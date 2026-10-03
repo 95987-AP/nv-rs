@@ -1,0 +1,40 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    name: check (${{ matrix.workspace }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [core, viewer]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install stable Rust tools
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          rustup default stable
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Check formatting, tests and lints
+        env:
+          WORKSPACE: ${{ matrix.workspace }}
+        run: |
+          if ($env:WORKSPACE -eq 'viewer') { Set-Location viewer }
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked --workspace
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

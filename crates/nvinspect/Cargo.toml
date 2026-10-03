@@ -1,0 +1,26 @@
+[package]
+name = "nvinspect"
+version = "0.1.0"
+description = "Command-line inspector for Fallout: New Vegas game data"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+esm = { path = "../esm" }
+bsa = { path = "../bsa" }
+nif = { path = "../nif" }
+dds = { path = "../dds" }
+assets = { path = "../assets" }
+world = { path = "../world" }
+preview = { path = "../preview" }
+shaders = { path = "../shaders" }
+physics = { path = "../physics" }
+script = { path = "../script" }
+mp3 = { path = "../mp3" }
+cellview = { path = "../cellview" }
+ui = { path = "../ui" }
+speedtree = { path = "../speedtree" }
+
+[dev-dependencies]
+testdata = { path = "../testdata" }

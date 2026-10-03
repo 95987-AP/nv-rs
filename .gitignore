@@ -1,0 +1,33 @@
+# Build output from both workspaces
+target/
+dist/
+userdata/
+reports/
+nv-rs-*.txt
+viewer/nv-rs-*.txt
+# Local game data, extracted assets and research databases are never published.
+*.esm
+*.esp
+*.bsa
+*.nif
+*.kf
+*.dds
+*.ogg
+*.mp3
+*.wav
+*.exe
+*.dll
+*.pdb
+*.sqlite
+*.sqlite3
+*.db
+*.log
+.env
+.env.*
+!/.env.example
+.DS_Store
+Thumbs.db
+# Local address-named decompiler output directories
+/00447330/
+/005b1ba0/
+/007050d0/

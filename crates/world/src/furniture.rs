@@ -1,0 +1,839 @@
+//! Using furniture (chairs, benches, beds, wall leans) as the game does it,
+//! read from `FalloutNV.exe` with Ghidra (the function addresses are
+//! given with each rule; "inferred" marks what was deduced rather than
+//! seen in the code). The markers come from the furniture's model
+//! (`nif::FurnitureMarker`), the animations from the idle tree
+//! (`crate::idles`), their lengths and root movement from the caller
+//! ([`Animations`]).
+//!
+//! Someone heads for a piece of furniture: the nearest free marker the
+//! furniture's `MNAM` allows ([`nearest_free`]) is theirs from then on
+//! (scripts' `IsCurrentFurnitureRef` is already true; `GetSitting` still
+//! 0). They walk to it (arrival within `fAIFurnitureDestinationRadius`,
+//! 5), turn to its heading, and within 40 units the sit procedure runs
+//! ([`Sitter::update`]): the seated loop is loaded (`GetSitting` 1), the
+//! entry animation picked (`GetSitting` 2), the actor put exactly on the
+//! marker facing its heading, the entry played, and at its end the
+//! heading jumps by the marker's `fFurnitureMarkerNNHeadingDelta`
+//! (seated, `GetSitting` 3). Getting up (`Actor::StandUp`) turns back by
+//! the delta, plays the exit (`GetSitting` 4) and adds half a turn at the
+//! end. Beds go the same way through the sleep states (`GetSleeping`).
+
+use std::f32::consts::{PI, TAU};
+
+use esm::{FormId, FourCC, LoadOrder};
+
+use crate::cell::le_u32;
+
+const MNAM: FourCC = FourCC::new(b"MNAM");
+
+/// `FURN` `MNAM`: bit `i` lets marker `i` of the model be used; bit 30
+/// marks sitting furniture, bit 31 a bed (`00509450`, `005093f0`,
+/// `00509420`). Doc Mitchell's chair `SubChairDirtyF` has 0x40000004:
+/// only its third marker (number 14, the front) is used.
+pub const SIT_FURNITURE: u32 = 0x4000_0000;
+pub const BED: u32 = 0x8000_0000;
+
+/// How near the marker someone must be for the sit procedure to start
+/// (the double 40.0 at `01035810`, `00904f50`).
+pub const SIT_REACH: f32 = 40.0;
+
+/// How near the marker a walk to furniture ends:
+/// `fAIFurnitureDestinationRadius` (5, the exe's default).
+pub const DESTINATION_RADIUS: f32 = 5.0;
+
+/// A piece of furniture's `MNAM` (0 without one).
+pub fn marker_flags(order: &LoadOrder, furniture_base: FormId) -> u32 {
+    order
+        .get(furniture_base)
+        .and_then(|rr| rr.record().ok())
+        .and_then(|r| {
+            r.get(MNAM)
+                .filter(|s| s.data.len() >= 4)
+                .map(|s| le_u32(&s.data, 0))
+        })
+        .unwrap_or(0)
+}
+
+/// The sit / sleep state of someone's AI process (a byte at +0x13d), with
+/// the game's own names (its string table at `0118c6a8`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SitState {
+    #[default]
+    Normal,
+    LoadSitIdle,
+    WantToSit,
+    WaitingForSitAnim,
+    Sitting,
+    WantToStand,
+    LoadingSleepIdle,
+    WantToSleep,
+    WaitingForSleepAnim,
+    Sleeping,
+    WantToWake,
+}
+
+impl SitState {
+    /// The state's number (0–10).
+    pub fn number(self) -> u8 {
+        self as u8
+    }
+
+    pub fn name(self) -> &'static str {
+        [
+            "Normal",
+            "Load sit idle",
+            "Want to sit",
+            "Waiting for sit anim",
+            "Sitting",
+            "Want to stand",
+            "Loading sleep idle",
+            "Want to sleep",
+            "Waiting for sleep anim",
+            "Sleeping",
+            "Want to wake",
+        ][self as usize]
+    }
+
+    /// What `GetSitting` gives (`0059dd90`): 1 loading the seated loop, 2
+    /// sitting down (both "want" and "waiting"), 3 seated, 4 getting up,
+    /// else 0 (sleep states too).
+    pub fn get_sitting(self) -> u8 {
+        match self as u8 {
+            1 => 1,
+            2 | 3 => 2,
+            4 => 3,
+            5 => 4,
+            _ => 0,
+        }
+    }
+
+    /// What `GetSleeping` gives (`0059dc90`): the same for the sleep
+    /// states (6 → 1, 7 and 8 → 2, 9 → 3, 10 → 4).
+    pub fn get_sleeping(self) -> u8 {
+        match self as u8 {
+            6 => 1,
+            7 | 8 => 2,
+            9 => 3,
+            10 => 4,
+            _ => 0,
+        }
+    }
+
+    /// Settled in: seated or asleep.
+    pub fn is_settled(self) -> bool {
+        matches!(self, SitState::Sitting | SitState::Sleeping)
+    }
+
+    fn sleep(self) -> bool {
+        self as u8 >= 6
+    }
+}
+
+/// Bed markers (`005094f0`: numbers 1 to 9) go through the sleep states.
+pub fn is_sleep_marker(number: u8) -> bool {
+    (1..=9).contains(&number)
+}
+
+/// Markers that load a seated loop (`00509510`: 10 to 20, and 26).
+pub fn is_sit_marker(number: u8) -> bool {
+    (10..=20).contains(&number) || number == 26
+}
+
+/// Markers below 21 keep their user once the entry has played; from 21
+/// on ("use and leave"), the entry plays and the user is let go
+/// (`009213e0`; what those markers are used for in the game's data isn't
+/// checked).
+pub fn keeps_user(number: u8) -> bool {
+    number < 21
+}
+
+/// A furniture marker where the furniture stands: the process's copy of
+/// it (+0x148).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PlacedMarker {
+    /// Its place in the model's list (the `MNAM` bit).
+    pub index: u8,
+    /// Its marker number (11 chair left … 14 front, 1/2 bed sides…).
+    pub number: u8,
+    pub position: [f32; 3],
+    /// Radians clockwise from north.
+    pub heading: f32,
+}
+
+/// A piece of furniture's markers where it stands (`005686b0`): each
+/// offset turned clockwise by the furniture's heading and scaled, from
+/// its position; each heading the furniture's plus the marker's, in
+/// [0, 2π), kept in thousandths of a radian as the game stores it
+/// (`00c54550`). Only the furniture's heading turns them (furniture
+/// stands upright).
+pub fn place_markers(
+    markers: &[nif::FurnitureMarker],
+    position: [f32; 3],
+    heading: f32,
+    scale: f32,
+) -> Vec<PlacedMarker> {
+    let (s, c) = heading.sin_cos();
+    markers
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let [x, y, z] = m.offset.map(|v| v * scale);
+            let h = (heading + m.heading).rem_euclid(TAU);
+            PlacedMarker {
+                index: i as u8,
+                number: m.marker,
+                position: [
+                    position[0] + x * c + y * s,
+                    position[1] - x * s + y * c,
+                    position[2] + z,
+                ],
+                heading: ((h * 1000.0).round() / 1000.0).rem_euclid(TAU),
+            }
+        })
+        .collect()
+}
+
+/// The marker someone heading for the furniture takes (`005686b0`): of
+/// those whose bit is set in its `MNAM` and that nobody has taken
+/// (`taken`, by marker index), the nearest to them (3D distance).
+pub fn nearest_free(
+    markers: &[PlacedMarker],
+    flags: u32,
+    taken: impl Fn(u8) -> bool,
+    from: [f32; 3],
+) -> Option<PlacedMarker> {
+    let d = |p: [f32; 3]| (0..3).map(|k| (p[k] - from[k]).powi(2)).sum::<f32>();
+    markers
+        .iter()
+        .filter(|m| m.index < 30 && flags & (1 << m.index) != 0 && !taken(m.index))
+        .min_by(|a, b| d(a.position).total_cmp(&d(b.position)))
+        .copied()
+}
+
+/// The first usable marker nobody has taken (`005682c0`: the sandbox's
+/// reservation when it picks a piece of furniture).
+pub fn first_free(markers: &[PlacedMarker], flags: u32, taken: impl Fn(u8) -> bool) -> Option<u8> {
+    markers
+        .iter()
+        .map(|m| m.index)
+        .find(|&i| i < 30 && flags & (1 << i) != 0 && !taken(i))
+}
+
+/// The game's settings for a marker number: `fFurnitureMarkerNNDeltaX`,
+/// `DeltaY`, `DeltaZ` and `HeadingDelta` (`005099c0` and the table of
+/// setting pointers at `01189fa0`). Missing ones are 0, as the exe's
+/// defaults are.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct MarkerSettings {
+    pub delta: [f32; 3],
+    pub heading_delta: f32,
+}
+
+impl MarkerSettings {
+    pub fn read(order: &LoadOrder, number: u8) -> MarkerSettings {
+        let get = |what: &str| {
+            crate::scripting::game_setting(order, &format!("fFurnitureMarker{number:02}{what}"))
+                .unwrap_or(0.0)
+        };
+        MarkerSettings {
+            delta: [get("DeltaX"), get("DeltaY"), get("DeltaZ")],
+            heading_delta: get("HeadingDelta"),
+        }
+    }
+}
+
+/// Where the user of a marker is once settled, and their heading, as the
+/// game puts someone already seated (a reload while seated `00927d70`,
+/// seated when the 3D loads `00925700`, an instant sit `0088d2f0`): the
+/// deltas turned clockwise by the marker's heading from the marker (+y
+/// its facing, +x its right), the height delta only × (scale − 1)
+/// (`00509920`: so at scale 1 the feet stay at the marker's height), and
+/// the heading plus the heading delta. `scale` is the reference's scale ×
+/// the person's height.
+pub fn seat(marker: &PlacedMarker, settings: &MarkerSettings, scale: f32) -> ([f32; 3], f32) {
+    let [dx, dy, dz] = settings.delta;
+    let (s, c) = marker.heading.sin_cos();
+    let p = marker.position;
+    (
+        [
+            p[0] + dx * c + dy * s,
+            p[1] - dx * s + dy * c,
+            p[2] + (scale - 1.0) * dz,
+        ],
+        (marker.heading + settings.heading_delta).rem_euclid(TAU),
+    )
+}
+
+/// Animation lengths and root movement, from the files (`nif::Sequence`).
+pub trait Animations {
+    /// How long an animation (a `.kf` under `meshes\`) plays, in seconds.
+    fn length(&mut self, model: &str) -> Option<f32>;
+    /// How far its accumulation root has moved `time` seconds in, in the
+    /// skeleton's axes (+y forward): see `nif::Sequence::root_offset`.
+    fn root_offset(&mut self, model: &str, time: f32) -> [f32; 3];
+}
+
+/// An entry or exit animation playing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Playing {
+    pub idle: FormId,
+    /// The `.kf`, under `meshes\`.
+    pub model: String,
+    pub length: f32,
+    pub elapsed: f32,
+    /// Where the actor stood and faced when it began: its root's movement
+    /// is added to that, turned by the heading.
+    pub from: [f32; 3],
+    pub heading: f32,
+}
+
+/// What a step of the sit procedure came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// Still on the way in or out.
+    Busy,
+    /// Seated (or asleep) now.
+    Settled,
+    /// Let go of the furniture: up and away, or a use-and-leave marker
+    /// used.
+    Released,
+    /// The idle tree has no entry animation for the marker: the game
+    /// gives up ("AI: Missing furniture entry animation…", state back to
+    /// normal).
+    Failed,
+}
+
+/// Someone using a piece of furniture: the sit procedure's state for them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sitter {
+    pub state: SitState,
+    pub furniture: FormId,
+    pub marker: PlacedMarker,
+    pub settings: MarkerSettings,
+    /// The seated loop ("dynamic idle", the idle tree at `GetSitting` 1)
+    /// loaded on the way in: (idle, `.kf`).
+    pub dynamic_idle: Option<(FormId, String)>,
+    /// The entry or exit animation playing.
+    pub playing: Option<Playing>,
+    /// Asked to get up (`Actor::StandUp`, which keeps asking until done)
+    /// while not yet settled, or while a seated idle plays.
+    pub stand_requested: bool,
+    /// Where the actor stands and faces (radians clockwise from north).
+    pub position: [f32; 3],
+    pub heading: f32,
+}
+
+/// The idle tree's answer for someone using furniture, asked with
+/// `GetSitting`, `GetSleeping` and `GetFurnitureMarkerID` set: (idle,
+/// `.kf`).
+pub type PickIdle<'a> = dyn FnMut(u8, u8, u8) -> Option<(FormId, String)> + 'a;
+
+impl Sitter {
+    /// Someone heading for `marker` of `furniture`, from where they are.
+    pub fn new(
+        furniture: FormId,
+        marker: PlacedMarker,
+        settings: MarkerSettings,
+        position: [f32; 3],
+        heading: f32,
+    ) -> Sitter {
+        Sitter {
+            state: SitState::Normal,
+            furniture,
+            marker,
+            settings,
+            dynamic_idle: None,
+            playing: None,
+            stand_requested: false,
+            position,
+            heading,
+        }
+    }
+
+    /// Someone already seated (or asleep): at the seat ([`seat`]),
+    /// settled, with the seated loop `pick` gives.
+    pub fn seated(
+        furniture: FormId,
+        marker: PlacedMarker,
+        settings: MarkerSettings,
+        scale: f32,
+        pick: &mut PickIdle,
+    ) -> Sitter {
+        let (position, heading) = seat(&marker, &settings, scale);
+        let sleep = is_sleep_marker(marker.number);
+        let loading = if sleep {
+            SitState::LoadingSleepIdle
+        } else {
+            SitState::LoadSitIdle
+        };
+        Sitter {
+            state: if sleep {
+                SitState::Sleeping
+            } else {
+                SitState::Sitting
+            },
+            furniture,
+            marker,
+            settings,
+            dynamic_idle: pick(loading.get_sitting(), loading.get_sleeping(), marker.number),
+            playing: None,
+            stand_requested: false,
+            position,
+            heading,
+        }
+    }
+
+    /// Whether they've reached the marker: within [`SIT_REACH`].
+    pub fn in_reach(&self, at: [f32; 3]) -> bool {
+        let d: f32 = (0..3)
+            .map(|k| (self.marker.position[k] - at[k]).powi(2))
+            .sum();
+        d.sqrt() < SIT_REACH
+    }
+
+    /// Asks them to get up (`Actor::StandUp`, `008a75a0`, then the stand
+    /// update `00921e80` each frame): from seated, the exit plays; while
+    /// still sitting down, once seated; a use-and-leave marker's entry is
+    /// left to finish.
+    pub fn stand_up(&mut self) {
+        self.stand_requested = true;
+    }
+
+    /// One frame of the sit or stand procedure, `dt` seconds:
+    /// `009213e0` on the way in, `00921e80` on the way out. `seated_idle`
+    /// says a seated idle (relaxing, talking) is playing: getting up waits
+    /// for it to end (`00498f80`).
+    pub fn update(
+        &mut self,
+        dt: f32,
+        seated_idle: bool,
+        pick: &mut PickIdle,
+        anims: &mut dyn Animations,
+    ) -> Step {
+        let number = self.marker.number;
+        let sleep = is_sleep_marker(number);
+        match self.state {
+            SitState::Normal => {
+                // Load the seated loop (skipped for markers that have none).
+                let loading = if sleep {
+                    SitState::LoadingSleepIdle
+                } else {
+                    SitState::LoadSitIdle
+                };
+                self.state = loading;
+                if sleep || is_sit_marker(number) {
+                    self.dynamic_idle = pick(loading.get_sitting(), loading.get_sleeping(), number);
+                }
+                // Want to sit: the entry animation.
+                let want = if sleep {
+                    SitState::WantToSleep
+                } else {
+                    SitState::WantToSit
+                };
+                self.state = want;
+                let Some((idle, model)) = pick(want.get_sitting(), want.get_sleeping(), number)
+                else {
+                    self.state = SitState::Normal;
+                    return Step::Failed;
+                };
+                // Exactly on the marker, facing its heading, then waiting
+                // for the entry to play.
+                self.position = self.marker.position;
+                self.heading = self.marker.heading;
+                self.playing = Some(Playing {
+                    length: anims.length(&model).unwrap_or(0.0),
+                    idle,
+                    model,
+                    elapsed: 0.0,
+                    from: self.position,
+                    heading: self.heading,
+                });
+                self.state = if sleep {
+                    SitState::WaitingForSleepAnim
+                } else {
+                    SitState::WaitingForSitAnim
+                };
+                Step::Busy
+            }
+            SitState::WaitingForSitAnim | SitState::WaitingForSleepAnim => {
+                if !self.play(dt, anims) {
+                    // A use-and-leave marker asked to get up goes on to
+                    // "want to stand" with its entry still playing.
+                    if self.stand_requested && !keeps_user(number) {
+                        self.state = SitState::WantToStand;
+                    }
+                    return Step::Busy;
+                }
+                self.playing = None;
+                if !keeps_user(number) {
+                    return self.release();
+                }
+                self.heading = (self.heading + self.settings.heading_delta).rem_euclid(TAU);
+                self.state = if self.state.sleep() {
+                    SitState::Sleeping
+                } else {
+                    SitState::Sitting
+                };
+                Step::Settled
+            }
+            SitState::Sitting | SitState::Sleeping => {
+                if !self.stand_requested || seated_idle {
+                    return Step::Busy;
+                }
+                let want = if self.state.sleep() {
+                    SitState::WantToWake
+                } else {
+                    SitState::WantToStand
+                };
+                self.state = want;
+                let Some((idle, model)) = pick(want.get_sitting(), want.get_sleeping(), number)
+                else {
+                    // No exit: up where they are, turned back by the delta
+                    // and half a turn.
+                    self.heading =
+                        (self.heading - self.settings.heading_delta + PI).rem_euclid(TAU);
+                    return self.release();
+                };
+                // Back to the marker's heading for the exit.
+                self.heading = (self.heading - self.settings.heading_delta).rem_euclid(TAU);
+                self.playing = Some(Playing {
+                    length: anims.length(&model).unwrap_or(0.0),
+                    idle,
+                    model,
+                    elapsed: 0.0,
+                    from: self.position,
+                    heading: self.heading,
+                });
+                Step::Busy
+            }
+            SitState::WantToStand | SitState::WantToWake => {
+                if self.playing.is_some() && !self.play(dt, anims) {
+                    return Step::Busy;
+                }
+                self.playing = None;
+                if keeps_user(number) {
+                    self.heading = (self.heading + PI).rem_euclid(TAU);
+                }
+                self.release()
+            }
+            // Not yet seated: the stand update makes them seated first
+            // (`00921e80`'s default case), the sit update carries on.
+            SitState::LoadSitIdle
+            | SitState::WantToSit
+            | SitState::LoadingSleepIdle
+            | SitState::WantToSleep => {
+                self.state = if sleep {
+                    SitState::Sleeping
+                } else {
+                    SitState::Sitting
+                };
+                Step::Settled
+            }
+        }
+    }
+
+    /// Plays the entry or exit on: the actor moves with its root (the
+    /// accumulated root movement carries them from the marker to the seat
+    /// and back: inferred, since nothing else in the procedure moves them
+    /// there). Whether it has ended.
+    fn play(&mut self, dt: f32, anims: &mut dyn Animations) -> bool {
+        let Some(p) = self.playing.as_mut() else {
+            return true;
+        };
+        p.elapsed = (p.elapsed + dt).min(p.length.max(0.0));
+        let [x, y, z] = anims.root_offset(&p.model, p.elapsed);
+        let (s, c) = p.heading.sin_cos();
+        self.position = [
+            p.from[0] + x * c + y * s,
+            p.from[1] - x * s + y * c,
+            p.from[2] + z,
+        ];
+        p.elapsed >= p.length
+    }
+
+    fn release(&mut self) -> Step {
+        self.state = SitState::Normal;
+        self.playing = None;
+        Step::Released
+    }
+
+    /// The state values the idle tree's conditions ask
+    /// (`GetSitting`, `GetSleeping`, `GetFurnitureMarkerID`).
+    pub fn question(&self) -> (u8, u8, u8) {
+        (
+            self.state.get_sitting(),
+            self.state.get_sleeping(),
+            self.marker.number,
+        )
+    }
+}
+
+/// The markers of a piece of furniture others are using or heading for
+/// (by marker index): taken until they let go (the game's occupied and
+/// reserved bits, extra data 0x12 and 0x82 on the furniture).
+pub fn taken_markers(
+    state: &crate::scripting::GameState,
+    furniture: FormId,
+    except: FormId,
+) -> Vec<u8> {
+    state
+        .sitters
+        .iter()
+        .filter(|(who, s)| **who != except && s.furniture == furniture)
+        .map(|(_, s)| s.marker.index)
+        .collect()
+}
+
+/// A form list's entries (`FLST` `LNAM`s), or the form itself.
+pub fn list_or_one(order: &LoadOrder, id: FormId) -> Vec<FormId> {
+    let Some(rr) = order.get(id) else {
+        return vec![id];
+    };
+    if rr.entry.header.kind.as_bytes() != b"FLST" {
+        return vec![id];
+    }
+    let Ok(record) = rr.record() else {
+        return Vec::new();
+    };
+    record
+        .get_all(FourCC::new(b"LNAM"))
+        .filter(|s| s.data.len() >= 4)
+        .map(|s| rr.plugin.to_global(FormId(le_u32(&s.data, 0))))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Doc Mitchell's chair's front marker (`SubChairDirty01.nif`: number
+    /// 14 at (-2.0, 62.8), heading 3.141) and the chair settings.
+    fn front() -> nif::FurnitureMarker {
+        nif::FurnitureMarker {
+            offset: [-2.0, 62.8, -37.2],
+            heading: 3141.0 / 1000.0,
+            marker: 14,
+        }
+    }
+
+    fn chair14() -> MarkerSettings {
+        MarkerSettings {
+            delta: [2.4809, 57.3572, -28.948],
+            heading_delta: PI,
+        }
+    }
+
+    struct Anims;
+    impl Animations for Anims {
+        fn length(&mut self, model: &str) -> Option<f32> {
+            Some(if model.contains("Enter") { 1.73 } else { 1.53 })
+        }
+        // The front entry walks 55.4 forward, the exit 55.4 back, evenly.
+        fn root_offset(&mut self, model: &str, time: f32) -> [f32; 3] {
+            if model.contains("Enter") {
+                [0.0, 55.4 * (time / 1.73).min(1.0), 0.0]
+            } else {
+                [0.0, -55.4 * (time / 1.53).min(1.0), 0.0]
+            }
+        }
+    }
+
+    fn pick(sitting: u8, _sleeping: u8, marker: u8) -> Option<(FormId, String)> {
+        assert_eq!(marker, 14);
+        match sitting {
+            1 => Some((FormId(1), "DynamicIdle_ChairSit.kf".into())),
+            2 => Some((FormId(2), "Chair_ForwardEnter.kf".into())),
+            4 => Some((FormId(3), "Chair_ForwardExit.kf".into())),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn get_sitting_and_get_sleeping_map_the_states_as_the_game_does() {
+        let all = [
+            SitState::Normal,
+            SitState::LoadSitIdle,
+            SitState::WantToSit,
+            SitState::WaitingForSitAnim,
+            SitState::Sitting,
+            SitState::WantToStand,
+            SitState::LoadingSleepIdle,
+            SitState::WantToSleep,
+            SitState::WaitingForSleepAnim,
+            SitState::Sleeping,
+            SitState::WantToWake,
+        ];
+        let sitting: Vec<u8> = all.iter().map(|s| s.get_sitting()).collect();
+        let sleeping: Vec<u8> = all.iter().map(|s| s.get_sleeping()).collect();
+        assert_eq!(sitting, [0, 1, 2, 2, 3, 4, 0, 0, 0, 0, 0]);
+        assert_eq!(sleeping, [0, 0, 0, 0, 0, 0, 1, 2, 2, 3, 4]);
+        assert_eq!(SitState::WaitingForSleepAnim.number(), 8);
+        assert_eq!(SitState::Sitting.name(), "Sitting");
+    }
+
+    #[test]
+    fn only_the_markers_mnam_allows_are_used_nearest_first() {
+        // A chair turned a quarter clockwise (east), with left (11), right
+        // (12) and front (14) markers; Doc's MNAM allows only the third.
+        let markers = [
+            nif::FurnitureMarker {
+                offset: [-53.7, 7.5, -35.6],
+                heading: 1.570,
+                marker: 11,
+            },
+            nif::FurnitureMarker {
+                offset: [49.0, 7.6, -35.6],
+                heading: 4.712,
+                marker: 12,
+            },
+            front(),
+        ];
+        let placed = place_markers(&markers, [100.0, 0.0, 0.0], PI / 2.0, 1.0);
+        // The front marker 62.8 along the chair's facing (east) from it.
+        let f = placed[2];
+        assert!((f.position[0] - 162.8).abs() < 0.01 && (f.position[1] - 2.0).abs() < 0.01);
+        assert!((f.heading - (PI / 2.0 + 3141.0 / 1000.0).rem_euclid(TAU)).abs() < 1e-3);
+        let doc = 0x4000_0004;
+        let from_left = [0.0, 0.0, 0.0];
+        assert_eq!(
+            nearest_free(&placed, doc, |_| false, from_left)
+                .unwrap()
+                .index,
+            2
+        );
+        // All three allowed: the nearest.
+        let all = 0x4000_0007;
+        let near_right = placed[1].position;
+        assert_eq!(
+            nearest_free(&placed, all, |_| false, near_right)
+                .unwrap()
+                .number,
+            12
+        );
+        assert!(nearest_free(&placed, doc, |i| i == 2, from_left).is_none());
+        assert_eq!(first_free(&placed, all, |i| i == 0), Some(1));
+    }
+
+    #[test]
+    fn the_seat_follows_the_marker_and_scale_only_moves_it_down_past_1() {
+        let placed = place_markers(&[front()], [0.0, 0.0, 0.0], 0.0, 1.0)[0];
+        let (p, h) = seat(&placed, &chair14(), 1.0);
+        // Doc's chair: (-4.5, 5.4) at the marker's height, facing out.
+        assert!(
+            (p[0] + 4.45).abs() < 0.05 && (p[1] - 5.44).abs() < 0.05,
+            "{p:?}"
+        );
+        assert!((p[2] + 37.2).abs() < 1e-4);
+        assert!(h.min(TAU - h) < 0.01, "{h}");
+        let (tall, _) = seat(&placed, &chair14(), 1.1);
+        assert!((tall[2] - (-37.2 - 2.8948)).abs() < 1e-3, "{tall:?}");
+    }
+
+    #[test]
+    fn sitting_down_plays_the_entry_from_the_marker_then_turns() {
+        let placed = place_markers(&[front()], [0.0, 0.0, 0.0], 0.0, 1.0)[0];
+        let mut s = Sitter::new(FormId(9), placed, chair14(), [3.0, 80.0, -37.2], 0.0);
+        assert!(s.in_reach([3.0, 80.0, -37.2]));
+        assert!(!s.in_reach([3.0, 140.0, -37.2]));
+        let mut anims = Anims;
+        let step = s.update(0.0, false, &mut pick, &mut anims);
+        assert_eq!(step, Step::Busy);
+        assert_eq!(s.state, SitState::WaitingForSitAnim);
+        assert_eq!(s.question(), (2, 0, 14));
+        assert_eq!(
+            s.dynamic_idle.as_ref().unwrap().1,
+            "DynamicIdle_ChairSit.kf"
+        );
+        // Snapped onto the marker, facing it (into the chair).
+        assert_eq!(s.position, placed.position);
+        assert!((s.heading - placed.heading).abs() < 1e-6);
+        // Halfway: halfway along its facing.
+        s.update(1.73 / 2.0, false, &mut pick, &mut anims);
+        assert!(
+            (s.position[1] - (62.8 - 27.7)).abs() < 0.1,
+            "{:?}",
+            s.position
+        );
+        assert_eq!(s.state.get_sitting(), 2);
+        let step = s.update(1.0, false, &mut pick, &mut anims);
+        assert_eq!(step, Step::Settled);
+        assert_eq!(s.state, SitState::Sitting);
+        assert_eq!(s.question().0, 3);
+        // Ends 55.4 in, a few units from the settings' seat (inferred
+        // root movement), and turned half a turn: facing out.
+        assert!((s.position[1] - 7.4).abs() < 0.1, "{:?}", s.position);
+        assert!(s.heading.min(TAU - s.heading) < 0.01, "{}", s.heading);
+        // Standing waits for a seated idle to end.
+        s.stand_up();
+        assert_eq!(s.update(0.1, true, &mut pick, &mut anims), Step::Busy);
+        assert_eq!(s.state, SitState::Sitting);
+        s.update(0.0, false, &mut pick, &mut anims);
+        assert_eq!(s.state, SitState::WantToStand);
+        assert_eq!(s.question().0, 4);
+        // Turned back to the marker's heading for the exit.
+        assert!((s.heading - placed.heading).abs() < 1e-3);
+        let step = s.update(2.0, false, &mut pick, &mut anims);
+        assert_eq!(step, Step::Released);
+        assert_eq!(s.state, SitState::Normal);
+        // Back at the marker, facing away from the chair.
+        assert!((s.position[1] - 62.8).abs() < 0.1, "{:?}", s.position);
+        assert!(s.heading.min(TAU - s.heading) < 0.01, "{}", s.heading);
+    }
+
+    #[test]
+    fn no_entry_animation_gives_up_and_no_exit_pops_up_in_place() {
+        let placed = place_markers(&[front()], [0.0, 0.0, 0.0], 0.0, 1.0)[0];
+        let mut s = Sitter::new(FormId(9), placed, chair14(), placed.position, 0.0);
+        let mut none = |_: u8, _: u8, _: u8| None;
+        assert_eq!(s.update(0.0, false, &mut none, &mut Anims), Step::Failed);
+        assert_eq!(s.state, SitState::Normal);
+        let mut seated = Sitter::seated(FormId(9), placed, chair14(), 1.0, &mut pick);
+        assert_eq!(seated.state, SitState::Sitting);
+        assert_eq!(seated.dynamic_idle.as_ref().unwrap().0, FormId(1));
+        let at = seated.position;
+        seated.stand_up();
+        assert_eq!(
+            seated.update(0.0, false, &mut none, &mut Anims),
+            Step::Released
+        );
+        assert_eq!(seated.position, at);
+        // Heading: seated (2π) less the delta, plus half a turn.
+        assert!(seated.heading.min(TAU - seated.heading) < 0.01);
+    }
+
+    #[test]
+    fn a_stand_request_while_sitting_down_waits_until_seated() {
+        let placed = place_markers(&[front()], [0.0, 0.0, 0.0], 0.0, 1.0)[0];
+        let mut s = Sitter::new(FormId(9), placed, chair14(), placed.position, 0.0);
+        s.update(0.0, false, &mut pick, &mut Anims);
+        s.stand_up();
+        assert_eq!(s.update(0.5, false, &mut pick, &mut Anims), Step::Busy);
+        assert_eq!(s.state, SitState::WaitingForSitAnim);
+        assert_eq!(s.update(2.0, false, &mut pick, &mut Anims), Step::Settled);
+        s.update(0.0, false, &mut pick, &mut Anims);
+        assert_eq!(s.state, SitState::WantToStand);
+    }
+
+    #[test]
+    fn beds_go_through_the_sleep_states() {
+        let bed = nif::FurnitureMarker {
+            offset: [0.0, 0.0, 0.0],
+            heading: 0.0,
+            marker: 1,
+        };
+        let placed = place_markers(&[bed], [0.0, 0.0, 0.0], 0.0, 1.0)[0];
+        let mut asked = Vec::new();
+        let mut pick = |sitting: u8, sleeping: u8, _: u8| {
+            asked.push((sitting, sleeping));
+            Some((FormId(5), "BedLeft_Enter.kf".to_string()))
+        };
+        let mut s = Sitter::new(FormId(9), placed, MarkerSettings::default(), [0.0; 3], 0.0);
+        s.update(0.0, false, &mut pick, &mut Anims);
+        assert_eq!(s.state, SitState::WaitingForSleepAnim);
+        s.update(5.0, false, &mut pick, &mut Anims);
+        assert_eq!(s.state, SitState::Sleeping);
+        assert_eq!(s.question(), (0, 3, 1));
+        assert_eq!(asked, [(0, 1), (0, 2)]);
+    }
+}
