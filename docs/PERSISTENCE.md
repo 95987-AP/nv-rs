@@ -1,5 +1,56 @@
 # M1 custom save persistence
 
+## Camera continuation, 2026-10-04
+
+Active branch `codex/m1-camera-persistence`, based on appearance PR #6.
+The next bounded batch captures first-person special-idle clocks, frozen
+blend poses, loop counters, package cache, pending requests, hand-follow and
+view pitch in the custom save. It does not infer an animation from quest stage
+or claim native `.fos` compatibility. F9 preflights the skeleton and sequence
+assets before committing the running world.
+
+Changed files: animation.rs and animation/snapshot.rs; save.rs and
+save/camera.rs; scripting.rs; viewer player_idle.rs, sitting.rs, scripts.rs
+and actors.rs. Implementation and local checks are complete; no camera
+build is published yet. All test viewer processes have exited.
+Private design and eventual checks: nv-re/work/m1-overnight-2026-10-04/
+camera-persistence. PR #6 checks are running separately; play/app remains
+the verified PR #5 binary. Exact next action: submit the camera batch through
+a checked PR after appearance PR #6, then publish its verified binary.
+
+Implemented camera state is a versioned, bounded hex payload on one `camera`
+line. Saves without that line still load; older viewers will reject the new
+line. It preserves full active animation state, including frozen blend
+sources, live group data and pending package release. Sequence paths resolve
+through the same Seats cache used for new requests, preserving Arc identity.
+Ordered bone names/parents and sequence timing/track/group signatures reject
+incompatible assets before world replacement. These are structural checks,
+not file hashes: restoration requires unchanged assets and load order;
+same-path transform-only edits are not detected. No KF bytes are embedded.
+NPC pending requests wait until the destination scene is installed, but
+active NPC animations and dialogue continuation remain outside this batch.
+
+Generated checks pass: 925 root tests/doc tests and 85 viewer tests; both
+workspaces' clippy, formatting and release builds. A private installed-
+data harness round-tripped all four VCG01 player camera clips at 0, 0.05,
+0.25, 1 and 4 seconds, then compared every pose for 240 continuation frames
+and 30 release frames per case: all 20 passed exactly. This proves custom
+snapshot continuation against our animation engine with actual assets, not
+original-game visual equivalence. Native request/transition provenance stays
+with `world::animation` and [OPENING.md](OPENING.md).
+
+Live installed-data F5/F9 preserved `SpecialIdle_NVCG01PlayerBedsit.kf`,
+package001055C3, physical feet/heading and pitch. A second save confirmed an
+advancing animation clock (2.2223833 to 5.2226577 in its loop). A fresh-process
+F9 also restored that clip from disk and saved it at clock2.5011308. Images
+were inspected and both startup logs contained only Vulkan present-mode
+warnings. The name menu consumed F5/F9 until closed, so those attempts were
+not counted as loads. Dialogue continuation remains incomplete after restart;
+camera restoration does not establish the full opening-save acceptance gate.
+Private logs/saves and decoded summaries: camera-persistence/live/.
+Verified binary SHA256:
+`39A4219C0B9B3D6562E1673E70AB5112AC4E83FD3B5D62FF378DEA5FCC9BCBC8`.
+
 ## Failed writes and failed destination loads, 2026-10-04
 
 This batch concerns nv-rs's own text saves, not original `.fos` compatibility
@@ -67,3 +118,19 @@ click and Return did not drive its DirectInput. The test was closed with
 Alt-F4; no save was loaded or overwritten. Do not invent a phase-specific
 save prohibition from this failed experiment. Native evidence and executable
 hash: `nv-re/work/m1-overnight-2026-10-04/save-gating/RESULT.md`.
+
+## CI fixture collision found during camera PR #7
+
+The first core CI run failed before package-action assertions: parallel
+tests used the same tag/PID temporary directory, so another fixture could
+delete or truncate its generated FalloutNV.esm. `TempData` now exclusively
+creates unique tag/PID/counter directories; every fixture builder uses that
+allocator. A deterministic same-tag regression verifies independent contents
+and that dropping one fixture preserves the other. No check was disabled.
+The amended root suite passes 926 tests/doc tests; viewer remains 85.
+Both workspaces' checks were rerun. This changes test data only; the rebuilt
+release also passed an isolated installed-data opening smoke (situp/bedsit,
+Doc speech, inspected screenshot, normal exit; only known Vulkan warnings).
+Its SHA256 is `1219AD13BC6190B208C76C84B0F29D856A10324DA1AE6C0D1206A4F4FB277560`.
+Private logs/image: `camera-persistence/fixture-smoke` under the overnight
+research directory. CI must pass the amended head before camera publication.
