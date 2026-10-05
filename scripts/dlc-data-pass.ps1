@@ -16,7 +16,9 @@ param(
     [string]$Out = "dlc-data-pass.txt"
 )
 
-$ErrorActionPreference = "Stop"
+# Continue: in Windows PowerShell 5.1, "Stop" would abort on any line nvinspect
+# writes to stderr (warnings), which this script records instead.
+$ErrorActionPreference = "Continue"
 $data = Join-Path $Game "Data"
 if (-not (Test-Path (Join-Path $data "FalloutNV.esm"))) {
     throw "No FalloutNV.esm in ${data}: pass the folder that contains Data."
