@@ -535,9 +535,19 @@ pub fn talk(
             .0
             .iter()
             .find(|t| t.reference == speaker)
+            .copied()
+            // A talking activator isn't an actor: its own base and place.
+            .or_else(|| {
+                let base = world::scripting::base_of(order, speaker)?;
+                (order.get(base)?.entry.header.kind.as_bytes() == b"TACT").then(|| Talker {
+                    reference: speaker,
+                    base,
+                    position: [0.0; 3],
+                })
+            })
             .and_then(|t| {
                 let name = order.get(t.base)?.record().ok()?.full_name()?;
-                Some((*t, name))
+                Some((t, name))
             });
         match found {
             Some((talker, name)) => {

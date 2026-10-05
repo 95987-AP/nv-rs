@@ -601,6 +601,12 @@ talking activators is taken to be met. Nothing compared in the original game.
   (the gas jets, `FXSprayJet0101Ref`…) weren't drawn when a script enabled
   them. The viewer now draws them once a second, if they are in the place
   (`bring_in_enabled`).
+- **Talking activators** (Elijah's hologram, `NVDLC01ElijahTalkingActivatorREF`).
+  After the wake-up, `NVDLC01FountainStartSequenceSCRIPT` calls `Activate
+  Player` on it. A talking activator with a voice type (its `VNAM`) now
+  starts a conversation when a script has the player activate it: the
+  greeting, with the player's choices.
+
 - **Gear removal** works: after `RemoveAllItems NVDLC01PlayerEquipmentContainerRef`
   the pistol is unequipped and the ammo count leaves the HUD.
 - **Slideshow view:** the slide fills the view upright; no tilt shows.
