@@ -718,3 +718,31 @@ fn the_pipboy_radio_and_its_stations() {
     assert_eq!(back.more.radio, state.more.radio);
     assert_eq!(back.more.radio.tuned, Some(FormId(TALKER_REF)));
 }
+
+#[test]
+fn objects_animations_playing() {
+    let (_data, order) = order("more-anim");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let q = |state: &mut GameState, e: &str| ask(&order, &scripts, state, e);
+    // Before the viewer reports anything, nothing has 3D: nothing plays.
+    assert_eq!(q(&mut state, "BarrelRef.IsAnimPlaying"), 0.0);
+    more::report_sequences(
+        &mut state,
+        [
+            (FormId(BARREL_REF), vec!["SpecialIdle".to_string()]),
+            (FormId(RADIO_REF), vec!["Forward".to_string()]),
+            (FormId(CRATE_REF), Vec::new()),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    assert_eq!(q(&mut state, "BarrelRef.IsAnimPlaying"), 1.0);
+    assert_eq!(q(&mut state, "BarrelRef.IsAnimPlaying Forward"), 0.0);
+    // Group names compare without case (Dead Money writes `Forward`).
+    assert_eq!(q(&mut state, "RadioRef.IsAnimPlaying forward"), 1.0);
+    assert_eq!(q(&mut state, "RadioRef.IsAnimPlaying Backward"), 0.0);
+    assert_eq!(q(&mut state, "CrateRef.IsAnimPlaying"), 0.0);
+    // People's animation data isn't carried out: the script stops.
+    assert_eq!(q(&mut state, "PersonRef.IsAnimPlaying"), STOPPED);
+}
