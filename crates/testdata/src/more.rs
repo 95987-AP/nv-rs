@@ -82,6 +82,12 @@ pub mod ids {
     pub const GUN: u32 = 0xE1E;
     /// A casino (`CSNO`, no data) for the casino games' menus.
     pub const CASINO: u32 = 0xE1F;
+    /// A placed object whose script (`TestSayerScript`) has `SayToDone`
+    /// blocks: `TestRadioTopic` adds 1 to `TestValue`, `TestTick` sets it
+    /// to 100.
+    pub const SAYER_SCRIPT: u32 = 0xE21;
+    pub const SAYER: u32 = 0xE22;
+    pub const SAYER_REF: u32 = 0xE3C;
 }
 
 /// The world, written as `FalloutNV.esm` into a temporary Data folder.
@@ -184,6 +190,24 @@ pub fn more(tag: &str) -> TempData {
         *b"SCPT",
         0,
         &named(b"SCPT", CARD_SCRIPT, "TestCardScript", &card_script),
+    ));
+    let mut sayer_script = sub(b"SCHR", &[0; 20]);
+    sayer_script.extend(sub(
+        b"SCTX",
+        b"scn TestSayerScript\nbegin SayToDone TestRadioTopic\n\tset TestValue to TestValue + 1\nend\nbegin SayToDone TestTick\n\tset TestValue to 100\nend",
+    ));
+    plugin.extend(group(
+        *b"SCPT",
+        0,
+        &named(b"SCPT", SAYER_SCRIPT, "TestSayerScript", &sayer_script),
+    ));
+    let mut sayer = sub(b"FULL", &zstr("Sayer"));
+    sayer.extend(sub(b"SCRI", &SAYER_SCRIPT.to_le_bytes()));
+    sayer.extend(sub(b"DATA", &[0; 8]));
+    plugin.extend(group(
+        *b"MISC",
+        0,
+        &named(b"MISC", SAYER, "TestSayer", &sayer),
     ));
     let mut card = sub(b"FULL", &zstr("Ace of Clubs"));
     card.extend(sub(b"SCRI", &CARD_SCRIPT.to_le_bytes()));
@@ -452,6 +476,15 @@ pub fn more(tag: &str) -> TempData {
         [400.0, 100.0, 0.0],
         [0.0; 3],
         "CardCupRef",
+        &[],
+    ));
+    refs.extend(thing(
+        b"REFR",
+        SAYER_REF,
+        SAYER,
+        [400.0, 200.0, 0.0],
+        [0.0; 3],
+        "SayerRef",
         &[],
     ));
     let mut xesp = BARREL_REF.to_le_bytes().to_vec();

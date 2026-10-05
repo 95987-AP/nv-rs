@@ -1222,8 +1222,36 @@ impl Interactive {
 /// base has a script (people, activators, triggers, doors…), with trigger
 /// volumes; items lying around; containers.
 pub fn interactive_references(order: &LoadOrder, cell: FormId) -> Vec<Interactive> {
+    interactive_among(order, order.references_in_cell(cell))
+}
+
+/// [`interactive_references`] for an outdoor grid square: its cell's and
+/// the worldspace's persistent ones standing in it (kept in the
+/// worldspace's persistent cell: doors, markers, triggers such as Dead
+/// Money's fountain trigger).
+pub fn interactive_references_outdoors(
+    order: &LoadOrder,
+    grid: &crate::WorldGrid,
+    square: (i32, i32),
+) -> Vec<Interactive> {
+    let cell = grid.cell_at(square);
+    let refs = cell
+        .into_iter()
+        .flat_map(|c| order.references_in_cell(c))
+        .chain(
+            grid.persistent_in(square)
+                .iter()
+                .filter_map(|&id| order.get(id)),
+        );
+    interactive_among(order, refs)
+}
+
+fn interactive_among<'a>(
+    order: &'a LoadOrder,
+    refs: impl IntoIterator<Item = esm::RecordRef<'a>>,
+) -> Vec<Interactive> {
     let mut out = Vec::new();
-    for rr in order.references_in_cell(cell) {
+    for rr in refs {
         if rr.entry.header.is_deleted() {
             continue;
         }
@@ -2404,6 +2432,22 @@ impl<'a> Runner<'a> {
         let saved = self.container.replace(container);
         self.run_blocks(reference, Some(reference), "onadd", names);
         self.container = saved;
+    }
+
+    /// `speaker` finished saying a line of `topic` it was told to say with
+    /// `SayTo`: its script's `SayToDone` blocks (block type 7, the block
+    /// table's entry at `0118e408`) run, those naming no topic or this one.
+    /// The game raises it when the line is done; where exactly isn't
+    /// traced (the scripts that use it chain the next line from here, as
+    /// Dead Money's narrator does).
+    pub fn say_to_done(&mut self, speaker: FormId, topic: FormId) {
+        let order = self.order;
+        let names = |b: &script::Block| match b.args.first() {
+            None => true,
+            Some(Arg::Word(w)) => order.form_by_editor_id(w) == Some(topic),
+            Some(_) => false,
+        };
+        self.run_blocks(speaker, Some(speaker), "saytodone", names);
     }
 
     /// Several events at once, in one run of the reference's script (as

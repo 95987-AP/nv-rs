@@ -34,7 +34,7 @@ pub struct PlacedRef(pub u32);
 /// greeting), and whether it's a conversation (`StartConversation`) or
 /// just a line said (`SayTo`).
 #[derive(Resource, Default)]
-pub struct ScriptedTalk(pub Option<(FormId, Option<FormId>, bool)>);
+pub struct ScriptedTalk(pub Option<(FormId, Option<FormId>, bool, bool)>);
 
 /// Notices on screen, each with the time it appeared.
 #[derive(Resource, Default)]
@@ -249,16 +249,20 @@ fn refresh_cell_scripts(
     cache: &ScriptCache,
     state: &mut world::scripting::GameState,
     cell_scripts: &mut CellScripts,
+    outdoors: Option<(&world::WorldGrid, (i32, i32))>,
 ) {
     if state.player_cell == cell_scripts.cell {
         return;
     }
     cell_scripts.cell = state.player_cell;
     cell_scripts.inside.clear();
-    cell_scripts.refs = state
-        .player_cell
-        .map(|c| world::scripting::interactive_references(order, c))
-        .unwrap_or_default();
+    cell_scripts.refs = match (state.player_cell, outdoors) {
+        (Some(_), Some((grid, square))) => {
+            world::scripting::interactive_references_outdoors(order, grid, square)
+        }
+        (Some(c), None) => world::scripting::interactive_references(order, c),
+        (None, _) => Vec::new(),
+    };
     let mut runner = Runner::new(order, cache, state);
     for r in cell_scripts.refs.iter().filter(|r| r.script.is_some()) {
         runner.run_blocks(r.reference, Some(r.reference), "onload", |_| true);
@@ -734,7 +738,10 @@ type Starting<'w> = (
     Res<'w, crate::walk::Player>,
     ResMut<'w, crate::PendingScene>,
     ResMut<'w, crate::exterior::PendingExterior>,
-    ResMut<'w, crate::combat::ObjectShots>,
+    (
+        ResMut<'w, crate::combat::ObjectShots>,
+        ResMut<'w, crate::swaps::TextureSwaps>,
+    ),
 );
 
 /// Runs the scripts for this frame and carries out what they asked for.
@@ -749,7 +756,13 @@ pub fn run_scripts(
     conversation: Res<Conversation>,
     mut talk: ResMut<ScriptedTalk>,
     mut notices: ResMut<Notices>,
-    (mut start_stage, player, mut pending, mut pending_exterior, mut object_shots): Starting,
+    (
+        mut start_stage,
+        player,
+        mut pending,
+        mut pending_exterior,
+        (mut object_shots, mut texture_swaps),
+    ): Starting,
     mut start_commands: ResMut<StartCommands>,
     here_now: HereNow,
     cameras: Query<(&Transform, &FlyCamera, Option<&Projection>)>,
@@ -882,7 +895,10 @@ pub fn run_scripts(
             println!("{line}: {flow:?}");
         }
     }
-    refresh_cell_scripts(order, &scripts.0, state, &mut cell_scripts);
+    let outdoors = exterior
+        .as_ref()
+        .map(|e| (&*e.grid, world::square_of(feet)));
+    refresh_cell_scripts(order, &scripts.0, state, &mut cell_scripts, outdoors);
     // Walking away from a seat gets the player up.
     if let Some(seat) = cell_scripts.seat {
         let d = ((feet[0] - seat[0]).powi(2) + (feet[1] - seat[1]).powi(2)).sqrt();
@@ -1063,7 +1079,10 @@ pub fn run_scripts(
                 } else if (to == PLAYER_REF || to.0 == 0) && talk.0.is_none() {
                     // `Say` speaks to no one in particular (`to` 0): the
                     // player hears it as a line said to them.
-                    talk.0 = Some((speaker, topic, conversation));
+                    // `SayTo` (a line to the player, not `Say`'s to no
+                    // one): its `SayToDone` blocks run when it's said.
+                    let say_to = !conversation && to == PLAYER_REF;
+                    talk.0 = Some((speaker, topic, conversation, say_to));
                 }
                 None
             }
@@ -1113,10 +1132,7 @@ pub fn run_scripts(
                 node,
                 texture,
             } => {
-                println!(
-                    "A script gives {}'s {node} the texture {texture} (not shown here).",
-                    name(what)
-                );
+                texture_swaps.0.push((what, node, texture));
                 None
             }
             Event::Enable(r, on) => {
@@ -1437,7 +1453,7 @@ mod tests {
         let mut state = GameState::new(&order);
         state.player_cell = Some(FormId(HOUSE));
         let mut cells = CellScripts::default();
-        refresh_cell_scripts(&order, &cache, &mut state, &mut cells);
+        refresh_cell_scripts(&order, &cache, &mut state, &mut cells, None);
         let people = [(PLAYER_REF, [1888.0, 1835.0, 7360.0])];
         // Enter before the quest permits the instruction, then load a save
         // at stage55 in that same volume. Old occupancy must not suppress it.
@@ -1448,7 +1464,7 @@ mod tests {
         loaded.player_cell = Some(FormId(HOUSE));
         loaded.stages.insert(FormId(VIGOR_QUEST), 55);
         restore_script_state(&mut state, &mut cells, loaded);
-        refresh_cell_scripts(&order, &cache, &mut state, &mut cells);
+        refresh_cell_scripts(&order, &cache, &mut state, &mut cells, None);
         run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016, None);
         assert_eq!(state.stages.get(&FormId(VIGOR_QUEST)), Some(&60));
         assert!(cells.seat.is_none());

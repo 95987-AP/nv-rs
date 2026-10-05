@@ -1367,3 +1367,22 @@ fn recipe_and_casino_menus_open_with_their_data() {
     );
     assert!(state.events.is_empty());
 }
+
+#[test]
+fn say_to_done_runs_the_blocks_for_the_topic_said() {
+    let (_data, order) = order("more-saytodone");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    state.globals.insert(FormId(VALUE), 0.0);
+    // The line of `TestRadioTopic` is said: only its block runs.
+    Runner::new(&order, &scripts, &mut state).say_to_done(FormId(SAYER_REF), FormId(RADIO_TOPIC));
+    assert_eq!(state.globals[&FormId(VALUE)], 1.0);
+    Runner::new(&order, &scripts, &mut state).say_to_done(FormId(SAYER_REF), FormId(RADIO_TOPIC));
+    assert_eq!(state.globals[&FormId(VALUE)], 2.0);
+    // Another topic: its own block.
+    Runner::new(&order, &scripts, &mut state).say_to_done(FormId(SAYER_REF), FormId(TICK));
+    assert_eq!(state.globals[&FormId(VALUE)], 100.0);
+    // Someone without such blocks: nothing.
+    Runner::new(&order, &scripts, &mut state).say_to_done(FormId(PERSON_REF), FormId(RADIO_TOPIC));
+    assert_eq!(state.globals[&FormId(VALUE)], 100.0);
+}

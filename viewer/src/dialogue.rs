@@ -76,6 +76,9 @@ pub struct Talk {
     /// Only a line said (`SayTo`): no dialogue menu, no choices after it,
     /// and the player and the game carry on meanwhile.
     line_only: bool,
+    /// Said with `SayTo`, of this topic: the speaker's `SayToDone` blocks
+    /// run once it's said.
+    say_to: Option<FormId>,
     /// What the game's dialogue menu shows now (`game_menus::dialog`): the
     /// line and response, or the topics.
     shown_line: Option<(FormId, usize)>,
@@ -324,10 +327,17 @@ pub fn talk(
                         talk.speaker.reference,
                     );
                     if talk.line_only || talk.info.flags & dialogue::GOODBYE != 0 {
+                        let (speaker, said) = (talk.speaker.reference, talk.say_to);
                         if let Some(s) = screen.as_deref_mut() {
                             crate::game_menus::dialog::end(s);
                         }
                         end(&mut commands, &mut conversation.0, &mut player, &mut panel);
+                        // `SayTo`'s line is said: the speaker's
+                        // `SayToDone` blocks (which may start the next).
+                        if let Some(topic) = said {
+                            Runner::new(order, &scripts.0, &mut state.0)
+                                .say_to_done(speaker, topic);
+                        }
                         return;
                     }
                     let top = top_level.get_or_insert_with(|| dialogue::top_level_topics(order));
@@ -483,7 +493,7 @@ pub fn talk(
     });
     // A script asked someone to talk to the player (`SayTo`,
     // `StartConversation`): they start, about the topic given.
-    if let Some((speaker, topic, menu)) = scripted.0.take() {
+    if let Some((speaker, topic, menu, say_to)) = scripted.0.take() {
         let found = talkers
             .0
             .iter()
@@ -500,6 +510,7 @@ pub fn talk(
                 {
                     let mut talk = talk;
                     talk.line_only = !menu;
+                    talk.say_to = say_to.then_some(topic);
                     talk.voice = play_voice(&mut commands, &mut audio, &game.0, &talk);
                     if menu {
                         player.ready = false;
@@ -639,6 +650,7 @@ fn start_talk(
         voice: None,
         choices: None,
         line_only: false,
+        say_to: None,
         shown_line: None,
         shown_topics: false,
     })

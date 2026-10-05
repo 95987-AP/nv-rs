@@ -48,7 +48,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::asset::{load_internal_asset, weak_handle, RenderAssetUsages};
-use bevy::audio::AudioSource;
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::prelude::*;
 use bevy::render::camera::RenderTarget;
@@ -461,7 +460,6 @@ pub struct Around<'w> {
     conversation: Res<'w, crate::dialogue::Conversation>,
     requests: ResMut<'w, SoundRequests>,
     messages: ResMut<'w, crate::hud::HudMessages>,
-    oggs: ResMut<'w, Assets<AudioSource>>,
     wavs: ResMut<'w, Assets<PcmSound>>,
     markers: Res<'w, crate::map::MapMarkers>,
 }
@@ -747,7 +745,6 @@ fn update_pipboy(
         state,
         mut menus,
         mut player,
-        mut oggs,
         mut wavs,
         markers,
         ..
@@ -852,15 +849,8 @@ fn update_pipboy(
             .form_by_editor_id("UIPipBoyHumLP")
             .and_then(|id| world::sound::Sound::load(order, id))
         {
-            pipboy.hum = crate::sounds::play(
-                &mut commands,
-                &game.0,
-                &mut oggs,
-                &mut wavs,
-                &s,
-                state.0.dice,
-                true,
-            );
+            pipboy.hum =
+                crate::sounds::play(&mut commands, &game.0, &mut wavs, &s, state.0.dice, true);
         }
     }
 

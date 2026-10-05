@@ -197,6 +197,13 @@ impl WorldGrid {
         })
     }
 
+    /// The persistent objects standing in a grid square.
+    pub fn persistent_in(&self, square: (i32, i32)) -> &[FormId] {
+        self.persistent_by_square
+            .get(&square)
+            .map_or(&[], |v| v.as_slice())
+    }
+
     /// The cell at a grid square, if the worldspace has one there.
     pub fn cell_at(&self, square: (i32, i32)) -> Option<FormId> {
         self.cells.get(&square).copied()
