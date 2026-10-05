@@ -75,7 +75,13 @@ Whether the present code covers Dead Money's use is unchecked.
 Each command reads the game's own files. Save outputs outside the repository, and copy
 only counts, editor IDs and conclusions into this file: never dialogue or other game text.
 
-Build nvinspect first (`cargo build --release`, giving `target\release\nvinspect.exe`), then:
+All of it in one go, for all four story DLCs, into `dlc-data-pass.txt` (git ignores it):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\dlc-data-pass.ps1 -Game "<your Fallout New Vegas folder>"
+```
+
+Or by hand: build nvinspect first (`cargo build --release`, giving `target\release\nvinspect.exe`), then:
 
 ```powershell
 $Data = "<your Fallout New Vegas folder>\Data"
