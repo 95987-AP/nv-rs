@@ -591,9 +591,19 @@ talking activators is taken to be met. Nothing compared in the original game.
   `NVDLC01FountainStartSequence` run.
 - **Ogg crash.** Bevy's ogg playback crashed the viewer in the Villa. Ogg is
   now decoded in the viewer (lewton) and played as PCM like the other sounds.
-- **Not done:** references that start disabled in the current cell and that
-  scripts enable (the gas jets), the slideshow's view tilt, and checking that
-  the gear really leaves the player.
+- **Narrator voice.** The narrator (`NVDLC01Narrator`) is an actor of voice
+  type `MaleAdult01Default`, but all his intro lines are recorded under
+  Elijah's voice type folder (`nvdlc01maleuniqueelijah`). How the game finds
+  them there isn't traced; the viewer looks for the same file name under
+  another voice type of the same plugin when the speaker's own folder has
+  none (`other_voice` in `viewer/src/dialogue.rs`).
+- **References enabled after the place loaded.** Ones that start disabled
+  (the gas jets, `FXSprayJet0101Ref`…) weren't drawn when a script enabled
+  them. The viewer now draws them once a second, if they are in the place
+  (`bring_in_enabled`).
+- **Gear removal** works: after `RemoveAllItems NVDLC01PlayerEquipmentContainerRef`
+  the pistol is unequipped and the ammo count leaves the HUD.
+- **Slideshow view:** the slide fills the view upright; no tilt shows.
 
 ## Open questions
 

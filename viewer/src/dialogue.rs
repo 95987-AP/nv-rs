@@ -149,6 +149,35 @@ fn ray_person(eye: [f32; 3], dir: [f32; 3], feet: [f32; 3]) -> Option<f32> {
     (0.0..=HEIGHT).contains(&z).then_some(t)
 }
 
+/// The voice file for a line when the speaker's own voice type has none:
+/// the same file name under another voice type of the same plugin. Dead
+/// Money's narrator is a `MaleAdult01Default` actor whose lines are all
+/// recorded in Elijah's voice type folder (how the game finds them there
+/// isn't traced).
+fn other_voice(game: &cellview::Game, path: &str) -> Option<String> {
+    static INDEX: std::sync::OnceLock<std::collections::HashMap<String, String>> =
+        std::sync::OnceLock::new();
+    // Keyed by the plugin and the file name, whatever the voice type.
+    let key = |lower: &str| -> Option<String> {
+        let (folder, name) = lower.rsplit_once('\\')?;
+        let plugin = folder.rsplit_once('\\').map_or(folder, |(p, _)| p);
+        Some(format!("{plugin}\\{name}"))
+    };
+    let index = INDEX.get_or_init(|| {
+        let mut index = std::collections::HashMap::new();
+        for p in game.assets.paths() {
+            let lower = p.to_ascii_lowercase();
+            if lower.starts_with("sound\\voice\\") && lower.ends_with(".ogg") {
+                if let Some(k) = key(&lower) {
+                    index.entry(k).or_insert(lower);
+                }
+            }
+        }
+        index
+    });
+    index.get(&key(&path.to_ascii_lowercase())?).cloned()
+}
+
 /// Plays a response's voice, if its file is found.
 fn play_voice(
     commands: &mut Commands,
@@ -159,7 +188,15 @@ fn play_voice(
     let response = talk.info.responses.get(talk.response)?;
     let voice = talk.speaker.voice?;
     let path = dialogue::voice_path(&game.order, &talk.info, response, voice)?;
-    let bytes = game.assets.read(&path).ok()??;
+    let (path, bytes) = match game.assets.read(&path).ok()? {
+        Some(bytes) => (path, bytes),
+        None => {
+            let path = other_voice(game, &path)?;
+            println!("{} says this line in another voice type: {path}", talk.name);
+            let bytes = game.assets.read(&path).ok()??;
+            (path, bytes)
+        }
+    };
     let source = audio.add(AudioSource {
         bytes: Arc::from(bytes.into_boxed_slice()),
     });
