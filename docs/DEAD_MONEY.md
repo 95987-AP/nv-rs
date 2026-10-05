@@ -189,7 +189,7 @@ a frame aren't counted: a guess). `IsAnimPlaying` answers from that report, comp
 group names without case. People's animation data isn't carried out (the script stops, as
 before). Test: `objects_animations_playing`. nvinspect: 179 of 199.
 
-## Line of sight (`GetLineOfSight`): traced, not built
+## Line of sight (`GetLineOfSight`)
 
 42 uses in 6 scripts. **traced** (`005c1ce0` → `0059c990`): the caller must be an actor
 and the target given; otherwise 0.
@@ -208,11 +208,25 @@ and the target given; otherwise 0.
   first), with the same hit rule.
 * With the console's debug flag, it prints "sees" or "can't see".
 
-**Blocker**: the world can't cast rays; the viewer's collision does. Building it needs a
-way for the world to ask the viewer for a ray during a script run (a ray trait given to
-`Runner`), or a per-frame report of the pairs scripts ask about (one frame late). Open:
-the process's own test (+0x2cc), `005723b0` (a value that must exceed 2), the view-cone
-test.
+Dead Money's uses: `Player.GetLOS` on Ghost People (36: the camera path) and
+`HoloA/B/C.GetLOS Player`, `NVDLC01DeanRef.GetLOS Player` (16: the actor test). The actor
+test's process answer is the `HighProcess`'s (`008f6930`): its detection data on the target
+(vtable +0x504), byte +0x1e, the line of sight its last detection run found; other
+processes (`008d0510`) say 0. `005723b0` is the distance between the two (must exceed 2;
+the exact comparison is unconfirmed).
+
+**in code** (`crates/world/src/sight.rs`, test `line_of_sight`): the rules above in the
+world. The viewer answers what they ask through `world::sight::Sight`, given to the
+`Runner` that runs placed objects' and quests' scripts each frame
+(`viewer/src/sight.rs`): a reference's bound (placed objects' rendered bounds; people's
+collision shape, a stand-in for their model's bound), the camera's position and view (any
+corner or the middle of the box inside the frustum), and rays through the cell's
+collision. nv-rs's collision doesn't know which object a ray hit, so a ray stopping where
+it enters the target's box counts as hitting the target (a stand-in). The viewer's
+detection runs report their line of sight (`report_detection_sight`), which the actor
+test reads. Not carried out: an object target for someone other than the player (view
+cone `0088c570` and rays from the eyes), the player's test headless, and conditions
+(`CTDA`) asking it. Nothing compared in the original game.
 
 ## Open questions
 

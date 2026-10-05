@@ -159,6 +159,10 @@ pub struct State {
     /// reference, as the viewer last reported them ([`report_sequences`];
     /// not saved). An object missing here has no 3D loaded.
     pub sequences: HashMap<FormId, Vec<String>>,
+    /// The line of sight each actor's last detection run found to another
+    /// (`GetLineOfSight` asks it, [`crate::sight`]), by (who, whom), as the
+    /// viewer reports it ([`report_detection_sight`]; not saved).
+    pub detection_sight: HashMap<(FormId, FormId), bool>,
     /// The menu open now, while its `MenuMode` blocks run or the viewer
     /// shows it (not saved).
     pub menu_open: Option<u16>,
@@ -258,6 +262,12 @@ pub fn report_sequences(state: &mut GameState, sequences: HashMap<FormId, Vec<St
     state.more.sequences = sequences;
 }
 
+/// The viewer tells what `who`'s detection run found of `other`: whether
+/// it had a line of sight (kept with its detection data, `008f6930`).
+pub fn report_detection_sight(state: &mut GameState, who: FormId, other: FormId, sight: bool) {
+    state.more.detection_sight.insert((who, other), sight);
+}
+
 /// The functions answered ([`value`]), by the game's own names.
 pub const READS: &[&str] = &[
     "GetIsGhost",
@@ -341,7 +351,12 @@ pub const CHANGES: &[&str] = &[
 
 /// Every function here.
 pub fn handled() -> impl Iterator<Item = &'static str> {
-    READS.iter().chain(CHANGES).chain(radio::CHANGES).copied()
+    READS
+        .iter()
+        .chain(CHANGES)
+        .chain(radio::CHANGES)
+        .chain(crate::sight::FUNCTIONS)
+        .copied()
 }
 
 /// The game's form type numbers (the byte at form +4), by record type:
@@ -839,6 +854,11 @@ pub(crate) fn change(
         // The script's version (`005deef0`): completed or recurred.
         let c = args.first().map(Value::form).filter(|f| f.0 != 0);
         return Some(c.map(|c| flag(challenges::completed_for_scripts(runner.state, c))));
+    }
+    if name == "GetLineOfSight" {
+        // `005c1ce0`: on the caller, with whom it looks for.
+        let whom = args.first().map(Value::form).unwrap_or(FormId(0));
+        return Some(crate::sight::line_of_sight(runner, target, whom));
     }
     if radio::CHANGES.contains(&name) {
         return Some(radio::carry_out(runner, name, target, args));

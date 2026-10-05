@@ -34,6 +34,7 @@ mod pipboy;
 mod player_idle;
 mod report;
 mod scripts;
+mod sight;
 mod sitting;
 mod sounds;
 mod terrain;
