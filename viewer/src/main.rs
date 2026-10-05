@@ -243,7 +243,10 @@ fn main() {
         .init_resource::<dialogue::Talkers>()
         .init_resource::<dialogue::TalkTarget>()
         .init_resource::<dialogue::Conversation>()
-        .insert_resource(dialogue::AutoTalk(args.talk))
+        .insert_resource(dialogue::AutoTalk(
+            args.talk,
+            args.choose.iter().copied().collect(),
+        ))
         .insert_resource(player)
         .insert_resource(walk::CellCollision(physics::Collider::new()))
         .insert_resource(walk::Doors(Vec::new()))
@@ -771,6 +774,7 @@ fn bring_in_made(
 /// the place loaded (the gas jets) come on screen: once a second, those
 /// in the place, within reach outdoors, not drawn yet. A place loaded
 /// afresh draws what is enabled by itself.
+#[allow(clippy::too_many_arguments)]
 fn bring_in_enabled(
     time: Res<Time>,
     game: Res<GameFiles>,

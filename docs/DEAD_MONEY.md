@@ -611,6 +611,55 @@ talking activators is taken to be met. Nothing compared in the original game.
   the pistol is unequipped and the ammo count leaves the HUD.
 - **Slideshow view:** the slide fills the view upright; no tilt shows.
 
+## Playing Act 1 (MQ01), in the order a player meets it
+
+Played at the rules level: the viewer in each place with `--run` lines for
+what the player's hands would do, and `--talk` / `--choose` (new: reply
+numbers picked in order, unattended) for conversations.
+
+1. **Fountain wake-up and Elijah.** Works: the wake-up, MQ01's start, the
+   greeting and his replies; his last reply starts the three finding quests
+   (Dog 8, Dean 14, Christine 12). The objectives show as they come.
+2. **Collars.** The collar's beeping and its radio interference messages
+   work in the Villa.
+3. **Dog (police station).** Works: his greeting moves the quest on to the
+   basement. Taking the "Dog Command Tape" moves it on again
+   (`NVDLC01MQ01aSCRIPT` watches `GetHasNote`). Playing it was missing: the
+   Pip-Boy's notes list couldn't play a voice note (`NOTE` of type 3). Now
+   Enter on one has its speaker (`SNAM`) say its topic (`TNAM`), line and
+   result scripts as for `SayTo`, when that speaker is in the place (unit
+   tested; not tried in the Pip-Boy itself). The result needs the player in
+   range of the cell (a trigger sets `bPlayerInRange`).
+4. **Dean (Residential District).** Broken, now fixed: the district is a
+   dense world of its own, and the graphics lost the device within seconds
+   at the usual 5 by 5 squares (Direct3D 12 and Vulkan both). It now loads
+   3 by 3 (`DENSE_WORLDS` in `viewer/src/exterior.rs`; `NV_LOAD_RADIUS`
+   sets it for any place). **Still missing:** his first greeting is "Have a
+   seat" until the player sits in the explosive chair, and the player
+   can't sit (scripts see it, the player stays where they are). With
+   `NVDLC01DeanDialogue.bFirstConversation` set the real conversation
+   plays and finishes "Get to Dean".
+5. **Christine (clinic).** Works through recruiting: the silent
+   conversation (her lines are stage directions, no voice), her quest to
+   stage 100, the "Assemble Your Crew" notice, and Christine following.
+   Not played: the clinic basement (turning off the shielded speakers'
+   power at the terminal) and the Auto-Doc wing.
+6. **All three recruited.** Works: the quest's end messages, the ghost
+   people enabled for later, the master quest completing, and "Speak to
+   Elijah at the Fountain".
+7. **Back at the fountain.** Works: his Act 2 greeting and the replies,
+   which start MQ02a to c (their objectives show: the switching station,
+   the rooftop, the substation). The companions come into view at the
+   fountain.
+
+Also found: Elijah's hologram is a talking activator, so it had no way to
+talk (fixed, above); all voice lines now decode their ogg here, like the
+music did; one run in about ten stopped with a native crash after the
+companions came into view, not repeated.
+
+Not played: fighting the ghost people on the way, the Villa's other
+destinations, and Act 2 itself.
+
 ## Open questions
 
 * Which DLCs are installed in the maintainer's Data folder (the data pass's `info`)?
