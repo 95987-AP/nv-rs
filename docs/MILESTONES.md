@@ -82,12 +82,27 @@ in a four-export probe. Full indexing is deferred; source snapshots, hashes,
 DB and inventory remain private. Shared query workflow and limitations:
 [RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md).
 
+Movie batch, 2026-10-06 (Claude, branch `claude/m1-bink-intro`): new
+`crates/bink` decodes Bink 1 video with tables read from the install's
+`binkw32.dll`; `nvinspect <movie.bik> info|frames` and the 32-bit
+`research/nv-oracle` tool `nv-bink` (the game's own library as oracle)
+compare them frame by frame. All 8,692 intro frames match in Y, U and V;
+982 core tests pass. The shipped `VCG00` plays `FNVIntro.bik` and jumps to
+stage 90, so the burial stages (and `TriggerScreenSplatter`) never run.
+Evidence: [MOVIES.md](MOVIES.md). **Next action:** Bink audio (DCT, 48 kHz
+stereo), then the `PlayBink` handler's presentation in Ghidra and viewer
+playback.
+
 Outstanding M1 gates:
 - Exact opening camera transition replay and Doc/player assistance timing.
 - Native Doc head/eye tracking; final rotation math remains unresolved
   ([OPENING_LOOK_IK.md](OPENING_LOOK_IK.md)).
-- Original face editor instead of auto-accept, and opening movie playback
+- Original face editor instead of auto-accept
   ([FACE_CREATION.md](FACE_CREATION.md)).
+- Opening movie playback ([MOVIES.md](MOVIES.md)): video decoding done and
+  bit-exact with the game's `binkw32.dll` on all 8,692 frames of
+  `FNVIntro.bik`; audio, `PlayBink` presentation and viewer playback
+  remain.
 - In-progress animation save restoration, full character-creation route,
   exit to Goodsprings and save/restart/reload acceptance.
 - SPECIAL's remaining visual/input fidelity and progression comparison

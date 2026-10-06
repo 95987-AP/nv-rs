@@ -1,0 +1,200 @@
+//! Commands for Bink movies (`Data\Video\*.bik`).
+
+use std::io::Write;
+use std::path::Path;
+use std::time::Instant;
+
+use bink::{Decoder, Movie};
+
+use crate::fmt::{human_bytes, thousands};
+use crate::{expect_args, CliError, Options};
+
+enum Command {
+    Info,
+    /// Decode every frame and write each plane's SHA-256, as a file
+    /// (`research/nv-oracle`'s `nv-bink` writes the same format from the
+    /// game's own library) or to the output.
+    Frames(Option<String>),
+}
+
+fn parse_command(command: &str, rest: &[String]) -> Result<Command, CliError> {
+    match command {
+        "info" => {
+            expect_args(command, rest, 0, 0)?;
+            Ok(Command::Info)
+        }
+        "frames" => {
+            expect_args(command, rest, 0, 1)?;
+            Ok(Command::Frames(rest.first().cloned()))
+        }
+        other => Err(CliError::Usage(format!(
+            "'{other}' isn't a movie command; for .bik files use info or frames"
+        ))),
+    }
+}
+
+/// Runs a command on one .bik file.
+pub fn run_file(
+    out: &mut impl Write,
+    path: &Path,
+    command: &str,
+    rest: &[String],
+    options: &Options,
+) -> Result<(), CliError> {
+    let command = parse_command(command, rest)?;
+    let bytes = std::fs::read(path).map_err(|e| CliError::Open {
+        path: path.display().to_string(),
+        message: e.to_string(),
+    })?;
+    let movie = Movie::parse(&bytes).map_err(|e| CliError::InFile {
+        path: path.display().to_string(),
+        message: e.to_string(),
+    })?;
+    match command {
+        Command::Info => info(out, &movie, bytes.len()),
+        Command::Frames(file) => frames(out, path, &movie, file, options.force),
+    }
+}
+
+fn info(out: &mut impl Write, m: &Movie, size: usize) -> Result<(), CliError> {
+    let frames = m.frame_count();
+    let seconds = if m.fps() > 0.0 {
+        frames as f64 / m.fps()
+    } else {
+        0.0
+    };
+    writeln!(
+        out,
+        "Bink revision '{}', {} x {}, {} frames at {:.3} fps ({}/{}), {:.1} s, {}",
+        m.revision as char,
+        m.width,
+        m.height,
+        thousands(frames as usize),
+        m.fps(),
+        m.fps_num,
+        m.fps_den,
+        seconds,
+        human_bytes(size as u64)
+    )?;
+    writeln!(
+        out,
+        "video flags {:08x}{}{}; largest frame {}",
+        m.video_flags,
+        if m.video_flags & bink::FLAG_ALPHA != 0 {
+            ", alpha plane"
+        } else {
+            ""
+        },
+        if m.video_flags & bink::FLAG_GRAY != 0 {
+            ", grey"
+        } else {
+            ""
+        },
+        human_bytes(m.largest_frame as u64)
+    )?;
+    let mut keyframes = 0;
+    let mut video = 0u64;
+    let mut audio = vec![0u64; m.audio.len()];
+    for i in 0..frames {
+        let p = m.packet(i).map_err(|e| CliError::InFile {
+            path: format!("frame {i}"),
+            message: e.to_string(),
+        })?;
+        keyframes += p.keyframe as u32;
+        video += p.video.len() as u64;
+        for (t, a) in p.audio.iter().enumerate() {
+            audio[t] += a.len() as u64;
+        }
+    }
+    writeln!(
+        out,
+        "{keyframes} keyframes; video data {}",
+        human_bytes(video)
+    )?;
+    for (t, track) in m.audio.iter().enumerate() {
+        writeln!(
+            out,
+            "audio track {} (id {}): {} Hz, {} channel(s), {}{}, data {}",
+            t,
+            track.id,
+            track.sample_rate,
+            track.channels(),
+            if track.flags & bink::AUDIO_DCT != 0 {
+                "DCT"
+            } else {
+                "RDFT"
+            },
+            if track.flags & bink::AUDIO_16BIT != 0 {
+                ", 16-bit"
+            } else {
+                ""
+            },
+            human_bytes(audio[t])
+        )?;
+    }
+    Ok(())
+}
+
+fn frames(
+    out: &mut impl Write,
+    path: &Path,
+    m: &Movie,
+    file: Option<String>,
+    force: bool,
+) -> Result<(), CliError> {
+    let mut target: Box<dyn Write> = match &file {
+        Some(name) => {
+            if Path::new(name).exists() && !force {
+                return Err(CliError::Usage(format!(
+                    "'{name}' already exists; add --force to overwrite it"
+                )));
+            }
+            Box::new(std::io::BufWriter::new(std::fs::File::create(name)?))
+        }
+        None => Box::new(std::io::sink()),
+    };
+    let mut decoder = Decoder::new(m.width, m.height, m.revision, m.video_flags);
+    let (w, h) = (m.width as usize, m.height as usize);
+    let luma = w * h;
+    let chroma = (w / 2) * (h / 2);
+    let mut buf = Vec::new();
+    let started = Instant::now();
+    let mut failed = 0u32;
+    for i in 0..m.frame_count() {
+        let p = m.packet(i).map_err(|e| CliError::InFile {
+            path: path.display().to_string(),
+            message: e.to_string(),
+        })?;
+        let status = match decoder.decode(p.video) {
+            Ok(()) => 0,
+            Err(e) => {
+                failed += 1;
+                if failed <= 10 {
+                    writeln!(out, "frame {i}: {e}")?;
+                }
+                1
+            }
+        };
+        decoder.to_yv12(&mut buf);
+        let line = format!(
+            "{i}\t{status}\t{}\t{}\t{}",
+            crate::sha256::hex_digest(&buf[..luma]),
+            crate::sha256::hex_digest(&buf[luma..luma + chroma]),
+            crate::sha256::hex_digest(&buf[luma + chroma..luma + 2 * chroma])
+        );
+        if file.is_some() {
+            writeln!(target, "{line}")?;
+        } else {
+            writeln!(out, "{line}")?;
+        }
+    }
+    target.flush()?;
+    writeln!(
+        out,
+        "{} frames decoded in {:.1} s; {} with errors",
+        m.frame_count(),
+        started.elapsed().as_secs_f64(),
+        failed
+    )?;
+    Ok(())
+}
