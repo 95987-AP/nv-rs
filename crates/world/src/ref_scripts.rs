@@ -65,8 +65,8 @@ pub const ON_TRIGGER_LEAVE: &str = "ontriggerleave";
 // Translated from 00452580 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn grid_center(current: Option<(i32, i32)>, position: [f32; 3], grids: i32) -> (i32, i32) {
     // `00406d90`: FISTP (round to nearest), then `>> 12`.
-    let x = position[0].round_ties_even() as i32;
-    let y = position[1].round_ties_even() as i32;
+    let x = fistp(position[0]);
+    let y = fistp(position[1]);
     let here = (x >> 12, y >> 12);
     let Some((cx, cy)) = current else {
         return here;
@@ -79,6 +79,18 @@ pub fn grid_center(current: Option<(i32, i32)>, position: [f32; 3], grids: i32) 
     } else {
         here
     }
+}
+
+/// A float to an integer as `FISTP` does with the default rounding mode:
+/// to nearest, halves to even.
+fn fistp(v: f32) -> i32 {
+    let r = v.round();
+    let r = if (v - v.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
+        r - v.signum()
+    } else {
+        r
+    };
+    r as i32
 }
 
 /// The grid's squares around a centre, in the order the game runs their
@@ -294,50 +306,55 @@ impl RefScripts {
     /// Returns the references whose scripts ran.
     pub fn frame(&mut self, runner: &mut Runner, people: &[(FormId, [f32; 3])]) -> Vec<FormId> {
         let order: &LoadOrder = runner.order;
-        let scripted: Vec<Interactive> = self
+        let scripted: Vec<FormId> = self
             .all
             .iter()
             .filter(|r| r.script.is_some())
-            .cloned()
+            .map(|r| r.reference)
             .collect();
         // Enabled or disabled since: an enabled one's 3D is attached
         // (`00451ef0`); a disabled one's trigger is taken out (its
         // occupants leave: `00576760` → `0062de90`; the caller chain is
         // not fully traced).
-        for r in &scripted {
-            let off = !crate::enabled_now(order, r.reference, &runner.state.disabled);
-            match self.disabled.insert(r.reference, off) {
-                Some(true) if !off => self.flag(r.reference, ON_LOAD, None),
-                Some(false) if off => self.force_leave(runner, r.reference),
+        for &reference in &scripted {
+            let off = !crate::enabled_now(order, reference, &runner.state.disabled);
+            match self.disabled.insert(reference, off) {
+                Some(true) if !off => self.flag(reference, ON_LOAD, None),
+                Some(false) if off => self.force_leave(runner, reference),
                 _ => {}
             }
         }
-        for r in scripted.iter().filter(|r| r.trigger.is_some()) {
-            if self.disabled.get(&r.reference) == Some(&true) {
-                continue;
-            }
-            let inside: Vec<FormId> = people
-                .iter()
-                .filter(|(_, feet)| {
-                    BODY_HEIGHTS
-                        .iter()
-                        .any(|h| r.contains([feet[0], feet[1], feet[2] + h]))
-                })
-                .map(|(who, _)| *who)
-                .collect();
-            if !inside.is_empty() || self.triggers.contains_key(&r.reference) {
-                self.update_trigger(r.reference, &inside);
-            }
+        let steps: Vec<(FormId, Vec<FormId>)> = self
+            .all
+            .iter()
+            .filter(|r| r.script.is_some() && r.trigger.is_some())
+            .filter(|r| self.disabled.get(&r.reference) != Some(&true))
+            .map(|r| {
+                let inside = people
+                    .iter()
+                    .filter(|(_, feet)| {
+                        BODY_HEIGHTS
+                            .iter()
+                            .any(|h| r.contains([feet[0], feet[1], feet[2] + h]))
+                    })
+                    .map(|(who, _)| *who)
+                    .collect::<Vec<_>>();
+                (r.reference, inside)
+            })
+            .filter(|(t, inside)| !inside.is_empty() || self.triggers.contains_key(t))
+            .collect();
+        for (trigger, inside) in steps {
+            self.update_trigger(trigger, &inside);
         }
         // Translated from 0054c740 (decompiled, FalloutNV.exe 1.4.0.525):
         // every scripted reference here has its 3D loaded or is disabled,
         // so each runs; the pass stops when a run reports a change.
         let mut ran = Vec::new();
-        for r in &scripted {
-            let events = self.pending.remove(&r.reference).unwrap_or_default();
-            let action = self.action.get(&r.reference).copied();
-            ran.push(r.reference);
-            if runner.run_reference_script(r.reference, &events, action) {
+        for reference in scripted {
+            let events = self.pending.remove(&reference).unwrap_or_default();
+            let action = self.action.get(&reference).copied();
+            ran.push(reference);
+            if runner.run_reference_script(reference, &events, action) {
                 break;
             }
         }

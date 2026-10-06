@@ -73,6 +73,9 @@ fn var(state: &GameState, reference: u32, name: &str) -> f64 {
 fn the_grid_moves_only_past_the_games_margin() {
     // `00452580`: 4096 units from the centre cell's centre (x 2048).
     assert_eq!(grid_center(None, [100.0, 100.0, 0.0], 5), (0, 0));
+    // `00406d90` rounds (FISTP, halves to even) before `>> 12`.
+    assert_eq!(grid_center(None, [4095.5, -0.4, 0.0], 5), (1, 0));
+    assert_eq!(grid_center(None, [4094.5, -0.6, 0.0], 5), (0, -1));
     assert_eq!(grid_center(Some((0, 0)), [4000.0, 100.0, 0.0], 5), (0, 0));
     assert_eq!(grid_center(Some((0, 0)), [6143.0, 100.0, 0.0], 5), (0, 0));
     assert_eq!(grid_center(Some((0, 0)), [6144.0, 100.0, 0.0], 5), (1, 0));
