@@ -366,6 +366,26 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
     ("sNetTotalText", "Net Total: "),
     ("sPlaceCardText", "Place Card"),
     ("sDiscardSelectedText", "Discard Selected"),
+    // The casino games (`world::casino`): the slot machine's buttons and
+    // lines (`007c0a40`), the shared texts.
+    ("sCurrentBetText", "Current Bet: "),
+    ("sChipCountText", "Chips: "),
+    ("sCasinoEarningsText", "Earnings: "),
+    ("sCasinoChipText", "chip"),
+    ("sPlural", "(s)"),
+    ("sYouWin", "You win"),
+    ("sYouLose", "You lose"),
+    ("sLuckyWinText", "You feel lucky. You win"),
+    ("sUnluckyLoseText", "You feel unlucky. You lose"),
+    ("sSpinText", "Spin"),
+    ("sIncreaseBetText", "Increase Bet"),
+    ("sDecreaseBetText", "Decrease Bet"),
+    ("sPayoutListText", "Payout List"),
+    ("sBetMax", "Bet Max"),
+    (
+        "sSlotPressAnyButtonText",
+        "Press any valid slot machine button to continue.",
+    ),
     // The Pip-Boy's Drop (`00780140` case 7; objects `011d47a4`, `011d22c8`,
     // `011d43e4`, `011d31f8`, `011d3d30`).
     (

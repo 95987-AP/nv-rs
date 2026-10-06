@@ -17,6 +17,7 @@ pub mod message;
 pub mod quantity;
 pub mod repair_services;
 pub mod sleepwait;
+pub mod slots;
 pub mod textedit;
 pub mod traits;
 mod typed;

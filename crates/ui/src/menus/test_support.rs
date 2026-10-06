@@ -734,3 +734,57 @@ pub fn caravan_menu() -> String {
         text("CRM_BiggestTitle", 50),
     )
 }
+
+/// The slot machine's menu as its file lays it out: the three displays (a
+/// rect with `_Value`, its title copying `_Value` and its value `_X`), the
+/// six buttons, the status line, the menu's `_PCButton_` traits.
+pub fn slots_menu_file() -> String {
+    let display = |name: &str, id: i32| {
+        format!(
+            "<rect name=\"{name}\"><id>{id}</id><_Value></_Value>
+               <text name=\"{name}Title\"><font>7</font><string><copy src=\"parent()\" trait=\"_Value\"/></string></text>
+               <text name=\"{name}Value\"><font>7</font><string><copy src=\"parent()\" trait=\"_X\"/></string></text>
+             </rect>"
+        )
+    };
+    let button = |name: &str, id: i32| {
+        format!(
+            "<hotrect name=\"{name}\"><id>{id}</id><target>&true;</target><string></string>
+               <text name=\"{name}Text\"><font>7</font><string><copy src=\"parent()\" trait=\"string\"/></string></text>
+             </hotrect>"
+        )
+    };
+    format!(
+        "<menu name=\"SlotMachineMenu\"><class>&SlotMachineMenu;</class>
+           <_PCButton_Q>SMM_DecreaseBet</_PCButton_Q><_PCButton_E>SMM_IncreaseBet</_PCButton_E>
+           <_PCButton_W>SMM_Spin</_PCButton_W><_PCBUTTON_S>SMM_BetMax</_PCBUTTON_S>
+           <_PCBUTTON_R>SMM_ExitButton</_PCBUTTON_R><_PCBUTTON_F>SMM_PayoutList</_PCBUTTON_F>
+           <rect name=\"NOGLOW_BRANCH\">
+             {}{}
+             <rect name=\"SMM_CasinoNameDisplay\"><id>2</id><_Value></_Value>
+               <text name=\"SMM_CasinoNameTitle\"><string><copy src=\"parent()\" trait=\"_Value\"/></string></text>
+               <text name=\"SMM_TotalEarningsValue\"><string><copy src=\"parent()\" trait=\"_X\"/></string></text>
+             </rect>
+             {}{}{}{}{}{}
+             <text name=\"SMM_StatusText\"><id>9</id><font>7</font><visible>&false;</visible></text>
+           </rect>
+         </menu>",
+        display("SMM_CurrentBetDisplay", 0),
+        display("SMM_ChipsDisplay", 1),
+        button("SMM_Spin", 3),
+        button("SMM_IncreaseBet", 4),
+        button("SMM_DecreaseBet", 5),
+        button("SMM_PayoutList", 6),
+        button("SMM_BetMax", 7),
+        button("SMM_ExitButton", 8),
+    )
+}
+
+/// A UI with the slot machine's menu loaded.
+pub fn slots_menu() -> (Ui, super::slots::SlotsMenu) {
+    let mut ui = self::ui();
+    let mut code = super::slots::SlotsMenu::new(0);
+    let menu = load(&mut ui, &slots_menu_file(), &mut code);
+    code.menu = menu;
+    (ui, code)
+}

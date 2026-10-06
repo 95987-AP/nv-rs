@@ -22,6 +22,7 @@ pub mod impacts;
 pub mod lockpick;
 pub mod music;
 pub mod particles;
+pub mod slots;
 pub mod sound;
 pub mod space;
 pub mod texture;
