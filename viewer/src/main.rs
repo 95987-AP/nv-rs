@@ -7,6 +7,7 @@
 mod actors;
 mod ai;
 mod args;
+mod caravan_table;
 mod chatter;
 mod combat;
 mod daylight;
@@ -243,6 +244,7 @@ fn main() {
             at: args.menu_clicks.clone(),
             release: false,
         })
+        .insert_resource(game_menus::FixedKeys(args.menu_keys.clone()))
         .add_plugins((GradePlugin, GameLightingPlugin, TerrainPlugin, LodPlugin))
         // After the default plugins: they load shaders.
         .add_plugins((hud::HudPlugin, pipboy::PipboyPlugin))
@@ -256,6 +258,7 @@ fn main() {
         .add_plugins(music::MusicPlugin)
         .add_plugins(hiteffects::HitEffectsPlugin)
         .add_plugins(lockpick::LockpickPlugin)
+        .add_plugins(caravan_table::CaravanTablePlugin)
         .add_audio_source::<sounds::PcmSound>()
         // The first-person camera runs the image space passes with the
         // main camera's grade, once everything has set it.

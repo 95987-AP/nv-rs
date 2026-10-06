@@ -113,6 +113,9 @@ pub struct CaravanMenu {
     pub arrows: Vec<Arrow>,
     /// The screens whose layout was set up (once each).
     prepared: [bool; 4],
+    /// The `_Value`s written, by tile id (written again only when they
+    /// change).
+    values: std::collections::HashMap<i32, i64>,
     /// The track values placed.
     pub tracks_placed: bool,
 }
@@ -126,6 +129,7 @@ impl CaravanMenu {
             typed: Vec::new(),
             arrows: Vec::new(),
             prepared: [false; 4],
+            values: std::collections::HashMap::new(),
             tracks_placed: false,
         }
     }
@@ -152,12 +156,19 @@ impl CaravanMenu {
     }
 
     /// `_Value` (written as 1 first, then the number: `00a01290`,
-    /// `00700320`).
-    fn set_value(&self, ui: &mut Ui, id: i32, v: i64) {
+    /// `00700320`; the game works the tiles out after each, so a text
+    /// copying it sees it change even to the number it had).
+    fn set_value(&mut self, ui: &mut Ui, id: i32, v: i64) {
+        if self.values.get(&id) == Some(&v) {
+            return;
+        }
         if let Some(tile) = self.tile(id) {
+            self.values.insert(id, v);
             let value = ui.names.lookup_or_add("_Value").unwrap_or(0);
             ui.set_number(tile, value, 1.0);
+            ui.work_out_all(tile);
             ui.set_number(tile, value, v as f32);
+            ui.work_out_all(tile);
         }
     }
 

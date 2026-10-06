@@ -211,6 +211,7 @@ fn open(
         | Menu::RepairServices(..)
         | Menu::Teammate(..)
         | Menu::CompanionWheel(..)
+        | Menu::Caravan { .. }
         | Menu::LevelUp(..)
         | Menu::Character(CharacterMenu::Traits { .. })
         | Menu::Character(CharacterMenu::TagSkills { .. })
@@ -218,18 +219,6 @@ fn open(
         | Menu::Character(CharacterMenu::Special { .. })
         | Menu::SleepWait { .. } => {
             println!("That menu can't be opened: the game's menus aren't available.");
-            return None;
-        }
-        // The Caravan table isn't drawn yet (`world::caravan` has the game).
-        Menu::Caravan {
-            npc,
-            deck,
-            difficulty,
-            share,
-        } => {
-            println!(
-                "Caravan against {npc} with deck {deck} (difficulty {difficulty}, betting {share}): the table isn't drawn yet."
-            );
             return None;
         }
         // A terminal the player gets into (`game_menus::hacking::use_terminal`

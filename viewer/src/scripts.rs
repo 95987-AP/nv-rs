@@ -987,12 +987,12 @@ pub fn run_scripts(
         }
     }
     // `--run`: each line as the console would run it, once the place is
-    // up and the player is in it.
-    if player.ready {
-        for line in std::mem::take(&mut start_commands.0) {
-            let flow = Runner::new(order, &scripts.0, state).run_source(&line, None, None);
-            println!("{line}: {flow:?}");
-        }
+    // up and the player is in it; one a frame, so each sees what the
+    // scripts did after the one before (an item's `OnAdd`).
+    if player.ready && !start_commands.0.is_empty() {
+        let line = start_commands.0.remove(0);
+        let flow = Runner::new(order, &scripts.0, state).run_source(&line, None, None);
+        println!("{line}: {flow:?}");
     }
     refresh_cell_scripts(order, &scripts.0, state, &mut cell_scripts);
     // Walking away from a seat gets the player up.

@@ -15,6 +15,7 @@
 //! is drawn where it is.
 
 pub mod barter;
+pub mod caravan;
 pub mod chargen;
 pub mod companion_wheel;
 pub mod computers;
@@ -22,7 +23,7 @@ pub mod container;
 pub mod dialog;
 pub mod hacking;
 pub mod levelup;
-mod message;
+pub(crate) mod message;
 pub mod repair;
 pub mod sleepwait;
 pub mod textedit;
@@ -47,7 +48,7 @@ use crate::GameFiles;
 /// The game's menus, built for the window's size, and the ones open.
 #[derive(Resource, Default)]
 pub struct GameMenus {
-    screen: Option<Box<Screen>>,
+    pub(crate) screen: Option<Box<Screen>>,
     failed: bool,
     /// `--open-menu levelup:perks`: the next level-up menu's points are
     /// given and Continue pressed through the menu's own clicks.
@@ -93,6 +94,7 @@ pub enum OpenMenu {
     Barter(Box<barter::BarterScreen>),
     Repair(Box<repair::RepairScreen>),
     CompanionWheel(Box<companion_wheel::WheelScreen>),
+    Caravan(Box<caravan::CaravanScreen>),
     Quantity(ui::menus::quantity::QuantityMenu),
     LevelUp(Box<ui::menus::levelup::LevelUpMenu>),
     Traits(Box<ui::menus::traits::TraitMenu>),
@@ -113,6 +115,7 @@ impl OpenMenu {
             OpenMenu::Barter(b) => &mut b.menu,
             OpenMenu::Repair(r) => &mut r.menu,
             OpenMenu::CompanionWheel(w) => &mut w.menu,
+            OpenMenu::Caravan(c) => &mut c.menu,
             OpenMenu::Quantity(m) => m,
             OpenMenu::LevelUp(m) => &mut **m,
             OpenMenu::Traits(m) => &mut **m,
@@ -133,6 +136,7 @@ impl OpenMenu {
             OpenMenu::Barter(b) => b.menu.menu,
             OpenMenu::Repair(r) => r.menu.menu,
             OpenMenu::CompanionWheel(w) => w.menu.menu,
+            OpenMenu::Caravan(c) => c.menu.menu,
             OpenMenu::Quantity(m) => m.menu,
             OpenMenu::LevelUp(m) => m.menu,
             OpenMenu::Traits(m) => m.menu,
@@ -153,6 +157,7 @@ impl OpenMenu {
             OpenMenu::Barter(b) => b.menu.closed,
             OpenMenu::Repair(r) => r.menu.closed,
             OpenMenu::CompanionWheel(w) => w.menu.closed,
+            OpenMenu::Caravan(c) => c.closed,
             OpenMenu::Quantity(m) => m.closed,
             OpenMenu::LevelUp(m) => m.closed,
             OpenMenu::Traits(m) => m.closed,
@@ -175,6 +180,7 @@ impl Plugin for GameMenusPlugin {
             .init_resource::<StartMenu>()
             .init_resource::<FixedPointer>()
             .init_resource::<FixedClicks>()
+            .init_resource::<FixedKeys>()
             .init_resource::<hacking::HackingSounds>()
             .init_resource::<companion_wheel::WheelVoices>()
             .add_systems(
@@ -201,6 +207,11 @@ pub struct FixedClicks {
     pub at: Vec<f64>,
     pub release: bool,
 }
+
+/// `--menu-keys S:K,...`: keys typed into the top menu at these seconds
+/// (a character, or left, right, up, down), for testing.
+#[derive(Resource, Default)]
+pub struct FixedKeys(pub Vec<(f64, String)>);
 
 /// `--open-menu NAME[:ID]`: a menu to open once the place has loaded, for
 /// testing.
@@ -479,6 +490,7 @@ pub fn takes(m: &crate::menus::Menu) -> bool {
         || barter::takes(m)
         || repair::takes(m)
         || companion_wheel::takes(m)
+        || caravan::takes(m)
         || levelup::takes(m)
         || traits::takes(m)
         || chargen::takes(m)
@@ -553,6 +565,8 @@ fn open_menus(
             repair::open(screen, &game.0, &mut state.0, request);
         } else if companion_wheel::takes(&request) {
             companion_wheel::open(screen, &game.0, &scripts.0, &mut state.0, request);
+        } else if caravan::takes(&request) {
+            caravan::open(screen, &game.0, &mut state.0, request);
         } else {
             sounds
                 .0
@@ -578,6 +592,7 @@ pub struct MenuInput<'w, 's> {
     time: Res<'w, Time<bevy::time::Real>>,
     fixed: Res<'w, FixedPointer>,
     clicks: ResMut<'w, FixedClicks>,
+    fixed_keys: ResMut<'w, FixedKeys>,
 }
 
 /// A key as the game's interface turns it into a menu code (`007154b0`):
@@ -788,6 +803,21 @@ fn run_open_menus(
                 }
             }
         }
+        // `--menu-keys`: the ones due.
+        while let Some(i) = input.fixed_keys.0.iter().position(|(t, _)| *t <= now) {
+            let (_, k) = input.fixed_keys.0.remove(i);
+            let code = match k.to_ascii_lowercase().as_str() {
+                "left" => Some(ui::menu::key::LEFT),
+                "right" => Some(ui::menu::key::RIGHT),
+                "up" => Some(ui::menu::key::UP),
+                "down" => Some(ui::menu::key::DOWN),
+                _ => k.chars().next().map(|c| c as u32),
+            };
+            if let Some(code) = code {
+                println!("--menu-keys: {k}");
+                interface.key(ui, menu, top.code(), code, false, false, now);
+            }
+        }
         // The menus have the keys and buttons.
         input.keys.reset_all();
         // Sounds the interface asked for.
@@ -837,6 +867,9 @@ fn run_open_menus(
         &mut wheel_voices,
         now * 1000.0,
     ));
+    sounds
+        .0
+        .extend(caravan::after(screen, &game.0, &mut state.0, now * 1000.0));
     sounds
         .0
         .extend(levelup::after(screen, &game.0, &mut state.0));

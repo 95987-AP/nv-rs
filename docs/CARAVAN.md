@@ -189,6 +189,31 @@ constructor `0073b7e0`).
   `…DeckBuilding`, `…StartingCaravans`, `…ContractWar`), the results'
   `GAMECaravanWin` / `GAMECaravanLose` before the camera goes back.
 
+## The table
+
+`cellview::caravan` puts the 3D together as `PrepareShared3DElements`
+(`0073cbf0`), `PrepareDeckMenu` (`0073d850`) and `PrepareGameMenu`
+(`0073ea90`) do: every model in one node, as authored (no transform set);
+the camera is the table's own `NiCamera` `object0` (under `Camera01` and
+`Dummy05`, which `Bet_to_Deck`, `Deck_to_Play` and `Play_to_Bet` move),
+with the file's frustum (45° across, 16:9, near 1, far 5000); the lights are
+the table's three point lights (also under `Dummy05`, so they move with the
+camera), radius 2.5 × the node's bound radius with only the table in it,
+attenuation zeroed (`00b5ca70`). Poses stay where a model's last sequence
+left them (Gamebryo's `NiControllerSequence`). Card faces are set on their
+shapes' diffuse slot (`Textures\` + the card's `TX00`, backs `TX01`):
+`Card_0{n}:{column}` on the rows (n the column + 1 on the player's tracks,
+4 − the column on the opponent's), `Player-Deck_0{n}:{n−1}` on the hands
+(the opponent's showing backs), `Deck_{nn}` / `Available_{nn}` on the deck
+screen. The markers (`Select_Add`, `Select_Remove`) go to the grids'
+`Select{r}_0{c}:0` shapes (their own turn × a quarter turn about z, their
+bound's centre); the money to `Bill-Placement` / `Coin-Placement` shapes.
+
+The game draws the table after the image space pass and under the menus'
+pictures (`Draw3DElements` `00740f30`); the viewer draws it into the HUD's
+picture with a camera of its own before the HUD's, which then blends its
+pictures over it (`viewer/src/caravan_table.rs`).
+
 ## Here
 
 `world::caravan`: `card`, `deck`, `Collection` (`GameState::caravan`,
@@ -200,8 +225,14 @@ saved as `caravancard` / `caravanrecord` lines), `add_card_to_player`
 `Package`, `crt_qsort`); `world::caravan::bet` (`funds`, `Bet`, `settle`);
 `world::caravan::menu` (`Menu`: the screens, states, flags and controls
 above, telling the caller what to do as `Effect`s); `world::caravan::money`
-(the ante's bills and coins); `ShowCaravanMenu` raises `Event::Caravan`
-(the viewer only says so for now). Checks: `world::caravan::tests`,
+(the ante's bills and coins); `ShowCaravanMenu` raises `Event::Caravan`.
+`ui::menus::caravan` fills `caravan_menu.xml`'s tiles; `cellview::caravan`
+reads the table's models; the viewer runs the menu
+(`viewer/src/game_menus/caravan.rs`: input, the "How many?" and quit boxes,
+the effects on the table, the cards written back, the stake paid) and draws
+the table (`viewer/src/caravan_table.rs`). Seen live against Ringo with his
+deck: the ante with its money, the deck screen, the deal and the start of a
+game. Checks: `world::caravan::tests`,
 `world::caravan::ai::tests` (39 whole games each end),
 `world::caravan::menu::tests` (40 whole games through the menu, every
 state reached), `world::caravan::money::tests`,
@@ -209,7 +240,11 @@ state reached), `world::caravan::money::tests`,
 
 ## Not done yet
 
-- The menu on screen: its tiles (`caravan_menu.xml`) and the 3D table
-  (`Meshes\Terminals\NV_Caravan\`, its camera `object0`), and the viewer
-  running it. The order money is paid in follows the form IDs here, not the
+- The tutorial messages (`HelpCaravanBetting`…): the game's once-only
+  tutorial manager (`007185e0`, `00718840`) isn't here; the menu goes on
+  as if each were read.
+- The camera keeps its 45° across and the window's shape (the game keeps
+  the file's 16:9 frustum on any screen).
+- The deck screen's scrollbar drag (its tile's mouse handling), the gamepad
+  stick. The order money is paid in follows the form IDs here, not the
   inventory's own order.
