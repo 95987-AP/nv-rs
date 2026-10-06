@@ -422,6 +422,22 @@ not compared with the original. Evidence and gaps:
 [ANIMATION.md](ANIMATION.md). **Next action:** record a ganger drawing
 and a settler greeting in the original and compare.
 
+M2 batch (`claude/m2-physics-2`, 2026-10-06): physics completion. Traced
+and translated: the collision filter's layer table (`00c828f0`, shots
+cast on the projectile layer), contact friction/restitution (`00cfd800`),
+the land body's friction, the Z-key grab and Havok's mouse spring
+(`0095f6c0`…`00961280`, `00cbb1e0`), impact sounds by material
+(`00837550`, `00839e00`), physics damage (`006238b0`, `0062be90`),
+saved velocities (`00563220`/`00563380`), the walkers' move limit
+(`fMoveLimitMass`). Fixed: moved bodies hit and picked where they are; no
+prompt on destroyed references (the swinging-door pick took clutter for
+doors). Verified live: shot/second shot, no prompt, Z grab and carry,
+dynamite moving the bottles, F5/F9 of flying bodies, walking into a
+tumbleweed, contact sounds logged. Not compared with the original;
+Havok's solver, deactivation and constraints aren't reproduced. Evidence
+and gaps: [PHYSICS.md](PHYSICS.md). **Next action:** record a bottle shot
+and a Z-grab carry in the original game and compare.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

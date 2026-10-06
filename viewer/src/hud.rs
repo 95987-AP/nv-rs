@@ -484,6 +484,7 @@ impl HudState<'_, '_> {
             esm::FormId(door.reference)
         } else if let Some(reference) =
             crate::walk::opening_door_in_view(&self.collision.0, eye, direction)
+                .filter(|&r| crate::walk::is_door(order, r))
         {
             reference
         } else {

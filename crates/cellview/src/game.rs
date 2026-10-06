@@ -745,12 +745,13 @@ impl Game {
             let terrain = self.terrain(&land, origin, lod, &mut cache);
             for t in &terrain {
                 // The ground stands out from the terrain's triangles by the
-                // game's height-field radius (physics::TERRAIN_SHELL).
-                viewer.collision.add_solid(
+                // game's height-field radius (physics::TERRAIN_SHELL), and
+                // rubs as the land body does (physics::LAND_SURFACE).
+                viewer.collision.add_solid_surface(
                     &t.positions,
                     &triangles(&t.indices),
-                    physics::TERRAIN_SHELL,
-                    0,
+                    (physics::TERRAIN_SHELL, 0, physics::NO_MATERIAL),
+                    Some(physics::LAND_SURFACE),
                 );
             }
             viewer.notes.push(format!(

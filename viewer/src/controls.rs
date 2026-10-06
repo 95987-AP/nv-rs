@@ -59,6 +59,8 @@ pub struct Controls {
     pub ammo_swap: Binding,
     /// Control 4, "Use": attacking.
     pub attack: Binding,
+    /// Control 27, "Grab": pick up and carry clutter (`clutter`).
+    pub grab: Binding,
     /// `bAlwaysRunByDefault` (the player's +0x651 at the start).
     pub always_run_default: bool,
 }
@@ -72,6 +74,7 @@ impl Default for Controls {
             auto_move: Binding::from_value(0x0010_FFFF),
             ammo_swap: Binding::from_value(0x0003_FF01),
             attack: Binding::from_value(0x00FF_0011),
+            grab: Binding::from_value(0x002C_FF09),
             always_run_default: true,
         }
     }
@@ -95,6 +98,7 @@ impl Controls {
             auto_move: binding("Auto Move", base.auto_move),
             ammo_swap: binding("Ammo Swap", base.ammo_swap),
             attack: binding("Use", base.attack),
+            grab: binding("Grab", base.grab),
             always_run_default: settings
                 .get("Controls", "bAlwaysRunByDefault")
                 .map_or(base.always_run_default, |v| v.trim() != "0"),
@@ -127,5 +131,7 @@ mod tests {
         // Ammo Swap: the 2 key (DirectInput 3); Use: the left button.
         assert_eq!(c.ammo_swap.key, Some(KeyCode::Digit2));
         assert_eq!(c.attack.mouse, Some(MouseButton::Left));
+        // This install's Grab: Z.
+        assert_eq!(Controls::default().grab.key, Some(KeyCode::KeyZ));
     }
 }

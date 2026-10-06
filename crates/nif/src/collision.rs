@@ -233,6 +233,9 @@ pub struct RigidBodyInfo {
     pub deactivator: u8,
     pub solver_deactivation: u8,
     pub quality: u8,
+    /// How many constraints (`bhk…Constraint` blocks: hinges, ragdoll
+    /// joints, springs) join it to other bodies (228).
+    pub constraints: u32,
 }
 
 /// A model's collision.
@@ -505,8 +508,17 @@ impl Nif {
         let deactivator = r.u8("the deactivator type")?;
         let solver_deactivation = r.u8("the solver deactivation")?;
         let quality = r.u8("the quality type")?;
+        // The number of constraints (joints to other bodies or the world)
+        // at 228, before their references.
+        let constraints = {
+            let mut c = Reader::new(bytes, self.blocks()[index].offset);
+            c.take(228, "the rigid body's fields before its constraints")
+                .and_then(|_| c.u32("the constraint count"))
+                .unwrap_or(0)
+        };
         let info = RigidBodyInfo {
             block: index,
+            constraints,
             mass,
             center,
             inertia,

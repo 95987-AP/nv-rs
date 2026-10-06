@@ -21,7 +21,10 @@
 //! assert!(player.on_ground && player.feet[2].abs() < 1.0);
 //! ```
 
+pub mod contacts;
+pub mod grab;
 pub mod impulses;
+pub mod layers;
 pub mod ragdoll;
 pub mod rigid;
 pub mod shapes;
@@ -66,7 +69,13 @@ struct Triangle {
     /// Its rigid body's friction and restitution: 1 + an index into
     /// `Live::surfaces`, 0 for none given.
     surface: u16,
+    /// Its body's Havok layer ([`ANY_LAYER`]: not given), which decides
+    /// what casts meet it ([`Collider::raycast_layer`]).
+    layer: u8,
 }
+
+/// A triangle added without a Havok layer: every cast meets it.
+pub const ANY_LAYER: u8 = u8::MAX;
 
 /// How a surface rubs and bounces: its rigid body's friction and
 /// restitution (`nif::RigidBodyInfo`).
@@ -166,8 +175,21 @@ impl Collider {
         &mut self,
         vertices: &[Vec3],
         triangles: &[[u32; 3]],
+        parts: (f32, u32, u32),
+        surface: Option<Surface>,
+    ) {
+        self.add_layered(vertices, triangles, parts, surface, ANY_LAYER);
+    }
+
+    /// [`Self::add_solid_surface`] with the Havok layer of the body the
+    /// triangles belong to (`nif::CollisionPart::layer`).
+    pub fn add_layered(
+        &mut self,
+        vertices: &[Vec3],
+        triangles: &[[u32; 3]],
         (shell, owner, material): (f32, u32, u32),
         surface: Option<Surface>,
+        layer: u8,
     ) {
         let surface = surface.map_or(0, |s| self.surface_index(s));
         let base = self.vertices.len() as u32;
@@ -189,7 +211,7 @@ impl Collider {
                 [t[0] + base, t[1] + base, t[2] + base],
                 shell,
                 owner,
-                (material, surface),
+                (material, surface, layer),
             );
         }
     }
@@ -265,7 +287,7 @@ impl Collider {
         tri: [u32; 3],
         shell: f32,
         owner: u32,
-        (material, surface): (u32, u16),
+        (material, surface, layer): (u32, u16, u8),
     ) {
         let [a, b, c] = tri.map(|i| self.vertices[i as usize]);
         if [a, b, c].iter().flatten().any(|v| !v.is_finite()) {
@@ -283,6 +305,7 @@ impl Collider {
             owner,
             material,
             surface,
+            layer,
         });
         if owner != 0 {
             self.live.owned.entry(owner).or_default().push(index);
@@ -313,7 +336,7 @@ impl Collider {
                 tri.corners.map(|i| i + base),
                 tri.shell,
                 tri.owner,
-                (tri.material, surface),
+                (tri.material, surface, tri.layer),
             );
         }
         self.live.hidden.extend(other.live.hidden.iter().copied());
@@ -408,7 +431,28 @@ impl Collider {
     /// The nearest surface along a ray from `origin` in `direction` (unit
     /// length), within `max` units: its distance and triangle.
     pub fn raycast(&self, origin: Vec3, direction: Vec3, max: f32) -> Option<(f32, u32)> {
-        self.cast(origin, direction, max, false)
+        self.cast(origin, direction, max, false, None)
+    }
+
+    /// [`Collider::raycast`] for a cast on Havok layer `layer`: triangles
+    /// whose body's layer that layer doesn't touch (the game's collision
+    /// filter, [`layers::Filter::layers_touch`] with the cast first, as the
+    /// ray filter `00c84930` asks it) are passed through. A shot (layer 6,
+    /// `PROJECTILE`) goes through a `TRANSPARENT` (3) chain-link fence that
+    /// stops a walker.
+    pub fn raycast_layer(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max: f32,
+        layer: u8,
+    ) -> Option<(f32, u32)> {
+        self.cast(origin, direction, max, false, Some(layer))
+    }
+
+    /// The Havok layer a triangle's body is on ([`ANY_LAYER`]: not given).
+    pub fn layer(&self, index: u32) -> u8 {
+        self.triangles[index as usize].layer
     }
 
     /// [`Collider::raycast`], also meeting switched-off objects (an open
@@ -419,10 +463,24 @@ impl Collider {
         direction: Vec3,
         max: f32,
     ) -> Option<(f32, u32)> {
-        self.cast(origin, direction, max, true)
+        self.cast(origin, direction, max, true, None)
     }
 
-    fn cast(&self, origin: Vec3, direction: Vec3, max: f32, hidden: bool) -> Option<(f32, u32)> {
+    fn cast(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max: f32,
+        hidden: bool,
+        layer: Option<u8>,
+    ) -> Option<(f32, u32)> {
+        let filter = layer.map(|l| (l, layers::Filter::shared()));
+        let passes = |t: u32| {
+            filter.is_some_and(|(l, f)| {
+                let tl = self.triangles[t as usize].layer;
+                tl != ANY_LAYER && !f.layers_touch(l, tl)
+            })
+        };
         // Walk the buckets the ray crosses, a step at a time.
         let steps = (max / (BUCKET * 0.5)).ceil().max(1.0) as usize;
         let mut best: Option<(f32, u32)> = None;
@@ -439,7 +497,7 @@ impl Collider {
                         continue;
                     };
                     for &t in list {
-                        if !seen.insert(t) || (!hidden && self.switched_off(t)) {
+                        if !seen.insert(t) || (!hidden && self.switched_off(t)) || passes(t) {
                             continue;
                         }
                         let [a, b, c] = self.triangle(t);
@@ -672,6 +730,15 @@ pub const HAVOK_UNIT: f32 = 6.999_125_7;
 /// triangle collection with a radius of 0.5 Havok units (`00cb0820`, the
 /// float at `01016248`), 3.5 game units; models' shapes have 0.1.
 pub const TERRAIN_SHELL: f32 = 0.5 * HAVOK_UNIT;
+
+/// How the ground rubs and bounces: each square's land body is built
+/// (`00621f60`) from Havok's default body info (`00c8f510`, restitution
+/// 0.4) as a fixed body (mass 0, motion 5) with its friction set to
+/// `[Landscape] fLandFriction` (2.5 in the exe and `Fallout.ini`).
+pub const LAND_SURFACE: Surface = Surface {
+    friction: 2.5,
+    restitution: 0.4,
+};
 
 /// The Havok world's gravity, (0, 0, −98.1) Havok units a second squared
 /// (`00f4b550`: 10 × −9.81, put on z by both world builders), in game
@@ -1870,5 +1937,39 @@ mod tests {
         assert!(c
             .spherecast([0.0, 0.0, 50.0], [0.0, 1.0, 0.0], 150.0, 10.0)
             .is_none());
+    }
+
+    #[test]
+    fn shots_pass_a_transparent_fence_that_stops_walkers() {
+        // A chain-link fence on layer 3 (TRANSPARENT) 100 units north, a
+        // wall on layer 1 (STATIC) behind it.
+        let mut c = Collider::new();
+        let plane = |y: f32| {
+            [
+                [-100.0, y, 0.0],
+                [100.0, y, 0.0],
+                [100.0, y, 200.0],
+                [-100.0, y, 200.0],
+            ]
+        };
+        let quad = [[0, 1, 2], [0, 2, 3]];
+        c.add_layered(&plane(100.0), &quad, (0.0, 0x31, NO_MATERIAL), None, 3);
+        c.add_layered(&plane(200.0), &quad, (0.0, 0x32, NO_MATERIAL), None, 1);
+        let north = [0.0, 1.0, 0.0];
+        // Unfiltered (and for the character, layer 30) the fence is met.
+        let (d, t) = c.raycast([0.0, 0.0, 50.0], north, 500.0).unwrap();
+        assert!((d - 100.0).abs() < 1e-3 && c.owner(t) == 0x31);
+        let (_, t) = c.raycast_layer([0.0, 0.0, 50.0], north, 500.0, 30).unwrap();
+        assert_eq!(c.owner(t), 0x31);
+        // A projectile's cast (layer 6) goes through to the wall.
+        let (d, t) = c.raycast_layer([0.0, 0.0, 50.0], north, 500.0, 6).unwrap();
+        assert!((d - 200.0).abs() < 1e-3 && c.owner(t) == 0x32, "{d}");
+        assert_eq!(c.layer(t), 1);
+        // Triangles added without a layer stop every cast.
+        let mut plain = Collider::new();
+        plain.add(&plane(100.0), &quad);
+        assert!(plain
+            .raycast_layer([0.0, 0.0, 50.0], north, 500.0, 6)
+            .is_some());
     }
 }
