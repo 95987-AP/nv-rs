@@ -113,6 +113,15 @@ constructors are now identified; runtime configuration and original comparison
 remain unverified. Do not repeat the established
 package-look lock or tester activation fixes.
 
+Dialogue batch, 2026-10-06 (`claude/m1-dialogue`): Doc's farewell at the
+front door could not be left because line follow-ups (`TCFU`) were not
+read. Follow-ups, Goodbye states, random runs and Intelligence classes are
+now traced from `00762ff0`/`0061af30`/`0061a7d0` and implemented, with
+generated regressions; a real-data walk of the chain reaches the Goodbye
+line, which un-destroys the house door. Not yet compared with the original
+game. Evidence and gaps: [DIALOGUE.md](DIALOGUE.md). **Next action:** play
+the route through the door with installed data.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,
