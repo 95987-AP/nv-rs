@@ -498,37 +498,40 @@ fn base_or(order: &esm::LoadOrder, r: FormId) -> FormId {
     world::scripting::base_of(order, r).unwrap_or(r)
 }
 
-/// `MoveTo` on the player: go to where `to` stands, loading its place.
+/// `MoveTo` on the player: go to where `to` stands now (the place and
+/// position the state has for it: someone who walked out of their editor
+/// cell is found where they walked to), loading its place.
 fn move_player(
     game: &cellview::Game,
-    disabled: &world::Disabled,
+    state: &world::scripting::GameState,
     to: FormId,
     pending: &mut crate::PendingScene,
     pending_exterior: &mut crate::exterior::PendingExterior,
 ) -> Result<(), String> {
     let order = &game.order;
-    let w = world::scripting::whereabouts(order, to)
+    let (space, _, position, heading) = state
+        .place(order, to)
         .ok_or_else(|| format!("{to} isn't a placed object"))?;
-    let info = world::cell_info(order, w.cell).map_err(|e| e.to_string())?;
-    if !info.interior {
-        let world = w
-            .world
-            .or(info.world)
-            .ok_or_else(|| "it's outdoors but in no worldspace".to_string())?;
-        let grid = world::WorldGrid::load(order, world).map_err(|e| e.to_string())?;
+    let interior = order
+        .get(space)
+        .is_some_and(|r| r.entry.header.kind == esm::sig::CELL);
+    if !interior {
+        let grid = world::WorldGrid::load(order, space).map_err(|e| e.to_string())?;
         pending_exterior.0 = Some(crate::exterior::ExteriorStart {
             grid,
-            feet: [w.position[0], w.position[1]],
-            height: Some(w.position[2]),
-            heading: w.heading,
+            feet: [position[0], position[1]],
+            height: Some(position[2]),
+            heading,
         });
         return Ok(());
     }
-    let mut scene = game.load_cell_now(w.cell, disabled).map_err(|e| e.0)?;
-    let [x, y, z] = w.position;
+    let mut scene = game
+        .load_cell_now(space, &state.disabled)
+        .map_err(|e| e.0)?;
+    let [x, y, z] = position;
     scene.start = cellview::Start {
         eye: [x, y, z + cellview::EYE_HEIGHT],
-        heading: w.heading,
+        heading,
         via: "a script (MoveTo)",
     };
     pending.0 = Some(scene);
@@ -1303,13 +1306,8 @@ pub fn run_scripts(
             }
             Event::MoveTo { what, to } if what == PLAYER_REF => {
                 println!("A script moves the player to {}.", name(to));
-                if let Err(e) = move_player(
-                    &game.0,
-                    &state.disabled,
-                    to,
-                    &mut pending,
-                    &mut pending_exterior,
-                ) {
+                if let Err(e) = move_player(&game.0, state, to, &mut pending, &mut pending_exterior)
+                {
                     println!("  couldn't: {e}");
                 }
                 None
