@@ -197,6 +197,21 @@ stand; CF/AM guard packages send settlers back to their editor location
 after stage 70's `MoveTo`. Evidence and gaps: [PACKAGES.md](PACKAGES.md).
 **Next action:** compare both `bTrudyHelp` branches in the original game.
 
+## M2 blocker batch: NPC combat
+
+`claude/m2-npc-combat` (2026-10-06): people now choose their weapon the
+way the combat controller rates it (`009993c0`, DPS `00645380`/`00646060`,
+weapon kinds `00522c80`, planner costs `011a4280`), switch when out of
+reach or ammunition, empty and reload clips, and only use rounds up for
+"NPCs use ammo" weapons (dynamite) or teammates (`008a8dd0`);
+`GetShouldAttack` (`0059ed30`), `OnStartCombat` (`00980830`/`009887b0`)
+and `SetUnconscious` ending the fight (`005d0760`) are in. Generated
+regressions pass; not compared with the original. The planner's search
+beyond its action costs is inferred. Evidence and gaps:
+[NPC_COMBAT.md](NPC_COMBAT.md). **Next action:** record a powder-ganger
+fight in the original game and compare weapon switches and dynamite
+throws.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,
