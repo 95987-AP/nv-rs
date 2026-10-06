@@ -592,6 +592,12 @@ pub struct ActorSkeleton {
     /// The skeleton's box (`BSBound`), which sizes a creature's collision
     /// (`world::combat_ai::creature_radius`).
     pub bound: Option<nif::Bound>,
+    /// Where the skeleton, its idle and its walk were read from (relative
+    /// to `meshes\`): the folders the actor's animations are loaded from
+    /// (`00447330`, `008b73f0`).
+    pub skeleton_path: String,
+    pub idle_path: String,
+    pub walk_path: String,
 }
 
 pub struct Model {

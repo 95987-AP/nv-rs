@@ -154,6 +154,7 @@ impl Loader<'_> {
                     .and_then(|kf| kf.sequences().ok())
                     .and_then(|s| s.into_iter().next())
             };
+            let walk_path = walk;
             let turn = |file: &str| optional(&turn_path(walk, file));
             let (turn_left, turn_right) = (turn("mtturnleft.kf"), turn("mtturnright.kf"));
             let walk = optional(walk);
@@ -212,6 +213,9 @@ impl Loader<'_> {
                         .flatten()
                         .map(|r| crate::ragdoll::RagdollRig::new(&bones, r)),
                     bound: nif.bound(),
+                    skeleton_path: skeleton.to_string(),
+                    idle_path: idle.to_string(),
+                    walk_path: walk_path.to_string(),
                 }),
             }))
         });

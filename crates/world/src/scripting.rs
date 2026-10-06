@@ -385,6 +385,10 @@ pub struct GameState {
     /// (`GetKillingBlowLimb`). Not saved.
     pub hit_location: HashMap<FormId, i32>,
     pub killing_blow_limb: HashMap<FormId, i32>,
+    /// The hits dealt since the animation last looked (who, the part, and
+    /// whether it killed): the game asks the idle tree for a hit reaction
+    /// while the hit's data is set (`0089a760`). Not saved.
+    pub hits_taken: Vec<(FormId, i32, bool)>,
     /// The quest the Pip-Boy shows as active (`ForceActiveQuest`).
     pub active_quest: Option<FormId>,
     /// The player's own map marker, set on the Pip-Boy's map
@@ -2739,7 +2743,11 @@ impl<'a> Runner<'a> {
         if attacker == PLAYER_REF && person && !was_hostile {
             fights_back &= crate::crime::assault(order, self.state, target);
         }
-        if crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker) {
+        let killed = crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker);
+        self.state
+            .hits_taken
+            .push((target, part.map_or(-1, i32::from), killed));
+        if killed {
             // The part the killing blow landed on (`GetKillingBlowLimb`; the
             // game keeps it with the dismembered limbs, when it writes it
             // there isn't traced).

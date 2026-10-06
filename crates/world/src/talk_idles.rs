@@ -130,12 +130,96 @@ impl Talking {
     }
 }
 
+/// What a say asks of the speaker and the listener (`008a20d0`, the say
+/// for any line, said in the menu or not).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SayRequests {
+    pub speaker: Option<Ask>,
+    pub listener: Option<Ask>,
+}
+
+/// The idle requests a say makes (`008a20d0`): the speaker asks for the
+/// response's speaker idle, or the tree when its caller forces one
+/// (`force_tree`, the say's last argument), forced unless the speaker is in
+/// combat; a listener that is an actor with a process (not the player)
+/// asks for the response's listener idle, or the tree unless its running
+/// package has idles of its own (package +0x34, `009344a0` →
+/// `005f36f0`), always forced.
+// Translated from 008a20d0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn say_requests(
+    response: &Response,
+    force_tree: bool,
+    speaker_in_combat: bool,
+    listener_package_has_idles: Option<bool>,
+) -> SayRequests {
+    let speaker = (response.speaker_idle.is_some() || force_tree).then(|| Ask {
+        request: response.speaker_idle.map_or(Request::Tree, Request::Idle),
+        forced: !speaker_in_combat,
+    });
+    let listener = listener_package_has_idles.and_then(|has_idles| {
+        (response.listener_idle.is_some() || !has_idles).then(|| Ask {
+            request: response.listener_idle.map_or(Request::Tree, Request::Idle),
+            forced: true,
+        })
+    });
+    SayRequests { speaker, listener }
+}
+
+/// Whether the GREET procedure's says force a tree request (`008dbe30`'s
+/// last argument): unless the current package has idles of its own or the
+/// run-once package is of type 0x1a.
+// Translated from 008dbe30 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn greet_forces_tree(package_has_idles: bool, run_once_kind: Option<u8>) -> bool {
+    !package_has_idles && run_once_kind != Some(0x1a)
+}
+
+/// Whether a conversation's says force a tree request (its +0xa0, given
+/// when it's made, `009edd80`): a script's `StartConversation` does
+/// (`008b2170`); one a package starts does unless that package has idles
+/// of its own (`008b19c0`, `00935480`).
+pub fn conversation_forces_tree(package_has_idles: Option<bool>) -> bool {
+    !package_has_idles.unwrap_or(false)
+}
+
+/// A conversation's update with no line said (the next one not due yet):
+/// both sides ask the tree, forced (`009ee0a0`).
+// Translated from 009ee0a0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub const BETWEEN_LINES: Ask = Ask {
+    request: Request::Tree,
+    forced: true,
+};
+
+/// Whether the running package refuses idle requests (`008dab40` →
+/// `008dade0`: its flag 0x1000000, "no idle anims").
+// Translated from 008dade0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn package_refuses_idles(package_flags: Option<u32>) -> bool {
+    package_flags.is_some_and(|f| f & 0x100_0000 != 0)
+}
+
+/// Whether a package has idles of its own (`IDLA` with an `IDLC` count
+/// above 0): what package +0x34 holds.
+pub fn package_has_idles(order: &esm::LoadOrder, package: FormId) -> bool {
+    let Some(rr) = order
+        .get(package)
+        .filter(|r| r.entry.header.kind == esm::FourCC::new(b"PACK"))
+    else {
+        return false;
+    };
+    rr.record().ok().is_some_and(|r| {
+        let count = r
+            .get(esm::FourCC::new(b"IDLC"))
+            .and_then(|s| s.data.first().copied())
+            .unwrap_or(0);
+        count > 0 && r.get(esm::FourCC::new(b"IDLA")).is_some()
+    })
+}
+
 /// Whether an idle request is taken (`008dab40`): sit state 0, 4 or 9,
 /// and the special idle done, an idle named or the request forced; the
 /// tree is only asked when no special idle is starting (`00498f80`).
-/// (The request's other refusals, a knocked-down or ragdolled actor,
-/// vfuncs +0x230/+0x234, and two untraced checks, `00437bf0` and
-/// `008dade0`, aren't modelled.)
+/// (Its refusal for a running package with the "no idle anims" flag is
+/// [`package_refuses_idles`]; a knocked-down or ragdolled actor, vfuncs
+/// +0x230/+0x234, and the untraced `00437bf0` aren't modelled.)
 // Translated from 008dab40 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn takes_request(
     sit_state: u8,
@@ -240,6 +324,41 @@ mod tests {
         // One just starting: the tree isn't asked, a named idle still is.
         assert!(!takes_request(0, false, true, forced));
         assert!(takes_request(0, false, true, named));
+    }
+
+    #[test]
+    fn a_say_asks_for_the_speaker_and_the_listener() {
+        let mut r = response(0, false, None);
+        // A greeting forcing the tree, the listener an NPC whose package
+        // has no idles: both ask the tree, forced.
+        let asks = say_requests(&r, true, false, Some(false));
+        let tree = Ask {
+            request: Request::Tree,
+            forced: true,
+        };
+        assert_eq!(asks.speaker, Some(tree));
+        assert_eq!(asks.listener, Some(tree));
+        // In combat the speaker's isn't forced; to the player, no listener.
+        let asks = say_requests(&r, true, true, None);
+        assert_eq!(asks.speaker.map(|a| a.forced), Some(false));
+        assert_eq!(asks.listener, None);
+        // Not forcing, no idles named: nothing for the speaker; a listener
+        // whose package has idles asks nothing either.
+        assert_eq!(
+            say_requests(&r, false, false, Some(true)),
+            SayRequests::default()
+        );
+        // Named idles are asked for whatever else.
+        r.speaker_idle = Some(FormId(5));
+        r.listener_idle = Some(FormId(6));
+        let asks = say_requests(&r, false, false, Some(true));
+        assert_eq!(asks.speaker.unwrap().request, Request::Idle(FormId(5)));
+        assert_eq!(asks.listener.unwrap().request, Request::Idle(FormId(6)));
+        assert!(greet_forces_tree(false, None));
+        assert!(!greet_forces_tree(true, None));
+        assert!(!greet_forces_tree(false, Some(0x1a)));
+        assert!(conversation_forces_tree(None));
+        assert!(!conversation_forces_tree(Some(true)));
     }
 
     #[test]
