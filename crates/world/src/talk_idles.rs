@@ -250,6 +250,7 @@ mod tests {
             use_emotion,
             speaker_idle: speaker_idle.map(FormId),
             listener_idle: None,
+            sound: None,
         }
     }
 

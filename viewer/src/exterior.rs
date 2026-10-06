@@ -384,6 +384,7 @@ pub fn stream_squares(
                     .get_or_insert_with(|| game.0.lod_noise().and_then(|t| spawner.upload(&t)))
                     .clone();
                 let spawned = Box::new(spawner.spawn_square(&scene, here, noise));
+                crate::local_map::capture_square(&mut spawner.commands, &scene, square);
                 Square::Loaded {
                     spawned,
                     lights: scene.lights.clone(),

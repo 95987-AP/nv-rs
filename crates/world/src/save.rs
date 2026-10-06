@@ -365,6 +365,25 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     if let Some(q) = state.active_quest {
         line(format!("activequest {}", id(q)));
     }
+    // The local map's seen points (`SeenData::SaveGame`, `0087a330`).
+    let mut seen: Vec<_> = state.seen.bits.iter().collect();
+    seen.sort_by_key(|(k, _)| **k);
+    for (k, bits) in seen {
+        let (kind, space, x, y) = match *k {
+            crate::local_map::SeenKey::Exterior(s, x, y) => ('e', s, x, y),
+            crate::local_map::SeenKey::Interior(s, x, y) => ('i', s, x, y),
+        };
+        let words: Vec<String> = bits.iter().map(|w| format!("{w:08X}")).collect();
+        let full = u8::from(state.seen.fully.contains(k));
+        line(format!(
+            "seen {kind} {} {x} {y} {full} {}",
+            id(space),
+            words.join(" ")
+        ));
+    }
+    for l in crate::radio::save_lines(&state.radio, &|f| id(f)) {
+        line(l);
+    }
     if let Some(m) = state.custom_marker {
         let [x, y, z] = m.position;
         line(format!("custommarker {} {x} {y} {z}", id(m.space)));
@@ -698,6 +717,33 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                 state.dropped.insert((form(1)?, form(2)?));
             }
             "activequest" => state.active_quest = Some(form(1)?),
+            // The radio (`FalloutRadio::SaveGame`, `008366e0`): on, the tuned
+            // station, the stations found.
+            "radio" => {
+                state.radio.on = num(1)? != 0.0;
+                state.radio.active = form(2).ok();
+            }
+            "radiofound" => state.radio.discovered.push(form(1)?),
+            "seen" => {
+                let space = form(2)?;
+                let (x, y) = (num(3)? as i32, num(4)? as i32);
+                let key = if parts.get(1) == Some(&"i") {
+                    crate::local_map::SeenKey::Interior(space, x, y)
+                } else {
+                    crate::local_map::SeenKey::Exterior(space, x, y)
+                };
+                let mut bits = [0u32; 8];
+                for (i, b) in bits.iter_mut().enumerate() {
+                    *b = parts
+                        .get(6 + i)
+                        .and_then(|s| u32::from_str_radix(s, 16).ok())
+                        .unwrap_or(0);
+                }
+                state.seen.bits.insert(key, bits);
+                if num(5)? != 0.0 {
+                    state.seen.fully.insert(key);
+                }
+            }
             "custommarker" => {
                 state.custom_marker = Some(crate::map::CustomMarker {
                     space: form(1)?,

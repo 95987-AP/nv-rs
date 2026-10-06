@@ -120,6 +120,7 @@ impl Conversation {
                 use_emotion: false,
                 speaker_idle: None,
                 listener_idle: None,
+                sound: None,
             }],
             conditions: vec![],
             prompt: None,

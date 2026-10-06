@@ -67,6 +67,52 @@ pub struct Music {
     decks: [Option<Playing>; 2],
 }
 
+/// Changes the decks' volumes (the start menu's Audio page,
+/// `StartMenu::SetMasterVol` … (Xbox PDB)); before the manager has started,
+/// it starts from the INI's and then this applies next time.
+pub fn set_volumes(music: &mut Music, change: impl FnOnce(&mut world::music::Volumes)) {
+    if let Some(d) = music.director.as_mut() {
+        change(&mut d.decks.volumes);
+    }
+}
+
+/// The music's clock, ms (the audio manager's: from 1 s, never 0), which
+/// the radio's times use too.
+pub fn audio_clock(real: &Time<Real>) -> u64 {
+    real.elapsed().as_millis() as u64 + 1000
+}
+
+/// The radio holds the music manager (`008325a0`) or lets it go.
+pub fn radio_hold(music: &mut Music, on: bool) {
+    if let Some(d) = music.director.as_mut() {
+        d.suspended = on;
+    }
+}
+
+/// Both decks cleared at once (`008304a0`).
+pub fn radio_clear(music: &mut Music) {
+    if let Some(d) = music.director.as_mut() {
+        d.clear_decks();
+    }
+}
+
+/// A song's length (relative to `Data`), as the decks read it.
+pub fn song_ms(music: &mut Music, game: &cellview::Game, path: &str) -> Option<u32> {
+    use world::music::MusicFiles;
+    music.library.files(&game.assets).duration_ms(path)
+}
+
+/// The radio's song onto a deck as type 7, in step with `sync`.
+pub fn radio_song(music: &mut Music, game: &cellview::Game, path: &str, sync: u64, now: u64) {
+    let Music {
+        director, library, ..
+    } = music;
+    if let Some(d) = director.as_mut() {
+        let mut files = library.files(&game.assets);
+        d.radio_song(path, sync, now, &mut files);
+    }
+}
+
 /// Where a track's samples come from.
 enum Feed {
     /// An MP3, decoded on its own thread.

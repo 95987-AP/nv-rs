@@ -215,6 +215,18 @@ only); none compared with the original game. Repair/Mod belong to another
 contributor's branch. Still missing: the start menu on Escape, the radio,
 the local map. **Next action:** the start menu (`007cb7d0`, `007cc6e0`).
 
+Start menu, radio and local map batch, 2026-10-06
+(`claude/m2-startmenu-radio-map`): Escape opens the pause menu
+(`StartMenu` 1013) with its background, settings pages, the viewer's
+saves (save / load / confirmations) and Quit; DATA › Radio (stations in
+range, tuning, songs and programmes, playing with the Pip-Boy away); DATA
+› Local Map (pictures from above, fog of war, doors, quest markers, the
+arrow, zoom) indoors and outdoors; hot key controls read through
+`controls.rs`. Verified live in the viewer only; none compared with the
+game. Details and gaps: [START_MENU.md](START_MENU.md),
+[PIPBOY.md](PIPBOY.md). **Next action:** compare the local map and
+pause menu with the game; Radio New Vegas's news live.
+
 Dialogue batch, 2026-10-06 (`claude/m1-dialogue`): Doc's farewell at the
 front door could not be left because line follow-ups (`TCFU`) were not
 read. Follow-ups, Goodbye states, random runs and Intelligence classes are

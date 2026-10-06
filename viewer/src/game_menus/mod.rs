@@ -23,6 +23,7 @@ pub mod levelup;
 mod message;
 pub mod recipe;
 pub mod sleepwait;
+pub mod start;
 pub mod textedit;
 pub mod traits;
 pub mod vigor;
@@ -82,6 +83,8 @@ pub struct Screen {
     quantity_owner: Option<u32>,
     sizes: HashMap<String, Option<(u32, u32)>>,
     atlases: HashMap<String, Option<ui::Atlas>>,
+    /// `nif` tiles' models (the start menu's pause background).
+    models: HashMap<String, Option<Vec<start::ModelPiece>>>,
 }
 
 /// A menu on screen.
@@ -98,6 +101,7 @@ pub enum OpenMenu {
     TextEdit(Box<ui::menus::textedit::TextEditMenu>),
     SleepWait(Box<ui::menus::sleepwait::SleepWaitMenu>),
     Vigor(Box<vigor::VigorScreen>),
+    Start(Box<start::StartScreen>),
 }
 
 impl OpenMenu {
@@ -115,6 +119,7 @@ impl OpenMenu {
             OpenMenu::TextEdit(m) => &mut **m,
             OpenMenu::SleepWait(m) => &mut **m,
             OpenMenu::Vigor(m) => &mut m.menu,
+            OpenMenu::Start(m) => &mut m.menu,
         }
     }
 
@@ -132,6 +137,7 @@ impl OpenMenu {
             OpenMenu::TextEdit(m) => m.menu,
             OpenMenu::SleepWait(m) => m.menu,
             OpenMenu::Vigor(m) => m.menu.menu,
+            OpenMenu::Start(m) => m.menu.menu,
         }
     }
 
@@ -149,6 +155,9 @@ impl OpenMenu {
             OpenMenu::TextEdit(m) => m.closed,
             OpenMenu::SleepWait(m) => m.closed,
             OpenMenu::Vigor(m) => m.menu.closed,
+            // Its requests (the load asked for, back to the game) are
+            // carried out first (`start::frame`).
+            OpenMenu::Start(m) => m.menu.closed && m.menu.requests.is_empty(),
         }
     }
 }
@@ -162,9 +171,18 @@ impl Plugin for GameMenusPlugin {
             .init_resource::<asks::PipboyAsks>()
             .init_resource::<StartMenu>()
             .init_resource::<FixedPointer>()
+            .init_resource::<start::GameSettings>()
+            .init_resource::<start::SaveFiles>()
             .add_systems(
                 Update,
-                (start_menu, open_menus, run_open_menus, draw_menus)
+                (
+                    start_menu,
+                    escape_opens_start_menu,
+                    open_menus,
+                    run_open_menus,
+                    start_menu_frame,
+                    draw_menus,
+                )
                     .chain()
                     .before(crate::menus::run_menus),
             )
@@ -330,6 +348,7 @@ impl Screen {
             quantity_owner: None,
             sizes: HashMap::new(),
             atlases: HashMap::new(),
+            models: HashMap::new(),
         }
     }
 
@@ -634,6 +653,18 @@ pub(crate) fn run_open_menus(
         if let OpenMenu::Vigor(v) = top {
             sounds.0.extend(v.inputs(&game.0, &mut state.0));
         }
+        // A meter's bar held under the pointer follows it (`007cf6a0`, id
+        // 0x66).
+        if let (OpenMenu::Start(s), Some((x, _)), true) =
+            (&mut *top, pointer, input.mouse.pressed(MouseButton::Left))
+        {
+            let bar = interface.dragging.or(interface.over).filter(|&o| {
+                ui.has(o, t::ID) && ui.number(o, t::ID) as i32 == ui::menus::start::id::BAR
+            });
+            if let Some(bar) = bar {
+                s.menu.drag_meter(ui, bar, x);
+            }
+        }
         let notches = match input.scroll.unit {
             MouseScrollUnit::Line => input.scroll.delta.y,
             MouseScrollUnit::Pixel => input.scroll.delta.y / 40.0,
@@ -676,6 +707,12 @@ pub(crate) fn run_open_menus(
             }
             // The Escape control: the message box hears it as a 1 (`0070c4a0`).
             if e.logical_key == Key::Escape {
+                // The start menu takes the Escape control as Back
+                // (`007cf5e0`).
+                if let OpenMenu::Start(s) = top {
+                    s.menu.escape(ui, now);
+                    continue;
+                }
                 // The recipe menu's Exit is its X key.
                 if top.code().class() == ui::menus::recipe::CLASS {
                     interface.key(ui, menu, top.code(), u32::from(b'X'), false, false, now);
@@ -782,6 +819,96 @@ pub(crate) fn run_open_menus(
     }
 }
 
+/// The Escape control opens the start menu as the pause menu
+/// (`0070c4a0` at `0070e651` → `007cb7d0(1, 0)`) when no other menu has
+/// the keys (the game's menus closed, no conversation, no lock; the
+/// Pip-Boy may be up: the start menu opens over it). The game stops
+/// (virtual time paused) while it's up. Saving is offered unless the game
+/// refuses (`00850fe0`: its refusals in combat and the like aren't
+/// followed here).
+#[allow(clippy::too_many_arguments)]
+fn escape_opens_start_menu(
+    game: Res<GameFiles>,
+    mut menus: ResMut<GameMenus>,
+    mut queue: ResMut<crate::menus::Menus>,
+    keys: Res<ButtonInput<KeyCode>>,
+    conversation: Res<crate::dialogue::Conversation>,
+    mut settings: ResMut<start::GameSettings>,
+    mut virt: ResMut<Time<Virtual>>,
+    mut player: ResMut<crate::walk::Player>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+) {
+    if !keys.just_pressed(KeyCode::Escape) {
+        return;
+    }
+    let Some(size) = window_size(&windows) else {
+        return;
+    };
+    if queue.others_open() || conversation.0.is_some() {
+        return;
+    }
+    let Some(screen) = screen(&mut menus, &game.0, size) else {
+        return;
+    };
+    if !screen.open.is_empty() {
+        return;
+    }
+    let was_paused = virt.is_paused();
+    if start::open(screen, &game.0, &mut settings, true, was_paused) {
+        virt.pause();
+        queue.game_open = true;
+        player.ready = false;
+    }
+}
+
+/// The start menu's frame: its fades and saving, then what it asked for:
+/// back to the game (time going again), a save or load for the save
+/// system, the program's end, the settings' new values (the volumes into
+/// the music's decks).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn start_menu_frame(
+    game: Res<GameFiles>,
+    mut menus: ResMut<GameMenus>,
+    mut settings: ResMut<start::GameSettings>,
+    mut saves: ResMut<start::SaveFiles>,
+    mut virt: ResMut<Time<Virtual>>,
+    time: Res<Time<bevy::time::Real>>,
+    mut exit: EventWriter<AppExit>,
+    mut music: ResMut<crate::music::Music>,
+    mut sounds: ResMut<crate::sounds::SoundRequests>,
+) {
+    let Some(screen) = menus.screen.as_deref_mut() else {
+        return;
+    };
+    let out = start::frame(screen, &game.0, &mut settings, time.elapsed_secs_f64());
+    for s in out.sounds {
+        if let Some(id) = game.0.order.form_by_editor_id(&s) {
+            sounds.0.push(id);
+        }
+    }
+    if let Some(was_paused) = out.resume {
+        if !was_paused {
+            virt.unpause();
+        }
+    }
+    if let Some(s) = out.save {
+        saves.0 = Some(s);
+    }
+    for (setting, v) in out.applied {
+        use ui::menus::start::Setting;
+        match setting {
+            Setting::MasterVolume => crate::music::set_volumes(&mut music, |vol| vol.master = v),
+            Setting::MusicVolume => crate::music::set_volumes(&mut music, |vol| vol.music = v),
+            Setting::RadioVolume => crate::music::set_volumes(&mut music, |vol| vol.radio = v),
+            _ => {}
+        }
+    }
+    if out.exit {
+        println!("Exit Game.");
+        exit.write(AppExit::Success);
+    }
+}
+
 /// The open menus' pictures and the cursor, for the HUD's layer.
 fn draw_menus(
     game: Res<GameFiles>,
@@ -828,7 +955,18 @@ fn draw_menus(
             }
         }
         for &menu in &tiles {
+            let first = items.len();
             items.extend(ui::draw_list(&mut screen.ui, menu, &mut files, &|_| None));
+            // A start menu's `nif` tile (the pause background).
+            start::background_draws(
+                &mut screen.ui,
+                &screen.open,
+                &game.0,
+                &mut screen.models,
+                &mut items,
+                menu,
+                first,
+            );
         }
         // The cursor over everything while a menu is open (the Pip-Boy
         // too: it moves over the screen and the model's buttons,

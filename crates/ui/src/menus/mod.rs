@@ -13,6 +13,7 @@ pub mod message;
 pub mod quantity;
 pub mod recipe;
 pub mod sleepwait;
+pub mod start;
 pub mod textedit;
 pub mod traits;
 pub mod vigor;

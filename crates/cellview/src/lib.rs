@@ -268,6 +268,9 @@ pub struct MeshData {
     pub motion: Option<std::sync::Arc<PieceMotion>>,
     /// Pieces that turn to face the camera ([`billboard_matrix`]).
     pub billboard: Option<Billboard>,
+    /// Drawn into the local map's pictures (`preview::cell::ModelMesh::
+    /// local_map`).
+    pub local_map: bool,
 }
 
 /// How a billboard piece is turned for a camera at `eye` (game units)
@@ -1447,6 +1450,7 @@ fn mesh_data(
         rig: None,
         motion: None,
         billboard: mesh.billboard,
+        local_map: mesh.local_map,
     }
 }
 
