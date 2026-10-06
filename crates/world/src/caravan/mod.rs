@@ -25,6 +25,8 @@ use crate::scripting::GameState;
 
 pub mod ai;
 pub mod bet;
+pub mod menu;
+pub mod money;
 
 pub const ACE: i32 = 1;
 pub const JACK: i32 = 12;

@@ -138,6 +138,57 @@ constructor `0073b7e0`).
   decided, the side with more wins. Otherwise a side with no cards in deck
   or hand left loses (the player checked first).
 
+## The menu
+
+`CaravanMenu`'s update (`DoIdle` `00741500`) is a state machine
+(`CaravanState` 0–23, the screen `eActiveMenu` +0x28, the flags
+`enumFlags` +0xE74), read with the Xbox prototype's PDB names:
+
+- Screens one way: the ante (`PrepareAnteMenu` `0073d020`), the deck
+  (`PrepareDeckMenu` `0073d850`, never skipped), the game
+  (`PrepareGameMenu` `0073ea90`), the results (`PrepareResultsMenu`
+  `00740980`); any key on the results closes the menu. Leaving the ante or
+  the deck screen (R / B) closes at once: nothing paid, the deck kept. The
+  camera moves are the table's `Bet_to_Deck`, `Deck_to_Play`, `Play_to_Bet`
+  (its `Bet_to_Play`, `Play_to_Deck`, `Deck_to_Bet` are never used).
+- The clock: the seconds in the state (`ftotalStateSecs`), the update's
+  milliseconds ÷ 1000 added while the state is the one it was last update,
+  else 0. An animated state starts its sequences at time 0, updates its
+  models at the time each update and moves on once the time reaches the
+  sequence's end time (passes it, for the column-at-a-time states 15, 17,
+  18). Behind a message box or tutorial the clock isn't kept, so the time
+  spent there is added at once on the way back.
+- The ante: W (A) matches, A (X) raises through the "How many?" box (up to
+  the funds left; `ItemSelectCallback` counts the money put on the table
+  from the old ante, not the raise), F (Y) accepts. The money on the table
+  (`UpdateBettingUI` `0074a2c0`) is only for show: bills and coins picked
+  at random by the opponent's most (`world::caravan::money`), landing for
+  a second (state 4, `GAMECaravanFundsDrop`).
+- The deck screen: the player's cards sorted by value (out of the deck
+  first, then in it; the game's `qsort`), the chosen one in the middle
+  (the scrollbar starts at 12); ← / → or a drag move along (a step each, 5
+  or more one fast move); W (A) adds, A (X) removes, F (Y) plays with 30
+  or more (at most 108), S (RB) makes a random deck of 30 (with more than
+  30 owned, 30 up to one fewer than all). Steps forward show each card as
+  they end; back, the cards are set once for the first step.
+- The game (states 11–21): the hands dealt with the camera (state 2);
+  the opponent moves first, on the update after the last animation ended
+  (no delay of its own). The player's turn: ← / → choose a hand card
+  (round; up or down alone picks the last card, the game's 0 / 0), W (A)
+  picks it and then the place (arrows move along the player's tracks and
+  rows, crossing above row 0 to the facing track; a green or red marker
+  says whether it may go there), W again places it; Q (LT) throws it
+  away; E (RT) then the arrows and W throw a track away (an empty one
+  too); R (B) cancels a choice, or asks whether to forfeit (a loss). At
+  most one cursor move a quarter second, the first of a turn after 0.25 s.
+  Jacks take their row and those after it out a column at a time (highest
+  first), the rows move up, and the rest come back; a joker does that for
+  each track with marked rows, in track order, and its rows are taken
+  without emptying the last (a full seventh row would be left doubled).
+- Sounds (`GAMECaravan…`), the tutorials (`HelpCaravanBetting`,
+  `…DeckBuilding`, `…StartingCaravans`, `…ContractWar`), the results'
+  `GAMECaravanWin` / `GAMECaravanLose` before the camera goes back.
+
 ## Here
 
 `world::caravan`: `card`, `deck`, `Collection` (`GameState::caravan`,
@@ -147,13 +198,18 @@ saved as `caravancard` / `caravanrecord` lines), `add_card_to_player`
 `discard_track`, `setup_track`, `setup_finished`, `npc_turn`,
 `player_play`), `winning_state`; `world::caravan::ai` (`process_ai`,
 `Package`, `crt_qsort`); `world::caravan::bet` (`funds`, `Bet`, `settle`);
-`ShowCaravanMenu` raises `Event::Caravan` (the viewer only says so for
-now). Checks: `world::caravan::tests`,
+`world::caravan::menu` (`Menu`: the screens, states, flags and controls
+above, telling the caller what to do as `Effect`s); `world::caravan::money`
+(the ante's bills and coins); `ShowCaravanMenu` raises `Event::Caravan`
+(the viewer only says so for now). Checks: `world::caravan::tests`,
 `world::caravan::ai::tests` (39 whole games each end),
+`world::caravan::menu::tests` (40 whole games through the menu, every
+state reached), `world::caravan::money::tests`,
 `crates/world/tests/caravan.rs`.
 
 ## Not done yet
 
-- The deck building screen and the menu itself (`caravan_menu.xml`, the 3D
-  table `Meshes\Terminals\NV_Caravan\`). The order money is paid in
-  follows the form IDs here, not the inventory's own order.
+- The menu on screen: its tiles (`caravan_menu.xml`) and the 3D table
+  (`Meshes\Terminals\NV_Caravan\`, its camera `object0`), and the viewer
+  running it. The order money is paid in follows the form IDs here, not the
+  inventory's own order.
