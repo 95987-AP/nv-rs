@@ -56,7 +56,36 @@ pub struct StatsMenu {
     description: Option<TileId>,
     /// What the lists were last filled from (refilled only when it
     /// changes, so choices and scrolling stay).
-    filled: Option<PipboyInput>,
+    filled: Option<ListSources>,
+    /// Per page, the last row the pointer was over (`007dfd20`'s
+    /// `DAT_011dad60` .. `DAT_011dad70`).
+    hovered: [Option<usize>; 5],
+}
+
+/// What the STATS lists are made from: the rest of the game's state
+/// (health, the date, ...) changes without the rows being made again, so
+/// the pointer's row and the scrolling stay.
+#[derive(Debug, Clone, PartialEq)]
+struct ListSources {
+    special: Vec<StatLine>,
+    skills: Vec<StatLine>,
+    perks: Vec<StatLine>,
+    general: Vec<StatLine>,
+    reputations: Vec<super::ReputationLine>,
+    effects: Vec<(String, String)>,
+}
+
+impl ListSources {
+    fn of(input: &PipboyInput) -> ListSources {
+        ListSources {
+            special: input.special.clone(),
+            skills: input.skills.clone(),
+            perks: input.perks.clone(),
+            general: input.general.clone(),
+            reputations: input.reputations.clone(),
+            effects: input.effects.clone(),
+        }
+    }
 }
 
 impl StatsMenu {
@@ -95,6 +124,7 @@ impl StatsMenu {
             badge: by_id(ui, menu, 52),
             description: ui.find(menu, "stats_description"),
             filled: None,
+            hovered: [None; 5],
         };
         let set = |ui: &mut Ui, tile: Option<TileId>, trait_id: i32, setting: &str| {
             if let Some(tile) = tile {
@@ -258,9 +288,10 @@ impl StatsMenu {
         if let Some(title) = by_id(ui, m, 37) {
             ui.set_string(title, t::STRING, &input.karma_title);
         }
-        if self.filled.as_ref() != Some(input) {
+        let sources = ListSources::of(input);
+        if self.filled.as_ref() != Some(&sources) {
             self.fill_lists(ui, input);
-            self.filled = Some(input.clone());
+            self.filled = Some(sources);
         }
     }
 
@@ -472,9 +503,60 @@ impl StatsMenu {
         } else if (0..5).contains(&id) {
             self.set_page(ui, id as usize, Some(input));
             out.push(Action::Sound("UIPipBoyTab".into()));
+        } else if let Some(mode) = status_mode_of(id) {
+            // `007e0060`: a mode the page has (CND, RAD, EFF; the three
+            // needs only in hardcore) other than the one shown becomes the
+            // status tile's `user0`. (The buttons' own `clicksound`,
+            // `UIPipboySelect`, is the file's: the interface plays it.)
+            let last = if input.hardcore { 5 } else { 2 };
+            if mode <= last && mode != self.status_mode {
+                self.status_mode = mode;
+                if let Some(s) = self.status {
+                    ui.set_number(s, t::USER0, mode as f32);
+                }
+            }
         }
         out
     }
+
+    /// The pointer onto a tile (`007dc1b0`, slot 0x10): on the
+    /// S.P.E.C.I.A.L., Skills, Perks and General pages a row of the page's
+    /// list becomes the chosen one and its picture and description show;
+    /// the knob clicks (`007dfd20` → `007f8610`, `UIPipBoyScroll`) when its
+    /// `listindex` differs from the last one the pointer was over on that
+    /// page. (The Status page's limbs, for a Doctor's Bag, are not here.)
+    pub fn mouseover(&mut self, ui: &mut Ui, tile: TileId, input: &PipboyInput) -> Vec<Action> {
+        let mut out = Vec::new();
+        let page = self.page;
+        let Some(list) = self.page_list(ui) else {
+            return out;
+        };
+        let Some(index) = list.index_of(tile) else {
+            return out;
+        };
+        list.choose(ui, Some(index));
+        let last = &mut self.hovered[page.min(4)];
+        if *last != Some(index) {
+            *last = Some(index);
+            out.push(Action::Sound("UIPipBoyScroll".into()));
+        }
+        self.show_selected(ui, input);
+        out
+    }
+}
+
+/// The Status page's mode buttons by `id` (`007e0160`): 0x1c CND, 0x1d
+/// RAD, 0x1e EFF, then the hardcore needs 0x35, 0x37, 0x39.
+fn status_mode_of(id: i32) -> Option<usize> {
+    Some(match id {
+        0x1c => 0,
+        0x1d => 1,
+        0x1e => 2,
+        0x35 => 3,
+        0x37 => 4,
+        0x39 => 5,
+        _ => return None,
+    })
 }
 
 /// The aid buttons' `id`s by slot: Stimpak, Doctor's Bag, RadAway, Rad-X
