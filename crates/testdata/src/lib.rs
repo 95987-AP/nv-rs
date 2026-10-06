@@ -1249,6 +1249,9 @@ pub mod quest_ids {
     pub const TOPIC_CHECK: u32 = 0xA70;
     pub const CHECK_PASSED: u32 = 0xA71;
     pub const CHECK_FAILED: u32 = 0xA72;
+    /// A topic with no lines of its own: its `INFC` list names the secret's
+    /// line, which stands under another topic.
+    pub const TOPIC_LINKED: u32 = 0xA1B;
     /// Experience settings (three forms from here): picking an easy lock
     /// 30, hacking an easy terminal 30, finding a place 10.
     pub const XP_SETTINGS: u32 = 0xA73;
@@ -2339,6 +2342,15 @@ pub fn quests(tag: &str) -> TempData {
         check_lines.extend(record(b"INFO", id, &line));
     }
     dialogue.extend(group(TOPIC_CHECK.to_le_bytes(), 7, &check_lines));
+    // A topic with no lines of its own, connected (`INFC`, then `INFX`, its
+    // place) to the secret's line.
+    let mut d = edid("TestLinkedTopic");
+    d.extend(sub(b"QSTI", &QUEST.to_le_bytes()));
+    d.extend(sub(b"INFC", &SECRET_LINE.to_le_bytes()));
+    d.extend(sub(b"INFX", &0u32.to_le_bytes()));
+    d.extend(sub(b"FULL", &zstr("Linked.")));
+    d.extend(sub(b"DATA", &[0, 0]));
+    dialogue.extend(record(b"DIAL", TOPIC_LINKED, &d));
 
     // Editor IDs come first in a record.
     let named_with = |id: u32, base: u32, pos: [f32; 3], name: &str, extra: &[u8]| {
