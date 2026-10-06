@@ -61,6 +61,7 @@ pub mod music;
 pub mod particles;
 pub mod perks;
 mod placement;
+pub mod player_camera;
 pub mod quest;
 pub mod region;
 pub mod reputation;
