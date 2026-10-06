@@ -395,6 +395,9 @@ pub struct GameState {
     /// Locks broken by failed forcing (`world::lockpick`: the lock's count
     /// at `+0xC`, `00790330`).
     pub broken_locks: HashMap<FormId, u32>,
+    /// What placed terminals remember: hacked, lockouts
+    /// (`world::terminal::TerminalState`).
+    pub terminal_states: HashMap<FormId, crate::terminal::TerminalState>,
     /// Map markers the player has found (`world::map`).
     pub discovered: HashSet<FormId>,
     /// What people have equipped (`EquipItem`), by person.
@@ -1472,12 +1475,24 @@ impl Facts<'_> {
                 v => self.unaffected_actor_value(on?, v)?,
             },
             "HasMagicEffect" => flag(crate::magic::has_effect(s, on?, arg(0).form())),
-            "GetLocked" => flag(crate::locks::lock_now(self.order, s, on?).is_some()),
+            "GetLocked" => {
+                let r = on?;
+                match crate::terminal::placed(self.order, r) {
+                    Some(t) => crate::terminal::get_locked(self.order, s, &t, r),
+                    None => flag(crate::locks::lock_now(self.order, s, r).is_some()),
+                }
+            }
             // `0059d1d0`: `00430ae0` on the reference's lock (only locks
             // forcing broke have a count).
             "GetIsLockBroken" => flag(crate::lockpick::is_broken(self.order, s, on?)),
             "GetLockLevel" => {
-                crate::locks::lock_now(self.order, s, on?).map_or(0.0, |l| f64::from(l.level))
+                let r = on?;
+                match crate::terminal::placed(self.order, r) {
+                    Some(t) => crate::terminal::get_lock_level(self.order, s, &t, r),
+                    None => {
+                        crate::locks::lock_now(self.order, s, r).map_or(0.0, |l| f64::from(l.level))
+                    }
+                }
             }
             "GetLinkedRef" => {
                 f64::from(crate::locks::linked_ref(self.order, on?).map_or(0, |r| r.0))
@@ -3261,6 +3276,11 @@ impl<'a> Runner<'a> {
             // `Unlock`.
             "Lock" => {
                 let r = target?;
+                if crate::terminal::placed(self.order, r).is_some() {
+                    let level = args.first().map_or(0, |a| a.number() as i32);
+                    crate::terminal::script_lock(self.state, r, level);
+                    return Some(0.0);
+                }
                 let level = args
                     .first()
                     .map(|a| a.number() as u8)
@@ -3276,7 +3296,12 @@ impl<'a> Runner<'a> {
             }
             // The table's name (scripts write `Unlock`).
             "UnLock" => {
-                self.state.locks.insert(target?, None);
+                let r = target?;
+                if crate::terminal::placed(self.order, r).is_some() {
+                    crate::terminal::script_unlock(self.state, r);
+                } else {
+                    self.state.locks.insert(r, None);
+                }
             }
             // FalloutNV.exe 1.4.0.525, `AddScriptPackage` at `exe005cc4f0`
             // requests the old package's change action through

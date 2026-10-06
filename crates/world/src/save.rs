@@ -350,6 +350,15 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     for (r, n) in broken {
         line(format!("brokenlock {} {n}", id(*r)));
     }
+    let terminals: BTreeMap<_, _> = state.terminal_states.iter().collect();
+    for (r, t) in terminals {
+        line(format!(
+            "terminal {} {} {}",
+            id(*r),
+            u8::from(t.hacked),
+            t.lockouts
+        ));
+    }
     // An effect, then its script's variables.
     for e in &state.active_effects {
         line(format!(
@@ -646,6 +655,15 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
             }
             "brokenlock" => {
                 state.broken_locks.insert(form(1)?, num(2)? as u32);
+            }
+            "terminal" => {
+                state.terminal_states.insert(
+                    form(1)?,
+                    crate::terminal::TerminalState {
+                        hacked: num(2)? != 0.0,
+                        lockouts: num(3)? as u8,
+                    },
+                );
             }
             "effect" => {
                 let flag = |i: usize| num(i).map(|v| v != 0.0);

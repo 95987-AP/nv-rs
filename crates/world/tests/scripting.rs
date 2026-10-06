@@ -944,7 +944,7 @@ fn locks_keys_and_terminals() {
         ("Office Terminal", "Welcome, USER")
     );
     assert!(!t.unlocked());
-    assert_eq!(t.science_needed(), 25);
+    assert_eq!(world::hacking::min_skill(t.difficulty), 25.0);
     assert_eq!(t.items.len(), 2);
     assert_eq!(t.items[0].result.as_deref(), Some("Unlocking..."));
     assert_eq!(t.items[1].note, Some(FormId(NOTE)));
@@ -962,21 +962,59 @@ fn locks_keys_and_terminals() {
     assert!(locks::lock_now(&order, &state, strongbox).is_none());
     assert!(state.unhandled.is_empty(), "{:?}", state.unhandled_first);
 
-    // Hacking it: locked until Science reaches 25, then open for good,
-    // worth `iXPRewardHackComputerEasy` once.
-    use world::terminal::{try_hack, Access};
+    // Getting in: the hacking game once Science reaches the easy
+    // minimum (25); hacked, it opens for good, worth
+    // `iXPRewardHackComputerEasy` once, and `GetLocked` still says 1.
+    use world::terminal::{access, Access};
     let r = FormId(TERMINAL_REF);
     Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 10", None, None);
-    assert_eq!(
-        try_hack(&order, &mut state, &t, r),
-        Access::NeedsScience(25)
-    );
+    assert_eq!(access(&order, &state, &t, r), Access::NeedsScience(25));
     Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 25", None, None);
-    assert_eq!(try_hack(&order, &mut state, &t, r), Access::Hacked);
+    assert_eq!(access(&order, &state, &t, r), Access::Hack);
+    world::terminal::hacked(&order, &mut state, &t, r);
     assert_eq!(world::experience::xp(&state), 60.0);
     Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 0", None, None);
-    assert_eq!(try_hack(&order, &mut state, &t, r), Access::Open);
-    assert_eq!(world::experience::xp(&state), 60.0);
+    assert_eq!(access(&order, &state, &t, r), Access::Open);
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLocked"),
+        1.0
+    );
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLockLevel"),
+        1.0
+    );
+    // A script's `Lock` takes the hack away and sets the level; `Unlock`
+    // opens it.
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Lock 3", None, None);
+    Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 60", None, None);
+    assert_eq!(access(&order, &state, &t, r), Access::NeedsScience(75));
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLockLevel"),
+        3.0
+    );
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Unlock", None, None);
+    assert_eq!(access(&order, &state, &t, r), Access::Open);
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLocked"),
+        0.0
+    );
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLockLevel"),
+        -1.0
+    );
+    // Locked out: `GetLocked` 2; level 5 ("requires key") too.
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Lock", None, None);
+    world::terminal::lock_out(&mut state, r);
+    assert_eq!(access(&order, &state, &t, r), Access::LockedOut);
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLocked"),
+        2.0
+    );
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Unlock", None, None);
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Lock 5", None, None);
+    assert_eq!(access(&order, &state, &t, r), Access::LockedOut);
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Unlock", None, None);
+    Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 0", None, None);
     // Quest scripts reward experience too.
     Runner::new(&order, &scripts, &mut state).run_source("RewardXP 25", None, None);
     assert_eq!(world::experience::xp(&state), 85.0);

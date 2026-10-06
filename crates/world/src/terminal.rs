@@ -11,21 +11,34 @@
 //! `FULL` its title, `DATA` its kind (0 sound, 1 text, 2 image, 3 voice),
 //! `TNAM` the text.
 //!
-//! Hacking: the game's word-guessing game isn't here. A locked terminal
-//! opens when the player's Science reaches 25 × its difficulty (the
-//! thresholds as the game's players know them; not found in its settings
-//! or traced in its code: a guess).
+//! Getting in (`00966c60`, read from `FalloutNV.exe` 1.4.0.525): open
+//! when the player holds the terminal's password note (`PNAM`), or it was
+//! hacked, or it's unlocked (its `DNAM` flag 0x02, or a script's
+//! `Unlock`); locked out when it locked the player out before (once only,
+//! with a perk's "Ignore Locked Terminal": Computer Whiz) or its level is
+//! 5 ("requires key"); otherwise the hacking game (`world::hacking`) when
+//! the player's Science reaches `fHackingMinSkill<difficulty>` (0, 25, 50,
+//! 75, 100), else "A Science skill of N is required to hack this
+//! terminal." (`sHackIneligible`). What each placed terminal remembers is
+//! the game's `ExtraTerminalState` ([`TerminalState`]); its lock level is
+//! kept with every other lock in `GameState::locks`.
 
 use esm::{FormId, FourCC, LoadOrder};
 
 use crate::cell::le_u32;
-use crate::dialogue::Condition;
+use crate::dialogue::{Condition, PLAYER_REF};
+use crate::scripting::GameState;
 
 const TERM: FourCC = FourCC::new(b"TERM");
 const NOTE: FourCC = FourCC::new(b"NOTE");
 
-/// `DNAM` flag: no hacking needed.
+/// `DNAM` flag: no hacking needed (`005015d0`).
 pub const UNLOCKED: u8 = 0x02;
+/// `DNAM` flag: the difficulty rises with the level (`00501250`).
+pub const LEVELED: u8 = 0x01;
+/// The lock level that only a key opens (the hacking menu shows the
+/// terminal locked).
+pub const REQUIRES_KEY: u8 = 5;
 
 /// One menu item.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -48,6 +61,9 @@ pub struct Terminal {
     pub header: String,
     pub difficulty: u8,
     pub flags: u8,
+    /// The note whose holder gets in without hacking (`PNAM`, the
+    /// terminal's `+0xA0`).
+    pub password_note: Option<FormId>,
     pub items: Vec<TerminalItem>,
 }
 
@@ -117,67 +133,236 @@ impl Terminal {
                 .unwrap_or_default(),
             difficulty: dnam.first().copied().unwrap_or(0),
             flags: dnam.get(1).copied().unwrap_or(0),
+            password_note: record.get(FourCC::new(b"PNAM")).and_then(form),
             items,
         })
     }
 
-    /// Whether it opens without hacking.
+    /// Whether its record says it opens without hacking.
     pub fn unlocked(&self) -> bool {
         self.flags & UNLOCKED != 0
     }
 
-    /// The Science skill that opens it when locked (a guess; see the
-    /// module notes).
-    pub fn science_needed(&self) -> u16 {
-        u16::from(self.difficulty.min(4)) * 25
+    /// Whether its difficulty rises with the level.
+    pub fn leveled(&self) -> bool {
+        self.flags & LEVELED != 0
     }
 }
 
-/// How the player gets into a terminal.
+/// What a placed terminal remembers (the game's `ExtraTerminalState`,
+/// extra data 0x50: a flags byte, 0x80 hacked and the rest the lockouts,
+/// and the lock level, which lives in `GameState::locks` here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TerminalState {
+    /// Hacked (`005018b0`).
+    pub hacked: bool,
+    /// Times it locked the player out (`00501930`).
+    pub lockouts: u8,
+}
+
+/// How the player gets into a terminal (`00966c60`'s answers).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
-    /// Unlocked (by its flags, or hacked before, or by a script's
-    /// `UnLock`).
+    /// Straight in: the password note held (0), or hacked or unlocked (1).
     Open,
-    /// Hacked now: it stays open, and gives the setting's experience
-    /// (`iXPRewardHackComputer<difficulty>`).
-    Hacked,
-    /// Locked: hacking it needs this much Science.
+    /// Locked out (2): the hacking menu opens on "TERMINAL LOCKED".
+    LockedOut,
+    /// The hacking game (3).
+    Hack,
+    /// Not enough Science (4): the Science it takes.
     NeedsScience(u16),
 }
 
-/// The player uses a placed terminal: open, hacked now (see the module
-/// notes) or still locked. Kept per reference in `GameState::locks`, as
-/// scripts lock and unlock terminals there too.
-pub fn try_hack(
+/// The terminal's own level unless a script locked it at another
+/// (`00501a30`: the reference's level when 0 or more).
+pub fn lock_level(state: &GameState, terminal: &Terminal, reference: FormId) -> u8 {
+    match state.locks.get(&reference) {
+        Some(Some(level)) => *level,
+        _ => terminal.difficulty,
+    }
+}
+
+/// Unlocked (`00501ae0`): a script's `Unlock` (level −2), its record's
+/// flag (level −1, the record's own), never at a level a script set.
+pub fn unlocked(state: &GameState, terminal: &Terminal, reference: FormId) -> bool {
+    match state.locks.get(&reference) {
+        Some(None) => true,
+        Some(Some(_)) => false,
+        None => terminal.unlocked(),
+    }
+}
+
+/// The difficulty the hacking game is set at (`005011a0`): the lock level;
+/// for a leveled terminal plus ⌊level × `fHackLevelMult`⌋ (0.25, exe
+/// default), at most 4. The level is the reference's encounter zone's,
+/// else the player's (`00567e10`); zone levels aren't here, so always the
+/// player's.
+pub fn difficulty(
     order: &LoadOrder,
-    state: &mut crate::scripting::GameState,
+    state: &GameState,
     terminal: &Terminal,
     reference: FormId,
-) -> Access {
-    let locked = match state.locks.get(&reference) {
-        Some(lock) => lock.is_some(),
-        None => !terminal.unlocked(),
-    };
-    if !locked {
-        return Access::Open;
+) -> u8 {
+    let level = lock_level(state, terminal, reference);
+    if !terminal.leveled() {
+        return level;
     }
-    let needed = terminal.science_needed();
-    let science = crate::scripting::Facts {
+    let mult = crate::scripting::game_setting(order, "fHackLevelMult").unwrap_or(0.25);
+    let extra = (f64::from(state.player_level.max(1)) * f64::from(mult)).trunc() as i64;
+    (i64::from(level) + extra).clamp(0, 4) as u8
+}
+
+/// "Ignore Locked Terminal".
+const IGNORE_LOCKED_TERMINAL: u8 = 20;
+
+/// Locked out (`00501990`): once, unless a perk's "Ignore Locked
+/// Terminal" (entry point 20, from 0) is other than 0; twice, for good.
+pub fn locked_out(order: &LoadOrder, state: &GameState, reference: FormId) -> bool {
+    match state
+        .terminal_states
+        .get(&reference)
+        .map_or(0, |t| t.lockouts & 0x7F)
+    {
+        0 => false,
+        1 => {
+            crate::perks::apply_for(order, state, PLAYER_REF, IGNORE_LOCKED_TERMINAL, 0.0, &[])
+                == 0.0
+        }
+        _ => true,
+    }
+}
+
+/// The player's Science as the game asks it here (`0066ef50`: the current
+/// value, clamped to 0..100).
+pub fn science(order: &LoadOrder, state: &GameState) -> f32 {
+    crate::scripting::Facts {
         order,
         state,
         speaker: None,
     }
-    .current_actor_value(crate::dialogue::PLAYER_REF, SCIENCE)
-    .unwrap_or(0.0);
-    if science < f64::from(needed) {
-        return Access::NeedsScience(needed);
+    .current_actor_value(PLAYER_REF, SCIENCE)
+    .unwrap_or(0.0)
+    .clamp(0.0, 100.0) as f32
+}
+
+/// How the player gets in (`00966c60`).
+pub fn access(
+    order: &LoadOrder,
+    state: &GameState,
+    terminal: &Terminal,
+    reference: FormId,
+) -> Access {
+    if terminal
+        .password_note
+        .is_some_and(|n| state.notes.contains(&n))
+    {
+        return Access::Open;
     }
-    state.locks.insert(reference, None);
+    let hacked = state
+        .terminal_states
+        .get(&reference)
+        .is_some_and(|t| t.hacked);
+    if hacked || unlocked(state, terminal, reference) {
+        return Access::Open;
+    }
+    if locked_out(order, state, reference) || lock_level(state, terminal, reference) == REQUIRES_KEY
+    {
+        return Access::LockedOut;
+    }
+    let needed = crate::hacking::min_skill(difficulty(order, state, terminal, reference));
+    if science(order, state) >= needed {
+        Access::Hack
+    } else {
+        // `00501310`: rounded (`004bd510(needed, 1)`) for the message.
+        Access::NeedsScience((needed + 0.5).floor().min(f32::from(u16::MAX)) as u16)
+    }
+}
+
+/// `iXPRewardHackComputer…`'s exe defaults (the official data sets them).
+const HACK_XP_DEFAULTS: [f32; 5] = [5.0, 10.0, 20.0, 30.0, 50.0];
+
+/// The hacking game won (`00766b80`): the terminal stays hacked, the
+/// experience for its difficulty (`006705b0(2, …)`: the reward beside the
+/// first of `iXPLevelHackComputer…` (0–4) the difficulty doesn't pass,
+/// `iXPRewardHackComputer…`), and "Computers Hacked" + 1.
+pub fn hacked(order: &LoadOrder, state: &mut GameState, terminal: &Terminal, reference: FormId) {
+    let d = f32::from(difficulty(order, state, terminal, reference));
+    state.terminal_states.entry(reference).or_default().hacked = true;
+    let mut reward = None;
+    let mut last = 0.0;
+    for (i, name) in crate::experience::DIFFICULTIES.iter().enumerate() {
+        let level = crate::scripting::game_setting(order, &format!("iXPLevelHackComputer{name}"))
+            .unwrap_or(i as f32);
+        let xp = crate::scripting::game_setting(order, &format!("iXPRewardHackComputer{name}"))
+            .unwrap_or(HACK_XP_DEFAULTS[i]);
+        last = xp;
+        if d <= level {
+            reward = Some(xp);
+            break;
+        }
+    }
+    crate::experience::reward(order, state, f64::from(reward.unwrap_or(last)));
     crate::stats::bump(state, crate::stats::COMPUTERS_HACKED, 1);
-    let setting = crate::experience::by_difficulty("iXPRewardHackComputer", terminal.difficulty);
-    crate::experience::reward_setting(order, state, &setting);
-    Access::Hacked
+}
+
+/// The hacking game lost (`00501930(ref, 1)`): one more lockout.
+pub fn lock_out(state: &mut GameState, reference: FormId) {
+    let t = state.terminal_states.entry(reference).or_default();
+    t.lockouts = t.lockouts.wrapping_add(1) & 0x7F;
+}
+
+/// A script's `Lock` on a terminal (`005cbf80`): the level 0..5 (0 when
+/// not given), and no longer hacked.
+pub fn script_lock(state: &mut GameState, reference: FormId, level: i32) {
+    state.locks.insert(reference, Some(level.clamp(0, 5) as u8));
+    if let Some(t) = state.terminal_states.get_mut(&reference) {
+        t.hacked = false;
+    }
+}
+
+/// A script's `Unlock` on a terminal (`005cc120`): unlocked, and its
+/// flags (hacked, lockouts) cleared.
+pub fn script_unlock(state: &mut GameState, reference: FormId) {
+    state.locks.insert(reference, None);
+    state.terminal_states.remove(&reference);
+}
+
+/// `GetLocked` on a terminal (`0059d010`): 2 locked out, 1 not unlocked
+/// (even when hacked), 0 unlocked.
+pub fn get_locked(
+    order: &LoadOrder,
+    state: &GameState,
+    terminal: &Terminal,
+    reference: FormId,
+) -> f64 {
+    if access(order, state, terminal, reference) == Access::LockedOut {
+        2.0
+    } else if !unlocked(state, terminal, reference) {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+/// `GetLockLevel` on a terminal (`0059d100`): −1 unlocked, else its
+/// difficulty.
+pub fn get_lock_level(
+    order: &LoadOrder,
+    state: &GameState,
+    terminal: &Terminal,
+    reference: FormId,
+) -> f64 {
+    if unlocked(state, terminal, reference) {
+        -1.0
+    } else {
+        f64::from(difficulty(order, state, terminal, reference))
+    }
+}
+
+/// The terminal a reference places, if it places one.
+pub fn placed(order: &LoadOrder, reference: FormId) -> Option<Terminal> {
+    let base = crate::scripting::base_of(order, reference)?;
+    Terminal::load(order, base)
 }
 
 /// The Science skill's actor value.

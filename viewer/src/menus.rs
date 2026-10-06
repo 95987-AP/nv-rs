@@ -59,15 +59,24 @@ enum Open {
     },
     /// A terminal: the screens gone into (its own first, then sub-menus),
     /// the item chosen, a note being read, and what the last item printed;
-    /// `locked` with the Science it needs when the player can't get in.
+    /// `locked` when the player can't get in.
     Terminal {
         reference: FormId,
         stack: Vec<FormId>,
         row: usize,
         reading: Option<String>,
         printed: String,
-        locked: Option<u16>,
+        locked: Option<Locked>,
     },
+}
+
+/// Why a terminal stays shut.
+#[derive(Clone, Copy)]
+enum Locked {
+    /// The Science it takes.
+    Science(u16),
+    /// Locked out (the hacking menu's "TERMINAL LOCKED").
+    Out,
 }
 
 /// A terminal screen's items the player can pick (their conditions pass),
@@ -191,14 +200,18 @@ fn open(
             println!("That menu can't be opened: the game's menus aren't available.");
             return None;
         }
-        // Locked unless its record says otherwise or the player's Science
-        // is enough (`world::terminal`: the hacking game isn't here).
+        // How the player gets in (`world::terminal::access`). The hacking
+        // game (`world::hacking`) has no screen here yet: when it would
+        // open, the terminal counts as hacked.
         Menu::Terminal(terminal, reference) => {
             use world::terminal::Access;
-            let access = world::terminal::Terminal::load(order, terminal)
-                .map(|t| world::terminal::try_hack(order, state, &t, reference));
-            if access == Some(Access::Hacked) {
-                println!("Hacked the terminal.");
+            let t = world::terminal::Terminal::load(order, terminal);
+            let access = t
+                .as_ref()
+                .map(|t| world::terminal::access(order, state, t, reference));
+            if let (Some(Access::Hack), Some(t)) = (access, &t) {
+                world::terminal::hacked(order, state, t, reference);
+                println!("Hacked the terminal (the hacking game has no screen here yet).");
             }
             Open::Terminal {
                 reference,
@@ -207,7 +220,8 @@ fn open(
                 reading: None,
                 printed: String::new(),
                 locked: match access {
-                    Some(Access::NeedsScience(n)) => Some(n),
+                    Some(Access::NeedsScience(n)) => Some(Locked::Science(n)),
+                    Some(Access::LockedOut) => Some(Locked::Out),
                     _ => None,
                 },
             }
@@ -258,12 +272,21 @@ fn describe(order: &esm::LoadOrder, state: &world::scripting::GameState, open: &
                 }
                 s.push('\n');
             }
-            if let Some(needed) = locked {
-                // The game's words (`sHackIneligible`, with Science's name).
-                let text = world::scripting::game_setting_text(order, "sHackIneligible")
-                    .unwrap_or_else(|| "A %s skill of %d is required to hack this terminal.".into())
-                    .replacen("%s", &chargen::actor_value_name(order, 40), 1)
-                    .replacen("%d", &needed.to_string(), 1);
+            if let Some(why) = locked {
+                let text = match why {
+                    // The game's words (`sHackIneligible`, with Science's
+                    // name).
+                    Locked::Science(needed) => {
+                        world::scripting::game_setting_text(order, "sHackIneligible")
+                            .unwrap_or_else(|| {
+                                "A %s skill of %d is required to hack this terminal.".into()
+                            })
+                            .replacen("%s", &chargen::actor_value_name(order, 40), 1)
+                            .replacen("%d", &needed.to_string(), 1)
+                    }
+                    // `sHackingLockout3` and `4`, as the hacking menu shows.
+                    Locked::Out => "TERMINAL LOCKED\nPLEASE CONTACT AN ADMINISTRATOR".into(),
+                };
                 s.push_str(&format!("{text}\n\n(Enter or Esc leaves.)"));
                 return s;
             }
