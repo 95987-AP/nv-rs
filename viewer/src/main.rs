@@ -354,6 +354,7 @@ fn main() {
                     player_idle::animate,
                     combat::player_attack,
                     combat::object_shots,
+                    actors::report_facing_up,
                     combat::show_dropped_weapons,
                     scope::update_scope,
                     viewmodel::update_view_model,

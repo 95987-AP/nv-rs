@@ -142,6 +142,9 @@ pub struct ActorRig {
     reloading: bool,
     /// The 3D's plain `Death` group's sequence, if it has one.
     pub death: Option<Arc<nif::Sequence>>,
+    /// Whether the spine node faces up in the last pose (`IsFacingUp`;
+    /// `None` without the node): see [`spine_up`].
+    pub spine_up: Option<bool>,
 }
 
 /// A dead actor's ragdoll (`preview::ragdoll`): the bodies in motion, the
@@ -194,6 +197,7 @@ impl ActorRig {
             package_flags: None,
             reloading: false,
             death: None,
+            spine_up: None,
             skeleton,
         };
         if let Some(idle) = rig.skeleton.idle.clone() {
@@ -686,6 +690,7 @@ pub fn animate_actors(
             }
             pose
         };
+        rig.spine_up = spine_up(&rig.skeleton.bones, &pose);
         for (joint, t) in rig.joints.iter().zip(&pose) {
             if let Ok(mut transform) = joints.get_mut(*joint) {
                 *transform = bevy_transform(t);
@@ -800,6 +805,29 @@ fn menu_stops_animation(
     menu_open && !dialogue_only
 }
 
+/// Whether a pose's spine node (`Bip01 Spine`, else `Bip01 Spine01`) faces
+/// up, as `IsFacingUp` asks (`005a0710` → `00c6b7b0`): its world rotation's
+/// [2][1] above 0. An actor's placement only turns it about Z, which
+/// leaves that row alone, so the pose's own (model-space) rotation answers.
+/// `None` when the skeleton has neither node.
+pub fn spine_up(bones: &[nif::Bone], pose: &[nif::Transform]) -> Option<bool> {
+    let find = |name: &str| bones.iter().position(|b| b.name.eq_ignore_ascii_case(name));
+    let i = find("Bip01 Spine").or_else(|| find("Bip01 Spine01"))?;
+    Some(pose.get(i)?.rotation[2][1] > 0.0)
+}
+
+/// Tells the world which way each person's spine faces (`IsFacingUp`).
+pub fn report_facing_up(
+    mut state: ResMut<crate::dialogue::DialogueState>,
+    rigs: Query<(&crate::ai::Walker, &ActorRig)>,
+) {
+    let facing = rigs
+        .iter()
+        .filter_map(|(w, rig)| Some((w.reference, rig.spine_up?)))
+        .collect();
+    world::more_functions::report_facing_up(&mut state.0, facing);
+}
+
 /// The skinned piece entity's components.
 pub fn skinned(
     inverse_bindposes: Handle<SkinnedMeshInverseBindposes>,
@@ -878,6 +906,28 @@ mod tests {
             .npc_requests
             .is_empty());
     }
+    #[test]
+    fn the_spine_faces_up_by_its_rotation() {
+        let bone = |name: &str| nif::Bone {
+            name: name.into(),
+            parent: None,
+            local: nif::Transform::IDENTITY,
+        };
+        let bones = [bone("Bip01"), bone("Bip01 Spine")];
+        // Standing: the spine's Y axis level, [2][1] = 0: not up.
+        let mut pose = vec![nif::Transform::IDENTITY; 2];
+        assert_eq!(spine_up(&bones, &pose), Some(false));
+        // Turned 90° about X (Y → Z): up.
+        pose[1].rotation = [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]];
+        assert_eq!(spine_up(&bones, &pose), Some(true));
+        // The other name, and none at all.
+        assert_eq!(
+            spine_up(&[bone("Bip01"), bone("Bip01 Spine01")], &pose),
+            Some(true)
+        );
+        assert_eq!(spine_up(&bones[..1], &pose), None);
+    }
+
     #[test]
     fn a_dropped_weapon_shrinks_its_bone_away() {
         let bone = |name: &str, parent| nif::Bone {
