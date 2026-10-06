@@ -451,6 +451,9 @@ pub struct GameState {
     pub more: crate::more_functions::State,
     /// The player's Caravan cards and record (`world::caravan`).
     pub caravan: crate::caravan::Collection,
+    /// The player's casinos: the chips won at each and the level reached
+    /// (`world::casino`, `PlayerCharacter` +0x610), head first.
+    pub casinos: Vec<crate::casino::CasinoData>,
     /// For the viewer: what to show or do, oldest first.
     pub events: Vec<Event>,
     /// Functions scripts called that aren't carried out yet, with counts,
@@ -1098,6 +1101,17 @@ pub enum Event {
         deck: FormId,
         difficulty: i32,
         share: f32,
+    },
+    /// `ShowSlotMachineMenuParams`, `ShowBlackJackMenuParams`,
+    /// `ShowRouletteMenuParams`: a casino game (`world::casino`), its bets'
+    /// limits and the least winnings to sit down (0 for none; blackjack's
+    /// handler always passes 0).
+    Casino {
+        game: crate::casino::Game,
+        casino: FormId,
+        min_bet: i32,
+        max_bet: i32,
+        min_winnings: i32,
     },
     /// Someone died (killed by `by`).
     Died {
@@ -1993,9 +2007,14 @@ impl Facts<'_> {
                 )
             }
             "GetCombatTarget" => f64::from(s.combat.get(&on?).map_or(0, |t| t.0)),
-            // True of a new game, where nobody wins at the casinos or has
-            // a reputation yet (hardcore: `world::living`).
-            "HasBeenEaten" | "GetCasinoWinningsLevel" | "GetKnockedState" => 0.0,
+            // True of a new game, where nobody has been eaten or knocked
+            // down yet (hardcore: `world::living`).
+            "HasBeenEaten" | "GetKnockedState" => 0.0,
+            // `005dec30`: the player's winnings there by quarters of its
+            // limit (`world::casino`); 0 where they haven't played.
+            "GetCasinoWinningsLevel" => {
+                f64::from(crate::casino::winnings_level(self.order, s, arg(0).form()))
+            }
             // The process's flag (`00915d40`; nobody without one: 0).
             "IsWeaponOut" => flag(s.weapon_out.contains(&on?)),
             // Reputations (`world::reputation`); a type or axis out of
@@ -3275,6 +3294,43 @@ impl<'a> Runner<'a> {
             // `005cf250` → `00741060` (`CaravanMenu::Create`): on someone
             // other than the player; with fewer than 30 cards the player's
             // told so (`sCardCountText`) instead.
+            // `005cf040` / `005cf0f0` / `005cf1a0`: the game's `Create`
+            // (its checks are the viewer's, with the anti-cheat clock). The
+            // parameterless forms read no casino (an unset local in the
+            // game; no script uses them).
+            "ShowSlotMachineMenuParams" | "ShowBlackJackMenuParams" | "ShowRouletteMenuParams" => {
+                let casino = arg(0).form();
+                if casino.0 != 0 {
+                    let game = match name {
+                        "ShowSlotMachineMenuParams" => crate::casino::Game::Slots,
+                        "ShowBlackJackMenuParams" => crate::casino::Game::Blackjack,
+                        _ => crate::casino::Game::Roulette,
+                    };
+                    events.push(Event::Casino {
+                        game,
+                        casino,
+                        min_bet: arg(1).number() as i32,
+                        max_bet: arg(2).number() as i32,
+                        min_winnings: if game == crate::casino::Game::Blackjack {
+                            0
+                        } else {
+                            arg(3).number() as i32
+                        },
+                    });
+                }
+            }
+            // `005ded40` (no vanilla script calls it).
+            "SetCasinoWinningsLevel" => {
+                crate::casino::set_winnings_level(
+                    self.order,
+                    self.state,
+                    arg(0).form(),
+                    arg(1).number() as i32,
+                );
+            }
+            // `005d4a40`: the PC's shared `return 1` (the Xbox kept a
+            // cheat level nothing reads).
+            "SetCasinoCheatLevel" => {}
             "ShowCaravanMenu" => {
                 let npc = target?;
                 let deck = arg(0).form();
@@ -4065,6 +4121,11 @@ pub const HANDLED: &[&str] = &[
     "SetItemValue",
     "AddCardToPlayer",
     "ShowCaravanMenu",
+    "ShowSlotMachineMenuParams",
+    "ShowBlackJackMenuParams",
+    "ShowRouletteMenuParams",
+    "SetCasinoWinningsLevel",
+    "SetCasinoCheatLevel",
     "ForceActiveQuest",
     "SetEnemy",
     "SetAlly",

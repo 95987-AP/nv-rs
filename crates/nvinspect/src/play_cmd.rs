@@ -1121,6 +1121,16 @@ pub fn play(
             Event::RepairServices(m) => {
                 format!("{}'s repair services", describe_id(order, *m))
             }
+            Event::Casino {
+                game,
+                casino,
+                min_bet,
+                max_bet,
+                min_winnings,
+            } => format!(
+                "{game:?} at {} (bets {min_bet} to {max_bet}, least winnings {min_winnings})",
+                describe_id(order, *casino)
+            ),
             Event::Died { who, by } => format!(
                 "{} killed by {}",
                 describe_id(order, *who),

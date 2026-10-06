@@ -25,6 +25,7 @@ pub mod animation;
 pub mod barter;
 pub mod body_parts;
 pub mod caravan;
+pub mod casino;
 mod cell;
 pub mod chargen;
 pub mod combat;

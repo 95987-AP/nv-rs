@@ -1511,6 +1511,13 @@ pub mod quest_ids {
     pub const CARD_QUEEN: u32 = 0xB56;
     pub const CARD_SCRIPT: u32 = 0xB57;
     pub const CARAVAN_DECK: u32 = 0xB58;
+    /// A casino laid out as FalloutNV.esm's are (`CSNO`: eight `MODL`s,
+    /// `MOD2` to `MOD4`, seven `ICON`s, four `ICO2`s, a 0x38-byte `DATA`):
+    /// `TestCasino` "Gommorah" with Gomorrah's numbers (shuffle 0.2,
+    /// payout 1.5, two stops each, three decks, limit 9000, `TestQuest` its
+    /// comps quest), played with `TestChip` (`CHIP`, no `DATA`).
+    pub const CASINO: u32 = 0xB64;
+    pub const CHIP: u32 = 0xB65;
     /// Settings the perks' rules read (seven forms from here):
     /// `fPackRatThreshold` 2, `fPackRatModifier` 0.5, `fAgilityReloadBase`
     /// 5, `fAgilityReloadModifier` 0.1, `fDamageToWeaponValue` 0.2,
@@ -3007,6 +3014,50 @@ End
         0,
         &record(b"CDCK", CARAVAN_DECK, &caravan_deck),
     ));
+    // A casino and its chip.
+    let mut chip = edid("TestChip");
+    chip.extend(sub(b"FULL", &zstr("Test Chip")));
+    chip.extend(sub(b"MODL", &zstr("clutter\\casino\\PokerChip01.nif")));
+    plugin.extend(group(*b"CHIP", 0, &record(b"CHIP", CHIP, &chip)));
+    let mut casino = edid("TestCasino");
+    casino.extend(sub(b"FULL", &zstr("Gommorah")));
+    for m in [
+        "NV_Blackjack-Chip_001.NIF",
+        "NV_Blackjack-Chip_005.NIF",
+        "NV_Blackjack-Chip_010.NIF",
+        "NV_Blackjack-Chip_025.NIF",
+        "NV_Blackjack-Chip_100.NIF",
+        "NV_Blackjack-Chip_S.NIF",
+        "NV_Roulette-Chip.NIF",
+        "NV_SlotMachine-Minigame-Gom.NIF",
+    ] {
+        casino.extend(sub(b"MODL", &zstr(m)));
+    }
+    casino.extend(sub(b"MOD2", &zstr("NV_SlotMachine-Minigame-Gom.NIF")));
+    casino.extend(sub(b"MOD3", &zstr("NV_Blackjack-Table-Gom.NIF")));
+    casino.extend(sub(b"MOD4", &zstr("NV_Roulette-Table-Gom.NIF")));
+    for n in [1, 2, 3, 4, 6, 7, 5] {
+        casino.extend(sub(
+            b"ICON",
+            &zstr(&format!("NV_SlotMachine-Symbol{n}.dds")),
+        ));
+    }
+    for _ in 0..4 {
+        casino.extend(sub(b"ICO2", &zstr("DeckG\\cardG_back.dds")));
+    }
+    let mut casino_data = Vec::new();
+    casino_data.extend(0.2f32.to_le_bytes());
+    casino_data.extend(1.5f32.to_le_bytes());
+    for _ in 0..7 {
+        casino_data.extend(2i32.to_le_bytes());
+    }
+    casino_data.extend(3i32.to_le_bytes());
+    casino_data.extend(9000i32.to_le_bytes());
+    casino_data.extend(CHIP.to_le_bytes());
+    casino_data.extend(QUEST.to_le_bytes());
+    casino_data.extend([0u8; 4]);
+    casino.extend(sub(b"DATA", &casino_data));
+    plugin.extend(group(*b"CSNO", 0, &record(b"CSNO", CASINO, &casino)));
     // The default objects: the Stimpak first.
     let mut objects = edid("DefaultObjectManager");
     let mut slots = STIMPAK.to_le_bytes().to_vec();

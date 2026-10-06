@@ -853,9 +853,10 @@ fn read(facts: &Facts, name: &str, on: Option<FormId>, args: &[Value]) -> Option
             // (`GetChallengeCompleted`: `world::more_functions::
             // challenges`.)
             // `005a6170`: the player's winnings at the casino by quarters
-            // of its limit; nothing is won at casinos here, so no entry
-            // and 0.
-            "GetCasinoWinningStage" => 0.0,
+            // of its limit (`world::casino`; 0 where not played).
+            "GetCasinoWinningStage" => {
+                f64::from(crate::casino::winnings_level(order, s, arg(0).form()))
+            }
             // `005a6280`: the region is in the player's list of regions
             // (player+0x764), the same list `IsPlayerInRegion` reads
             // (`005cf490`).

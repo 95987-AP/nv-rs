@@ -1141,6 +1141,16 @@ pub fn run_scripts(
                 waiting.push(crate::menus::Menu::Teammate(who));
                 None
             }
+            Event::Casino {
+                game,
+                casino,
+                min_bet,
+                max_bet,
+                ..
+            } => {
+                println!("{game:?} at {casino} (bets {min_bet} to {max_bet}): not shown yet.");
+                None
+            }
             Event::Caravan {
                 npc,
                 deck,
