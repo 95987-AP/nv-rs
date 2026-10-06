@@ -300,6 +300,58 @@ impl Picker {
         }
     }
 
+    /// Another weapon was put in the hand's 3D (`004ab750`, the biped's
+    /// weapon attach: the weapon's model under the `Weapon` node, then,
+    /// for an actor with a process and animation data): the weapon section
+    /// stops (`004994f0(4, 0)`) and the process puts the weapon where its
+    /// drawn state (`GetWeaponDrawn`, process vfunc +0x454) has it
+    /// (`ForceWeaponDrawnSheathed`, +0x1cc, `009231d0`), for the player at
+    /// once (`MiddleHighProcess::ReparentWeapon`, Xbox PDB, `00923960`):
+    /// drawn, the kinds' `Equip` plays with the action `Equip` (vfunc
+    /// +0x3ec) and the weapon already in hand; put away, the `Holster`
+    /// group (`ActorRig` hangs it as its holster pose). The sequence played,
+    /// whose `prn:` key the weapon bone moves under.
+    // Translated from 004ab750, 009231d0 and 00923960 (decompiled,
+    // FalloutNV.exe 1.4.0.525)
+    pub fn weapon_attached(
+        &mut self,
+        player: &mut Player,
+        lib: &mut impl Library,
+        f: &Frame,
+        bones: &[Bone],
+    ) -> Option<Arc<Sequence>> {
+        player.stop_section(section::WEAPON);
+        self.ids[4] = groups::NONE;
+        self.action = None;
+        self.pending = None;
+        if !self.drawn || f.dead {
+            return None;
+        }
+        let (looked, seq) = self.weapon_group(lib, f, group::EQUIP)?;
+        player.play(group::EQUIP, &seq, 0, bones);
+        self.ids[4] = looked;
+        self.action = Some(Action::Equip);
+        self.action_group = group::EQUIP;
+        self.attached = true;
+        Some(seq)
+    }
+
+    /// A weapon-section group's id and sequence for this frame's kinds
+    /// (`00897910`'s lookup), when the lookup gives that group.
+    pub fn weapon_group(
+        &self,
+        lib: &mut impl Library,
+        f: &Frame,
+        group: u8,
+    ) -> Option<(u16, Arc<Sequence>)> {
+        let (weapon, movement) = self.kinds(f, false);
+        let looked = lib.set().lookup(id(movement, weapon, group, f.power_armor));
+        if group_of(looked) != group {
+            return None;
+        }
+        Some((looked, lib.sequence(looked)?))
+    }
+
     /// After the update: a group that ended in the weapon section with the
     /// weapon drawn gives way to the aim, cross-fading (`004994f0` →
     /// `008b28c0(0x11)`).
@@ -752,6 +804,19 @@ mod tests {
                 ),
             ),
             (
+                "c\\h2haim.kf",
+                holds(
+                    "ha",
+                    "Aim",
+                    51.0,
+                    45,
+                    4.67,
+                    &[(0.0, "start"), (4.667, "end")],
+                    0.0,
+                    true,
+                ),
+            ),
+            (
                 "c\\1hpattackright.kf",
                 holds(
                     "ar",
@@ -847,6 +912,49 @@ mod tests {
         run(&mut p, &mut player, &mut lib, &f, 0.1);
         assert_eq!(player.playing(section::MOVEMENT), Some(group::TURN_LEFT));
         assert_eq!(player.movement_rate, 1.5);
+    }
+
+    #[test]
+    fn another_weapon_in_hand_starts_the_weapon_section_over() {
+        let mut lib = lib();
+        let mut p = Picker::new(true);
+        let mut player = Player::new(Settings::default());
+        let b = bones();
+        // Fists drawn: the unarmed guard.
+        let mut f = Frame {
+            want_drawn: true,
+            weapon_kind: Some(1),
+            ..frame()
+        };
+        run(&mut p, &mut player, &mut lib, &f, 0.1);
+        assert_eq!(p.id(section::WEAPON), 0x0111);
+        // A pistol in hand: its kind alone doesn't change the guard that
+        // plays (what the player's third-person body showed).
+        f.weapon_kind = Some(4);
+        run(&mut p, &mut player, &mut lib, &f, 0.1);
+        assert_eq!(p.id(section::WEAPON), 0x0111);
+        // Attached (`004ab750`): drawn, the pistol's equip plays at once
+        // with the weapon in hand, then the pistol's aim.
+        let played = p.weapon_attached(&mut player, &mut lib, &f, &b);
+        assert_eq!(played.map(|s| s.name.clone()), Some("Equip".to_string()));
+        assert_eq!(p.action, Some(Action::Equip));
+        assert_eq!(p.id(section::WEAPON), 0x0418);
+        assert!(p.drawn);
+        for _ in 0..6 {
+            run(&mut p, &mut player, &mut lib, &f, 0.1);
+            assert!(p.drawn);
+        }
+        assert_eq!(p.action, None);
+        assert_eq!(player.playing(section::WEAPON), Some(group::AIM));
+        assert_eq!(p.id(section::WEAPON), 0x0411);
+        // Put away: the section stops and nothing plays in it.
+        p.drawn = false;
+        f.want_drawn = false;
+        assert!(p.weapon_attached(&mut player, &mut lib, &f, &b).is_none());
+        for _ in 0..4 {
+            run(&mut p, &mut player, &mut lib, &f, 0.1);
+        }
+        assert_eq!(player.playing(section::WEAPON), None);
     }
 
     #[test]
