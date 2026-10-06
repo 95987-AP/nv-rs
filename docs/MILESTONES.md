@@ -322,6 +322,21 @@ not compared with the original. Evidence and gaps (scopes, sway,
 hotkeys): [PLAYER_ACTIONS.md](PLAYER_ACTIONS.md). **Next action:**
 compare those screens in the original game.
 
+M2 blocker batch (`claude/m2-npc-nav`, 2026-10-06): NPC routes and
+collision. People were set along their path points with no collision, on
+a stand-in search and funnel. Now the game's navmesh search costs
+(`006a6fa0`), its `PathSmootherPOVSearch` (`006ad770`: corner circles of
+1.2 × the request radius, side clearance, tangents, retries keeping off
+narrow edges), the straight-line test with side lines (`006cd1f0`), the
+stuck test (`009e4cf0`) and the player's character controller for every
+person (`009ddc00` → `00930c70`) are implemented. Live: Doc walks to his
+door and talks, Sunny's VCG02 runs to stage 45 by herself, settler 04
+goes through the saloon door. Generated regressions pass; not compared
+with the original. Gaps: light clutter blocks people (Easy Pete stuck at
+his eating marker), door triangle registration, off-navmesh ends.
+Evidence: [PATHING.md](PATHING.md). **Next action:** record Doc's walk
+and Easy Pete's approach in the original.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

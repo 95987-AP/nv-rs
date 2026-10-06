@@ -1,4 +1,108 @@
-# Long paths: the navmesh info map and the long way
+# NPC paths and movement
+
+Two batches: how a path is found and walked on the attached navmesh, and
+how people move through the cell's collision (`claude/m2-npc-nav`,
+below), then the long way over the navmesh info map
+(`claude/m2-long-paths`, further down).
+
+## Navmesh search, path smoother and character controller
+
+Branch `claude/m2-npc-nav` (on `claude/overnight-integration` at
+`915d220`), 2026-10-06. Read from FalloutNV.exe 1.4.0.525 in Ghidra; raw
+exports private in `%USERPROFILE%\nv-re\work\npcnav-2026-10-06`. Same
+status words as below.
+
+### What was wrong
+
+Maintainer's playtest: people don't always take the right routes and walk
+through things. Causes found:
+
+1. **No collision.** The viewer set a walker's position straight along
+   its path points, at the path's height (`ai.rs` `step`). Nothing stopped
+   them: furniture, rocks, walls at corners, each other (only the
+   avoidance wait/way-round, which is a path rule, not collision).
+2. **Not the game's search or smoother.** A* between triangle middles
+   with the full distance as estimate and no costs, then a "funnel"
+   (shortest line through the shared edges, touching the corridor's
+   corners): routes the game doesn't take and lines grazing every corner.
+3. **No stuck handling**, so a blocked walker stood forever.
+4. Load doors were walked to at the door reference's own position, inside
+   its frame.
+
+### Traced and implemented
+
+| What | Address | Status |
+| --- | --- | --- |
+| A path request (`PathingRequest` (Xbox PDB), constructor `006e2420`): radius 35 by default; an actor's is 0.6 × its width (`006e29f0` → `008be280` → `00885140`: bounds' x extent × scale); may swim (+0x9d), 3 tries (+0xa8) | `006e2420`, `006e29f0` | implemented (`world::ai::request_radius`: the base's `OBND` × `XSCL`; the game's bound vfuncs `00933630`/`00933700` take a process bound first, not traced) |
+| Straight line first only without avoid nodes; with both ends ≥ 25 above the land (always indoors) the lines ± the radius to either side must stay on the navmesh too | `006cc5e0`, `006cd1f0`, land height `0045cbc0` | implemented, tested |
+| The navmesh search (`NavMeshSearch` (Xbox PDB), vtable `0106b63c`): the A* template of the info search; nodes at triangle middles; cost = middles' distance × 0.01 preferred (0x40) × (avoid nodes' summed cost + 1) × marked obstacles' cost × (0.5 + 0.5·clamp(1 − edge length/512)) × 4 water / 5 into or out of water × 100 locked door × 100 edge to keep off; skips links that don't lead back, links of kind 1, flag 0x10 for wide actors; estimate 0.01 × distance to the goal triangle's middle | `006a6b70`, `006a6fa0`, `006a6ef0`, `006a79c0`, `006a8010`, `006a7e00`, `006dc990`/`006dc780` | implemented, tested (`world::ai::navsearch`) |
+| Triangle flags: `NVTR` flags + cover flags read as one u32 (`00692950`); door flag 0x1000 is set at run time on triangles under a loaded door (`006997e0`), never in the data (checked on the installed data: 1363 portal triangles carry 0x400, none 0x1000) | `00692950`, `006997e0` | read; the door registration isn't done, so doors cost nothing extra |
+| Smoother choice: `bUseAlternateSmoothingForPrime` (1) and radius > 150 → `0069f010`; else `bUseOldPathSmoothing` (0) → `PathSmootherPOVSearch` | `006cd8a0` | read; the POV smoother implemented |
+| `PathSmootherPOVSearch` (Xbox PDB): points = start, goal, corridor corners (shared edges' ends by side, circles of 1.2 × the radius where the side bends in by more than ∓0.05, and each side's first and last), avoid nodes and marked obstacles (their radius + 1.2 × the walker's); A* over (point, way round) with common tangents, corners passed on their side, arcs ≤ 3.4657 rad, steps no steeper than 1.2, clear with side lines at 0.9 × the radius (the ends half across and half along), the reached point's navmesh height within −64..180; cost (1 − 0.9·preferred share)·(arc + length + obstacle chords × (share × 7 + 1)); estimate 0.1 × distance; runs of 4 failures; output the tangent points, a corner's second one dropped after an arc under 50 | `006ad770`, `006adcb0`, `006ae370`, `006aeba0`, `006aefc0`, `006af2b0`, `006b0ad0`, `006b0f40`, `006bb570`, `006b25f0`, `006b2060`, `00698320`, `006b2c00`, `006b1df0`, `006afcc0`; constants `010290f0` 1.2, `0106b9e8` 0.9, `0106ba00`, `0101e2c0` 50, `0106b9f0` −64 | implemented, tested (`world::ai::smoother`) |
+| A failed smoothing keeps off the corridor's edges narrower than twice the radius and the last corner's edge (× 100), and the search goes again, up to 3 tries; no smoothed way: no path | `006b2fc0`, `006ad770`, `006cc5e0` | implemented, tested |
+| The mover: the path handler's move vector (speed × dt, cut on sharp turns `009e4800`, turned toward the steering point `009e3560`, shortened to the way left `009e0a00`) goes to the mover (`009ddc00`, +0x10) and so to the character controller every actor gets (`00930c70`), as the player's | `009e0a00`, `009e3520`, `009e3560`, `009ddc00`, `00930c70` | implemented (viewer `move_body`: `physics::Character` with the player's shape, other people and the player as cylinders); one controller update per frame assumed as for the player |
+| Stuck test: moved less than √0.125 of the last frame's move; blocked time (× 0.2 against an actor) past 1.5 s → stuck for the rest of the path: an obstacle record on the triangle (radius, cost 1, flag 0x80000000), the walk fails and the way is asked for again | `009e4cf0`, `00691510`, `006915d0`; constants `010924a8`, `01016ff0`, `01018a90` | implemented, tested (`world::movement::Stuck`, viewer `unstick`) |
+
+### Not done or unresolved (labelled in code)
+
+- The door triangles' run-time registration (`006997e0`), so locked doors
+  aren't avoided by cost; walking to a load door uses the navmesh point
+  nearest the door within the door reference's travel radius (`00678670`
+  rule; that the door is taken as a travel location is an inference).
+- An end off the navmesh: the game builds a ray-cast way onto it first
+  (`PathBuilder::BuildPathToNavMeshSearchStart` (Xbox PDB)); here such an
+  end is moved to its triangle and needs only the line itself, no side
+  lines.
+- 006af500's start/goal edge obstacles, the turn-angle request (+0xa2),
+  the search radius (+0x78), avoid nodes of kind 2, a start inside a
+  circle (chord), `006a0660` at short arcs, `0057b460` doors, the last
+  try's acceptance of a path ending near the goal.
+- The stuck test's "someone in the way is asked to make room" branch.
+- Obstacles marked on triangles never expire (the navmesh is rebuilt
+  when the attached cells change).
+- Light clutter: in the game the controller pushes bodies lighter than
+  `fMoveLimitMass` (95); here every model's collision is solid
+  (havok rigid bodies are another batch's), so e.g. Easy Pete never gets
+  to his eating marker at the saloon (stuck 25 short, asking again every
+  1.5 s) and some gangers stand stuck in the gunfight.
+- Collision still loading under someone: no controller until there is
+  ground within 256 below (a viewer bridge, not game behaviour); fall
+  damage for people isn't applied.
+- Callers in `sitting.rs`/`fighting.rs` (other batches') still ask with
+  the default radius; `fighting.rs` falls back to a straight line when no
+  path is found.
+- Search cost on the main thread: Sunny's 7 km route takes ~0.1 s in a
+  release build.
+
+### Verified live (viewer, installed data; nothing compared with the original)
+
+- **Doc Mitchell to the door** (`GSDocMitchellHouse --stage VCG01 110`):
+  the first search's corridor goes through a 46-wide edge his circles
+  can't pass; the retry keeps off it and Doc walks the west rooms to the
+  door in 36 s on his controller and starts talking there. Before the
+  retries his partial path made him turn on the spot forever.
+- **Sunny, Back in the Saddle** (VCG02 opening lines, bottle hits by
+  console, the player `MoveTo`'d after her): she walks the long way to
+  the first well, the end action sets stage 30, her sneak line, the walk
+  closer and stage 45 follow by themselves.
+- **Gunfight** (`VMS16`, `bTrudyHelp` 1, the documented line): settler 04
+  walks to the saloon door and goes through it; the fight runs; stuck
+  walkers are listed above.
+
+Regressions: `world` `ai::navsearch::tests` (costs and flags, links
+leading back, avoid nodes and obstacles), `ai::smoother::tests`
+(tangents and arcs, going round an avoid node at its radius + 1.2 r,
+a corridor too narrow for the side lines), `ai::tests::
+a_path_turns_the_corner_round_the_inside_corner`, `movement::tests::
+walkers_held_back_for_a_second_and_a_half_are_stuck`; viewer
+`ai::tests::walkers_are_moved_by_their_controller_and_a_wall_stops_them_till_they_are_stuck`,
+`walkers_go_round_each_other_not_through`.
+
+**Next action:** record Doc's walk to the door and Easy Pete's eating
+approach in the original game, and trace `006997e0` (door triangles) and
+the start/goal ray-cast paths.
+
+## Long paths: the navmesh info map and the long way
 
 Branch `claude/m2-long-paths` (on `claude/overnight-integration`),
 2026-10-06. How the game plans a path whose goal is on a navmesh that
@@ -8,7 +112,7 @@ private (`%USERPROFILE%\nv-re\work\longpaths-2026-10-06`). Status words:
 **implemented** (code exists), **tested** (generated regression), **not
 compared** (nothing here has been checked against the running game).
 
-## What was wrong
+### What was wrong
 
 `VCG02SunnyTravelToWell1` sends Sunny from behind the Prospector Saloon
 (about -68250, 5800, square -17,1) to `VCG02SunnyWellMarker1` (-67298,
@@ -18,7 +122,7 @@ untraced choice), found no triangle under the goal and gave no path, so she
 stood still. Out of sight people walked a navmesh path of the 3 × 3 squares
 around themselves, which fails the same way.
 
-## How the game does it
+### How the game does it
 
 | What | Address | Status |
 | --- | --- | --- |
@@ -42,7 +146,7 @@ the attached cells change and the walk goes on; once their own cell is
 detached they are in a lower process and walk the virtual nodes out of
 sight in game-time steps (`world::movement::offstage_seconds`).
 
-## In the code
+### In the code
 
 - `world::ai::navinfo`: `NavInfoMap` (load, search), `NavInfos` (which
   navmesh a point is on, `virtual_path`), `attached_run`, `walk_nodes`.
@@ -66,7 +170,7 @@ sight in game-time steps (`world::movement::offstage_seconds`).
 - Viewer `scripts.rs`: `player.MoveTo <someone>` goes where the state has
   them, not to their editor cell (needed to drive the player after Sunny).
 
-## Not done or unresolved (labelled in code)
+### Not done or unresolved (labelled in code)
 
 - The search's door edges (`006b8490`'s third list, for an actor's
   requests; 409600 more for a locked door): places are still changed
@@ -81,7 +185,7 @@ sight in game-time steps (`world::movement::offstage_seconds`).
 - Data without `NAVI` (generated test worlds): out of sight people walk the
   navmesh path around them as before.
 
-## Checks and runs
+### Checks and runs
 
 Regressions: `world` `ai::navinfo::tests` (costs ×3/×1, preferred
 factor, failed search, `NVMI`/`NVCI` reading, node walking),

@@ -6,8 +6,10 @@
 //! squares around the player, joined): first an in-place turn toward it,
 //! then the walk at their walk animation's own speed, turning by the
 //! walking rule, the body moving toward the steering point while the
-//! facing catches up; others in the way are waited for or gone round
-//! (`world::movement::Avoidance`). Dialogue packages walk up to their
+//! facing catches up, through the cell's collision with their character
+//! controller ([`move_body`]); others in the way are waited for or gone
+//! round (`world::movement::Avoidance`), and someone held back 1.5 s is
+//! stuck and asks for the way again ([`unstick`]). Dialogue packages walk up to their
 //! target and talk; people greet the player, chatter and talk with each
 //! other (`chatter` says the lines). Furniture, idles and sandbox packages
 //! are `sitting`'s; noticing others, fighting and running away are
@@ -195,6 +197,27 @@ pub struct Walker {
     /// Hidden here because they stand outdoors beyond the attached cells
     /// (the game's lower processes; [`move_offstage`] moves them).
     parked: bool,
+    /// Their character controller: the game builds one for every actor
+    /// whose 3D is set up (`00930c70` → `00c741e0`), the player's kind
+    /// (`physics::Character`), and moves them through the cell's collision
+    /// with it ([`move_body`]). `None` until there is collision under them.
+    pub(crate) body: Option<physics::Character>,
+    /// This frame's move along the path, in world units (x, y): the path
+    /// handler's move vector turned toward the steering point (`009e3560`,
+    /// handler +0x1c, its world form at +0xa0 from `009e0a00`), which the
+    /// mover hands on (`009ddc00`, mover +0x10) for the controller.
+    pub(crate) wanted: Option<[f32; 2]>,
+    /// The stuck test's state (`world::movement::Stuck`, `009e4cf0`), the
+    /// length of the last frame's move (handler +0x9c; 0 while turning in
+    /// place), whether their controller touches someone, and where they
+    /// got stuck (their path failed there: [`unstick`]).
+    pub(crate) stuck: mv::Stuck,
+    pub(crate) last_move: f32,
+    pub(crate) against_someone: bool,
+    pub(crate) stuck_at: Option<[f32; 3]>,
+    /// The radius their path requests carry (`world::ai::request_radius`;
+    /// the request's default 35 until their kit is read).
+    pub(crate) request_radius: f32,
 }
 
 /// The long way last planned: the attached squares and the goal.
@@ -291,6 +314,13 @@ impl Walker {
             partial: false,
             long: None,
             parked: false,
+            body: None,
+            wanted: None,
+            stuck: mv::Stuck::default(),
+            last_move: 0.0,
+            against_someone: false,
+            stuck_at: None,
+            request_radius: mv::REQUEST_RADIUS,
         }
     }
 
@@ -332,6 +362,9 @@ impl Walker {
         self.radius = radius;
         self.partial = false;
         self.avoidance = Avoidance::default();
+        // A new path handler: a new stuck test (`009dbdc0`).
+        self.stuck = mv::Stuck::default();
+        self.last_move = 0.0;
         self.arrival = None;
         self.facing = None;
         self.doors_ahead.clear();
@@ -434,7 +467,7 @@ type NavKey = (FormId, Option<Vec<(i32, i32)>>);
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct Around<'w> {
     scripts: Res<'w, crate::scripts::Scripts>,
-    collision: Res<'w, crate::walk::CellCollision>,
+    collision: ResMut<'w, crate::walk::CellCollision>,
     sounds: ResMut<'w, crate::sounds::SoundRequests>,
     seats: ResMut<'w, Seats>,
     settings: Res<'w, CombatSettings>,
@@ -494,7 +527,7 @@ pub fn move_actors(
 ) {
     let Around {
         scripts,
-        collision,
+        mut collision,
         mut sounds,
         mut seats,
         settings,
@@ -557,7 +590,17 @@ pub fn move_actors(
                     .iter()
                     .filter_map(|s| e.grid.cells.get(s).copied())
                     .collect();
-                NavMesh::load_cells(order, &cells)
+                let mut mesh = NavMesh::load_cells(order, &cells);
+                // The land under it (the straight-line test asks how high
+                // the ends stand above it).
+                for &s in squares {
+                    if let Ok(Some(land)) = e.grid.land(order, s) {
+                        if let Some(heights) = land.heights {
+                            mesh.set_land(s, heights);
+                        }
+                    }
+                }
+                mesh
             }
             _ => NavMesh::default(),
         };
@@ -574,6 +617,7 @@ pub fn move_actors(
     };
     last.player = state.player_position;
     let (others, obstacles) = seen(order, state, &attack, now, &actors, player_velocity);
+    let bodies = bodies(state, &actors);
     let interior = state.player_world.is_none();
     let mut starts = std::mem::take(&mut starts.0);
     for (mut walker, mut life, mut rig, mut transform, mut visibility) in &mut actors {
@@ -691,6 +735,9 @@ pub fn move_actors(
                 }
             }
         }
+        // Stuck last frame: an obstacle where they stand, and the way asked
+        // for again.
+        unstick(walker, &mut nav.mesh, &moves.settings, now);
         let before = walker.position;
         walker.turning = None;
         // Talking to the player in the dialogue menu: the world's update
@@ -799,6 +846,7 @@ pub fn move_actors(
                 moves.settings.in_place_rate(speed, creature, true),
             ];
             walker.kit = Some(kit);
+            walker.request_radius = world::ai::request_radius(order, me);
         }
         // A combat style a script gave them (`SetCombatStyle`) is theirs at
         // once, in a fight under way too (`008a8010`).
@@ -943,6 +991,7 @@ pub fn move_actors(
             if frame.attacked {
                 rig.attack_at = Some(now);
             }
+            move_body(walker, &mut collision.0, &bodies, dt);
             place(walker, &mut transform, state, &mut talkers);
             walker.velocity = velocity(before, walker.position, dt);
             continue;
@@ -960,6 +1009,7 @@ pub fn move_actors(
             if walker.fleeing.is_none() {
                 walker.forget_package(now);
             }
+            move_body(walker, &mut collision.0, &bodies, dt);
             place(walker, &mut transform, state, &mut talkers);
             walker.velocity = velocity(before, walker.position, dt);
             continue;
@@ -1078,7 +1128,7 @@ pub fn move_actors(
                 AvoidStep::Wait => blocked = true,
                 AvoidStep::Repath(nodes) => {
                     if let Some(goal) = walker.path.last().copied() {
-                        if let Some(path) = nav.mesh.path_avoiding(walker.position, goal, &nodes) {
+                        if let Some(path) = path_avoiding_for(&nav.mesh, walker, goal, &nodes) {
                             // The same walk, round them: its radius, end
                             // heading and the doors still ahead kept.
                             let keep = std::mem::take(&mut walker.avoidance);
@@ -1117,7 +1167,9 @@ pub fn move_actors(
         // The attached cells' part of the long way walked: they stand there
         // short of the place (the travel procedure asks for the path again,
         // `008e5e90`, and gets the same while the attached cells stay).
-        if was_on_path && !on_path && walker.partial {
+        if walker.stuck_at.is_some() {
+            // Stuck: the walk failed, it isn't over ([`unstick`]).
+        } else if was_on_path && !on_path && walker.partial {
             walker.partial = false;
             walker.arrival = None;
             println!(
@@ -1164,7 +1216,8 @@ pub fn move_actors(
         look_frame(&mut ctx, walker, rig.fighting, moves);
         // Idles (`sitting`): once a second of free time, the idle tree.
         crate::sitting::idles_frame(&mut ctx, walker, &mut life, &mut rig);
-        // Turned in place or walked.
+        // Turned in place or walked: the controller moves them.
+        move_body(walker, &mut collision.0, &bodies, dt);
         place(walker, &mut transform, state, &mut talkers);
         walker.velocity = velocity(before, walker.position, dt);
     }
@@ -1311,7 +1364,27 @@ fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool) {
             .and_then(|(space, _)| world::ai::door_toward(order, state, me, space)),
         _ => None,
     };
-    let goal = near.or(way.map(|w| (w.at, 0.0)));
+    // A load door: walked to as the path request resolves it, the navmesh
+    // point nearest the door (the door itself stands in its frame, where
+    // nobody's controller gets); the game then activates the door from the
+    // path once its triangles are just ahead (`009e20c0` → `009e22d0`, the
+    // triangles under the door flagged 0x1000 by `006997e0`, not
+    // registered here), so here at that point's arrival, within the radius
+    // a travel to the door reference would have (`00678670`: half its
+    // bounds' diagonal + 20; taking the door as the travel's location is
+    // an inference).
+    let goal = near.or(way.map(|w| {
+        let at = ctx.mesh.closest_point(w.at).unwrap_or(w.at);
+        let half = world::ai::half_bounds_diagonal(order, w.door);
+        let radius = mv::location_radius(
+            0,
+            mv::Spot::Object {
+                half_diagonal: half,
+            },
+            0.0,
+        );
+        (at, radius)
+    }));
     let package_id = package.as_ref().map(|p| p.form_id);
     let target_ref = package
         .as_ref()
@@ -1442,7 +1515,7 @@ fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool) {
         go_through(order, state, walker);
         return;
     }
-    if let Some((path, doors)) = ctx.mesh.path_with_doors(walker.position, to) {
+    if let Some((path, doors)) = path_with_doors_for(ctx.mesh, walker, to) {
         let length: f32 = path.windows(2).map(|w| distance(w[0], w[1])).sum();
         println!(
             "{me} walks {length:.0} units ({})",
@@ -1455,6 +1528,11 @@ fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool) {
         walker.set_path(path, radius, true, ctx.moves);
         walker.arrival = arrival;
         walker.doors_ahead = doors;
+    } else {
+        println!(
+            "{me} finds no way from ({:.0}, {:.0}, {:.0}) to ({:.0}, {:.0}, {:.0}) on the navmesh.",
+            walker.position[0], walker.position[1], walker.position[2], to[0], to[1], to[2]
+        );
     }
 }
 
@@ -1550,7 +1628,7 @@ fn follow_target(ctx: &mut Ctx, walker: &mut Walker, moves: &Moves) {
     if mv::arrived(walker.position, to, radius) {
         return;
     }
-    if let Some(path) = ctx.mesh.path(walker.position, to) {
+    if let Some(path) = path_for(ctx.mesh, walker, to) {
         walker.path_target = Some(at);
         let turn_first = !walker.on_path();
         walker.set_path(path, radius, turn_first, ctx.moves);
@@ -1654,9 +1732,9 @@ fn long_walk(
     // request's start is resolved onto the closest triangle
     // (`PathingLocation::ResolveToClosestNavmeshAndTriangle` (Xbox PDB),
     // not traced in detail), walked to first.
-    let planned_path = ctx.mesh.path_with_doors(walker.position, end).or_else(|| {
+    let planned_path = path_with_doors_for(ctx.mesh, walker, end).or_else(|| {
         let start = ctx.mesh.closest_point(walker.position)?;
-        let (mut path, doors) = ctx.mesh.path_with_doors(start, end)?;
+        let (mut path, doors) = path_from_for(ctx.mesh, walker, start, end)?;
         path.insert(0, walker.position);
         Some((path, doors))
     });
@@ -1794,11 +1872,11 @@ fn guard_frame(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life) {
             let Some(way) = world::ai::door_toward(order, ctx.state, me, space) else {
                 return;
             };
-            if let Some(path) = ctx.mesh.path(walker.position, way.at) {
+            if let Some(path) = path_for(ctx.mesh, walker, way.at) {
                 walker.set_path(path, mv::REQUEST_RADIUS, true, ctx.moves);
                 walker.door = Some(way);
             }
-        } else if let Some(path) = ctx.mesh.path(walker.position, post) {
+        } else if let Some(path) = path_for(ctx.mesh, walker, post) {
             walker.set_path(path, plan.path_radius, true, ctx.moves);
             walker.door = None;
         }
@@ -1865,7 +1943,7 @@ fn flee_frame(ctx: &mut Ctx, walker: &mut Walker) {
         FleeStep::Run { to: Some(_), .. } => {
             if !walker.on_path() {
                 if let Some((_, at, _)) = to {
-                    if let Some(path) = ctx.mesh.path(walker.position, at) {
+                    if let Some(path) = path_for(ctx.mesh, walker, at) {
                         walker.set_path(path, radius.max(mv::REQUEST_RADIUS), true, ctx.moves);
                         walker.run = true;
                     }
@@ -1906,7 +1984,7 @@ fn dialogue_frame(
         // The travel: walking there (set up by `rethink`).
         if !walker.on_path() {
             if let Some((to, radius)) = destination(order, ctx.state, me, &package) {
-                if let Some(path) = ctx.mesh.path(walker.position, to) {
+                if let Some(path) = path_for(ctx.mesh, walker, to) {
                     walker.set_path(path, radius, true, ctx.moves);
                     walker.arrival = world::ai::arrival_heading(order, ctx.state, me, &package);
                 }
@@ -1942,7 +2020,7 @@ fn dialogue_frame(
                     .path_target
                     .is_some_and(|p| distance(p, at) > moves.recalc_follow);
             if repath {
-                if let Some(path) = ctx.mesh.path(walker.position, at) {
+                if let Some(path) = path_for(ctx.mesh, walker, at) {
                     walker.path_target = Some(at);
                     let turn_first = !walker.on_path();
                     walker.set_path(path, reach, turn_first, ctx.moves);
@@ -2123,7 +2201,7 @@ fn talk_frame(
             .path_target
             .is_some_and(|p| distance(p, at) > moves.recalc_follow);
     if repath {
-        if let Some(path) = ctx.mesh.path(walker.position, at) {
+        if let Some(path) = path_for(ctx.mesh, walker, at) {
             walker.path_target = Some(at);
             let turn_first = !walker.on_path();
             walker.set_path(path, reach, turn_first, ctx.moves);
@@ -2207,7 +2285,7 @@ fn chat_frame(
                 .path_target
                 .is_some_and(|p| distance(p, at) > moves.recalc_follow);
         if repath {
-            match ctx.mesh.path(walker.position, at) {
+            match path_for(ctx.mesh, walker, at) {
                 Some(path) => {
                     walker.path_target = Some(at);
                     let turn_first = !walker.on_path();
@@ -2801,12 +2879,26 @@ pub(crate) fn step(walker: &mut Walker, speed: f32, dt: f32) -> bool {
         if side.is_some() {
             walker.turning = side;
         }
+        walker.last_move = 0.0;
         return true;
     }
     let pos = walker.position;
     let goal = walker.path[n - 1];
     if mv::arrived(pos, goal, walker.radius) {
         walker.clear_path();
+        return false;
+    }
+    // The stuck test (`009e4cf0`, before the move): stuck, the walk fails
+    // where they stand ([`unstick`] marks the triangle and asks again).
+    // Only with a controller: without one nothing can stop them.
+    if walker.body.is_some()
+        && walker
+            .stuck
+            .update(pos, walker.last_move, walker.against_someone, dt)
+    {
+        walker.stuck_at = Some(pos);
+        walker.clear_path();
+        walker.last_move = 0.0;
         return false;
     }
     let frame_move = speed * dt;
@@ -2832,18 +2924,266 @@ pub(crate) fn step(walker: &mut Walker, speed: f32, dt: f32) -> bool {
     walker.heading = w.heading;
     let (dx, dy, dz) = (steer[0] - pos[0], steer[1] - pos[1], steer[2] - pos[2]);
     let flat = dx.hypot(dy);
+    walker.last_move = 0.0;
     if flat > 1e-4 {
+        // The move: this frame's forward motion, turned toward the steering
+        // point (`009e3560`), no longer than the way left to it (`009e0a00`
+        // shortens the move vector to the distance to the path's end).
         let go = (frame_move * w.forward).min(flat);
-        walker.position = [
-            pos[0] + dx / flat * go,
-            pos[1] + dy / flat * go,
-            pos[2] + dz * (go / flat),
-        ];
-    } else if (walker.progress - (n - 1) as f32).abs() < 1e-4 {
+        walker.last_move = go;
+        let along = [dx / flat * go, dy / flat * go];
+        if walker.body.is_some() {
+            // The character controller moves them ([`move_body`]).
+            walker.wanted = Some(along);
+        } else {
+            // No collision under them yet: along the path, at its height.
+            walker.position = [
+                pos[0] + along[0],
+                pos[1] + along[1],
+                pos[2] + dz * (go / flat),
+            ];
+        }
+    } else if (walker.progress - (n - 1) as f32).abs() < 1e-4 && walker.body.is_none() {
         walker.position = goal;
     }
     walker.next = ((walker.progress.floor() as usize) + 1).min(n - 1);
     true
+}
+
+/// The path request someone's walks are asked with: their radius
+/// (`world::ai::request_radius`) and the defaults (`006e2420`).
+fn request_of(walker: &Walker) -> world::ai::navsearch::PathRequest<'static> {
+    world::ai::navsearch::PathRequest {
+        radius: walker.request_radius,
+        ..Default::default()
+    }
+}
+
+/// A path for someone from where they stand ([`request_of`]).
+pub(crate) fn path_for(mesh: &NavMesh, walker: &Walker, to: [f32; 3]) -> Option<Vec<[f32; 3]>> {
+    path_with_doors_for(mesh, walker, to).map(|(p, _)| p)
+}
+
+/// [`path_for`], and the doors on it.
+#[allow(clippy::type_complexity)]
+pub(crate) fn path_with_doors_for(
+    mesh: &NavMesh,
+    walker: &Walker,
+    to: [f32; 3],
+) -> Option<(Vec<[f32; 3]>, Vec<(FormId, [f32; 3])>)> {
+    path_from_for(mesh, walker, walker.position, to)
+}
+
+/// [`path_with_doors_for`] from another point.
+#[allow(clippy::type_complexity)]
+fn path_from_for(
+    mesh: &NavMesh,
+    walker: &Walker,
+    from: [f32; 3],
+    to: [f32; 3],
+) -> Option<(Vec<[f32; 3]>, Vec<(FormId, [f32; 3])>)> {
+    mesh.plan(from, to, &request_of(walker))
+}
+
+/// A path round others in the way (avoid nodes, `009e5ae0`).
+fn path_avoiding_for(
+    mesh: &NavMesh,
+    walker: &Walker,
+    to: [f32; 3],
+    avoid: &[mv::AvoidNode],
+) -> Option<Vec<[f32; 3]>> {
+    let request = world::ai::navsearch::PathRequest {
+        avoid,
+        ..request_of(walker)
+    };
+    mesh.plan(walker.position, to, &request).map(|(p, _)| p)
+}
+
+/// The size of someone's character controller: people all have the
+/// player's (`physics::CharacterShape::PLAYER`, `00c72410` uses one shared
+/// shape for anything that isn't a creature); a creature's radius is its
+/// skeleton's (`fighting::Kit`) and its height 128 × its scale (a guess, as
+/// for the player's collision with them in `walk::people`: the game sizes it
+/// from the skeleton's `BSBound`, `00c55170`, not read here).
+pub(crate) fn body_shape(walker: &Walker) -> physics::CharacterShape {
+    let shape = physics::CharacterShape::PLAYER;
+    match walker.kit.as_ref() {
+        Some(k) if k.creature.is_some() => physics::CharacterShape {
+            radius: k.radius,
+            height: shape.height * walker.scale,
+            ..shape
+        },
+        _ => shape,
+    }
+}
+
+/// The others someone's controller runs into (the game's controllers
+/// collide with each other, layer 30 with itself; `physics::Person`): the
+/// player and everyone alive on screen, where they stood as this frame
+/// began.
+fn bodies(
+    state: &world::scripting::GameState,
+    actors: &Query<Person>,
+) -> Vec<(FormId, physics::Person)> {
+    let mut out = Vec::new();
+    if let Some(p) = state
+        .player_position
+        .filter(|_| !state.dead.contains(&PLAYER_REF))
+    {
+        let shape = physics::CharacterShape::PLAYER;
+        out.push((
+            PLAYER_REF,
+            physics::Person {
+                feet: p,
+                radius: shape.radius,
+                height: shape.height,
+            },
+        ));
+    }
+    for (walker, _, _, _, visibility) in actors.iter() {
+        if *visibility == Visibility::Hidden || state.dead.contains(&walker.reference) {
+            continue;
+        }
+        let shape = body_shape(walker);
+        out.push((
+            walker.reference,
+            physics::Person {
+                feet: walker.position,
+                radius: shape.radius,
+                height: shape.height,
+            },
+        ));
+    }
+    out
+}
+
+/// How far below their feet collision must be for someone to get a
+/// character controller ([`move_body`]).
+const GROUND_PROBE: f32 = 256.0;
+
+/// Moves someone through the cell's collision with their character
+/// controller, wanting this frame's move ([`Walker::wanted`]; none: standing
+/// still), as the player's controller moves the player: on the ground at
+/// the wanted velocity, falling, stepping up to 31, sliding along walls and
+/// round other people (`physics::Character::update_controlled`; the game
+/// hands the mover's move vector to the controller each frame, `009ddc00`).
+/// Someone moved by anything else since (a script, furniture, a door)
+/// starts again where they now are.
+///
+/// The viewer's collision loads behind the squares people stand in; the
+/// game never has a high-process actor without its cell's collision. So
+/// until there is collision within [`GROUND_PROBE`] under them, someone has
+/// no controller and walks the path at its own height (not game
+/// behaviour: it only bridges the viewer's loading).
+pub(crate) fn move_body(
+    walker: &mut Walker,
+    collider: &mut physics::Collider,
+    others: &[(FormId, physics::Person)],
+    dt: f32,
+) {
+    let wanted = walker.wanted.take();
+    let p = walker.position;
+    if let Some(body) = &walker.body {
+        let moved = (body.feet[0] - p[0]).hypot(body.feet[1] - p[1]) > 0.5
+            || (body.feet[2] - p[2]).abs() > 1.0;
+        if moved {
+            walker.body = None;
+        }
+    }
+    if walker.body.is_none() {
+        let ground = collider.raycast(
+            [p[0], p[1], p[2] + 64.0],
+            [0.0, 0.0, -1.0],
+            64.0 + GROUND_PROBE,
+        );
+        if ground.is_none() {
+            if let Some(m) = wanted {
+                walker.position = [p[0] + m[0], p[1] + m[1], p[2]];
+            }
+            return;
+        }
+        walker.body = Some(physics::Character::new(p));
+    }
+    if dt <= 0.0 {
+        return;
+    }
+    let me = walker.reference;
+    collider.set_people(
+        others
+            .iter()
+            .filter(|(who, _)| *who != me)
+            .map(|(_, person)| *person)
+            .collect(),
+    );
+    let shape = body_shape(walker);
+    let desired = wanted.map_or([0.0; 2], |m| [m[0] / dt, m[1] / dt]);
+    let body = walker.body.as_mut().expect("made above");
+    body.update_controlled(
+        collider,
+        &shape,
+        desired,
+        None,
+        world::locomotion::air_gain(world::locomotion::AIR_CONTROL),
+        dt,
+    );
+    body.fell = None;
+    walker.position = body.feet;
+    // Walked off the collision loaded so far (into a square still loading):
+    // no controller till there is ground under them again (the same bridge
+    // as above; the game's high-process actors always have their cell's
+    // collision).
+    if !body.on_ground {
+        let f = body.feet;
+        let ground = collider.raycast(
+            [f[0], f[1], f[2] + 64.0],
+            [0.0, 0.0, -1.0],
+            64.0 + GROUND_PROBE,
+        );
+        if ground.is_none() {
+            walker.position = [f[0], f[1], body.ground];
+            walker.body = None;
+        }
+    }
+    // Up against someone (the controller's contact is an actor, as the stuck
+    // test asks, `009e4cf0`): touching their cylinder.
+    let feet = walker.position;
+    walker.against_someone = others.iter().any(|(who, p)| {
+        *who != me
+            && (p.feet[0] - feet[0]).hypot(p.feet[1] - feet[1]) < shape.radius + p.radius + 0.5
+            && feet[2] < p.feet[2] + p.height
+            && p.feet[2] < feet[2] + shape.height
+    });
+}
+
+/// Someone whose walk got stuck (`009e4cf0`): the triangle they stand on
+/// gets an obstacle (`00691510`: the request's radius, cost 1; the path
+/// smoother then goes round it, `world::ai::smoother`) and they ask for
+/// their way again (the walk failed short of its place, and the travel
+/// procedure asks again, `008e5e90`). The game first looks for someone
+/// standing in the way and has them make room instead of marking the
+/// triangle (`009e4cf0`'s loop over the high actors; what it asks of them,
+/// `00804cb0`/`00819a50`, wasn't traced): not done.
+fn unstick(walker: &mut Walker, mesh: &mut NavMesh, settings: &MoveSettings, now: f32) {
+    let Some(at) = walker.stuck_at.take() else {
+        return;
+    };
+    if let Some(t) = mesh.triangle_at(at) {
+        mesh.mark_obstacle(t, at, walker.request_radius, 1.0);
+    }
+    println!(
+        "{now:.1} s: {} is stuck at ({:.0}, {:.0}, {:.0}): an obstacle there, the way asked for again.",
+        walker.reference, at[0], at[1], at[2]
+    );
+    let Some(goal) = walker.target else {
+        return;
+    };
+    if let Some((path, doors)) = path_with_doors_for(mesh, walker, goal) {
+        let (radius, arrival, partial) = (walker.radius, walker.arrival, walker.partial);
+        walker.set_path(path, radius, false, settings);
+        walker.arrival = arrival;
+        walker.partial = partial;
+        walker.doors_ahead = doors;
+    }
 }
 
 pub(crate) fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -2892,6 +3232,91 @@ mod tests {
         }
         assert!(!w.on_path());
         assert!((w.position[0] - 100.0).abs() < 1.0, "{:?}", w.position);
+    }
+
+    /// A floor 1000 across at z = 0, and a wall across it at y = 100.
+    fn floor_and_wall() -> physics::Collider {
+        let mut c = physics::Collider::new();
+        c.add(
+            &[
+                [-500.0, -500.0, 0.0],
+                [500.0, -500.0, 0.0],
+                [500.0, 500.0, 0.0],
+                [-500.0, 500.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        );
+        c.add(
+            &[
+                [-500.0, 100.0, 0.0],
+                [500.0, 100.0, 0.0],
+                [500.0, 100.0, 300.0],
+                [-500.0, 100.0, 300.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        );
+        c
+    }
+
+    #[test]
+    fn walkers_are_moved_by_their_controller_and_a_wall_stops_them_till_they_are_stuck() {
+        let mut collider = floor_and_wall();
+        let mut w = Walker::at(FormId(1), [0.0, 0.0, 0.0], 0.0, 1.0, false);
+        w.set_path(
+            vec![[0.0, 0.0, 0.0], [0.0, 300.0, 0.0]],
+            0.0,
+            false,
+            &MoveSettings::defaults(),
+        );
+        let dt = 1.0 / 60.0;
+        let mut frames = 0;
+        while frames < 600 && w.stuck_at.is_none() {
+            step(&mut w, 85.0, dt);
+            move_body(&mut w, &mut collider, &[], dt);
+            frames += 1;
+        }
+        assert!(w.body.is_some(), "collision under them: a controller");
+        // Never through the wall: the capsule's radius short of it.
+        let radius = physics::CharacterShape::PLAYER.radius;
+        assert!(w.position[1] <= 100.0 - radius + 0.5, "{:?}", w.position);
+        assert!(w.position[1] > 100.0 - radius - 5.0, "{:?}", w.position);
+        // Stuck 1.5 s after reaching it (`009e4cf0`): the walk failed there.
+        assert!(w.stuck_at.is_some());
+        let reached = ((100.0 - radius) / 85.0 / dt) as i32;
+        assert!(
+            (frames - reached - 90).abs() <= 10,
+            "{frames} frames, wall reached after {reached}"
+        );
+        assert!(!w.on_path());
+    }
+
+    #[test]
+    fn walkers_go_round_each_other_not_through() {
+        let mut collider = floor_and_wall();
+        let mut w = Walker::at(FormId(1), [0.0, -300.0, 0.0], 0.0, 1.0, false);
+        w.set_path(
+            vec![[0.0, -300.0, 0.0], [0.0, 0.0, 0.0]],
+            0.0,
+            false,
+            &MoveSettings::defaults(),
+        );
+        // Someone standing on the line.
+        let other = (
+            FormId(2),
+            physics::Person {
+                feet: [5.0, -150.0, 0.0],
+                radius: 20.25,
+                height: 128.0,
+            },
+        );
+        let dt = 1.0 / 60.0;
+        let mut closest = f32::MAX;
+        for _ in 0..300 {
+            step(&mut w, 85.0, dt);
+            move_body(&mut w, &mut collider, &[other], dt);
+            closest = closest.min((w.position[0] - 5.0).hypot(w.position[1] + 150.0));
+        }
+        assert!(closest >= 2.0 * 20.25 - 0.5, "{closest}");
     }
 
     #[test]
