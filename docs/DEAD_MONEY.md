@@ -593,10 +593,11 @@ talking activators is taken to be met. Nothing compared in the original game.
   now decoded in the viewer (lewton) and played as PCM like the other sounds.
 - **Narrator voice.** The narrator (`NVDLC01Narrator`) is an actor of voice
   type `MaleAdult01Default`, but all his intro lines are recorded under
-  Elijah's voice type folder (`nvdlc01maleuniqueelijah`). How the game finds
-  them there isn't traced; the viewer looks for the same file name under
-  another voice type of the same plugin when the speaker's own folder has
-  none (`other_voice` in `viewer/src/dialogue.rs`).
+  Elijah's voice type folder (`nvdlc01maleuniqueelijah`). Traced since
+  (2026-10-06, `00616fa0`): a line's own speaker (`INFO` `ANAM`,
+  `TESTopicInfo::pSpeaker`) gives the voice type when set, and the intro
+  lines name Elijah. `world::dialogue::voice_path` does this; the earlier
+  guess (any voice type folder with the same file name) is gone.
 - **References enabled after the place loaded.** Ones that start disabled
   (the gas jets, `FXSprayJet0101Ref`…) weren't drawn when a script enabled
   them. The viewer now draws them once a second, if they are in the place

@@ -734,7 +734,8 @@ impl Speaker {
             reference,
             base,
             name: record.full_name(),
-            // A talking activator's voice type is its VNAM.
+            // A talking activator's voice type is its VNAM (form type
+            // 0x16 in 00616fa0 → 009185e0).
             voice: form(VTCK).or_else(|| {
                 (rr.entry.header.kind.as_bytes() == b"TACT")
                     .then(|| form(VNAM))
@@ -1078,6 +1079,7 @@ pub fn voice_path(
             .ok()?
             .map(|e| e.to_ascii_lowercase())
     };
+    let voice = line_speaker_voice(order, info).unwrap_or(voice);
     let voice_name = edid(Some(voice))?;
     let (quest, topic) = voice_name_parts(&edid(info.quest)?, &edid(info.topic)?);
     let rr = order.get(info.form_id)?;
@@ -1087,6 +1089,31 @@ pub fn voice_path(
         rr.plugin.name.to_ascii_lowercase(),
         response.number
     ))
+}
+
+/// The voice type of a line's own speaker (`ANAM`, `TESTopicInfo::pSpeaker`
+/// (Xbox PDB), +0x3c here: `00639b40`), when the line names one.
+// Translated from 00616fa0 (decompiled, FalloutNV.exe 1.4.0.525): the voice
+// file's voice type is the line's own speaker's when it has one; only
+// without one does the speaking reference's base give it (an NPC's or
+// creature's voice type, a talking activator's `VNAM` via `009185e0`).
+// Dead Money's narrator (`NVDLC01Narrator`, voice type
+// `MaleAdult01Default`) says intro lines whose speaker is Elijah, so they
+// play from Elijah's voice type folder.
+fn line_speaker_voice(order: &LoadOrder, info: &Info) -> Option<FormId> {
+    let rr = order.get(info.form_id)?;
+    let record = rr.record().ok()?;
+    let speaker = record
+        .get(FourCC::new(b"ANAM"))
+        .filter(|s| s.data.len() >= 4)
+        .map(|s| global(&rr, &s.data))
+        .filter(|id| id.0 != 0)?;
+    let srr = order.get(speaker)?;
+    let srec = srr.record().ok()?;
+    srec.get(VTCK)
+        .filter(|s| s.data.len() >= 4)
+        .map(|s| global(&srr, &s.data))
+        .filter(|id| id.0 != 0)
 }
 
 #[cfg(test)]
