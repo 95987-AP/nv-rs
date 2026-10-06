@@ -42,13 +42,20 @@ use crate::{
 /// `[HAVOK] fMaxTime` as `Fallout_default.ini` sets it (the executable's
 /// default is 1/60).
 pub const STEP: f32 = 0.016;
-/// The most steps one frame takes: 3 (`00c66760`: `(param_2 == 0) * 2 + 1`
-/// with its second argument false in play; 1 otherwise).
+/// The most steps one frame takes: 3 (`00c66760`: 3 when its second
+/// argument is false, 1 when true; which the play loop passes, from
+/// `00525420`, is taken as false here, not traced further).
 pub const MAX_STEPS: u32 = 3;
 /// Substeps per step, and position passes over the contacts per substep
 /// (choices of this solver, not the game's).
 const SUBSTEPS: usize = 8;
 const ITERATIONS: usize = 4;
+/// The most one correction moves a touching point out (game units): placed
+/// objects can start sunk into what they stand on (the VCG02 bottles sit
+/// 1.4 units into their rail's shells), and pushing them out at once
+/// throws them (this solver's; Havok recovers penetration gradually too,
+/// by its own rule, not traced).
+const MAX_CORRECTION: f32 = 0.05;
 /// What a surface added without its body's values rubs and bounces like:
 /// Havok's default body (`hkpRigidBodyCinfo`: friction 0.5, restitution
 /// 0.4; not traced in the executable). The game's clutter models carry
@@ -270,6 +277,10 @@ pub struct Rigid {
     /// How far its surface reaches from the centre of mass.
     reach: f32,
     still: f32,
+    /// How far the centre moved this substep, kept apart from `x` (far
+    /// from the origin a position's rounding is worth several units a
+    /// second of speed).
+    moved_by: Vec3,
     /// At rest: not stepped until something pushes it.
     pub asleep: bool,
     /// Moved since it was put (the game's "Havok moved" reference change,
@@ -342,6 +353,7 @@ impl Rigid {
             rest: pose,
             reach,
             still: 0.0,
+            moved_by: [0.0; 3],
             asleep: true,
             moved: false,
             inverse_inertia,
@@ -400,6 +412,7 @@ impl Rigid {
         }
         let turn = self.inverse_inertia_world(cross(arm, p));
         self.x = add(self.x, scale(p, self.inverse_mass));
+        self.moved_by = add(self.moved_by, scale(p, self.inverse_mass));
         self.q = rotated(self.q, turn);
     }
 
@@ -552,7 +565,9 @@ impl RigidWorld {
         self.movers = movers;
     }
 
-    fn wake(&mut self, body: usize) {
+    /// Wakes a body (it's stepped until it comes to rest again): a placed
+    /// object settling when its place loads.
+    pub fn wake(&mut self, body: usize) {
         let b = &mut self.bodies[body];
         if b.dynamic() {
             b.asleep = false;
@@ -696,6 +711,7 @@ impl RigidWorld {
             }
             b.v[2] -= GRAVITY * h;
             b.x = add(b.x, scale(b.v, h));
+            b.moved_by = scale(b.v, h);
             b.q = rotated(b.q, scale(b.w, h));
         }
         // What touches what, found once, then corrected a few times over
@@ -738,17 +754,17 @@ impl RigidWorld {
             .map(|(&(a, other, t), &l)| self.contact(a, other, &t, l, &before))
             .collect();
         // Velocities from the moves.
-        for (b, (x, q, _, _)) in self.bodies.iter_mut().zip(&before) {
+        for (b, (_, q, _, _)) in self.bodies.iter_mut().zip(&before) {
             if b.asleep || !b.dynamic() {
                 continue;
             }
-            b.v = scale(sub(b.x, *x), 1.0 / h);
+            b.v = scale(b.moved_by, 1.0 / h);
             let d = quat_mul(b.q, conjugate(*q));
             let w = scale([d[0], d[1], d[2]], 2.0 / h);
             b.w = if d[3] < 0.0 { scale(w, -1.0) } else { w };
         }
         // Bounce (or stop approaching), with each contact's push summed
-        // over a few passes and never pulling, then friction.
+        // over a few passes, then friction.
         let mut pushed = vec![0.0f32; contacts.len()];
         for _ in 0..ITERATIONS {
             for (c, p) in contacts.iter().zip(pushed.iter_mut()) {
@@ -799,6 +815,9 @@ impl RigidWorld {
         if depth <= 0.0 {
             return 0.0;
         }
+        // A deep overlap (a body placed sunk into what holds it) comes out
+        // a little at a time.
+        let depth = depth.min(MAX_CORRECTION);
         let wb = match other {
             Other::Body(j) if !self.bodies[j].asleep => self.bodies[j].give(arm_b, t.n),
             _ => 0.0,
@@ -992,14 +1011,41 @@ impl RigidWorld {
                         }
                     }
                 }
-                // The triangle's corners inside a hull.
+                // The triangle's edges reaching into a hull (a rail's long
+                // edge under a bottle's base, a ridge of the ground): where
+                // each enters and leaves the hull grown by the shells, the
+                // hull is pushed off along its own face that faces the
+                // triangle the most squarely, under that point.
                 if let Shape::Hull {
                     planes, shell: s, ..
                 } = shape
                 {
-                    for corner in [ta, tb, tc] {
-                        if let Some(t) = corner_in_hull(b, corner, planes, s + shell, surface) {
-                            out.push(t);
+                    let margin = s + shell;
+                    let r = quat_mat(b.q);
+                    for (e0, e1) in [(ta, tb), (tb, tc), (tc, ta)] {
+                        let (l0, l1) = (b.to_model(e0), b.to_model(e1));
+                        let Some((t0, t1)) = clip_segment(l0, l1, planes, margin) else {
+                            continue;
+                        };
+                        for t in [t0, t1] {
+                            let local = add(l0, scale(sub(l1, l0), t));
+                            // Only a face the body is in front of (a rail's
+                            // top under a bottle, not its side).
+                            let to_body = normalize(sub(b.x, b.to_world(local)));
+                            if dot(face, to_body) < 0.5 {
+                                continue;
+                            }
+                            if let Some(touch) = edge_point_touch(
+                                &r,
+                                local,
+                                b.to_world(local),
+                                planes,
+                                face,
+                                margin,
+                                surface,
+                            ) {
+                                out.push(touch);
+                            }
                         }
                     }
                 }
@@ -1177,6 +1223,73 @@ fn point_triangle(
     let q = closest_on_triangle(p, a, b, c);
     let d = length(sub(p, q));
     (d < margin && d > 1e-5).then(|| (q, scale(sub(p, q), 1.0 / d), margin))
+}
+
+/// The part of segment `a`–`b` (model space) inside a hull's planes grown
+/// by `margin`, as the range of the segment's parameter (Cyrus–Beck).
+fn clip_segment(a: Vec3, b: Vec3, planes: &[[f32; 4]], margin: f32) -> Option<(f32, f32)> {
+    if planes.is_empty() {
+        return None;
+    }
+    let d = sub(b, a);
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for p in planes {
+        let n = [p[0], p[1], p[2]];
+        let start = dot(n, a) + p[3] - margin;
+        let along = dot(n, d);
+        if along.abs() < 1e-9 {
+            if start > 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let t = -start / along;
+        if along > 0.0 {
+            t1 = t1.min(t);
+        } else {
+            t0 = t0.max(t);
+        }
+        if t0 > t1 {
+            return None;
+        }
+    }
+    Some((t0, t1))
+}
+
+/// A point of the world (`local` in the body's model space, `world` in the
+/// world) within a hull's `margin`: the touch pushing the hull off it along
+/// the hull's own face that faces the world's triangle (normal `face`,
+/// pointing toward the body) the most squarely among those it's least
+/// deep behind; none when no face of the hull faces the triangle.
+fn edge_point_touch(
+    r: &Mat3,
+    local: Vec3,
+    world: Vec3,
+    planes: &[[f32; 4]],
+    face: Vec3,
+    margin: f32,
+    surface: Surface,
+) -> Option<Touch> {
+    let mut best: Option<(f32, Vec3, Vec3)> = None;
+    for p in planes {
+        let n_local = [p[0], p[1], p[2]];
+        let n = mat_vec(r, n_local);
+        if dot(n, face) > -0.5 {
+            continue;
+        }
+        let sd = dot(n_local, local) + p[3];
+        if best.map_or(true, |(b, _, _)| sd > b) {
+            best = Some((sd, n_local, n));
+        }
+    }
+    let (sd, n_local, n) = best?;
+    (sd < margin).then(|| Touch {
+        on_a: sub(local, scale(n_local, sd)),
+        on_b: world,
+        n: scale(n, -1.0),
+        margin,
+        surface,
+    })
 }
 
 /// A world point `p` inside body `b`'s hull (its planes, in the model's
@@ -1426,6 +1539,182 @@ mod tests {
         }
         let now = w.bodies[lower].pose().1;
         assert!(now[0] > start[0] + 20.0, "{start:?} → {now:?}");
+    }
+
+    /// A six-sided bottle as `clutter\junk\ssbottle02.nif`'s body has it
+    /// (rounded): 4.5 across its corners, 17.8 tall to the shoulder, its
+    /// neck to 29.1 narrowing to 2; mass 1, centre 12.3 up, inertia 59.1,
+    /// 59.1, 7.7; damping, friction, restitution and limits as stored.
+    fn bottle(reference: u32) -> RigidSetup {
+        let ring = |r: f32, z: f32| -> Vec<Vec3> {
+            (0..6)
+                .map(|k| {
+                    let a = k as f32 * std::f32::consts::FRAC_PI_3;
+                    [r * a.cos(), r * a.sin(), z]
+                })
+                .collect()
+        };
+        let mut vertices = ring(4.5, 0.0);
+        vertices.extend(ring(4.5, 17.8));
+        vertices.extend(ring(2.0, 29.1));
+        // Faces: bottom, top, the six sides of the body, the six of the
+        // shoulder; planes through their corners, pointing out.
+        let mut planes = vec![[0.0, 0.0, -1.0, 0.0], [0.0, 0.0, 1.0, -29.1]];
+        for k in 0..6 {
+            for (lo, hi) in [(0, 6), (6, 12)] {
+                let (a, b, c) = (
+                    vertices[lo + k],
+                    vertices[lo + (k + 1) % 6],
+                    vertices[hi + k],
+                );
+                let mut n = normalize(cross(sub(b, a), sub(c, a)));
+                if dot(n, [a[0], a[1], 0.0]) < 0.0 {
+                    n = scale(n, -1.0);
+                }
+                planes.push([n[0], n[1], n[2], -dot(n, a)]);
+            }
+        }
+        RigidSetup {
+            reference,
+            layer: 10,
+            mass: 1.0,
+            center: [0.0, 0.0, 12.31],
+            inertia: [[59.13, 0.0, 0.0], [0.0, 59.13, 0.0], [0.0, 0.0, 7.69]],
+            linear_damping: 0.1,
+            angular_damping: 0.05,
+            friction: 0.5,
+            restitution: 0.4,
+            max_linear_speed: 1068.0 * HAVOK_UNIT,
+            max_angular_speed: 31.57,
+            motion: 4,
+            shapes: vec![Shape::hull(vertices, &planes, 0.7)],
+        }
+    }
+
+    /// A rail 3 wide with its top at z 100 (two boxes meeting at x 0.5),
+    /// over the ground at z 20 (the terrain's shell).
+    fn fence() -> Collider {
+        let mut c = Collider::new();
+        for (x0, x1) in [(-200.0f32, 0.5f32), (0.5, 200.0)] {
+            let v = [
+                [x0, -1.5, 100.0],
+                [x1, -1.5, 100.0],
+                [x1, 1.5, 100.0],
+                [x0, 1.5, 100.0],
+                [x0, -1.5, 96.0],
+                [x1, -1.5, 96.0],
+                [x1, 1.5, 96.0],
+                [x0, 1.5, 96.0],
+            ];
+            let t = [
+                [0, 1, 2],
+                [0, 2, 3],
+                [4, 6, 5],
+                [4, 7, 6],
+                [0, 4, 5],
+                [0, 5, 1],
+                [3, 2, 6],
+                [3, 6, 7],
+            ];
+            c.add_solid(&v, &t, 0.7, 0);
+        }
+        c.add_solid(
+            &[
+                [-1000.0, -1000.0, 20.0],
+                [1000.0, -1000.0, 20.0],
+                [1000.0, 1000.0, 20.0],
+                [-1000.0, 1000.0, 20.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            crate::TERRAIN_SHELL,
+            0,
+        );
+        c
+    }
+
+    #[test]
+    fn a_bottle_stands_on_a_narrow_rail_until_a_shot_tips_it_off() {
+        bottle_shot_off_a_rail([0.0; 3]);
+    }
+
+    #[test]
+    fn far_from_the_origin_a_shot_bottle_falls_the_same_way() {
+        // Goodsprings' fence is at (-68233, 5050, 8438): there a
+        // position's rounding is worth several units a second of speed
+        // when velocities come from positions.
+        bottle_shot_off_a_rail([-68233.0, 5050.0, 8338.0]);
+    }
+
+    /// Everything moved by `at`.
+    fn shifted(c: &Collider, at: Vec3) -> Collider {
+        let mut out = Collider::new();
+        for k in 0..c.triangle_count() as u32 {
+            let tri = c.triangle(k).map(|p| add(p, at));
+            out.add_solid(&tri, &[[0, 1, 2]], c.shell(k), 0);
+        }
+        out
+    }
+
+    fn bottle_shot_off_a_rail(at: Vec3) {
+        let c = shifted(&fence(), at);
+        let mut w = RigidWorld::new();
+        let i = w.add(bottle(9), (I3, add(at, [0.0, 0.0, 101.4])));
+        // Woken, it stays standing on the rail (its base wider than the
+        // rail: held by the rail's long edges) and falls asleep.
+        w.apply_linear_impulse(i, [0.0, 0.0, 1e-4]);
+        for _ in 0..120 {
+            w.update(&c, 1.0 / 60.0);
+        }
+        let t = sub(w.bodies[i].pose().1, at);
+        assert!(length(sub(t, [0.0, 0.0, 101.4])) < 0.1, "{t:?}");
+        assert!(w.bodies[i].asleep);
+        // A varmint rifle round (impact force 3: 9 Havok units on this
+        // prop) high on it, heading north: it tips over and falls off
+        // behind the rail, coming to rest on the ground.
+        let j = crate::impulses::projectile_impulse(
+            3.0,
+            [0.0, 1.0, -0.14],
+            10,
+            1.0,
+            &Default::default(),
+        )
+        .unwrap();
+        w.apply_point_impulse(i, j, add(at, [0.0, 0.0, 120.0]));
+        for _ in 0..400 {
+            w.update(&c, 1.0 / 60.0);
+        }
+        let t = sub(w.bodies[i].pose().1, at);
+        // Off northward, not sideways.
+        assert!(t[1] > 10.0 && t[2] < 30.0 && t[0].abs() < 15.0, "{t:?}");
+        assert!(w.bodies[i].asleep && w.bodies[i].moved);
+        // Lying on its side on the ground: its axis level.
+        let (r, _) = w.bodies[i].pose();
+        assert!(r[2][2].abs() < 0.2, "{r:?}");
+    }
+
+    #[test]
+    fn a_rails_end_under_a_body_doesnt_push_it_sideways() {
+        // A rail ending under a standing body (its end corners within the
+        // body's footprint, inside its shell): the body stays put.
+        let mut c = Collider::new();
+        c.add(
+            &[
+                [-200.0, -2.0, 100.0],
+                [1.0, -2.0, 100.0],
+                [1.0, 2.0, 100.0],
+                [-200.0, 2.0, 100.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        );
+        let mut w = RigidWorld::new();
+        let i = w.add(crate_(8, [2.0, 2.0, 12.0], 1.0), (I3, [0.0, 0.0, 112.7]));
+        w.apply_linear_impulse(i, [0.0, 0.0, 0.001]);
+        for _ in 0..120 {
+            w.update(&c, 1.0 / 60.0);
+        }
+        let t = w.bodies[i].pose().1;
+        assert!(t[0].abs() < 0.5 && t[1].abs() < 0.5, "{t:?}");
+        assert!((t[2] - 112.7).abs() < 0.5, "{t:?}");
     }
 
     #[test]

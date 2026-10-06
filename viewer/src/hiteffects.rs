@@ -67,6 +67,8 @@ impl HitReports {
         attacker: FormId,
         weapon: FormId,
     ) {
+        // A body Havok moves takes the shot's push (`clutter`).
+        crate::clutter::shot(weapon, attacker, (eye, dir), d, collider.owner(tri));
         self.0.push(HitReport {
             attacker,
             target: None,

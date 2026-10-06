@@ -1596,8 +1596,17 @@ pub struct DynamicBody {
     /// The base's editor ID, for messages.
     pub name: String,
     pub setup: physics::rigid::RigidSetup,
+    /// Each shape's Havok material (what a shot striking it sounds like).
+    pub materials: Vec<u32>,
     pub pose: physics::rigid::Pose,
+    /// Whether Havok lets it settle when its place loads: unless the
+    /// reference carries the record flag 0x2000_0000 (named "Don't Havok
+    /// Settle" by xEdit; how the game reads it isn't traced here).
+    pub settle: bool,
 }
+
+/// The reference record flag xEdit names "Don't Havok Settle".
+pub const DONT_HAVOK_SETTLE: u32 = 0x2000_0000;
 
 /// The one body a model's moving parts belong to (the `bhkRigidBody`
 /// block), when they all belong to one: a model with several moving
@@ -1698,7 +1707,9 @@ impl CellScene {
                     .clone()
                     .unwrap_or_else(|| object.base.to_string()),
                 setup,
+                materials: parts.iter().map(|p| p.material).collect(),
                 pose: (place.rotation, place.translation),
+                settle: object.flags & DONT_HAVOK_SETTLE == 0,
             });
         }
         out

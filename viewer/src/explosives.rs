@@ -316,6 +316,8 @@ fn explode(
     sounds.0.extend(e.sound2);
     let radius = explosions::blast_radius(order, state, Some(thrower), Some(weapon.form_id), e);
     let damage = explosions::base_damage(order, state, Some(thrower), Some(weapon), e);
+    // It pushes the clutter in its sphere (`clutter`).
+    crate::clutter::blast(e, at, radius);
     println!(
         "{} goes off at ({:.0}, {:.0}, {:.0}): {damage:.1} damage, {radius:.0} units.",
         e.form_id, at[0], at[1], at[2]
