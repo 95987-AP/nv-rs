@@ -432,8 +432,10 @@ fn run_cell_scripts(
     cell_scripts: &mut CellScripts,
     people: &[(FormId, [f32; 3])],
     seconds: f32,
+    sight: Option<&dyn world::sight::Sight>,
 ) {
     let mut runner = Runner::new(order, cache, state);
+    runner.sight = sight;
     runner.seconds_passed = seconds;
     cell_scripts.scheduler.frame(&mut runner, people);
 }
@@ -940,7 +942,7 @@ pub fn run_scripts(
     ),
     mut start_commands: ResMut<StartCommands>,
     here_now: HereNow,
-    cameras: Query<(&Transform, &FlyCamera)>,
+    cameras: Query<(&Transform, &FlyCamera, Option<&Projection>)>,
     mut placed: Query<(&PlacedRef, &mut Visibility)>,
     mut text: Query<NoticePanel, (With<NoticeText>, Without<PlacedRef>)>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -1014,7 +1016,7 @@ pub fn run_scripts(
     let state = &mut state.0;
     let (eye, dir, heading) = cameras
         .single()
-        .map(|(t, input)| {
+        .map(|(t, input, _)| {
             let f = t.forward().as_vec3();
             (
                 game_point(t.translation),
@@ -1027,6 +1029,21 @@ pub fn run_scripts(
             )
         })
         .unwrap_or_default();
+    // The camera's up and view angle, for `GetLineOfSight`.
+    let (up, tan_half_fov, aspect) = cameras
+        .single()
+        .map(|(t, _, projection)| {
+            let u = t.up().as_vec3();
+            let (fov, aspect) = match projection {
+                Some(Projection::Perspective(p)) => (p.fov, p.aspect_ratio),
+                _ => (
+                    cellview::vertical_fov(cellview::GAME_FOV_DEGREES),
+                    16.0 / 9.0,
+                ),
+            };
+            ([u.x, -u.z, u.y], (fov * 0.5).tan(), aspect)
+        })
+        .unwrap_or(([0.0, 0.0, 1.0], 1.0, 1.0));
     // Animation and V.A.T.S. can move the view independently of the body.
     // Quest positions, triggers and saves must follow the collision capsule.
     let feet = player.position_for_view(eye);
@@ -1087,7 +1104,21 @@ pub fn run_scripts(
     let dt = time.delta_secs();
     if conversation.0.as_ref().is_none_or(|t| t.is_line_only()) && !waiting.is_open() {
         let warner = state.living.trespass.as_ref().map(|w| w.warner);
-        Runner::new(order, &scripts.0, state).update(dt);
+        let mut people: Vec<(FormId, [f32; 3])> = vec![(PLAYER_REF, feet)];
+        people.extend(talkers.0.iter().map(|t| (t.reference, t.position)));
+        let sight = crate::sight::ViewerSight {
+            collision: &collision.0,
+            bounds: object_bounds.as_deref(),
+            people: &people,
+            eye,
+            forward: dir,
+            up,
+            tan_half_fov,
+            aspect,
+        };
+        Runner::new(order, &scripts.0, state)
+            .with_sight(&sight)
+            .update(dt);
         // Someone coming to warn the trespassing player off
         // (`world::living::trespass`).
         let now_warner = state.living.trespass.as_ref().map(|w| w.warner);
@@ -1101,9 +1132,15 @@ pub fn run_scripts(
             }
         }
         if player.ready {
-            let mut people: Vec<(FormId, [f32; 3])> = vec![(PLAYER_REF, feet)];
-            people.extend(talkers.0.iter().map(|t| (t.reference, t.position)));
-            run_cell_scripts(order, &scripts.0, state, &mut cell_scripts, &people, dt);
+            run_cell_scripts(
+                order,
+                &scripts.0,
+                state,
+                &mut cell_scripts,
+                &people,
+                dt,
+                Some(&sight),
+            );
         }
         // The sleep/wait menu open: the scripts' `MenuMode 1012` blocks
         // run (`PlayerBedSCRIPT` notes `IsPCSleeping` there).
@@ -2006,7 +2043,7 @@ mod tests {
         let people = [(PLAYER_REF, [1888.0, 1835.0, 7360.0])];
         // Enter before the quest permits the instruction, then load a save
         // at stage55 in that same volume. Old occupancy must not suppress it.
-        run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016);
+        run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016, None);
         assert!(!cells
             .scheduler
             .inside(FormId(testdata::functions::ids::VIGOR_TRIGGER_REF))
@@ -2016,7 +2053,7 @@ mod tests {
         loaded.stages.insert(FormId(VIGOR_QUEST), 55);
         restore_script_state(&mut state, &mut cells, loaded);
         attach_test_cell(&order, &cache, &mut state, &mut cells, HOUSE);
-        run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016);
+        run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016, None);
         assert_eq!(state.stages.get(&FormId(VIGOR_QUEST)), Some(&60));
     }
 
@@ -2057,6 +2094,7 @@ mod tests {
             &mut cell_scripts,
             &[(PLAYER_REF, [1888.0, 1835.0, 7360.0])],
             1.0 / 60.0,
+            None,
         );
         assert_eq!(state.stages.get(&FormId(VIGOR_QUEST)), Some(&60));
         assert!(!state.objectives.contains_key(&(FormId(VIGOR_QUEST), 30)));

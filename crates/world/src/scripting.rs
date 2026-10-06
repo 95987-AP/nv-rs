@@ -2277,6 +2277,9 @@ pub struct Runner<'a> {
     /// Each nested `Script::Run` has its own runner in the game
     /// (`005e2590`); here nested runs share this flag (unresolved).
     pub references_changed: bool,
+    /// The viewer's camera and collision, for `GetLineOfSight`
+    /// ([`crate::sight`]); none headless.
+    pub sight: Option<&'a dyn crate::sight::Sight>,
     depth: u8,
 }
 
@@ -2302,8 +2305,15 @@ impl<'a> Runner<'a> {
             owner: None,
             seconds_passed: 0.0,
             references_changed: false,
+            sight: None,
             depth: 0,
         }
+    }
+
+    /// With the viewer's camera and collision for `GetLineOfSight`.
+    pub fn with_sight(mut self, sight: &'a dyn crate::sight::Sight) -> Self {
+        self.sight = Some(sight);
+        self
     }
 
     fn facts(&self) -> Facts<'_> {
