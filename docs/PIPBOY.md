@@ -41,8 +41,21 @@ closing over the Pip-Boy no longer makes the player ready to walk.
 | STATS healing mode: hover the damaged left leg (meter at 40%), click: Stimpak (3) → (2), the leg's meter to about 80%, health a tenth | `--run "player.damageav LeftMobilityCondition 60"`, F1 |
 | ITEMS buttons: Mod lit with the pistol chosen, Repair dim; both dim with nothing chosen | F2, hover |
 | Keyring: Misc ends with "Keyring" (its picture); click lists Becky Hostetler's Key and Van Graff Key with "Cancel E)"; E closes it | `--run "player.additem VFSVanGraffKey 1"` … |
+| Hot keys: a number key held over ITEMS shows the hot key wheel (the chosen key highlighted); the 9mm Pistol row clicked with it shown goes on that key (its icon on the wheel); Pip-Boy put away, that number key equips the pistol (HUD condition bar appears) | F2, number key held, click, Tab, number key |
+| Notes: a text note shows its text, an image note its picture (DCTA Metro Map), an audio note (Post-War Audio Log) plays with "00:04:3 remaining" counting down | DATA › Misc after `player.additem` of the notes |
+| World map: the active quest's target shows as `glow_hud_compass_objective_marker.dds` | DATA › Map with a quest running |
+| Knobs: the tab knob turns to the tab chosen, the scroll knob turns on row changes / zoom | screenshots before / after a tab click |
+| Pip-Boy light: Tab held past the timer lights the corridor walls in front of the player (off again the same way) | `GSDocMitchellHouse`, Tab held 1.8 s, compared with light off |
+| Dropped items: a Stimpak dropped (3 → 2) lies on the carpet in front of where the view faces; E on it: "Stimpak added", gone from the floor, Stimpak (3) | ITEMS right click, Tab, look down, E |
 
-Pictures are kept privately in `%USERPROFILE%\nv-re\work\pipboylive-2026-10-06`.
+Pictures are kept privately in `%USERPROFILE%\nv-re\work\pipboylive-2026-10-06`
+and `%USERPROFILE%\nv-re\work\pipboycomplete-2026-10-06`.
+
+## Repair and Mod
+
+The Repair menu (ITEMS R), the weapon mod menu (ITEMS X) and merchant
+repair are **owned by another contributor's branch** (to be merged); the R
+and X buttons here stay as they were (lit by `00781680`, no menu).
 
 ## Traced behaviour (implemented)
 
@@ -64,6 +77,13 @@ Pictures are kept privately in `%USERPROFILE%\nv-re\work\pipboylive-2026-10-06`.
 | World map border: a place's share × 0.796875 + 0.1015625 on the picture (`01075010`, `01075008`), back × 1.2549 − 0.12745 | `0079c380`, `0079c450` |
 | Zoom: wheel ÷120 > 0 in by 1.1 (`01056528`), Page Down in / Page Up out by 1.2 (`01018204`); magnification clamped to `fWorldMapMinZoom` 0.75 .. `MaxZoom` 5; marker, quest marker, arrow sizes lerped; the point under the window's middle kept; `UIPipBoyScroll` via the knob when it changed | `0079c530`, `00799790` 0x0f/0x10, `0079c5a0` |
 | DATA map tabs: highlight box centred on the pointer, cursor alpha 0 inside 0..850 × 0..500 (`01074f68`, `010301a8`), nearest marker within half the box height, `UIPipBoyHighlight`, "Companion" keeps the title | `0079a130`, `00799dc0` |
+| Hot keys (controls 0x11 + n, n = 1 being ammo swap, left out): the number key held over ITEMS shows `IM_HotKeyWheel` (id 5) with each key's icon (`_HotKeyAssigned`, `_HotKeyIcon`, its name in `string`; `_SelectedHotkey` / `_SelectedText`); a row clicked while it shows puts the item on that key and off any other (`007019e0` → `004bf800`); broken items `sCantHotkeyBrokenItem`, others that can't `sCantHotkeyItem`; with the Pip-Boy away the key coming up equips / takes off / uses it; kept in a save | `00781ba0`, `00701e00`, `007017b0`, `00701e80` |
+| Notes (`NOTE` DATA kind): 0 sound (`SNAM`), 1 text (`TNAM`), 2 image (`XNAM`), 3 voice (topic's responses, speaker); text into the data text, image into the data image (`_ItemType` 3/1/2); sound and voice play their pieces 500 ms apart; "%02d:%02d:%01d remaining" while playing, "--:--:- remaining" / "00:00:0 remaining" otherwise; `UIPipBoyHolotapeStart` | `007993d0`, `0079a660` |
+| World map quest targets: `WorldMapQuestMarkerTemplate` with `glow_hud_compass_objective_marker.dds`, id 0x1b, sized and lit as the map's markers; a target inside goes to the last exterior door on the door path to it, else the player | `0079e0a0`, `0079f7e0` |
+| STATS aimed limb blinks: its picture's alpha pulsed 255 → 0 over 1 s (the face, id 24, too for the head) | `007dbfa0` → `007dbfe0` → `007dc040` |
+| Knobs: tab knob positions `fTabKnobMin` .. `fTabKnobMax` in 4 steps, moved at `fTabKnobMoveRate`; scroll knob by `fScrollKnobIncrement` at `fScrollKnobRate` on `UIPipBoyScroll`; rad needle at π/2 − rads/1000·π; nodes `TabKnob` (Z), `ScrollKnob` (X), `RadNeedle`; rotations as `004168a0` | `007f99d0`, `007f8320`, `007f8610`, `007fa0f0` |
+| Pip-Boy light: `PipBoyLight` → `PipLight` (archetype 13) → `PipboyLight640` (194, 245, 209); radius `fMagicUnitsPerFoot` × (magnitude + `fMagicLightRadiusBase`); placed the bound's far y + `fMagicLightForwardOffset` forward, height + `fMagicLightHeightOffset` up; lights the place's surfaces (not the first-person view) | `0080e970` |
+| Dropped items: lie on the static collision below the drop point (ray down, the item's `OBND` bottom on it) in front of the view's heading; listed with the place's things E can take; taken, the reference goes | `world::more_functions::placed::{dropped_items, taken}` |
 | F1/F2/F3 (DIK 0x3B..0x3D, raw keys): open on STATS/ITEMS/DATA, switch, or close on the shown one; Tab release closes | `0070c4a0`, `00a24180`, `0070f4e0`, `0070f690` |
 | Boxes over the Pip-Boy are ordinary menus on the main screen (only files whose `id` is `&pipboymenu;` draw on its screen); the HUD keeps its messages over the Pip-Boy's pages | `menus\*.xml`, `ui::hud::parts_for_menu` mode 3 |
 | Menu class numbers: Stats 0x3eb, Inventory 0x3ea, Map 0x3ff | `00717920`, rtti vtables `0106ffd4`, `010739b4`, `01074d44` |
@@ -73,7 +93,11 @@ Labelled guesses: the menus' camera covering 1280 × 960 units over the
 measured between screen centres (the game uses `_x`/`_y` in the map
 frame); the dropped item's size as half its `OBND` diagonal (the game's
 `0050ebf0` isn't traced) and its height the player's; the drop's sound as
-the item's put-down sound.
+the item's put-down sound; the dropped item set on the ground by a ray
+straight down (the game casts its shape, `009614b0`, then physics); the
+hot keys' default keys as the digits 1..8; the light's brightness 1 (what
+`0080ed20(255)` sets isn't traced); the player's bound read from its
+`OBND`.
 
 ## Tests
 
@@ -91,6 +115,11 @@ the item's put-down sound.
 - `world` `more_functions::the_player_drops_items_in_front`
 - `viewer pipboy::tests::the_pointer_lands_on_the_screens_picture`
 - `viewer pipboy::tests::a_click_finishes_although_the_buttons_are_cleared`
+- `ui::pipboy::tests::number_keys_put_items_on_hot_keys`,
+  `ui::pipboy::tests::the_aimed_limb_blinks`,
+  `ui::pipboy::data::tests::notes_show_by_kind_and_play`
+- viewer `pipboy::tests` for the knobs, rotations, the light's point,
+  audio lengths and hot key events
 
 Generated cut-down menus and plugins; no game files.
 
@@ -99,23 +128,26 @@ Generated cut-down menus and plugins; no game files.
 Nothing here has been compared side by side with the original game; the
 live checks above are of the viewer only. Not implemented:
 
-- STATS healing mode's aimed limb blinking (`007dbfe0` animating its
-  alpha), the pad's X toggle and the buttons' texts with a pad
+- The aimed limb's blink, the rad needle and the scroll knob's turn are
+  only checked in tests, not seen live.
+- With the light on the Pip-Boy's screen looks washed green: that is the
+  light's cone (`PipboyLightEffect`, `007fa310`) over the arm, as before;
+  not compared with the game.
+- STATS: the pad's X toggle and the buttons' texts with a pad
   (`007df620`), the Stimpak / Doctor's Bag buttons' `target` by
   `007e05f0` / `007e06f0`; "limb condition" effects (archetype 35, the
   Doctor's Bag) do nothing in the world yet, aimed or not.
-- ITEMS: Repair (the Repair menu), Mod (the item mod menu), hot keys (1-8
-  with an item chosen, `00781ba0`), the other Drop refusals (during an
-  action, in the air, worn items that can't come off, no room), the
-  drop's shape cast, ten headings and physics; dropped items can't be
-  picked up again (made references aren't among the things E takes); the
-  sort's ties by condition and equipped.
-- DATA: the local map (rendered from above), quest markers and waypoints
-  on the map, the radio playing, notes' audio, challenges, the custom
-  marker on the compass and on the local map.
+- ITEMS: Repair and Mod (another contributor's branch, above); the hot
+  keys' pad assignment; the other Drop refusals (during an action, in the
+  air, worn items that can't come off, no room), the drop's shape cast,
+  ten headings and physics; the sort's ties by condition and equipped.
+- DATA: the local map (`TESObjectCELL::TakeLocalMapPicture` (Xbox PDB),
+  rendered from above), quest markers and waypoints on the local map, the
+  radio (`008324e0`, `00834260`; findings/music.md §4), challenges, the
+  custom marker on the compass and on the local map.
 - The Escape control opens the game's start menu over the Pip-Boy
-  (`0070c4a0` at `0070e651`, `007ce7a0`); the viewer quits on Escape.
-- The Pip-Boy light lighting the place (only its cone on the arm shows),
-  knobs, needle and buttons moving, the PC button-label textures, held
-  keys repeating, swapped mouse buttons (`+0x1b4c`), the game's own cursor
-  speed (the system pointer is used).
+  (`0070c4a0` at `0070e651`, `007cb7d0`, options `007cc6e0`, Continue
+  `007ce7a0`, Quit's confirm page); the viewer quits on Escape.
+- Buttons moving, the PC button-label textures, held keys repeating,
+  swapped mouse buttons (`+0x1b4c`), the game's own cursor speed (the
+  system pointer is used).
