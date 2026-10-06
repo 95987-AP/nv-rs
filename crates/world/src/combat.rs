@@ -1154,6 +1154,11 @@ pub fn weapon_in_hand(order: &LoadOrder, state: &GameState, who: FormId) -> Opti
         .copied()
         .find(|&i| order.get(i).is_some_and(|r| r.entry.header.kind == WEAP) && !dropped(i));
     let disarmed = state.dropped.iter().any(|(w, _)| *w == who);
+    // Someone whose fight chose their fists (`world::npc_combat`) put
+    // their weapon away.
+    if equipped.is_none() && state.npc_combat.unarmed.contains(&who) {
+        return None;
+    }
     // Else the player's first; someone else's best (`world::actor::
     // best_weapon`), from what they carry now or, untouched, what their
     // record gives them (as they're drawn).

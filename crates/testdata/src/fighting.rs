@@ -59,6 +59,16 @@ pub mod ids {
     pub const SPAWNED_REF: u32 = 0xB17;
     pub const SPAWN_LIST: u32 = 0xB18;
     pub const SETTINGS: u32 = 0xB20;
+    /// A round (`AMMO`), a rifle that takes it (clip 5, 16 damage, 1.25
+    /// attacks a second, reload 2 s, 0–3000 units) and a stick of dynamite
+    /// (a grenade: animation 10, "NPCs use ammo", the grenade projectile).
+    pub const ROUND: u32 = 0xB30;
+    pub const RIFLE: u32 = 0xB31;
+    pub const DYNAMITE: u32 = 0xB32;
+    /// `TestFightGlobal` (0), which the raider's script
+    /// (`TestRaiderScript`: `Begin OnStartCombat player`) adds 1 to.
+    pub const FIGHT_GLOBAL: u32 = 0xB33;
+    pub const RAIDER_SCRIPT: u32 = 0xB34;
     /// The player's faction, as in the game.
     pub const PLAYER_FACTION: u32 = 0x1B2A4;
 }
@@ -151,15 +161,21 @@ pub fn fighting(tag: &str) -> TempData {
         shots: f32,
         semi: (f32, f32),
         skill: u32,
+        clip: u8,
+        ammo: u32,
+        reload: f32,
     }
     let weapon = |id: u32, name: &str, damage: i16, g: Gun| {
         let mut d = edid(name);
         d.extend(sub(b"FULL", &zstr(name)));
+        if g.ammo != 0 {
+            d.extend(sub(b"NAM0", &g.ammo.to_le_bytes()));
+        }
         let mut data = 100i32.to_le_bytes().to_vec();
         data.extend(150i32.to_le_bytes());
         data.extend(1.5f32.to_le_bytes());
         data.extend(damage.to_le_bytes());
-        data.push(13);
+        data.push(g.clip);
         d.extend(sub(b"DATA", &data));
         let mut dnam = vec![0u8; 204];
         dnam[0..4].copy_from_slice(&g.animation.to_le_bytes());
@@ -174,6 +190,7 @@ pub fn fighting(tag: &str) -> TempData {
         dnam[56..60].copy_from_slice(&g.flags2.to_le_bytes());
         dnam[64..68].copy_from_slice(&g.fire_rate.to_le_bytes());
         dnam[88..92].copy_from_slice(&g.shots.to_le_bytes());
+        dnam[92..96].copy_from_slice(&g.reload.to_le_bytes());
         dnam[104..108].copy_from_slice(&g.skill.to_le_bytes());
         dnam[128..132].copy_from_slice(&g.semi.0.to_le_bytes());
         dnam[132..136].copy_from_slice(&g.semi.1.to_le_bytes());
@@ -191,6 +208,9 @@ pub fn fighting(tag: &str) -> TempData {
         shots: 3.125,
         semi: (0.0, 0.3),
         skill: 41,
+        clip: 13,
+        ammo: 0,
+        reload: 0.0,
     };
     let mut weapons = weapon(PISTOL, "TestCombatPistol", 16, gun);
     weapons.extend(weapon(
@@ -234,6 +254,56 @@ pub fn fighting(tag: &str) -> TempData {
             ..gun
         },
     ));
+    weapons.extend(weapon(
+        RIFLE,
+        "TestRifle",
+        16,
+        Gun {
+            animation: 5,
+            range: (500.0, 750.0),
+            shots: 1.25,
+            clip: 5,
+            ammo: ROUND,
+            reload: 2.0,
+            ..gun
+        },
+    ));
+    weapons.extend(weapon(
+        DYNAMITE,
+        "TestDynamite",
+        1,
+        Gun {
+            animation: 10,
+            projectile: GRENADE,
+            range: (500.0, 1024.0),
+            flags2: 0x10A,
+            shots: 0.405,
+            semi: (0.0, 0.0),
+            skill: 35,
+            clip: 12,
+            ..gun
+        },
+    ));
+    let mut round = edid("TestRound");
+    round.extend(sub(b"FULL", &zstr("Test Round")));
+    let mut ammo_data = 1.0f32.to_le_bytes().to_vec();
+    ammo_data.extend([0, 0, 0, 0]);
+    ammo_data.extend(1i32.to_le_bytes());
+    ammo_data.push(0);
+    round.extend(sub(b"DATA", &ammo_data));
+    let ammo = record(b"AMMO", ROUND, &round);
+
+    let mut glob = edid("TestFightGlobal");
+    glob.extend(sub(b"FNAM", b"s"));
+    glob.extend(sub(b"FLTV", &0.0f32.to_le_bytes()));
+    let globals = record(b"GLOB", FIGHT_GLOBAL, &glob);
+    let mut raider_script = edid("TestRaiderScript");
+    raider_script.extend(sub(b"SCHR", &[0; 20]));
+    raider_script.extend(sub(
+        b"SCTX",
+        b"scn TestRaiderScript\nBegin OnStartCombat player\n\tset TestFightGlobal to TestFightGlobal + 1\nEnd",
+    ));
+    let scripts = record(b"SCPT", RAIDER_SCRIPT, &raider_script);
 
     // Creatures: DATA type, combat/magic/stealth skills, health i16, 2
     // unused, damage i16, SPECIAL; AIDT; RNAM reach.
@@ -309,8 +379,12 @@ pub fn fighting(tag: &str) -> TempData {
                name: &str,
                (aggression, confidence, assistance): (u8, u8, u8),
                faction: u32,
-               weapon: Option<u32>| {
+               weapon: Option<u32>,
+               script: Option<u32>| {
         let mut d = edid(name);
+        if let Some(s) = script {
+            d.extend(sub(b"SCRI", &s.to_le_bytes()));
+        }
         d.extend(sub(b"ACBS", &[0; 24]));
         let mut membership = faction.to_le_bytes().to_vec();
         membership.extend([0; 4]);
@@ -330,9 +404,23 @@ pub fn fighting(tag: &str) -> TempData {
         }
         record(b"NPC_", id, &d)
     };
-    let mut npcs = npc(GUARD, "TestGuard", (1, 3, 1), GUARDS, Some(PISTOL));
-    npcs.extend(npc(TOWNSPERSON, "TestTownsperson", (0, 1, 0), TOWN, None));
-    npcs.extend(npc(RAIDER, "TestRaider", (1, 2, 1), RAIDERS, Some(MACHETE)));
+    let mut npcs = npc(GUARD, "TestGuard", (1, 3, 1), GUARDS, Some(PISTOL), None);
+    npcs.extend(npc(
+        TOWNSPERSON,
+        "TestTownsperson",
+        (0, 1, 0),
+        TOWN,
+        None,
+        None,
+    ));
+    npcs.extend(npc(
+        RAIDER,
+        "TestRaider",
+        (1, 2, 1),
+        RAIDERS,
+        Some(MACHETE),
+        Some(RAIDER_SCRIPT),
+    ));
 
     let actor = |id: u32, base: u32, pos: [f32; 3], name: &str| {
         let mut r = placed(id, base, pos, [0.0; 3], &sub(b"EDID", &zstr(name)));
@@ -374,6 +462,9 @@ pub fn fighting(tag: &str) -> TempData {
     hedr.extend([0; 8]);
     let mut plugin = record(b"TES4", 0, &sub(b"HEDR", &hedr));
     plugin.extend(group(*b"GMST", 0, &settings));
+    plugin.extend(group(*b"GLOB", 0, &globals));
+    plugin.extend(group(*b"SCPT", 0, &scripts));
+    plugin.extend(group(*b"AMMO", 0, &ammo));
     plugin.extend(group(*b"FACT", 0, &factions));
     plugin.extend(group(*b"CSTY", 0, &styles));
     plugin.extend(group(*b"PROJ", 0, &projectiles));

@@ -414,6 +414,9 @@ pub struct GameState {
     /// weapon start holstered; the Ready Item key and attacking draw it).
     /// Not saved.
     pub weapon_out: HashSet<FormId>,
+    /// People's weapon choice, clips and reloads in a fight, and whose
+    /// `OnStartCombat` has run (`world::npc_combat`). Not saved.
+    pub npc_combat: crate::npc_combat::State,
     /// Faction relations scripts changed (`SetEnemy`, `SetAlly`): (faction,
     /// other) → reaction (0 neutral, 1 enemy, 2 ally, 3 friend).
     pub faction_relations: HashMap<(FormId, FormId), u8>,
@@ -1699,6 +1702,32 @@ impl Facts<'_> {
                 )
             }
             "GetCombatTarget" => f64::from(s.combat.get(&on?).map_or(0, |t| t.0)),
+            // 100 when the calling actor would attack the target (`008b06d0`,
+            // `factions::attacks_on_sight`), else 0; both must be actors.
+            // Not done: the early 0 when both are already fighting
+            // (`00992640`, the combat group test) and the call through
+            // actor vtable +0x344 before it (its purpose isn't traced).
+            // Translated from 0059ed30 (decompiled, FalloutNV.exe 1.4.0.525)
+            "GetShouldAttack" => {
+                let who = on?;
+                let target = arg(0).form();
+                let actor = |r: FormId| {
+                    r == PLAYER_REF
+                        || base_of(self.order, r)
+                            .and_then(|b| self.order.get(b))
+                            .is_some_and(|b| {
+                                matches!(b.entry.header.kind.as_bytes(), b"NPC_" | b"CREA")
+                            })
+                };
+                if actor(who)
+                    && actor(target)
+                    && crate::factions::attacks_on_sight(self.order, s, who, target)
+                {
+                    100.0
+                } else {
+                    0.0
+                }
+            }
             // True of a new game, where nobody wins at the casinos or has
             // a reputation yet (hardcore: `world::living`).
             "HasBeenEaten" | "GetCasinoWinningsLevel" | "GetKnockedState" => 0.0,
@@ -3274,9 +3303,14 @@ impl<'a> Runner<'a> {
                 events.push(Event::Video(file));
             }
             "PlayMusic" => events.push(Event::Music(arg(0).form())),
+            // `005d0760`: knocked out (life state 3, `008ace10`) after
+            // stopping their own fight (actor vtable +0x434 with no target,
+            // the call `StopCombatAlarmOnActor` makes per attacker); woken
+            // only from that state.
             "SetUnconscious" => {
                 let who = target?;
                 if arg(0).number() != 0.0 {
+                    self.state.combat.remove(&who);
                     self.state.unconscious.insert(who);
                 } else {
                     self.state.unconscious.remove(&who);
@@ -3719,6 +3753,7 @@ pub const HANDLED: &[&str] = &[
     "GetFactionRelation",
     "IsInCombat",
     "GetCombatTarget",
+    "GetShouldAttack",
     "StartCombat",
     "StopCombat",
     "EquipItem",
