@@ -30,6 +30,55 @@ pub struct Whereabouts {
     pub markers: Vec<world::map::MapMarker>,
     /// The player's feet and heading (degrees clockwise from north).
     pub player: Option<([f32; 3], f32)>,
+    /// Where the world map shows the active quest's targets (in the
+    /// worldspace, `quest_points`).
+    pub quest: Vec<[f32; 3]>,
+}
+
+/// Where the world map puts the active quest's targets (`0079e0a0` →
+/// `0079f7e0`): a target outdoors in the worldspace at itself; one indoors
+/// at the last door on the way to it (the door search, `world::
+/// quest_targets::door_path`) that stands outdoors in the worldspace; with
+/// none, at the player (the map menu's `+0x114`, read as the player).
+// Translated from 0079f7e0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn quest_points(
+    order: &LoadOrder,
+    state: &GameState,
+    graph: &mut world::quest_targets::DoorGraph,
+    world_space: FormId,
+) -> Vec<[f32; 3]> {
+    let Some(active) = state.active_quest else {
+        return Vec::new();
+    };
+    let Some(quest) = world::quest::Quest::load(order, active) else {
+        return Vec::new();
+    };
+    let player = state.place(order, PLAYER_REF);
+    let mut out = Vec::new();
+    for t in world::quest_targets::current_targets(order, &quest, state) {
+        let Some((space, _, at, _)) = state.place(order, t.reference) else {
+            continue;
+        };
+        if space == world_space {
+            out.push(at);
+            continue;
+        }
+        let Some((from_space, _, from, _)) = player else {
+            continue;
+        };
+        let path = world::quest_targets::door_path(order, state, graph, from_space, from, space)
+            .unwrap_or_default();
+        let outdoor = path.iter().rev().find_map(|&d| {
+            let w = world::scripting::whereabouts(order, d)?;
+            (w.world == Some(world_space)).then_some(w.position)
+        });
+        match outdoor {
+            Some(p) => out.push(p),
+            None if from_space == world_space => out.push(from),
+            None => {}
+        }
+    }
+    out
 }
 
 fn record_text(order: &LoadOrder, id: FormId, sub: FourCC) -> Option<String> {
@@ -178,6 +227,7 @@ pub fn world_map(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> Opti
         player: at.player.map(|(p, h)| (place(p), h)),
         corners: [nw, se],
         custom,
+        quest: at.quest.iter().map(|&p| place(p)).collect(),
     })
 }
 
@@ -517,12 +567,28 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
 
     // Notes (`NOTE`: `FULL`, the text in `TNAM`; listed by name, the list's
     // order not traced).
+    // Its kind is `DATA` (0 sound, 1 text, 2 picture, 3 voice; `TNAM` is
+    // the text of a text note, a voice note's topic), a picture's `XNAM`.
     let mut notes: Vec<NoteLine> = state
         .notes
         .iter()
-        .map(|&n| NoteLine {
-            name: record_name(order, n).unwrap_or_else(|| n.to_string()),
-            text: record_text(order, n, TNAM).unwrap_or_default(),
+        .map(|&n| {
+            let kind = order
+                .get(n)
+                .and_then(|r| r.record().ok())
+                .and_then(|r| r.get(esm::sig::DATA).and_then(|s| s.data.first().copied()))
+                .unwrap_or(1);
+            NoteLine {
+                form: n.0,
+                name: record_name(order, n).unwrap_or_else(|| n.to_string()),
+                text: if kind == 1 {
+                    record_text(order, n, TNAM).unwrap_or_default()
+                } else {
+                    String::new()
+                },
+                kind,
+                image: record_text(order, n, FourCC::new(b"XNAM")),
+            }
         })
         .collect();
     notes.sort_by(|a, b| a.name.cmp(&b.name));
@@ -606,6 +672,14 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
         notes,
         world_map: world_map(order, state, at),
         stations: Vec::new(),
+        // Hot keys whose items are still carried (`004bf4b0` finds them
+        // among the inventory's items).
+        hotkeys: state.hotkeys.map(|h| {
+            h.filter(|&f| state.item_count(order, PLAYER_REF, f) > 0)
+                .map(|f| f.0)
+        }),
+        // The caller's (the sound playing).
+        note_audio: None,
     }
 }
 
@@ -724,6 +798,7 @@ mod tests {
                 marker(0x901, [0.0, 0.0, 0.0], 0),
             ],
             player: Some(([-8192.0, 12288.0, 0.0], 45.0)),
+            quest: Vec::new(),
         };
         let mut state = state;
         world::map::set_custom_marker(&mut state, FormId(0x810), [8192.0, -4096.0, 0.0]);
