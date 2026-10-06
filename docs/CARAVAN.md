@@ -28,6 +28,10 @@ member offsets (`trackInfo` at +0xDE4, the tracks at +0xB44).
 | The player's moves | `DoGamepad` | `00747d30` |
 | The turns, jacks, jokers, the opponent's moves | `DoIdle` | `00741500` |
 | Which controls work | `UpdateCaravanFlags` | |
+| The ante | `PrepareAnteMenu`, `PrepareBettingCurrency`, `ItemSelectCallback` | `0074a090` |
+| The stake | `PrepareDeckMenu` | |
+| The results | `PrepareResultsMenu` | `00740980` |
+| Paying up | `ExchangeCurrency` | `0074cc70` |
 
 - Cards (`CCRD`): the first `INTV` the suit (1 hearts, 2 spades, 3
   diamonds, 4 clubs, 5 blank), the second the value (1 ace, 2–10, 12 jack,
@@ -100,6 +104,26 @@ member offsets (`trackInfo` at +0xDE4, the tracks at +0xB44).
   suit number equals the card's value; a king counts once under 21 and
   twice when sold; the queen move on the player's tracks can never happen
   (it asks for an empty row inside a loop over non-empty ones).
+- `ShowCaravanMenu deck difficulty share` (`CaravanMenu::Create`): on
+  someone else; with fewer than 30 cards owned the player is told
+  `sCardCountText` instead. (`sPlayerOutOfMoneyText`, "You do not have
+  funds to play Caravan.", is in the exe but nothing uses it.)
+- The ante (`PrepareAnteMenu`): each side's funds are its caps and its
+  caravan money (`CMNY`, each kind's `DATA` value × how many). The
+  opponent opens with its funds × the share. Raise (a "how many" up to
+  what the player has left, `ItemSelectCallback`/`0074a090`): the
+  opponent matches up to its most, funds × share × (1 + the player's
+  Barter / 100), Barter 0–100, at most its funds. Match: the player puts
+  in the opponent's ante or all they have. Accept works once the player
+  has put something in (or the opponent asks nothing); match and raise
+  stop working at the player's funds (and match at the opponent's ante)
+  (`UpdateCaravanFlags`). The stake is the smaller ante (`PrepareDeckMenu`).
+- The results (`PrepareResultsMenu`): the player's record (caps won or
+  lost, games won or lost, the biggest win), misc stat 0x25 "Caravan Games
+  Won" or 0x26 "Caravan Games Lost", `GAMECaravanWin`/`GAMECaravanLose`;
+  the loser pays the stake (`ExchangeCurrency`): caravan money first, each
+  kind as far as it goes without passing what's owed, then caps, as many as
+  they have.
 - The end (`IsGameOver`, before every turn): a caravan is sold at 21–26
   and wins its pair if the other isn't sold or is lower; all three pairs
   decided, the side with more wins. Otherwise a side with no cards in deck
@@ -113,14 +137,14 @@ saved as `caravancard` / `caravanrecord` lines), `add_card_to_player`
 `update_track_value`, `is_game_over`, `play` and `resolve`, `discard`,
 `discard_track`, `setup_track`, `setup_finished`, `npc_turn`,
 `player_play`), `winning_state`; `world::caravan::ai` (`process_ai`,
-`Package`, `crt_qsort`). Checks: `world::caravan::tests`,
+`Package`, `crt_qsort`); `world::caravan::bet` (`funds`, `Bet`, `settle`);
+`ShowCaravanMenu` raises `Event::Caravan` (the viewer only says so for
+now). Checks: `world::caravan::tests`,
 `world::caravan::ai::tests` (39 whole games each end),
 `crates/world/tests/caravan.rs`.
 
 ## Not done yet
 
-- The ante and the bet (`PrepareAnteMenu`, `ExchangeCurrency`,
-  `UpdateBettingUI`), the results and the player's record
-  (`PrepareResultsMenu`, misc stats "Caravan Games Won/Lost").
 - The deck building screen and the menu itself (`caravan_menu.xml`, the 3D
-  table `Meshes\Terminals\NV_Caravan\`), and `ShowCaravanMenu` opening it.
+  table `Meshes\Terminals\NV_Caravan\`). The order money is paid in
+  follows the form IDs here, not the inventory's own order.
