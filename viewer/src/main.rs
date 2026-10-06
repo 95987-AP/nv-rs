@@ -595,6 +595,7 @@ const BRING_IN_REACH: f32 = 2.5 * world::land::CELL_SIZE;
 /// square load rebuilds that list from the squares' own people. Without
 /// this Sunny Smiles, walking out of the saloon for `VCG02`, never counted
 /// in `VCG02SunnyPatrolTrigger` (its `OnTrigger SunnyREF` sets stage 20).
+#[allow(clippy::too_many_arguments)]
 fn bring_in_people(
     time: Res<Time>,
     game: Res<GameFiles>,
