@@ -82,6 +82,16 @@ in a four-export probe. Full indexing is deferred; source snapshots, hashes,
 DB and inventory remain private. Shared query workflow and limitations:
 [RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md).
 
+Player furniture batch, 2026-10-06 (`claude/m1-sitting`): E on furniture
+now runs the game's own activation and sit procedure for the player
+(`TESFurniture::Activate` `005095b0`, approach `00904f50`, temporary third
+person `00950340`/`009503d0`, activate-key gate, seated pitch limit,
+first-person seated loop with its Camera1st track); E on nothing while
+seated gets up. Unit and generated-plugin regressions pass; no live couch
+run or original comparison yet; no third-person camera exists for the
+entry/exit. Evidence and gaps: [FURNITURE.md](FURNITURE.md). **Next:** live
+`--stage VCG01 27` couch run through Doc's questionnaire.
+
 Outstanding M1 gates:
 - Exact opening camera transition replay and Doc/player assistance timing.
 - Native Doc head/eye tracking; final rotation math remains unresolved
