@@ -47,9 +47,14 @@ closing over the Pip-Boy no longer makes the player ready to walk.
 | Knobs: the tab knob turns to the tab chosen, the scroll knob turns on row changes / zoom | screenshots before / after a tab click |
 | Pip-Boy light: Tab held past the timer lights the corridor walls in front of the player (off again the same way) | `GSDocMitchellHouse`, Tab held 1.8 s, compared with light off |
 | Dropped items: a Stimpak dropped (3 → 2) lies on the carpet in front of where the view faces; E on it: "Stimpak added", gone from the floor, Stimpak (3) | ITEMS right click, Tab, look down, E |
+| Radio: DATA › Radio lists Mojave Music Radio; a click tunes it (filled square), a song plays on the radio deck (`mus_lazy_day_blues`, in the log) | `Goodsprings`, DATA › Radio tab, click on the row |
+| Local map indoors: Doc Mitchell's house laid out from above, unexplored rooms dark, door marker named on hover, the arrow turning with the view (west, then north), wheel zoom | `GSDocMitchellHouse`, `--pipboy data:0`, mouse turns, wheel |
+| Local map outdoors: Goodsprings' ground and objects around the player, the fog of war's edge soft, wheel zoom out shrinks the map round the arrow | `Goodsprings`, Tab, wheel |
+| Escape over the Pip-Boy opens the pause menu on top of it | Tab, Escape ([START_MENU.md](START_MENU.md)) |
 
-Pictures are kept privately in `%USERPROFILE%\nv-re\work\pipboylive-2026-10-06`
-and `%USERPROFILE%\nv-re\work\pipboycomplete-2026-10-06`.
+Pictures are kept privately in `%USERPROFILE%\nv-re\work\pipboylive-2026-10-06`,
+`%USERPROFILE%\nv-re\work\pipboycomplete-2026-10-06` and
+`%USERPROFILE%\nv-re\work\startmenu-2026-10-06`.
 
 ## Repair and Mod
 
@@ -87,6 +92,11 @@ and X buttons here stay as they were (lit by `00781680`, no menu).
 | F1/F2/F3 (DIK 0x3B..0x3D, raw keys): open on STATS/ITEMS/DATA, switch, or close on the shown one; Tab release closes | `0070c4a0`, `00a24180`, `0070f4e0`, `0070f690` |
 | Boxes over the Pip-Boy are ordinary menus on the main screen (only files whose `id` is `&pipboymenu;` draw on its screen); the HUD keeps its messages over the Pip-Boy's pages | `menus\*.xml`, `ui::hud::parts_for_menu` mode 3 |
 | Menu class numbers: Stats 0x3eb, Inventory 0x3ea, Map 0x3ff | `00717920`, rtti vtables `0106ffd4`, `010739b4`, `01074d44` |
+| Hot key controls: Hotkey1, Ammo Swap, Hotkey3..8 are controls 0x11..0x18 (names `011a7e60`); their keys from the INI's `[Controls]` lines, else the exe's defaults (the digits 1..8); each control looks its key up on its own, so the 2 key drives both Ammo Swap and the wheel's second slot | `00a24b70`, `00a24660`; `viewer::controls` |
+| Radio stations (`TACT` with flag 0x20000, not 0x10000000): in range by `XRDO` (radius, everywhere, worldspace, linked ref), signal strength truncated, rows sorted in-range first then by name; click (row 0x19) tunes / turns off; the music director held while a station plays; a station's programme from its scripts (`RadioHello` etc.), songs on the radio deck in step, DJ lines through the dialogue voice paths 50 ms apart; static volume ((100 − s)/100)^0.75; plays with the Pip-Boy away; saved (`radio`, `radiofound` lines) | `004ff1a0`, `00833d00`, `0061b440`, `00796fd0` case 0x19, `011dd313`; `world::radio`, `viewer::radio` |
+| Local map: 5 × 5 tiles of 4096 units (interiors: offset 2048 and turned by the `NorthMarker`), each a 128 × 128 picture from above (outdoors the land's top + 20000, indoors the bound's top + 40000, half-size 2176, outdoors 32 lower), colour the view-space normal × 0.5 + 0.5 (`SLS2084.vso`/`SLS2087.pso`), cleared black; one picture a frame; tiles drawn as 17 × 17 meshes, vertex alpha = seen count / 4, picture × Pip-Boy colour | `0054e830`, `0054ee80`, `0054f500`, `0079ffb0`, `00556870` |
+| Fog of war: 16 × 16 points a cell (256 apart), set within `fSeenDataUpdateRadius` (1024) of the player, fully-seen at 248 points; saved (`seen` lines) | `00555c20`, `00556ef0` |
+| Local map markers: doors (`icon_local_door.dds`, alpha the fog's, name where they lead: cell name, else worldspace), quest targets and the custom marker (`LocalMapQuestMarkerTemplate`), the arrow at −heading − 0.3 − north; zoom `fLocalMapMinZoom` 0.1 .. `MaxZoom` 0.9, marker sizes 20..75 / 40..75 / 40..70 | `0079d410`, `0079dbb0`, `0079e0a0`, `0079c5a0` |
 
 Labelled guesses: the menus' camera covering 1280 × 960 units over the
 4:3 rectangle (so menu point = u × 1280, v × 960); the marker distance
@@ -97,7 +107,14 @@ the item's put-down sound; the dropped item set on the ground by a ray
 straight down (the game casts its shape, `009614b0`, then physics); the
 hot keys' default keys as the digits 1..8; the light's brightness 1 (what
 `0080ed20(255)` sets isn't traced); the player's bound read from its
-`OBND`.
+`OBND`. Local map: which objects are drawn (the game's runtime "Show in
+Local Map" flag is set by code not traced; here every non-actor object
+not flagged hidden (0x00800000) with a bound of 50 or more), faces turned
+away left out (the pass's cull mode isn't traced), the normal per vertex,
+the map tile's own square not drawn under the pictures, outdoors the
+camera's height from the square's highest vertex, the pictures made again
+when the place changes. Radio: the ranges are straight-line (no path
+finding).
 
 ## Tests
 
@@ -141,13 +158,14 @@ live checks above are of the viewer only. Not implemented:
   keys' pad assignment; the other Drop refusals (during an action, in the
   air, worn items that can't come off, no room), the drop's shape cast,
   ten headings and physics; the sort's ties by condition and equipped.
-- DATA: the local map (`TESObjectCELL::TakeLocalMapPicture` (Xbox PDB),
-  rendered from above), quest markers and waypoints on the local map, the
-  radio (`008324e0`, `00834260`; findings/music.md §4), challenges, the
-  custom marker on the compass and on the local map.
-- The Escape control opens the game's start menu over the Pip-Boy
-  (`0070c4a0` at `0070e651`, `007cb7d0`, options `007cc6e0`, Continue
-  `007ce7a0`, Quit's confirm page); the viewer quits on Escape.
+- DATA: the local map and the radio are implemented and seen live in the
+  viewer only (pictures, fog, colours, marker placement not compared with
+  the game). Not done: the radio's waveform picture (`MM_Waveform`),
+  Radio New Vegas's news lines seen live (only the station's enable path
+  is traced), challenges, waypoints on the local map, the custom marker
+  on the compass, `OutputLocalMapPictures`, `ToggleFogOfWar`.
+- Hot keys: the shared 2 key (Ammo Swap and the wheel's second slot) is
+  tested, not checked live.
 - Buttons moving, the PC button-label textures, held keys repeating,
   swapped mouse buttons (`+0x1b4c`), the game's own cursor speed (the
   system pointer is used).
