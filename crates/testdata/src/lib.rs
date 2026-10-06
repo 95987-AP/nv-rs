@@ -1481,6 +1481,14 @@ pub mod quest_ids {
     pub const REGENERATING: u32 = 0xB52;
     pub const REGENERATING_LINE: u32 = 0xB53;
     pub const DEFAULT_OBJECTS: u32 = 0xB54;
+    /// Caravan: `TestCardAce` (hearts ace), `TestCardQueen` (spades queen),
+    /// both with `TestCardScript` (the game's `CardAddToPlayerScript`:
+    /// `OnAdd`, held by the player, `AddCardToPlayer` and `RemoveMe`), and
+    /// `TestCaravanDeck` with both.
+    pub const CARD_ACE: u32 = 0xB55;
+    pub const CARD_QUEEN: u32 = 0xB56;
+    pub const CARD_SCRIPT: u32 = 0xB57;
+    pub const CARAVAN_DECK: u32 = 0xB58;
     /// Settings the perks' rules read (seven forms from here):
     /// `fPackRatThreshold` 2, `fPackRatModifier` 0.5, `fAgilityReloadBase`
     /// 5, `fAgilityReloadModifier` 0.1, `fDamageToWeaponValue` 0.2,
@@ -1584,6 +1592,20 @@ pub fn quests(tag: &str) -> TempData {
         "TestCaseBundleScript",
         "scn TestCaseBundleScript\nBegin OnAdd Player\n\tPlayer.AddItem TestCase 25\n\tRemoveMe\nEnd\n",
     );
+    scripts.extend(script(
+        CARD_SCRIPT,
+        "TestCardScript",
+        "scn TestCardScript
+begin OnAdd
+	if GetContainer != player
+		return
+	else
+		AddCardToPlayer
+		RemoveMe
+	endif
+end
+",
+    ));
     scripts.extend(script(
         KEEPSAKE_SCRIPT,
         "TestKeepsakeScript",
@@ -2860,6 +2882,28 @@ End
     plugin.extend(group(*b"DOOR", 0, &record(b"DOOR", DOOR, &door)));
     plugin.extend(group(*b"CONT", 0, &record(b"CONT", CHEST, &chest)));
     plugin.extend(group(*b"DIAL", 0, &dialogue));
+    // Caravan cards (suit, then value) and a deck.
+    let caravan_card = |id: u32, name: &str, suit: u32, value: u32| {
+        let mut d = edid(name);
+        d.extend(sub(b"FULL", &zstr(name)));
+        d.extend(sub(b"SCRI", &CARD_SCRIPT.to_le_bytes()));
+        d.extend(sub(b"INTV", &suit.to_le_bytes()));
+        d.extend(sub(b"INTV", &value.to_le_bytes()));
+        d.extend(sub(b"DATA", &2u32.to_le_bytes()));
+        record(b"CCRD", id, &d)
+    };
+    let mut cards = caravan_card(CARD_ACE, "TestCardAce", 1, 1);
+    cards.extend(caravan_card(CARD_QUEEN, "TestCardQueen", 2, 13));
+    plugin.extend(group(*b"CCRD", 0, &cards));
+    let mut caravan_deck = edid("TestCaravanDeck");
+    caravan_deck.extend(sub(b"FULL", &zstr("Test Deck")));
+    caravan_deck.extend(sub(b"CARD", &CARD_ACE.to_le_bytes()));
+    caravan_deck.extend(sub(b"CARD", &CARD_QUEEN.to_le_bytes()));
+    plugin.extend(group(
+        *b"CDCK",
+        0,
+        &record(b"CDCK", CARAVAN_DECK, &caravan_deck),
+    ));
     // The default objects: the Stimpak first.
     let mut objects = edid("DefaultObjectManager");
     let mut slots = STIMPAK.to_le_bytes().to_vec();

@@ -24,6 +24,7 @@ pub mod ai;
 pub mod animation;
 pub mod barter;
 pub mod body_parts;
+pub mod caravan;
 mod cell;
 pub mod chargen;
 pub mod combat;

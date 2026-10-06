@@ -443,6 +443,8 @@ pub struct GameState {
     /// What the second round of script functions keeps (ghosts, made
     /// references, challenges, damaged objects…; `world::more_functions`).
     pub more: crate::more_functions::State,
+    /// The player's Caravan cards and record (`world::caravan`).
+    pub caravan: crate::caravan::Collection,
     /// For the viewer: what to show or do, oldest first.
     pub events: Vec<Event>,
     /// Functions scripts called that aren't carried out yet, with counts,
@@ -3648,6 +3650,18 @@ impl<'a> Runner<'a> {
                     }
                 }
             }
+            // `005cf3d0`: the card (the item whose script runs, or the
+            // reference's base) joins the player's cards
+            // (`PlayerCharacter::AddCaravanCard`).
+            "AddCardToPlayer" => {
+                let card = match self.item {
+                    Some((_, item)) => Some(item),
+                    None => target.and_then(|r| base_of(self.order, r)),
+                };
+                if let Some(card) = card {
+                    crate::caravan::add_card_to_player(self.order, self.state, card);
+                }
+            }
             // `005ce5c0`: the one holding the item whose script this is
             // (the containing object, `0084e3a0`); 0 for a script that
             // isn't a held item's.
@@ -4001,6 +4015,7 @@ pub const HANDLED: &[&str] = &[
     "GetDetected",
     "GetContainer",
     "SetItemValue",
+    "AddCardToPlayer",
     "ForceActiveQuest",
     "SetEnemy",
     "SetAlly",
