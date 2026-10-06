@@ -75,6 +75,7 @@ impl NavMesh {
     /// A closed door's triangles (`006997e0`).
     // Translated from 006997e0 and 006987d0 (decompiled, FalloutNV.exe 1.4.0.525).
     pub fn add_closed_door(&mut self, door: FormId, boxes: &[DoorBox]) {
+        self.doors_closed.insert(door);
         for b in boxes {
             // The thinnest side, thinned (x, y; a thinnest z doesn't change
             // the sheet seen from above).
@@ -165,6 +166,7 @@ impl NavMesh {
     /// An opened door's triangles freed (`00699a30`).
     // Translated from 00699a30 (decompiled, FalloutNV.exe 1.4.0.525).
     pub fn remove_closed_door(&mut self, door: FormId) {
+        self.doors_closed.remove(&door);
         let mine: Vec<usize> = self
             .door_triangles
             .iter()
@@ -179,12 +181,9 @@ impl NavMesh {
         }
     }
 
-    /// The doors whose triangles are marked closed now.
+    /// The doors marked closed now (sorted).
     pub fn closed_doors(&self) -> Vec<FormId> {
-        let mut out: Vec<FormId> = self.door_triangles.values().copied().collect();
-        out.sort();
-        out.dedup();
-        out
+        self.doors_closed.iter().copied().collect()
     }
 }
 
@@ -271,5 +270,22 @@ mod tests {
         mesh.remove_closed_door(door);
         assert!(mesh.door_triangles.is_empty());
         assert!(mesh.triangles[4].flags & DOOR == 0);
+    }
+
+    #[test]
+    fn a_closed_door_over_no_triangle_still_counts_as_marked() {
+        let mut mesh = strip();
+        let gate = FormId(0x501);
+        // Far off the strip: covers nothing.
+        let leaf = DoorBox {
+            center: [5000.0, 5000.0, 50.0],
+            axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            half: [2.0, 50.0, 50.0],
+        };
+        mesh.add_closed_door(gate, &[leaf]);
+        assert!(mesh.door_triangles.is_empty());
+        assert_eq!(mesh.closed_doors(), vec![gate]);
+        mesh.remove_closed_door(gate);
+        assert!(mesh.closed_doors().is_empty());
     }
 }

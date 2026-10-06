@@ -1257,6 +1257,9 @@ pub struct NavMesh {
     /// Triangles under a closed door, flagged [`navsearch::DOOR`] at run
     /// time (`006997e0`, [`doors`]), by triangle: the door.
     pub door_triangles: HashMap<usize, FormId>,
+    /// The doors marked closed, including those over no triangle (a gate
+    /// standing off the navmesh), so they aren't marked again each frame.
+    pub doors_closed: std::collections::BTreeSet<FormId>,
     /// What walkers may do with each door now (`006a6fa0`'s door test):
     /// set by whoever knows the doors' locks; a door not listed is walked
     /// through.
