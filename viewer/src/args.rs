@@ -66,8 +66,12 @@ OPTIONS:
                             quests); screenshots then show it
     --pipboy-keys K[,K...]  for testing: once the Pip-Boy is up, press these
                             keys in it, one a frame: up, down, left, right,
-                            enter, a letter (r: ITEMS' Repair, x: Mod), or
-                            close (put it away)
+                            enter, a letter (r: ITEMS' Repair, x: Mod), padx
+                            or pady (Shift + Enter, Alt + Enter: the pad's
+                            X and Y, ITEMS' Drop with --pad), or close (put
+                            it away)
+    --pad                   for testing: the menus as with a 360 pad
+                            connected (its buttons shown)
     --vats [N]              for testing: open V.A.T.S. three seconds after
                             loading (as V does); with N, queue N attacks on
                             the part it opens on and play them
@@ -181,6 +185,8 @@ pub struct Args {
     pub pipboy: Option<String>,
     /// `--pipboy-keys`: keys to press in the Pip-Boy once it's up.
     pub pipboy_keys: Vec<String>,
+    /// `--pad`: the menus as with a pad connected.
+    pub pad: bool,
     /// `--lockpick REF`: try this lock once loaded.
     pub lockpick: Option<String>,
     /// `--open-menu`: a game menu to open once loaded (`name[:id]`).
@@ -250,6 +256,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut freeze_ai = false;
     let mut pipboy = None;
     let mut pipboy_keys = Vec::new();
+    let mut pad = false;
     let mut lockpick = None;
     let mut open_menu = None;
     let mut menu_pointer = None;
@@ -315,8 +322,10 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             "--pipboy-keys" => {
                 let v = value("--pipboy-keys")?;
                 for k in v.split(',').map(|k| k.trim().to_ascii_lowercase()) {
-                    let known = ["up", "down", "left", "right", "enter", "close"]
-                        .contains(&k.as_str())
+                    let known = [
+                        "up", "down", "left", "right", "enter", "padx", "pady", "close",
+                    ]
+                    .contains(&k.as_str())
                         || (k.len() == 1 && k.as_bytes()[0].is_ascii_lowercase());
                     if !known {
                         return Err(format!("--pipboy-keys: don't know the key '{k}'"));
@@ -324,6 +333,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
                     pipboy_keys.push(k);
                 }
             }
+            "--pad" => pad = true,
             "--open-menu" => open_menu = Some(value("--open-menu")?),
             "--menu-pointer" => {
                 let v = value("--menu-pointer")?;
@@ -410,6 +420,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             freeze_ai,
             pipboy,
             pipboy_keys,
+            pad,
             lockpick,
             open_menu,
             menu_pointer,

@@ -125,3 +125,30 @@ fn dropme_lands_in_the_world() {
     assert_eq!(made.len(), 1);
     assert!(state.item_scripts.iter().any(|s| s.holder == made[0]));
 }
+
+/// The Pip-Boy's Drop (`00780140` case 7): its refusals in the game's
+/// order (a quest item, something equipped mid-action, in the air), then
+/// "How many?" for more than `iInventoryAskQuantityAt` (5).
+#[test]
+fn the_pipboys_drop_refusals_and_how_many() {
+    let (_data, order) = order("drop-refusals");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let cup = FormId(CUP);
+    run(&order, &scripts, &mut state, "player.AddItem TestCup 6");
+    let refusal = |state: &GameState, acting, in_air| {
+        world::items::drop_refusal(&order, state, cup, acting, in_air)
+    };
+    assert_eq!(refusal(&state, true, false), None);
+    assert_eq!(refusal(&state, false, true), Some("sNoJumpWarning"));
+    state.equipped.entry(PLAYER_REF).or_default().push(cup);
+    assert_eq!(refusal(&state, false, false), None);
+    assert_eq!(
+        refusal(&state, true, true),
+        Some("sDropEquippedItemWarning")
+    );
+    run(&order, &scripts, &mut state, "SetQuestObject TestCup 1");
+    assert_eq!(refusal(&state, true, true), Some("sDropQuestItemWarning"));
+    assert!(!world::items::drop_asks(&order, 5));
+    assert!(world::items::drop_asks(&order, 6));
+}

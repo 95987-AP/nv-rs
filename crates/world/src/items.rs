@@ -218,6 +218,40 @@ pub fn cannot_read_in_combat(order: &LoadOrder, state: &GameState) -> Option<Str
     })
 }
 
+/// Why the player can't drop an item from the Pip-Boy (ITEMS' Drop,
+/// `00780140` case 7), as the game asks in turn: a quest item
+/// (`sDropQuestItemWarning`); an equipped one while they're in the middle
+/// of an action (`008a7570` not -1: `sDropEquippedItemWarning`); in the air
+/// (`009337b0`: `sNoJumpWarning`). The game's further checks, a worn item
+/// that can't come off (`sCantRemoveWornItem`) and no room in front of them
+/// (`009614b0`: `sNotEnoughRoomWarning`), aren't asked here. The setting
+/// whose text is shown.
+pub fn drop_refusal(
+    order: &LoadOrder,
+    state: &GameState,
+    item: FormId,
+    acting: bool,
+    in_air: bool,
+) -> Option<&'static str> {
+    if crate::script_functions::is_quest_item(order, state, item) {
+        return Some("sDropQuestItemWarning");
+    }
+    if acting && state.is_equipped(crate::dialogue::PLAYER_REF, item) {
+        return Some("sDropEquippedItemWarning");
+    }
+    if in_air {
+        return Some("sNoJumpWarning");
+    }
+    None
+}
+
+/// How many the Pip-Boy drops without asking (`00780140`: more than
+/// `iInventoryAskQuantityAt`, 5, asks "How many?"; fewer drop one).
+pub fn drop_asks(order: &LoadOrder, count: i32) -> bool {
+    let at = crate::scripting::game_setting(order, "iInventoryAskQuantityAt").unwrap_or(5.0);
+    count > at as i32
+}
+
 /// The player reads a skill book (read from the game's code, `00515040`
 /// and its caller `0088c830`): while the skill's permanent value is under
 /// 200, it rises by `fBookPerkBonus` (3; the exe's default 1) after the

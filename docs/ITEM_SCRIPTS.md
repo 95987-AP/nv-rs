@@ -86,14 +86,53 @@ removes it (as `PrimerShotshellAddScript`); a hat whose `OnEquip` /
   (`GameState::player_heading`) so things land in front of them.
 - Checks: `crates/world/tests/dropping.rs`.
 
+## The Pip-Boy's Drop
+
+- ITEMS' Drop is `IM_DropButton` (id 7), reached only through the pad's X:
+  the menu's `xbuttonx` refers to its `clicked`, and the button shows only
+  with `_Has360Controller` (it copies `IM_EquipButton`'s `visible`). The
+  exe sets that global from `004b71d0` (XInput's pad 0 connected,
+  `00709fd0`, and `[Interface] bDisable360Controller` off) as the menus
+  load (`0070adb0`) and when the pad comes or goes (`00719630`). Shift +
+  Enter is the pad's X on the keyboard (`0070c4a0` turns Enter with the
+  interface's flag 4 into 0xb for `0070f6e0`), which clicks the referred
+  tile only while it shows. Without a pad the PC has no other way: a
+  click on a row equips (`00780140` case 0x1d → `00780d60`), and moving
+  the mouse off a row lets the chosen item go (`00781620` → `00781b10`).
+- With an item chosen `00781680` makes the pad's buttons clickable
+  (`target`): Equip (6) as `_EquippableItem`, Drop (7) and Mod (19),
+  Hot Key (9) for anything but ammo; none without one.
+- The click (`00780140` case 7) refuses, as a corner message, in turn: a
+  quest item (form flag 0x400 through `TESForm` slot 0x94, `00401190`;
+  `sDropQuestItemWarning`), something equipped while the player is in
+  the middle of an action (`008a7570` not -1; `sDropEquippedItemWarning`),
+  the player in the air (the character controller's state 2, `009337b0`;
+  `sNoJumpWarning`), a worn item that can't come off (`00418b10`,
+  `00418ab0`; `sCantRemoveWornItem`), and no room in front of them
+  (`009614b0`; `sNotEnoughRoomWarning`). With the keyring open
+  (`_KeyringOpen`) it only plays `UIVATSInsufficientAP`. Then more than
+  `iInventoryAskQuantityAt` (5) asks "How many?" (`007aba00`, up to all
+  of them) and the answer is dropped (`00780c50`); fewer drop one.
+- Here: `world::items::drop_refusal` / `drop_asks`, `ui::pipboy`'s
+  `ItemsMenu::pad_button` and the buttons' `target`, `ui::game::set_pad`;
+  the viewer (`viewer/src/pipboy.rs`) says the refusal, drops one or asks
+  with the quantity menu (`game_menus::pipboy_drop`), and shows the pad's
+  buttons when Bevy sees a gamepad (or with `--pad`). Seen live in Doc
+  Mitchell's house with `--pad`: one of three Stimpaks dropped, then 9 of
+  10 through "How many?". Checks: `crates/world/tests/dropping.rs`,
+  `ui::pipboy::items` tests.
+
 ## Not done
 
-- The Pip-Boy's Drop button (ITEMS id 7, the X button: its refusals
-  `sDropQuestItemWarning`, `sDropEquippedItemWarning`, `sNoJumpWarning`,
-  `sCantRemoveWornItem`, `sNotEnoughRoomWarning`, and "how many?" inside
-  the Pip-Boy); the free spot the game's physics finds for the player's
-  drop (`009614b0`) and the fall; the inventory run stopping after
-  `RemoveMe` or `DropMe`.
+- The Pip-Boy's Drop: the player's current action (`008a7570`) isn't
+  tracked, so something equipped is never refused; nor are the worn item
+  that can't come off and the room in front (`sCantRemoveWornItem`,
+  `sNotEnoughRoomWarning`); the keyring isn't listed. "How many?" is
+  drawn flat over the screen, not on the Pip-Boy; the pad's own buttons
+  (A, X, Y) aren't read, only the keyboard's Shift + Enter.
+- The free spot the game's physics finds for the player's drop
+  (`009614b0`) and the fall; the inventory run stopping after `RemoveMe`
+  or `DropMe`.
 - Items held by others run only for their events; the game runs them with
   their holder's script run (`00565870`) when it's processed.
 - A crippled arm dropping its weapon doesn't send `OnUnequip`.

@@ -67,6 +67,12 @@ pub enum Menu {
     /// A level gained (`world::experience::level_up`): its skill points to
     /// share out, then a perk on perk levels.
     LevelUp(world::experience::LevelUp),
+    /// "How many?" for dropping an item from the Pip-Boy
+    /// (`game_menus::pipboy_drop`): the item and how many there are.
+    PipboyDrop {
+        item: FormId,
+        most: i32,
+    },
 }
 
 /// A menu on screen, with what's been chosen so far.
@@ -212,6 +218,7 @@ fn open(
         | Menu::Teammate(..)
         | Menu::CompanionWheel(..)
         | Menu::Caravan { .. }
+        | Menu::PipboyDrop { .. }
         | Menu::LevelUp(..)
         | Menu::Character(CharacterMenu::Traits { .. })
         | Menu::Character(CharacterMenu::TagSkills { .. })

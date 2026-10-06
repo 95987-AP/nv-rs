@@ -366,6 +366,22 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
     ("sNetTotalText", "Net Total: "),
     ("sPlaceCardText", "Place Card"),
     ("sDiscardSelectedText", "Discard Selected"),
+    // The Pip-Boy's Drop (`00780140` case 7; objects `011d47a4`, `011d22c8`,
+    // `011d43e4`, `011d31f8`, `011d3d30`).
+    (
+        "sDropQuestItemWarning",
+        "You cannot remove Quest Items from your Inventory.",
+    ),
+    (
+        "sDropEquippedItemWarning",
+        "You cannot drop an equipped item until you complete your current action.",
+    ),
+    ("sNoJumpWarning", "You can not drop objects while in the air."),
+    ("sCantRemoveWornItem", "Unable to remove the worn item."),
+    (
+        "sNotEnoughRoomWarning",
+        "You do not have enough room to drop this object.",
+    ),
 ];
 
 /// A text setting's exe default (see [`EXE_TEXT_SETTINGS`]), name compared
@@ -470,6 +486,20 @@ pub fn new_ui(
         }
     }
     ui
+}
+
+/// Whether a 360 pad is in use, as `globals()`' `_Has360Controller`: the
+/// exe sets it as the menus load (`0070adb0`) and again when the pad
+/// comes or goes (`00719630`), from `004b71d0`: XInput's pad 0 connected
+/// (`00709fd0`) and `[Interface] bDisable360Controller` off. The pad-only
+/// buttons follow it (ITEMS' Equip and Drop).
+pub fn set_pad(ui: &mut Ui, pad: bool) {
+    let Some(globals) = ui.globals else {
+        return;
+    };
+    if let Some(id) = ui.names.lookup_or_add("_Has360Controller") {
+        ui.set_number(globals, id, if pad { 1.0 } else { 0.0 });
+    }
 }
 
 /// `[Interface] fMenuBackgroundOpacity`'s default in the exe.

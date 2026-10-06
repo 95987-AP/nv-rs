@@ -132,6 +132,11 @@ pub struct StartPipboy(pub Option<String>);
 #[derive(Resource, Default)]
 pub struct StartPipboyKeys(pub Vec<String>);
 
+/// `--pad`: the menus as with a 360 pad connected (for testing what only
+/// shows with one).
+#[derive(Resource, Default)]
+pub struct PretendPad(pub bool);
+
 /// A `--pipboy-keys` name as the key the menus get.
 fn named_key(name: &str) -> Option<Key> {
     Some(match name {
@@ -140,6 +145,8 @@ fn named_key(name: &str) -> Option<Key> {
         "left" => Key::Left,
         "right" => Key::Right,
         "enter" => Key::Activate,
+        "padx" => Key::ButtonX,
+        "pady" => Key::ButtonY,
         k if k.len() == 1 => Key::Letter(k.chars().next()?),
         _ => return None,
     })
@@ -191,6 +198,8 @@ struct Built {
     font_images: HashMap<(usize, u32), Option<Handle<Image>>>,
     last: Vec<DrawItem>,
     drawn: Vec<(Entity, Handle<Mesh>, Handle<TileMaterial>)>,
+    /// Whether its menus show a pad's buttons (`ui::game::set_pad`).
+    pad: bool,
 }
 
 /// The arm on screen.
@@ -391,6 +400,7 @@ fn build(game: &cellview::Game) -> Result<Built, String> {
         font_images: HashMap::new(),
         last: Vec::new(),
         drawn: Vec::new(),
+        pad: false,
     })
 }
 
@@ -512,6 +522,10 @@ fn pipboy_keys(
     let free = !menus.others_open() && conversation.0.is_none();
 
     if pipboy.open {
+        // A menu over it (the drop's "How many?") has the keys.
+        if menus.game_open {
+            return;
+        }
         // The Pip-Boy control again puts it away.
         if keys.just_pressed(KeyCode::Tab) {
             close(
@@ -642,6 +656,28 @@ fn pipboy_keys(
                     state.unequip_item(order, PLAYER_REF, item);
                 } else {
                     state.equip(order, PLAYER_REF, item);
+                }
+            }
+            // ITEMS' Drop (`00780140` case 7): the game's refusals as a
+            // corner message (`007052f0`); then more than
+            // `iInventoryAskQuantityAt` asks "How many?" (`007aba00`),
+            // fewer drop one (`00780c50(1)`). The player's current action
+            // (`008a7570`, for something equipped) isn't tracked here.
+            Action::Drop(form) => {
+                let item = FormId(form);
+                let in_air = player.walking && !player.character.on_ground;
+                if let Some(setting) = world::items::drop_refusal(order, state, item, false, in_air)
+                {
+                    say(world::scripting::game_setting_text(order, setting)
+                        .or_else(|| ui::game::exe_text_setting(setting).map(str::to_string))
+                        .unwrap_or_default());
+                    continue;
+                }
+                let count = state.item_count(order, PLAYER_REF, item);
+                if world::items::drop_asks(order, count) {
+                    menus.push(crate::menus::Menu::PipboyDrop { item, most: count });
+                } else if count > 0 && state.drop_item(order, PLAYER_REF, item, 1).is_some() {
+                    println!("Dropped {item}.");
                 }
             }
             Action::Use(form) => {
@@ -817,6 +853,8 @@ fn update_pipboy(
     mut transforms: Query<&mut Transform, (Without<FlyCamera>, Without<PipboyCamera>)>,
     mut visibility: Query<&mut Visibility>,
     piece_materials: Query<&MeshMaterial3d<GameLitMaterial>>,
+    pads: Query<(), With<Gamepad>>,
+    pretend_pad: Res<PretendPad>,
 ) {
     let Around {
         time,
@@ -922,6 +960,13 @@ fn update_pipboy(
     let Some(b) = pipboy.built.as_mut() else {
         return;
     };
+    // A pad connected shows its buttons (`00719630`; Bevy's gamepads stand
+    // for XInput's pad 0, `bDisable360Controller` isn't read).
+    let pad = pretend_pad.0 || !pads.is_empty();
+    if b.pad != pad {
+        ui::game::set_pad(&mut b.ui, pad);
+        b.pad = pad;
+    }
 
     // The hum while it's up.
     if pipboy.open && pipboy.hum.is_none() {

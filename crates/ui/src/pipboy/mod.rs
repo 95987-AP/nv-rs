@@ -256,6 +256,10 @@ pub enum Action {
     /// Equip or take off an item, or use it (aid, books).
     Equip(u32),
     Use(u32),
+    /// Drop an item (ITEMS' Drop, id 7, `00780140` case 7): the game's
+    /// refusals, then one dropped or "How many?" (`world::items::drop_refusal`,
+    /// `drop_asks`).
+    Drop(u32),
     /// Fast travel to a map marker (its reference).
     Travel(u32),
     /// Make a quest the active one.
@@ -459,6 +463,13 @@ impl Pipboy {
                     out.extend(self.click(ui, id, input));
                 }
             }
+            Key::ButtonX | Key::ButtonY if self.section == Section::Items => {
+                match self.items.pad_button(ui, key) {
+                    items::PadPress::Click(id) => out.extend(self.click(ui, id, input)),
+                    items::PadPress::Refused => out.push(Action::Sound("UIMenuCancel".into())),
+                    items::PadPress::Nothing => {}
+                }
+            }
             _ => match self.section {
                 Section::Stats => out.extend(self.stats.key(ui, key, input)),
                 Section::Items => out.extend(self.items.key(ui, key, input)),
@@ -494,6 +505,11 @@ impl Pipboy {
                     Action::OpenRepair(item.form),
                 ],
                 _ => Vec::new(),
+            },
+            // Drop (7) on the chosen item (`00780140` case 7).
+            Section::Items if id == 7 => match self.items.chosen(input) {
+                Some(item) => vec![Action::Drop(item.form)],
+                None => Vec::new(),
             },
             // Mod (19) on a chosen weapon (`00780140` case 0x13):
             // `UIMenuMode`, the mod screen.

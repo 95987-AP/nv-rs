@@ -24,6 +24,7 @@ pub mod dialog;
 pub mod hacking;
 pub mod levelup;
 pub(crate) mod message;
+pub mod pipboy_drop;
 pub mod repair;
 pub mod sleepwait;
 pub mod textedit;
@@ -82,6 +83,8 @@ pub struct Screen {
     rest_down: bool,
     /// The pointer this frame, in menu units.
     pub pointer: Option<(f32, f32)>,
+    /// The item the Pip-Boy's "How many?" is dropping (`pipboy_drop`).
+    pub pipboy_drop: Option<esm::FormId>,
     sizes: HashMap<String, Option<(u32, u32)>>,
     atlases: HashMap<String, Option<ui::Atlas>>,
 }
@@ -380,6 +383,7 @@ impl Screen {
             fader,
             rest_down: false,
             pointer: None,
+            pipboy_drop: None,
             sizes: HashMap::new(),
             atlases: HashMap::new(),
         }
@@ -491,6 +495,7 @@ pub fn takes(m: &crate::menus::Menu) -> bool {
         || repair::takes(m)
         || companion_wheel::takes(m)
         || caravan::takes(m)
+        || pipboy_drop::takes(m)
         || levelup::takes(m)
         || traits::takes(m)
         || chargen::takes(m)
@@ -567,6 +572,8 @@ fn open_menus(
             companion_wheel::open(screen, &game.0, &scripts.0, &mut state.0, request);
         } else if caravan::takes(&request) {
             caravan::open(screen, &game.0, &mut state.0, request);
+        } else if pipboy_drop::takes(&request) {
+            pipboy_drop::open(screen, &game.0, request);
         } else {
             sounds
                 .0
@@ -848,7 +855,11 @@ fn run_open_menus(
         rest_pressed,
         rest_held,
     ));
-    // What the menus did.
+    // What the menus did (the Pip-Boy's drop first: Caravan takes any
+    // quantity answer).
+    sounds
+        .0
+        .extend(pipboy_drop::after(screen, &game.0, &mut state.0));
     let order = &game.0.order;
     message::after(&mut screen.open, &mut state.0, &mut sounds, order);
     sounds
