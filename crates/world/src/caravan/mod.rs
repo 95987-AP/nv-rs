@@ -6,7 +6,8 @@
 //!   2 spades, 3 diamonds, 4 clubs, 5 blank), the second the value (1 ace,
 //!   2..10, 12 jack, 13 queen, 14 king, 15 joker) (`TESCaravanCard::Load`).
 //!   Decks (`CDCK`): their `CARD`s.
-//! - The player's cards (`PlayerCharacter` +0x624 and +0x628, the inactive
+//! - The player's cards (`PlayerCharacter` +0x614 and +0x618 on PC, the
+//!   Xbox's +0x624 and +0x628: the inactive
 //!   and active lists): `AddCardToPlayer` (`005cf3d0` → `00969bc0`,
 //!   `PlayerCharacter::AddCaravanCard`) puts a card form in the inactive
 //!   list unless it's in either already; the deck the player plays with is

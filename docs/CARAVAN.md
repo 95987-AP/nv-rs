@@ -10,7 +10,11 @@ The PC exe inlines most of the game into the menu's update (`00741500`,
 26 KB). The Xbox 360 build's PDB names its parts, and its code
 (decompiled from `Fallout_Release_MemDebug.xex`, section 4 at
 `0x82250000`) was matched to the PC's piece by piece; both use the same
-member offsets (`trackInfo` at +0xDE4, the tracks at +0xB44).
+member offsets (`trackInfo` at +0xDE4, the tracks at +0xB44) up to
++0xE7C; the PC adds a field at +0xE80 (the arrow key waiting, written by
+`00749360`), so the Xbox's later members are 4 further on (its
+`bContinueProcessing` +0xE82 is the PC's +0xE86, set to 1 by the
+constructor `0073b7e0`).
 
 ## Read from the game
 
@@ -37,8 +41,9 @@ member offsets (`trackInfo` at +0xDE4, the tracks at +0xB44).
   diamonds, 4 clubs, 5 blank), the second the value (1 ace, 2–10, 12 jack,
   13 queen, 14 king, 15 joker); `TX00`/`TX01` the face and back. Decks
   (`CDCK`): `CARD`s.
-- The player's cards are two lists on the player (+0x624 outside the
-  deck, +0x628 in it), not things carried: a card's script
+- The player's cards are two lists on the player (PC +0x614 outside the
+  deck, +0x618 in it, `00969bc0`; the Xbox's +0x624 and +0x628), not
+  things carried: a card's script
   (`CardAddToPlayerScript`) calls `AddCardToPlayer` when the player picks it
   up and `RemoveMe`. A card already in either list isn't added again. The
   player plays with at least 30 cards (`UpdateCaravanFlags`).
@@ -73,7 +78,7 @@ member offsets (`trackInfo` at +0xDE4, the tracks at +0xB44).
   suit, on any track.
 - Throwing away a card draws one; throwing away a whole track empties it
   (state 15).
-- Turns (state 21, the byte at +0xE82): the opponent moves first, then
+- Turns (state 21, the byte at PC +0xE86): the opponent moves first, then
   each in turn; a card thrown away while starting the caravans keeps the
   turn.
 - The opponent (`ProcessAI`, `0074fdc0`; `CaravanAIPackage`): every move it
