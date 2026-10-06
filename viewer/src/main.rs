@@ -209,6 +209,8 @@ fn main() {
         .init_resource::<scripts::Notices>()
         .init_resource::<combat::ObjectShots>()
         .init_resource::<swaps::TextureSwaps>()
+        .init_resource::<TextureCache>()
+        .init_resource::<MaterialCache>()
         .insert_resource(scripts::StartStage(args.stage.clone()))
         .insert_resource(scripts::StartCommands(args.run.clone()))
         .insert_resource(viewmodel::StartWeapon(args.weapon.clone()))
@@ -260,10 +262,19 @@ fn main() {
             wait: args.wait,
             waited: 0.0,
         })
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(window),
-            ..default()
-        }))
+        .add_plugins({
+            let plugins = DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(window),
+                ..default()
+            });
+            // Drawing on its own thread (Bevy's default) or in step with
+            // the game's frame (`NV_SYNC_RENDER`).
+            if std::env::var_os("NV_SYNC_RENDER").is_some() {
+                plugins.disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>()
+            } else {
+                plugins
+            }
+        })
         .insert_resource(hud::ShowHud(args.hud))
         .insert_resource(ai::FrozenAi(args.freeze_ai))
         .insert_resource(game_menus::StartMenu(args.open_menu.clone()))
@@ -1200,6 +1211,17 @@ fn setup(mut commands: Commands) {
     ));
 }
 
+/// Textures uploaded, by what they are.
+#[derive(Resource, Default)]
+pub struct TextureCache(std::collections::HashMap<String, Option<Handle<Image>>>);
+
+/// Materials made, by what's in them, and how many times one was reused.
+#[derive(Resource, Default)]
+pub struct MaterialCache(
+    std::collections::HashMap<String, Handle<GameLitMaterial>>,
+    usize,
+);
+
 /// What putting a loaded place on screen needs.
 #[derive(SystemParam)]
 pub struct Spawner<'w, 's> {
@@ -1216,6 +1238,8 @@ pub struct Spawner<'w, 's> {
     place_lighting: ResMut<'w, viewmodel::PlaceLighting>,
     water: water::WaterSpawn<'w>,
     particle_materials: ResMut<'w, Assets<particles::ParticleMaterial>>,
+    texture_cache: ResMut<'w, TextureCache>,
+    material_cache: ResMut<'w, MaterialCache>,
 }
 
 impl Spawner<'_, '_> {
@@ -1277,10 +1301,28 @@ impl Spawner<'_, '_> {
             .as_ref()
             .is_none_or(|d| d.features().contains(WgpuFeatures::TEXTURE_COMPRESSION_BC));
         let anisotropy = self.settings.anisotropy;
+        // A texture a place already uploaded isn't uploaded again for the
+        // next (every square of a town uses the same few hundred).
         let textures: Vec<Option<Handle<Image>>> = scene
             .textures
             .iter()
-            .map(|t| upload_texture(&mut self.images, t, compressed, anisotropy))
+            .map(|t| {
+                let key = format!(
+                    "{}|{}|{}|{}x{}|{}",
+                    t.path.to_ascii_lowercase(),
+                    t.linear,
+                    t.layers,
+                    t.width,
+                    t.height,
+                    t.mip_levels
+                );
+                if let Some(found) = self.texture_cache.0.get(&key) {
+                    return found.clone();
+                }
+                let up = upload_texture(&mut self.images, t, compressed, anisotropy);
+                self.texture_cache.0.insert(key, up.clone());
+                up
+            })
             .collect();
         if scene.lights.len() > MAX_LIGHTS {
             println!(
@@ -1324,12 +1366,32 @@ impl Spawner<'_, '_> {
                     None,
                 ),
             };
-            let material = self
-                .lit_materials
-                .add(lit_material(data, &textures, lighting));
+            // The same material (same textures, same settings, same light)
+            // is one material, not one for each square that uses it.
+            let made = lit_material(data, &textures, lighting);
+            let key = format!("{made:?}|{:?}", data.material.emittance);
+            let found = self.material_cache.0.get(&key).cloned();
+            let material = match found {
+                Some(found) => {
+                    self.material_cache.1 += 1;
+                    found
+                }
+                None => {
+                    let handle = self.lit_materials.add(made);
+                    self.material_cache.0.insert(key, handle.clone());
+                    handle
+                }
+            };
             pieces.push((mesh, material));
             binds.push(bind);
         }
+        println!(
+            "  materials: {} made, {} kept for reuse, {} reused here; textures kept: {}",
+            pieces.len(),
+            self.material_cache.0.len(),
+            self.material_cache.1,
+            self.texture_cache.0.len()
+        );
         let actor_joints: Vec<(Entity, Vec<Entity>)> = scene
             .actors
             .iter()

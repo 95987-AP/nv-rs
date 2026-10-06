@@ -135,6 +135,30 @@ impl Animations for Anims<'_> {
     }
 }
 
+/// Where the player sits on a piece of furniture, and facing which way
+/// (radians clockwise from north): the sit marker nearest them, as an
+/// actor's is chosen, and the game's settled position for it. `None` for
+/// furniture without a sit marker.
+pub fn player_seat(
+    seats: &mut Seats,
+    game: &cellview::Game,
+    state: &GameState,
+    furniture_ref: FormId,
+    from: [f32; 3],
+) -> Option<([f32; 3], f32)> {
+    let order = &game.order;
+    let base = world::scripting::base_of(order, furniture_ref)?;
+    seats.markers(game, base);
+    let (placed, flags) = placed_markers(order, state, &seats.markers, furniture_ref)?;
+    let sit: Vec<_> = placed
+        .into_iter()
+        .filter(|m| furniture::is_sit_marker(m.number))
+        .collect();
+    let marker = furniture::nearest_free(&sit, flags, |_| false, from)?;
+    let settings = seats.marker_settings(order, marker.number);
+    Some(furniture::seat(&marker, &settings, 1.0))
+}
+
 /// A placed reference's scale (`XSCL`, else 1).
 fn reference_scale(order: &LoadOrder, reference: FormId) -> f32 {
     order

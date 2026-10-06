@@ -53,6 +53,9 @@ pub struct Player {
     pub ready: bool,
     /// Dropped from the free camera (F): the landing does no damage.
     from_camera: bool,
+    /// Sitting on furniture (E on it): where they stood before. Movement
+    /// keys stand them up there.
+    seat: Option<[f32; 3]>,
 }
 
 impl Player {
@@ -63,6 +66,7 @@ impl Player {
             start: [0.0; 3],
             ready: true,
             from_camera: false,
+            seat: None,
         }
     }
 
@@ -161,8 +165,9 @@ pub fn walk(
     game: Res<GameFiles>,
     mut state: ResMut<crate::dialogue::DialogueState>,
     mut player: ResMut<Player>,
-    mut cameras: Query<(&mut Transform, &FlyCamera)>,
+    mut cameras: Query<(&mut Transform, &mut FlyCamera)>,
     walkers: Query<&crate::ai::Walker>,
+    mut seats: ResMut<crate::sitting::Seats>,
 ) {
     if !player.walking || !player.ready {
         return;
@@ -170,9 +175,53 @@ pub fn walk(
     collision.0.set_people(people(&walkers, &state.0));
     let locked = state.0.controls_off[world::scripting::controls::MOVEMENT]
         || state.0.dead.contains(&world::dialogue::PLAYER_REF);
-    let Ok((mut transform, camera)) = cameras.single_mut() else {
+    let Ok((mut transform, mut camera)) = cameras.single_mut() else {
         return;
     };
+    // Sitting: a script's `Activate` or E on furniture puts the player in
+    // the seat (`state.furniture`); a movement key, or a script having them
+    // stand, gets them up where they stood.
+    let sitting_on = state.0.furniture.get(&world::dialogue::PLAYER_REF).copied();
+    match (sitting_on, player.seat) {
+        (Some(furniture), None) => {
+            let feet = player.character.feet;
+            if let Some((at, heading)) =
+                crate::sitting::player_seat(&mut seats, &game.0, &state.0, furniture, feet)
+            {
+                player.seat = Some(feet);
+                player.character = Character::new(at);
+                camera.yaw = space::heading_to_yaw(heading);
+            } else {
+                // No sit marker to take: scripts see them seated where they are.
+                player.seat = Some(feet);
+            }
+        }
+        (None, Some(stood)) => {
+            player.character = Character::new(stood);
+            player.seat = None;
+        }
+        _ => {}
+    }
+    if let Some(stood) = player.seat {
+        let leave = [
+            KeyCode::KeyW,
+            KeyCode::KeyA,
+            KeyCode::KeyS,
+            KeyCode::KeyD,
+            KeyCode::Space,
+        ]
+        .iter()
+        .any(|k| keys.just_pressed(*k));
+        if leave && !locked {
+            state.0.stand(world::dialogue::PLAYER_REF);
+            player.character = Character::new(stood);
+            player.seat = None;
+        } else {
+            let [x, y, z] = player.character.feet;
+            transform.translation = Vec3::from(space::point([x, y, z + EYE_HEIGHT * SEATED_EYE]));
+            return;
+        }
+    }
     // Home: back to where the place started the player (R reloads).
     if keys.just_pressed(KeyCode::Home) {
         let start = player.start;
@@ -269,6 +318,9 @@ pub fn walk(
     let [x, y, z] = player.character.feet;
     transform.translation = Vec3::from(space::point([x, y, z + EYE_HEIGHT]));
 }
+
+/// A seated player's eye, as a part of the standing one (a guess).
+const SEATED_EYE: f32 = 0.68;
 
 /// The load door the view is on, within reach and not behind a wall.
 pub(crate) fn door_in_view<'a>(

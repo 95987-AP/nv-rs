@@ -914,10 +914,27 @@ pub fn hurt(
     if state.dead.contains(&who) || amount <= 0.0 {
         return false;
     }
+    // Someone essential who is down takes no more harm (until a script
+    // takes the flag off them: then they can be killed on the ground).
+    if state.more.down.contains_key(&who) && crate::more_functions::is_essential(order, state, who)
+    {
+        return false;
+    }
     *state.damage.entry(who).or_insert(0.0) += amount;
     state.last_blow.insert(who, (by, amount));
     crate::experience::count_damage(state, who, by, amount);
     if health(order, state, who).is_some_and(|h| h <= 0.0) {
+        // Essential people (not the player) don't die: they go down, and
+        // get up after [`DOWN_SECONDS`] (the time and the health they
+        // get up with aren't traced).
+        if who != PLAYER_REF && crate::more_functions::is_essential(order, state, who) {
+            state.more.down.insert(who, DOWN_SECONDS);
+            state.combat.remove(&who);
+            state.combat.retain(|_, target| *target != who);
+            state.events.push(Event::KnockedOut { who });
+            return false;
+        }
+        state.more.down.remove(&who);
         state.dead.insert(who);
         // The dead stop fighting, and nobody fights them any more.
         state.combat.remove(&who);
@@ -941,6 +958,37 @@ pub fn hurt(
         return true;
     }
     false
+}
+
+/// How long an essential person stays down (a guess: not traced).
+pub const DOWN_SECONDS: f32 = 12.0;
+
+/// What an essential person gets up with, of their full health (a guess).
+const GET_UP_HEALTH: f64 = 0.25;
+
+/// Those who are down count their seconds; at 0 they get up with some
+/// health (`Event::GotUp`).
+pub fn advance_down(order: &LoadOrder, state: &mut GameState, seconds: f32) {
+    if state.more.down.is_empty() {
+        return;
+    }
+    let mut up = Vec::new();
+    for (who, left) in state.more.down.iter_mut() {
+        *left -= seconds;
+        if *left <= 0.0 {
+            up.push(*who);
+        }
+    }
+    for who in up {
+        state.more.down.remove(&who);
+        if state.dead.contains(&who) {
+            continue;
+        }
+        if let Some(full) = max_health(order, state, who) {
+            state.damage.insert(who, full * (1.0 - GET_UP_HEALTH));
+        }
+        state.events.push(Event::GotUp { who });
+    }
 }
 
 /// How hard a killing hit throws the body, as a change of speed every body

@@ -242,6 +242,28 @@ pub fn door_opens(
     opened
 }
 
+/// The player's teammates come with them through a door or a move to
+/// another place: they're where the player is (and walk to their follow
+/// distance there). Those still in the same world stay where they are.
+fn bring_teammates(order: &esm::LoadOrder, state: &mut world::scripting::GameState) {
+    let (Some(at), Some(cell)) = (state.player_position, state.player_cell) else {
+        return;
+    };
+    let space = state.player_world.unwrap_or(cell);
+    for t in state.teammates.clone() {
+        if state.dead.contains(&t) || state.more.down.contains_key(&t) {
+            continue;
+        }
+        if state.place(order, t).is_some_and(|p| p.0 == space) {
+            continue;
+        }
+        state.spaces.insert(t, (space, cell));
+        state.positions.insert(t, (at, 0.0));
+        state.evaluate.insert(t);
+        println!("{t} comes along.");
+    }
+}
+
 /// The scripted objects where the player now is: a new place runs their
 /// `OnLoad` blocks.
 fn refresh_cell_scripts(
@@ -255,6 +277,7 @@ fn refresh_cell_scripts(
         return;
     }
     cell_scripts.cell = state.player_cell;
+    bring_teammates(order, state);
     cell_scripts.inside.clear();
     cell_scripts.refs = match (state.player_cell, outdoors) {
         (Some(_), Some((grid, square))) => {
@@ -1058,6 +1081,8 @@ pub fn run_scripts(
             } else {
                 format!("{} was killed by {}.", name(who), name(by))
             }),
+            Event::KnockedOut { who } => Some(format!("{} is down.", name(who))),
+            Event::GotUp { who } => Some(format!("{} gets up.", name(who))),
             Event::Journal { quest, text } => Some(format!("{}: {text}", name(quest))),
             Event::Objective {
                 text, completed, ..

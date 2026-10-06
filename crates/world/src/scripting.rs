@@ -889,6 +889,15 @@ pub enum Event {
         who: FormId,
         by: FormId,
     },
+    /// Someone essential was brought to 0 health: they go down instead of
+    /// dying (`world::combat::hurt`).
+    KnockedOut {
+        who: FormId,
+    },
+    /// Someone who was down gets up (`world::combat::advance_down`).
+    GotUp {
+        who: FormId,
+    },
     /// `PlayGroup`: an animation group (by the game's name: `Forward`,
     /// `Open`, `SpecialIdle`…) to play on a person or an object's model,
     /// with the script's flags (`005c0df0`: not 0 blends it in over flags ×
@@ -1687,7 +1696,16 @@ impl Facts<'_> {
             "GetCombatTarget" => f64::from(s.combat.get(&on?).map_or(0, |t| t.0)),
             // True of a new game, where nobody wins at the casinos or has
             // a reputation yet (hardcore: `world::living`).
-            "HasBeenEaten" | "GetCasinoWinningsLevel" | "GetKnockedState" => 0.0,
+            "HasBeenEaten" | "GetCasinoWinningsLevel" => 0.0,
+            // Knock state 2 (as `PushActorAway` leaves it) for someone
+            // essential brought down.
+            "GetKnockedState" => {
+                if s.more.down.contains_key(&on?) {
+                    2.0
+                } else {
+                    0.0
+                }
+            }
             // The process's flag (`00915d40`; nobody without one: 0).
             "IsWeaponOut" => flag(s.weapon_out.contains(&on?)),
             // Reputations (`world::reputation`); a type or axis out of
@@ -3264,8 +3282,9 @@ impl<'a> Runner<'a> {
                 }
                 let events = &mut self.state.events;
                 events.push(Event::Activate { what, by });
-                // Someone else using furniture sits in it.
-                if let Some(who) = by.filter(|&w| w != PLAYER_REF && w.0 != 0) {
+                // Someone using furniture sits in it (the player's seat
+                // is taken by the viewer: `walk`).
+                if let Some(who) = by.filter(|&w| w.0 != 0) {
                     if GameState::is_furniture(self.order, what) {
                         self.state.sit(who, what);
                     }

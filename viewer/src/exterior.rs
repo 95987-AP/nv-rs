@@ -21,10 +21,10 @@ use crate::{FlyCamera, GameFiles, Grading, SceneEntity, Spawner};
 /// Squares loaded on every side of the player's: `uGridsToLoad` 5 → 2.
 pub const LOAD_RADIUS_DEFAULT: i32 = 2;
 
-/// Worlds too dense for the graphics to hold 25 squares at once (Dead
-/// Money's Residential District lost the device on a laptop GPU within
-/// seconds): they load one square on every side.
-const DENSE_WORLDS: [&str; 1] = ["NVDLC01VillaDean"];
+/// Worlds that load fewer squares than the default (none now: Dead Money's
+/// Residential District needed one on a laptop GPU until places shared
+/// their textures and materials, see `TextureCache`).
+const DENSE_WORLDS: [&str; 0] = [];
 
 static RADIUS_NOW: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
@@ -475,8 +475,9 @@ pub fn stream_squares(
         // their doors have them once the collider is in place).
         swing_doors.read_settings(&game.0.settings);
         swing_doors.replace(swing.into_iter(), &mut state.0);
-        // Every square takes the loaded lights that reach it, its
-        // neighbours' too.
+        // Every square takes the loaded lights that reach the player's
+        // square (squares share their materials, so they share the list:
+        // what's near the player is lit right, what's far is fogged).
         let all: Vec<cellview::LightData> = exterior
             .squares
             .values()
@@ -486,9 +487,9 @@ pub fn stream_squares(
             })
             .flatten()
             .collect();
-        for (&at, state) in &exterior.squares {
+        let lights = cellview::lights_reaching(here, &all, crate::lighting::MAX_LIGHTS);
+        for state in exterior.squares.values() {
             if let Square::Loaded { spawned, .. } = state {
-                let lights = cellview::lights_reaching(at, &all, crate::lighting::MAX_LIGHTS);
                 spawner.relight(spawned, &lights);
             }
         }

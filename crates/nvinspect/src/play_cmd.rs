@@ -1131,6 +1131,8 @@ pub fn play(
             ),
             Event::CharacterMenu(m) => format!("character menu opened: {m:?}"),
             Event::Barter(m) => format!("trading with {}", describe_id(order, *m)),
+            Event::KnockedOut { who } => format!("{} is down", describe_id(order, *who)),
+            Event::GotUp { who } => format!("{} gets up", describe_id(order, *who)),
             Event::Died { who, by } => format!(
                 "{} killed by {}",
                 describe_id(order, *who),

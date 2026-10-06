@@ -68,6 +68,80 @@ fn ghosts_have_no_reaction_to_hits() {
 }
 
 #[test]
+fn essential_people_go_down_instead_of_dying_and_get_up() {
+    let (_data, order) = order("more-flags");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let who = FormId(PERSON_REF);
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.SetActorRefEssential 1",
+    );
+    // A blow far past their health: down, not dead.
+    let dead = world::combat::hurt(&order, &mut state, who, 100000.0, PLAYER_REF);
+    assert!(!dead);
+    assert!(!state.dead.contains(&who));
+    assert!(state.more.down.contains_key(&who));
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "PersonRef.GetKnockedState"),
+        2.0
+    );
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "PersonRef.IsAnimPlaying"),
+        0.0
+    );
+    // Down, they take no more harm while essential.
+    assert!(!world::combat::hurt(
+        &order, &mut state, who, 100000.0, PLAYER_REF
+    ));
+    // Time passes: they get up with some health.
+    world::combat::advance_down(&order, &mut state, world::combat::DOWN_SECONDS + 1.0);
+    assert!(state.more.down.is_empty());
+    assert!(world::combat::health(&order, &state, who).is_some_and(|h| h > 0.0));
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "PersonRef.GetKnockedState"),
+        0.0
+    );
+    // Down again; a script takes the flag off: the next blow kills.
+    world::combat::hurt(&order, &mut state, who, 100000.0, PLAYER_REF);
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.SetActorRefEssential 0",
+    );
+    assert!(world::combat::hurt(
+        &order, &mut state, who, 100000.0, PLAYER_REF
+    ));
+    assert!(state.dead.contains(&who));
+    assert!(state.more.down.is_empty());
+}
+
+#[test]
+fn teammates_follow_the_player_when_they_have_nothing_to_do() {
+    let (_data, order) = order("more-flags");
+    let mut state = new_game(&order);
+    let who = FormId(PERSON_REF);
+    let before = world::ai::current_package(&order, &state, who);
+    assert!(before
+        .as_ref()
+        .is_none_or(|p| p.kind != world::ai::kinds::FOLLOW));
+    state.teammates.insert(who);
+    let package = world::ai::current_package(&order, &state, who).unwrap();
+    assert_eq!(package.kind, world::ai::kinds::FOLLOW);
+    assert_eq!(
+        world::ai::followed(&package),
+        Some((PLAYER_REF, world::ai::TEAMMATE_DISTANCE as f32))
+    );
+    // The dead don't.
+    state.dead.insert(who);
+    assert!(world::ai::current_package(&order, &state, who)
+        .is_none_or(|p| p.kind != world::ai::kinds::FOLLOW));
+}
+
+#[test]
 fn alpha_alert_essential_and_subtitles() {
     let (_data, order) = order("more-flags");
     let scripts = ScriptCache::default();
