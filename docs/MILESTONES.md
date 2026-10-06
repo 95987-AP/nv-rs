@@ -270,6 +270,19 @@ units (was 10/10). Generated regressions pass; not compared with the
 original. Evidence and gaps: [NPC_COMBAT.md](NPC_COMBAT.md). **Next
 action:** record ganger hit rates at range in the original game.
 
+M2 blocker batch (`claude/m2-long-paths`, 2026-10-06): long outdoor
+walks. The game's high-level route over the navmesh info map (`NAVI`,
+`NavMeshInfoSearch` (Xbox PDB) `006b8c50`/`006b8490`), the detailed path
+only over attached cells (`006c9fc0`) and the virtual handler's node walk
+out of sight (`009ea8a0`) are traced and implemented; the viewer's
+navmesh is now the attached cells' and people beyond them walk out of
+sight. Sunny's VCG02 walks (both wells, sneak, wells 2 and 3) complete by
+themselves with the player following or ahead; one run completed VCG02.
+Generated regressions pass; not compared with the original. Evidence:
+[PATHING.md](PATHING.md), [GOODSPRINGS_ROUTE.md](GOODSPRINGS_ROUTE.md).
+**Next action:** record where Sunny stops in the original when the player
+stays behind the saloon.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

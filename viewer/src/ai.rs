@@ -186,6 +186,15 @@ pub struct Walker {
     /// Running, not walking, along the path (a guard far from its post,
     /// `world::ai::guard::runs`; fleeing).
     pub(crate) run: bool,
+    /// The path walked ends short of the place: the attached cells' part
+    /// of the long way ([`long_walk`]); its end isn't the travel's end.
+    partial: bool,
+    /// The long way last planned: the attached squares and the goal it
+    /// was planned for.
+    long: Option<(Vec<(i32, i32)>, [f32; 3])>,
+    /// Hidden here because they stand outdoors beyond the attached cells
+    /// (the game's lower processes; [`move_offstage`] moves them).
+    parked: bool,
 }
 
 /// People turn 135° a second in place until their kit is read.
@@ -204,6 +213,7 @@ impl Walker {
         self.dialogue_done = false;
         self.travelled = false;
         self.door = None;
+        self.long = None;
         self.evaluate = true;
     }
 
@@ -275,6 +285,9 @@ impl Walker {
             talk_to: None,
             ended: false,
             run: false,
+            partial: false,
+            long: None,
+            parked: false,
         }
     }
 
@@ -314,6 +327,7 @@ impl Walker {
         self.next = 1;
         self.progress = 0.0;
         self.radius = radius;
+        self.partial = false;
         self.avoidance = Avoidance::default();
         self.arrival = None;
         self.facing = None;
@@ -391,14 +405,26 @@ pub struct Moved(pub Vec<FormId>);
 #[derive(Resource, Default)]
 pub struct FrozenAi(pub bool);
 
-/// The navmesh where the player is: the interior's, or outdoors the 3 × 3
-/// squares around the player's, joined.
+/// The navmesh where the player is: the interior's, or outdoors the
+/// attached cells' (the `uGridsToLoad` grid around the game's grid centre,
+/// `world::ref_scripts::grid_center`, those of its squares loaded here),
+/// joined: a cell's navmesh is there while the cell is attached (the
+/// path code asks whether a node's cell is attached, `006c9fc0` →
+/// `00450ff0`, cell state 6).
 #[derive(Resource, Default)]
 pub struct CellNav {
-    /// The interior, or the worldspace and square, it was loaded for.
-    key: Option<(FormId, Option<(i32, i32)>)>,
+    /// The interior, or the worldspace and attached squares, it was loaded
+    /// for.
+    key: Option<NavKey>,
     mesh: NavMesh,
+    /// Outdoors, the worldspace and the grid's centre.
+    center: Option<(FormId, (i32, i32))>,
+    /// The navmesh info map, for the long way (`world::ai::navinfo`).
+    infos: world::ai::navinfo::NavInfos,
 }
+
+/// An interior, or a worldspace and its attached squares (sorted).
+type NavKey = (FormId, Option<Vec<(i32, i32)>>);
 
 /// What people's moving uses besides the state: scripts, collision, sounds
 /// to play, seats (`sitting`), the settings, lines said and conversations.
@@ -502,28 +528,40 @@ pub fn move_actors(
     // once, and they don't greet for `fAIGreetingTimer` (`00762160`).
     let ended = last.speaker.filter(|s| Some(*s) != menu_speaker);
     last.speaker = menu_speaker;
-    let key = match (state.player_world, state.player_cell, &exterior) {
+    let key: NavKey = match (state.player_world, state.player_cell, &exterior) {
         (None, Some(c), _) => (c, None),
-        (Some(w), _, Some(_)) => {
+        (Some(w), _, Some(e)) => {
+            use world::ref_scripts::{grid_center, grid_squares, GRIDS_TO_LOAD};
             let feet = state.player_position.unwrap_or_default();
-            (w, Some(world::square_of(feet)))
+            let before = nav.center.filter(|(world, _)| *world == w).map(|c| c.1);
+            let center = grid_center(before, feet, GRIDS_TO_LOAD);
+            nav.center = Some((w, center));
+            let loaded = e.loaded_squares();
+            let mut squares: Vec<(i32, i32)> = grid_squares(center, GRIDS_TO_LOAD)
+                .into_iter()
+                .filter(|s| loaded.contains(s))
+                .collect();
+            squares.sort();
+            (w, Some(squares))
         }
         _ => return,
     };
-    if nav.key != Some(key) {
-        nav.key = Some(key);
-        nav.mesh = match (key.1, &exterior) {
+    if nav.key.as_ref() != Some(&key) {
+        nav.mesh = match (&key.1, &exterior) {
             (None, _) => NavMesh::load(order, key.0),
-            (Some((x, y)), Some(e)) => {
-                let cells: Vec<FormId> = (-1..=1)
-                    .flat_map(|dx| (-1..=1).map(move |dy| (x + dx, y + dy)))
-                    .filter_map(|s| e.grid.cells.get(&s).copied())
+            (Some(squares), Some(e)) => {
+                let cells: Vec<FormId> = squares
+                    .iter()
+                    .filter_map(|s| e.grid.cells.get(s).copied())
                     .collect();
                 NavMesh::load_cells(order, &cells)
             }
             _ => NavMesh::default(),
         };
+        nav.key = Some(key.clone());
     }
+    let nav = &mut *nav;
+    let attached: HashSet<(i32, i32)> = key.1.iter().flatten().copied().collect();
     let now = time.elapsed_secs();
     let dt = time.delta_secs();
     let game_hour = state.global(order, "GameHour").unwrap_or(12.0);
@@ -555,6 +593,7 @@ pub fn move_actors(
             walker.clear_path();
             walker.target = None;
             walker.package = None;
+            walker.long = None;
         }
         if walker.fresh {
             let away = state
@@ -566,6 +605,44 @@ pub fn move_actors(
                 talkers.0.retain(|t| t.reference != me);
             } else if moved.contains(&me) {
                 *visibility = Visibility::Inherited;
+            }
+        }
+        // Outdoors, someone standing beyond the attached cells is in the
+        // game's lower processes (`009334b0`: their cell isn't attached), who
+        // walk out of sight ([`move_offstage`]): hidden here, and back when
+        // that walk brings them into an attached square.
+        if let Some(place) = state.place(order, me).filter(|_| key.1.is_some()) {
+            let here = place.0 == key.0;
+            let inside = here && attached.contains(&world::square_of(place.2));
+            if !walker.parked
+                && here
+                && !inside
+                && *visibility != Visibility::Hidden
+                && !walker.fallen
+                && !state.dead.contains(&me)
+            {
+                *visibility = Visibility::Hidden;
+                walker.parked = true;
+                walker.clear_path();
+                walker.package = None;
+                walker.long = None;
+                rig.walking = false;
+                rig.speed = 0.0;
+                talkers.0.retain(|t| t.reference != me);
+                println!("{now:.1} s: {me} is beyond the attached cells: out of sight.");
+            } else if walker.parked && inside {
+                *visibility = Visibility::Inherited;
+                walker.parked = false;
+                walker.fresh = true;
+                walker.package = None;
+                if !talkers.0.iter().any(|t| t.reference == me) {
+                    talkers.0.push(crate::dialogue::Talker {
+                        reference: me,
+                        base: world::scripting::base_of(order, me).unwrap_or(me),
+                        position: place.2,
+                    });
+                }
+                println!("{now:.1} s: {me} walks into the attached cells: in sight again.");
             }
         }
         if *visibility == Visibility::Hidden {
@@ -935,6 +1012,17 @@ pub fn move_actors(
             // path when it moved `fAIMoveDistanceToRecalcFollowPath` since the
             // last, or they stand farther than the radius from it.
             follow_target(&mut ctx, walker, moves);
+            // A place beyond the attached cells' navmesh: the long way.
+            if let Some(squares) = &key.1 {
+                long_walk(
+                    &mut ctx,
+                    walker,
+                    &mut nav.infos,
+                    (key.0, squares),
+                    &attached,
+                    moves.recalc_follow,
+                );
+            }
             // A wander package at its place: the wander procedure.
             if walker.package_kind == Some(world::ai::kinds::WANDER) {
                 crate::sitting::wander_package_frame(&mut ctx, walker, &mut life);
@@ -1017,15 +1105,23 @@ pub fn move_actors(
         } else {
             step(walker, speed, dt)
         };
-        // At a load door toward somewhere else: through it.
-        if was_on_path && !on_path && walker.door.is_some() {
+        // The attached cells' part of the long way walked: they stand there
+        // short of the place (the travel procedure asks for the path again,
+        // `008e5e90`, and gets the same while the attached cells stay).
+        if was_on_path && !on_path && walker.partial {
+            walker.partial = false;
+            walker.arrival = None;
+            println!(
+                "{now:.1} s: {me} stops at the edge of the attached cells, short of their place."
+            );
+        } else if was_on_path && !on_path && walker.door.is_some() {
+            // At a load door toward somewhere else: through it.
             go_through(order, ctx.state, walker);
             life.activity = None;
             continue;
-        }
-        // The walk over: they turn in place to the travel's end heading
-        // (`008e5e90` → `008bb5c0`), not while using furniture.
-        if was_on_path && !on_path {
+        } else if was_on_path && !on_path {
+            // The walk over: they turn in place to the travel's end heading
+            // (`008e5e90` → `008bb5c0`), not while using furniture.
             walker.facing = walker.arrival.take();
             // A travel package's walk over: its procedures reach `DONE`
             // (`0091ecf0`: the end action). Not a travel to furniture
@@ -1240,6 +1336,7 @@ fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool) {
     // The same package again: a forced restart (a dialogue package's).
     let restarted = package_id == walker.package;
     walker.door = way;
+    walker.long = None;
     walker.package = package_id;
     walker.package_kind = package.as_ref().map(|p| p.kind);
     walker.ended = false;
@@ -1451,6 +1548,138 @@ fn follow_target(ctx: &mut Ctx, walker: &mut Walker, moves: &Moves) {
         walker.arrival = world::ai::arrival_heading(order, ctx.state, me, &package);
     } else {
         walker.path_target = Some(at);
+    }
+}
+
+/// Someone idle whose package's place (or the load door toward it) isn't
+/// on the attached cells' navmesh: the game's path request plans the long
+/// way over the navmesh info map (`world::ai::navinfo`, `006c94c0`) and
+/// builds the detailed path only for the run of its nodes whose cells are
+/// attached (`006c9fc0`, `006ca0e0`), to the last such node (resolved onto
+/// the navmesh). They walk that and stand there (`partial`); planned again
+/// when the attached squares or the place change, as the travel procedure
+/// asks again whenever it's idle short of its place (`008e5e90`).
+fn long_walk(
+    ctx: &mut Ctx,
+    walker: &mut Walker,
+    infos: &mut world::ai::navinfo::NavInfos,
+    (space, squares): (FormId, &[(i32, i32)]),
+    attached: &HashSet<(i32, i32)>,
+    recalc_follow: f32,
+) {
+    use world::ai::kinds;
+    let order = &ctx.game.order;
+    let me = walker.reference;
+    if walker.on_path()
+        || matches!(
+            walker.package_kind,
+            Some(kinds::DIALOGUE | kinds::SANDBOX | kinds::WANDER | kinds::GUARD | kinds::FLEE)
+        )
+        || ctx.state.furniture.contains_key(&me)
+        || ctx.state.sitters.contains_key(&me)
+    {
+        return;
+    }
+    if ctx.state.place(order, me).map(|p| p.0) != Some(space) {
+        return;
+    }
+    let package = walker
+        .package
+        .and_then(|p| world::ai::Package::load(order, p));
+    let (to, radius) = match walker.door {
+        Some(d) => (d.at, 0.0),
+        None => match package
+            .as_ref()
+            .and_then(|p| destination(order, ctx.state, me, p))
+        {
+            Some(d) => d,
+            None => return,
+        },
+    };
+    if mv::arrived(walker.position, to, radius) {
+        return;
+    }
+    // Planned already for these squares and (within
+    // `fAIMoveDistanceToRecalcFollowPath`, for a target that moves) this
+    // place.
+    if walker
+        .long
+        .as_ref()
+        .is_some_and(|(s, g)| s == squares && distance(*g, to) <= recalc_follow)
+    {
+        return;
+    }
+    walker.long = Some((squares.to_vec(), to));
+    let Some(nodes) = infos.virtual_path(order, space, walker.position, to) else {
+        println!("{me} has no way to {:.0},{:.0},{:.0}", to[0], to[1], to[2]);
+        return;
+    };
+    let in_attached =
+        |n: &world::ai::navinfo::VirtualNode| n.square.is_some_and(|s| attached.contains(&s));
+    let Some(last) = world::ai::navinfo::attached_run(&nodes, 0, in_attached) else {
+        return;
+    };
+    let whole = last + 1 == nodes.len();
+    let end = if whole {
+        // A goal off the navmesh: the nearest navmesh point (resolved as
+        // the start is, below).
+        if ctx.mesh.navmesh_at(to).is_some() {
+            to
+        } else {
+            match ctx.mesh.closest_point(to) {
+                Some(p) => p,
+                None => return,
+            }
+        }
+    } else {
+        // The node resolved onto its own navmesh.
+        let node = nodes[last];
+        match ctx.mesh.closest_point_on(node.position, Some(node.navmesh)) {
+            Some(p) => p,
+            None => return,
+        }
+    };
+    // Standing off the navmesh (out of sight they walk straight from node
+    // to node, `009ea8a0`, and a navmesh's rough position can lie in a
+    // hole of it): the path starts from the nearest navmesh point, as the
+    // request's start is resolved onto the closest triangle
+    // (`PathingLocation::ResolveToClosestNavmeshAndTriangle` (Xbox PDB),
+    // not traced in detail), walked to first.
+    let planned_path = ctx.mesh.path_with_doors(walker.position, end).or_else(|| {
+        let start = ctx.mesh.closest_point(walker.position)?;
+        let (mut path, doors) = ctx.mesh.path_with_doors(start, end)?;
+        path.insert(0, walker.position);
+        Some((path, doors))
+    });
+    let Some((path, doors)) = planned_path else {
+        let p = walker.position;
+        println!(
+            "{me}: no navmesh path along the long way's attached part ({:.0},{:.0},{:.0} on {:?} to {:.0},{:.0},{:.0} on {:?})",
+            p[0],
+            p[1],
+            p[2],
+            ctx.mesh.navmesh_at(p),
+            end[0],
+            end[1],
+            end[2],
+            ctx.mesh.navmesh_at(end)
+        );
+        return;
+    };
+    let length: f32 = path.windows(2).map(|w| distance(w[0], w[1])).sum();
+    println!(
+        "{me} walks {length:.0} units of the long way ({} nodes, {} attached{})",
+        nodes.len(),
+        last + 1,
+        if whole { ", to the end" } else { "" }
+    );
+    walker.set_path(path, radius, true, ctx.moves);
+    walker.doors_ahead = doors;
+    walker.partial = !whole;
+    if whole && walker.door.is_none() {
+        walker.arrival = package
+            .as_ref()
+            .and_then(|p| world::ai::arrival_heading(order, ctx.state, me, p));
     }
 }
 
@@ -3070,5 +3299,85 @@ mod tests {
         rethink(&mut ctx, &mut walker, &mut life, true);
         assert_eq!(walker.package, Some(FormId(GUARD_POST)));
         assert!(package_events(ctx.state).is_empty());
+    }
+
+    #[test]
+    fn a_far_place_is_walked_toward_as_far_as_the_attached_cells_go() {
+        use testdata::long_paths::ids::*;
+        let data = testdata::long_paths::long_paths("viewer-long-walk");
+        let game = cellview::Game::open(
+            data.path(),
+            &cellview::Options {
+                official: true,
+                ..default()
+            },
+        )
+        .unwrap();
+        let order = &game.order;
+        let me = FormId(WALKER_REF);
+        let world = FormId(WORLD);
+        let mut state = world::scripting::GameState::new(order);
+        let mut seats = Seats::new(order);
+        let moves = MoveSettings::defaults();
+        let mut infos = world::ai::navinfo::NavInfos::default();
+        let mut walker = Walker::at(me, [1000.0, 1000.0, 0.0], 0.0, 1.0, false);
+        walker.package = Some(FormId(TRAVEL));
+        walker.package_kind = Some(world::ai::kinds::TRAVEL);
+        let cells = |n: i32| -> Vec<FormId> { (0..n).map(|i| FormId(CELL + i as u32)).collect() };
+        // Squares 0 and 1 attached: to square 1's navmesh (its rough
+        // position, the route's last attached node), short of the marker.
+        let near: Vec<(i32, i32)> = vec![(0, 0), (1, 0)];
+        let mesh = NavMesh::load_cells(order, &cells(2));
+        let mut ctx = Ctx {
+            game: &game,
+            state: &mut state,
+            seats: &mut seats,
+            mesh: &mesh,
+            moves: &moves,
+            now: 1.0,
+            dt: 0.1,
+            fighting: false,
+            talking: false,
+        };
+        let attached: HashSet<(i32, i32)> = near.iter().copied().collect();
+        long_walk(
+            &mut ctx,
+            &mut walker,
+            &mut infos,
+            (world, &near),
+            &attached,
+            300.0,
+        );
+        assert!(walker.on_path() && walker.partial);
+        let end = *walker.path.last().unwrap();
+        assert!(distance(end, [6144.0, 2048.0, 0.0]) < 1.0, "{end:?}");
+        // Standing there: the same squares give the same way, not planned
+        // again.
+        walker.clear_path();
+        long_walk(
+            &mut ctx,
+            &mut walker,
+            &mut infos,
+            (world, &near),
+            &attached,
+            300.0,
+        );
+        assert!(!walker.on_path());
+        // Every square attached: on to the marker, the travel's end.
+        let all: Vec<(i32, i32)> = (0..SQUARES).map(|x| (x, 0)).collect();
+        let mesh = NavMesh::load_cells(order, &cells(SQUARES));
+        ctx.mesh = &mesh;
+        let attached: HashSet<(i32, i32)> = all.iter().copied().collect();
+        long_walk(
+            &mut ctx,
+            &mut walker,
+            &mut infos,
+            (world, &all),
+            &attached,
+            300.0,
+        );
+        assert!(walker.on_path() && !walker.partial);
+        let end = *walker.path.last().unwrap();
+        assert!(distance(end, [19000.0, 3000.0, 0.0]) < 1.0, "{end:?}");
     }
 }
