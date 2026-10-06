@@ -289,11 +289,10 @@ pub fn pick_for(
         speaker: Some(speaker),
     };
     let mut quest_ok: std::collections::HashMap<FormId, bool> = Default::default();
-    topic_lines(order, topic).into_iter().find(|info| {
-        if info.responses.is_empty()
-            || said.contains(&info.form_id)
-            || (info.flags & crate::dialogue::SAY_ONCE != 0 && state.said.contains(&info.form_id))
-        {
+    // `0061b320` asks `0061a790` (the same choice as the menu's): random
+    // runs and the Intelligence classes as `dialogue::pick`.
+    let available = topic_lines(order, topic).into_iter().filter(|info| {
+        if said.contains(&info.form_id) {
             return false;
         }
         if let Some(q) = info.quest {
@@ -309,8 +308,9 @@ pub fn pick_for(
                 return false;
             }
         }
-        facts.conditions_pass(&info.conditions, speaker.reference, listener)
-    })
+        crate::dialogue::line_available(order, info, speaker, listener, state)
+    });
+    crate::dialogue::choose(available, state.dice)
 }
 
 /// One line of a conversation between two people: who says it, to whom.

@@ -1,10 +1,14 @@
 //! Talking to people: look at someone within reach and press E. They say
 //! the first greeting their conditions allow (`world::dialogue`), in their
-//! own recorded voice with the text shown; then their line's follow-up
-//! topics come up as numbered choices, or, after a line with none, the
-//! main list (`dialogue::menu_topics`: the greeting's follow-ups and the
-//! top-level and learned topics they answer). Space skips a line; Tab or
-//! Esc ends the conversation.
+//! own recorded voice with the text shown. After a line the game's rules
+//! (`world::dialogue::after_line`, `00762ff0`) decide: the speaker goes
+//! straight on to the line's follow-up (`TCFU`), the menu closes after a
+//! Goodbye, or the line's topics come up as numbered choices, or, after a
+//! line with none, the main list (`dialogue::menu_topics`: the greeting's
+//! follow-ups and the top-level and learned topics they answer). Space
+//! skips a line. Only the stand-in text panel (used when the game's menu
+//! files can't be read) also ends the conversation on Tab or Esc; the
+//! game's dialogue menu takes only its "A"/Enter key (`007628c0`).
 
 use std::sync::Arc;
 
@@ -96,6 +100,7 @@ impl Conversation {
             check: None,
             choices: vec![],
             add_topics: vec![],
+            follow_ups: vec![],
             begin_script: Some("BeginScript".into()),
             end_script: Some("EndScript".into()),
         };
@@ -108,6 +113,7 @@ impl Conversation {
                 response: 0,
                 since: 0.0,
                 voice: None,
+                skipped_at: None,
                 choices: None,
                 line_only: true,
                 shown_line: None,
@@ -129,6 +135,8 @@ pub struct Talk {
     response: usize,
     since: f32,
     voice: Option<Entity>,
+    /// When the player clicked the line away, while its voice plays.
+    skipped_at: Option<f32>,
     /// Once the line is said: what the player can answer.
     choices: Option<Vec<Choice>>,
     /// Only a line said (`SayTo`): no dialogue menu, no choices after it,
@@ -228,9 +236,37 @@ fn play_voice(
     )
 }
 
-/// How long a response stays up without a voice: a reading pace.
-fn reading_time(text: &str) -> f32 {
-    (text.split_whitespace().count() as f32 * 0.35).max(2.0)
+/// How long a response stays up without a voice file:
+/// `fDialogSpeechDelaySeconds` (exe default 2, setting `011d32c4`; the
+/// speaker's say function `008a20d0` sets the dialogue menu's line timer
+/// to it when the voice file isn't found, and the menu waits it out in
+/// state 3, `00762950`). Whether the speaker is marked done sooner is not
+/// traced.
+fn silent_line_seconds(order: &esm::LoadOrder) -> f32 {
+    world::scripting::game_setting(order, "fDialogSpeechDelaySeconds").unwrap_or(2.0)
+}
+
+/// After the player clicks a line away the voice goes on this long before
+/// it's stopped (`00762950` state 1: 500 ms, `010301a8`, then `008bc590`).
+const SKIP_CUT_SECONDS: f32 = 0.5;
+
+/// Whether the response being said is over: a voiced one when its voice
+/// ends or half a second after it was clicked away; a silent one after
+/// `silent` seconds, or at once when clicked away.
+fn response_done(
+    voiced: bool,
+    voice_done: bool,
+    skipped_at: Option<f32>,
+    skip: bool,
+    shown_for: f32,
+    now: f32,
+    silent: f32,
+) -> bool {
+    if voiced {
+        voice_done || skipped_at.is_some_and(|t| now - t >= SKIP_CUT_SECONDS)
+    } else {
+        skip || shown_for > silent
+    }
 }
 
 /// Runs one of a line's result scripts, on the speaker (whose script
@@ -261,18 +297,22 @@ fn run_line_script(
 }
 
 /// A line starts: it's been said, the speaker has talked to the player,
-/// the topics it names are learned, and its first result script runs.
+/// the topics it names are learned, and its first result script runs (in
+/// the dialogue menu, unless the line is flagged not to: `0083ebb0`).
 fn begin_line(
     order: &esm::LoadOrder,
     scripts: &ScriptCache,
     state: &mut GameState,
     info: &Info,
     speaker: FormId,
+    menu: bool,
 ) {
     dialogue::line_begins(state, info, speaker);
     let said: Vec<&str> = info.responses.iter().map(|r| r.text.as_str()).collect();
     println!("{} ({}): {}", speaker, info.form_id, said.join(" "));
-    run_line_script(order, scripts, state, info.begin_script.as_deref(), speaker);
+    if !menu || dialogue::menu_runs_begin_script(info) {
+        run_line_script(order, scripts, state, info.begin_script.as_deref(), speaker);
+    }
 }
 
 /// What `talk` uses besides: `--talk`, scripts, scripted talking, the
@@ -346,21 +386,23 @@ pub fn talk(
         let skip =
             keys.just_pressed(KeyCode::Space) || answer == Some(ui::menus::dialog::Answer::Skip);
         if talk.choices.is_none() {
-            // Saying the line: next response when the voice ends (or after
-            // a reading pause), or on Space.
+            // Saying the line: next response when the voice ends (or, with
+            // no voice file, after `fDialogSpeechDelaySeconds`); a click or
+            // Space moves on, the voice cut half a second later.
             let voice_done = talk.voice.is_none_or(|v| voices.get(v).is_err());
-            let text = talk
-                .info
-                .responses
-                .get(talk.response)
-                .map(|r| r.text.clone())
-                .unwrap_or_default();
-            let done = if talk.voice.is_some() {
-                voice_done
-            } else {
-                now - talk.since > reading_time(&text)
-            };
-            if done || skip {
+            if skip && talk.voice.is_some() && talk.skipped_at.is_none() {
+                talk.skipped_at = Some(now);
+            }
+            let done = response_done(
+                talk.voice.is_some(),
+                voice_done,
+                talk.skipped_at,
+                skip,
+                now - talk.since,
+                now,
+                silent_line_seconds(order),
+            );
+            if done {
                 if let Some(v) = talk.voice.take() {
                     if let Ok(mut e) = commands.get_entity(v) {
                         e.despawn();
@@ -368,44 +410,64 @@ pub fn talk(
                         crate::faces::cut_short(&mut commands, talk.speaker.reference);
                     }
                 }
+                talk.skipped_at = None;
                 talk.response += 1;
                 talk.since = now;
                 if talk.response < talk.info.responses.len() {
                     talk.voice = play_voice(&mut commands, &mut audio, &game.0, talk);
                 } else {
-                    // The line is said: its second result script.
-                    run_line_script(
-                        order,
-                        &scripts.0,
-                        &mut state.0,
-                        talk.info.end_script.as_deref(),
-                        talk.speaker.reference,
-                    );
-                    if talk.line_only || talk.info.flags & dialogue::GOODBYE != 0 {
-                        if let Some(s) = screen.as_deref_mut() {
-                            crate::game_menus::dialog::end(s);
-                        }
-                        end(&mut commands, &mut conversation.0, &mut player, &mut panel);
-                        return;
+                    // The line is said: its second result script (the menu
+                    // skips it for "run immediately" lines, `00762ff0`).
+                    if talk.line_only || dialogue::menu_runs_end_script(&talk.info) {
+                        run_line_script(
+                            order,
+                            &scripts.0,
+                            &mut state.0,
+                            talk.info.end_script.as_deref(),
+                            talk.speaker.reference,
+                        );
                     }
-                    let top = top_level.get_or_insert_with(|| dialogue::top_level_topics(order));
-                    let list = dialogue::next_choices(
-                        order,
-                        &talk.info,
-                        top,
-                        &talk.opening,
-                        &talk.speaker,
-                        &state.0,
-                    );
-                    if list.is_empty() {
-                        // Nothing more to say.
-                        if let Some(s) = screen.as_deref_mut() {
-                            crate::game_menus::dialog::end(s);
+                    let next = if talk.line_only {
+                        dialogue::AfterLine::Close
+                    } else {
+                        // A fresh draw for a run of random follow-ups.
+                        state.0.roll();
+                        let top =
+                            top_level.get_or_insert_with(|| dialogue::top_level_topics(order));
+                        dialogue::after_line(
+                            order,
+                            &talk.info,
+                            top,
+                            &talk.opening,
+                            &talk.speaker,
+                            &state.0,
+                        )
+                    };
+                    match next {
+                        dialogue::AfterLine::FollowUp(info) => {
+                            // The speaker goes straight on (`00762ff0`).
+                            begin_line(
+                                order,
+                                &scripts.0,
+                                &mut state.0,
+                                &info,
+                                talk.speaker.reference,
+                                true,
+                            );
+                            talk.info = *info;
+                            talk.response = 0;
+                            talk.since = now;
+                            talk.voice = play_voice(&mut commands, &mut audio, &game.0, talk);
                         }
-                        end(&mut commands, &mut conversation.0, &mut player, &mut panel);
-                        return;
+                        dialogue::AfterLine::Topics(list) => talk.choices = Some(list),
+                        dialogue::AfterLine::Close => {
+                            if let Some(s) = screen.as_deref_mut() {
+                                crate::game_menus::dialog::end(s);
+                            }
+                            end(&mut commands, &mut conversation.0, &mut player, &mut panel);
+                            return;
+                        }
                     }
-                    talk.choices = Some(list);
                 }
             }
         } else if let Some(list) = &talk.choices {
@@ -435,6 +497,7 @@ pub fn talk(
                         &mut state.0,
                         &info,
                         talk.speaker.reference,
+                        true,
                     );
                     talk.info = info;
                     talk.response = 0;
@@ -553,11 +616,17 @@ pub fn talk(
         match found {
             Some((talker, name)) => {
                 let topic = topic.unwrap_or(GREETING);
-                if let Some(talk) =
-                    start_talk(order, &scripts.0, &mut state.0, talker, name, topic, now)
-                {
+                if let Some(talk) = start_talk(
+                    order,
+                    &scripts.0,
+                    &mut state.0,
+                    talker,
+                    name,
+                    topic,
+                    now,
+                    menu,
+                ) {
                     let mut talk = talk;
-                    talk.line_only = !menu;
                     talk.voice = play_voice(&mut commands, &mut audio, &game.0, &talk);
                     if menu {
                         player.ready = false;
@@ -658,8 +727,16 @@ pub fn talk(
         }
         Use::Talk => {}
     }
-    let Some(mut talk) = start_talk(order, &scripts.0, &mut state.0, talker, name, GREETING, now)
-    else {
+    let Some(mut talk) = start_talk(
+        order,
+        &scripts.0,
+        &mut state.0,
+        talker,
+        name,
+        GREETING,
+        now,
+        true,
+    ) else {
         return;
     };
     talk.voice = play_voice(&mut commands, &mut audio, &game.0, &talk);
@@ -672,6 +749,7 @@ pub fn talk(
 
 /// Someone starts talking about a topic: the first line their conditions
 /// allow, its first result script run.
+#[allow(clippy::too_many_arguments)]
 fn start_talk(
     order: &esm::LoadOrder,
     scripts: &ScriptCache,
@@ -680,13 +758,16 @@ fn start_talk(
     name: String,
     topic: FormId,
     now: f32,
+    menu: bool,
 ) -> Option<Talk> {
     let speaker = Speaker::load(order, talker.reference, talker.base)?;
+    // A fresh draw for a run of random lines (`dialogue::choose`).
+    state.roll();
     let Some(info) = dialogue::pick(order, topic, &speaker, state) else {
         println!("{name} has nothing to say about {topic}.");
         return None;
     };
-    begin_line(order, scripts, state, &info, talker.reference);
+    begin_line(order, scripts, state, &info, talker.reference, menu);
     Some(Talk {
         speaker,
         name,
@@ -695,8 +776,9 @@ fn start_talk(
         response: 0,
         since: now,
         voice: None,
+        skipped_at: None,
         choices: None,
-        line_only: false,
+        line_only: !menu,
         shown_line: None,
         shown_topics: false,
     })
@@ -744,5 +826,20 @@ mod tests {
         assert!(ray_person([0.0, 0.0, 120.0], [-1.0, 0.0, 0.0], feet).is_none());
         let up = [0.6, 0.0, 0.8];
         assert!(ray_person([0.0, 0.0, 120.0], up, feet).is_none());
+    }
+
+    /// `00762950`: a clicked-away voice plays on for 500 ms; `008a20d0`: a
+    /// line without a voice file lasts `fDialogSpeechDelaySeconds`.
+    #[test]
+    fn responses_end_with_the_voice_or_the_speech_delay() {
+        // Voiced: not before the voice ends, unless skipped 0.5 s ago.
+        assert!(!response_done(true, false, None, false, 9.0, 10.0, 2.0));
+        assert!(response_done(true, true, None, false, 9.0, 10.0, 2.0));
+        assert!(!response_done(true, false, Some(9.7), true, 9.0, 10.0, 2.0));
+        assert!(response_done(true, false, Some(9.5), true, 9.0, 10.0, 2.0));
+        // Silent: the speech delay, or a click.
+        assert!(!response_done(false, true, None, false, 1.9, 10.0, 2.0));
+        assert!(response_done(false, true, None, false, 2.1, 10.0, 2.0));
+        assert!(response_done(false, true, None, true, 0.1, 10.0, 2.0));
     }
 }
