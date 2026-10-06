@@ -53,10 +53,9 @@
 //! Guesses: the picture's size in pixels (one a menu unit); the arm held at
 //! the raising animation's `Hit` key while up (where it's highest) and
 //! lowered by playing on from there.
-//! Not done: the keys held repeating, the light lighting the place
-//! (only its cone on the arm shows), the world paused while it's up, the
-//! knobs, needle and buttons moving, the `xbox` button labels swapped for
-//! the PC's, Page Up / Page Down on ITEMS (Mod and hot keys).
+//! Not done: the keys held repeating, the world paused while it's up, the
+//! buttons moving, the `xbox` button labels swapped for the PC's, Page Up
+//! / Page Down on ITEMS (Mod).
 // The shader-layout derive generates checking functions the compiler
 // reports as unused.
 #![allow(dead_code)]
@@ -87,7 +86,7 @@ use world::dialogue::PLAYER_REF;
 use crate::dialogue::DialogueState;
 use crate::game_menus::asks::{self, Ask};
 use crate::hud::{Files, Quad, TileMaterial};
-use crate::lighting::GameLitMaterial;
+use crate::lighting::{GameLight, GameLitMaterial};
 use crate::menus::Menus;
 use crate::sounds::{PcmSound, SoundRequests};
 use crate::walk::{game_point, Player};
@@ -137,6 +136,7 @@ impl Plugin for PipboyPlugin {
                     pipboy_keys
                         .after(crate::game_menus::run_open_menus)
                         .before(crate::menus::run_menus),
+                    pipboy_light.after(update_pipboy),
                     update_pipboy
                         .after(crate::scripts::run_scripts)
                         .after(crate::viewmodel::update_view_model)
@@ -144,6 +144,208 @@ impl Plugin for PipboyPlugin {
                 ),
             );
     }
+}
+
+/// The Pip-Boy light as the lighting shader takes it: the `PipBoyLight`
+/// ability's `PipLight` effect is a Light effect (archetype 13), whose
+/// light `LightEffect::AttachLight` (Xbox PDB; `0080e970`) makes: the
+/// effect's light record's colour (`PipboyLight640`: 194, 245, 209), a
+/// radius of `fMagicUnitsPerFoot` (22) × (the effect's magnitude, 15 +
+/// `fMagicLightRadiusBase` 0), on the actor's node at `fMagicLightSide
+/// Offset` (0) across, (the bound's far y + `fMagicLightForwardOffset`
+/// 22) × scale forward and the actor's height (`008853a0`: the bound's
+/// height × scale) + `fMagicLightHeightOffset` (10) × scale up. The
+/// player's bound is read as its `OBND` (y to 17, height 132). The
+/// light's brightness at 1 (what `0080ed20(255)` sets isn't traced).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PipboyLightData {
+    pub color: [f32; 3],
+    pub radius: f32,
+    /// Across, forward and up from the player's feet, in game units.
+    pub offset: [f32; 3],
+}
+
+impl PipboyLightData {
+    fn load(order: &esm::LoadOrder) -> Option<PipboyLightData> {
+        let setting = |n: &str, d: f32| world::scripting::game_setting(order, n).unwrap_or(d);
+        let spell = order.form_by_editor_id("PipBoyLight")?;
+        let effects = world::items::effects(order, spell);
+        let effect = effects.first()?;
+        let mgef = order.get(effect.effect)?.record().ok()?;
+        let data = mgef.get(esm::sig::DATA)?.data.clone();
+        let light = u32::from_le_bytes(data.get(24..28)?.try_into().ok()?);
+        let rr = order.get(effect.effect)?;
+        let light = rr.plugin.to_global(FormId(light));
+        let lrec = order.get(light)?.record().ok()?;
+        let l = lrec.get(esm::sig::DATA)?.data.clone();
+        let color = [l.get(8)?, l.get(9)?, l.get(10)?].map(|&c| f32::from(c) / 255.0);
+        let radius = setting("fMagicUnitsPerFoot", 22.0)
+            * (effect.magnitude as f32 + setting("fMagicLightRadiusBase", 0.0));
+        let player = order.get(PLAYER_BASE)?.record().ok()?;
+        let obnd = player.get(esm::FourCC::new(b"OBND"))?.data.clone();
+        let i16_at = |i: usize| -> Option<f32> {
+            Some(f32::from(i16::from_le_bytes([
+                *obnd.get(i)?,
+                *obnd.get(i + 1)?,
+            ])))
+        };
+        let (min_z, max_y, max_z) = (i16_at(4)?, i16_at(8)?, i16_at(10)?);
+        Some(PipboyLightData {
+            color,
+            radius,
+            offset: [
+                setting("fMagicLightSideOffset", 0.0),
+                max_y + setting("fMagicLightForwardOffset", 22.0),
+                (max_z - min_z) + setting("fMagicLightHeightOffset", 10.0),
+            ],
+        })
+    }
+}
+
+/// The player's base (`NPC_` 00000007).
+const PLAYER_BASE: FormId = FormId(7);
+
+/// Where the Pip-Boy light is in the world: the player's feet turned by
+/// the heading (radians clockwise from north), plus the offset.
+fn light_point(feet: [f32; 3], heading: f32, offset: [f32; 3]) -> [f32; 3] {
+    let (s, c) = heading.sin_cos();
+    // Forward is (sin, cos) on the ground; across, to the right, (cos, -sin).
+    [
+        feet[0] + offset[0] * c + offset[1] * s,
+        feet[1] - offset[0] * s + offset[1] * c,
+        feet[2] + offset[2],
+    ]
+}
+
+/// The lit surfaces' lights with the Pip-Boy light added after the
+/// place's (and taken off again): kept per material, with the count the
+/// place gave it.
+#[derive(Default)]
+pub struct LightOnSurfaces {
+    data: Option<Option<PipboyLightData>>,
+    last: Option<GameLight>,
+    lit: HashMap<AssetId<GameLitMaterial>, usize>,
+    terrain: HashMap<AssetId<crate::terrain::TerrainMaterial>, usize>,
+    counts: (usize, usize),
+}
+
+/// Adds the light to (or takes it from) one surface's lights; true when
+/// something changed.
+fn put_light(
+    lighting: &mut crate::lighting::GameLighting,
+    ours: Option<usize>,
+    last: Option<GameLight>,
+    light: Option<GameLight>,
+) -> Option<usize> {
+    let count = lighting.scale.y as usize;
+    // The place's own count: ours added on top, unless the place's lights
+    // were given again since.
+    let base = match ours {
+        Some(b) if count == b + 1 && last.is_some_and(|l| lighting.lights[b] == l) => b,
+        Some(b) if count == b => b,
+        _ => count,
+    };
+    match light {
+        Some(l) if base < crate::lighting::MAX_LIGHTS => {
+            lighting.lights[base] = l;
+            lighting.scale.y = (base + 1) as f32;
+            Some(base)
+        }
+        _ => {
+            lighting.scale.y = base as f32;
+            None
+        }
+    }
+}
+
+/// The Pip-Boy light lighting the place while it's on.
+#[allow(clippy::too_many_arguments)]
+fn pipboy_light(
+    pipboy: Res<Pipboy>,
+    game: Res<GameFiles>,
+    state: Res<DialogueState>,
+    settings: Res<crate::Settings>,
+    views: Query<&Transform, With<FlyCamera>>,
+    pieces: Query<(&MeshMaterial3d<GameLitMaterial>, &RenderLayers)>,
+    mut lit: ResMut<Assets<GameLitMaterial>>,
+    mut terrain: ResMut<Assets<crate::terrain::TerrainMaterial>>,
+    mut on: Local<LightOnSurfaces>,
+) {
+    let data = *on
+        .data
+        .get_or_insert_with(|| PipboyLightData::load(&game.0.order));
+    let light = (|| {
+        let data = data?;
+        if !pipboy.light {
+            return None;
+        }
+        let feet = state.0.player_position?;
+        let f = views.single().ok()?.forward().as_vec3();
+        let heading = f.x.atan2(-f.z);
+        let at = light_point(feet, heading, data.offset);
+        let [x, y, z] = space::point(at);
+        let [r, g, b] = data.color.map(|c| c * settings.brightness);
+        Some(GameLight {
+            position_radius: Vec4::new(x, y, z, data.radius * space::METERS_PER_UNIT),
+            color: Vec4::new(r, g, b, 0.0),
+        })
+    })();
+    // Moved little and nothing new to light: left as it is.
+    let counts = (lit.len(), terrain.len());
+    let near = match (light, on.last) {
+        (Some(a), Some(b)) => a.position_radius.distance(b.position_radius) < 0.05,
+        (None, None) => true,
+        _ => false,
+    };
+    if near && counts == on.counts {
+        return;
+    }
+    let last = on.last;
+    // The first-person view (the arm, the weapon in hand) is drawn apart
+    // with the place's own light: the place's light is what this adds to.
+    let first_person: std::collections::HashSet<_> = pieces
+        .iter()
+        .filter(|(_, layers)| {
+            layers.intersects(&RenderLayers::layer(crate::viewmodel::FIRST_PERSON_LAYER))
+        })
+        .map(|(m, _)| m.0.id())
+        .collect();
+    let ids: Vec<_> = lit
+        .ids()
+        .filter(|id| !first_person.contains(id) || on.lit.contains_key(id))
+        .collect();
+    for id in ids {
+        let light = if first_person.contains(&id) {
+            None
+        } else {
+            light
+        };
+        let ours = on.lit.get(&id).copied();
+        if ours.is_none() && light.is_none() {
+            continue;
+        }
+        if let Some(m) = lit.get_mut(id) {
+            match put_light(&mut m.extension.lighting, ours, last, light) {
+                Some(b) => on.lit.insert(id, b),
+                None => on.lit.remove(&id),
+            };
+        }
+    }
+    let ids: Vec<_> = terrain.ids().collect();
+    for id in ids {
+        let ours = on.terrain.get(&id).copied();
+        if ours.is_none() && light.is_none() {
+            continue;
+        }
+        if let Some(m) = terrain.get_mut(id) {
+            match put_light(&mut m.extension.lighting, ours, last, light) {
+                Some(b) => on.terrain.insert(id, b),
+                None => on.terrain.remove(&id),
+            };
+        }
+    }
+    on.last = light;
+    on.counts = counts;
 }
 
 /// `--pipboy SECTION[:PAGE]`: open it on this once the place is up.
@@ -221,6 +423,9 @@ struct Arm {
     /// shapes of `PipBoyButton01` .. `03` (STATS, ITEMS, DATA).
     screen_pick: Option<PickMesh>,
     button_picks: [Vec<PickMesh>; 3],
+    /// The knobs' and needle's pieces, and the angles they're drawn at.
+    knob_pieces: Vec<KnobPiece>,
+    knobs_drawn: [f32; 3],
 }
 
 /// A piece's triangles as the GPU skins them, kept for picking with the
@@ -376,6 +581,17 @@ pub struct Pipboy {
     marker_asked: Option<(FormId, [f32; 3])>,
     /// The item waiting for "how many?" to drop.
     drop_asked: Option<u32>,
+    /// The number keys (hot keys 1 to 8) held, as their events said.
+    hotkeys_held: [bool; 8],
+    /// A note's audio playing.
+    note: Option<NotePlayback>,
+    /// The world map's quest markers.
+    quest_points: QuestPoints,
+    /// The knobs and needle, their settings, and whether they're to be set
+    /// up (on coming up, `007f8ba0` → `007f99d0`).
+    knobs: Knobs,
+    knob_settings: Option<KnobSettings>,
+    knobs_fresh: bool,
 }
 
 impl Pipboy {
@@ -383,11 +599,7 @@ impl Pipboy {
     /// 1002, DATA 1023).
     pub fn menu_class(&self) -> Option<i32> {
         let b = self.built.as_ref().filter(|_| self.open)?;
-        Some(match b.pipboy.section {
-            Section::Stats => ui::pipboy::STATS_CLASS,
-            Section::Items => ui::pipboy::ITEMS_CLASS,
-            Section::Data => ui::pipboy::DATA_CLASS,
-        })
+        Some(b.pipboy.class())
     }
 
     /// Whether the game's cursor is hidden over the Pip-Boy (DATA's map
@@ -648,6 +860,7 @@ pub struct Around<'w> {
     wavs: ResMut<'w, Assets<PcmSound>>,
     markers: Res<'w, crate::map::MapMarkers>,
     asks: ResMut<'w, crate::game_menus::asks::PipboyAsks>,
+    collision: Res<'w, crate::walk::CellCollision>,
 }
 
 /// The mouse as the Pip-Boy reads it: the window's pointer, the first-
@@ -670,6 +883,58 @@ pub struct Mouse<'w, 's> {
     /// Pip-Boy reads the presses and releases themselves.
     events: EventReader<'w, 's, bevy::input::mouse::MouseButtonInput>,
     scroll: ResMut<'w, bevy::input::mouse::AccumulatedMouseScroll>,
+    /// The keys' own events, for the number keys (hot keys), which the
+    /// Pip-Boy clears from `ButtonInput` while it's up.
+    keyboard: EventReader<'w, 's, bevy::input::keyboard::KeyboardInput>,
+    /// The view, for the player's facing (drops land in front of it).
+    view: Query<'w, 's, &'static Transform, With<FlyCamera>>,
+}
+
+/// The view's heading on the ground (radians clockwise from north, game
+/// space), 0 without a view.
+fn view_heading(view: &Query<&Transform, With<FlyCamera>>) -> f32 {
+    view.single().map_or(0.0, |t| {
+        let f = t.forward().as_vec3();
+        f.x.atan2(-f.z)
+    })
+}
+
+/// The number keys 1 to 8 (the Hotkey1 .. Hotkey8 controls' default keys,
+/// 0x11 .. 0x18 in `00a24b70`'s table: a guess at the defaults, read as
+/// the keyboard's digits).
+const HOTKEY_KEYS: [KeyCode; 8] = [
+    KeyCode::Digit1,
+    KeyCode::Digit2,
+    KeyCode::Digit3,
+    KeyCode::Digit4,
+    KeyCode::Digit5,
+    KeyCode::Digit6,
+    KeyCode::Digit7,
+    KeyCode::Digit8,
+];
+
+/// The hot keys' keys from their events: held now (carried over in
+/// `held`), and those that came up this frame.
+fn hotkey_events(
+    held: &mut [bool; 8],
+    events: impl Iterator<Item = (KeyCode, bevy::input::ButtonState)>,
+) -> [bool; 8] {
+    let mut released = [false; 8];
+    for (code, state) in events {
+        let Some(n) = HOTKEY_KEYS.iter().position(|&k| k == code) else {
+            continue;
+        };
+        match state {
+            bevy::input::ButtonState::Pressed => held[n] = true,
+            bevy::input::ButtonState::Released => {
+                if held[n] {
+                    released[n] = true;
+                }
+                held[n] = false;
+            }
+        }
+    }
+    released
 }
 
 /// The mouse buttons this frame from their events, `held` carried over
@@ -742,6 +1007,9 @@ fn pipboy_keys(
         mut messages,
         markers,
         mut asks,
+        mut oggs,
+        mut wavs,
+        collision,
         ..
     } = around;
     let order = &game.0.order;
@@ -754,9 +1022,26 @@ fn pipboy_keys(
         &mut pipboy.mouse_held,
         mouse.events.read().map(|e| (e.button, e.state)),
     );
+    let hotkeys_released = hotkey_events(
+        &mut pipboy.hotkeys_held,
+        mouse.keyboard.read().map(|e| (e.key_code, e.state)),
+    );
     // Scripts can take the Pip-Boy away (`DisablePlayerControls`).
     let allowed = !state.0.controls_off[world::scripting::controls::PIPBOY];
     let free = !menus.others_open() && conversation.0.is_none();
+    // A hot key let go in the game (`0077da60`, PC: control 0x11 + n come
+    // up → `00701e80`): its item taken off when it's equipped, else
+    // equipped or used. The "2" is the ammunition swap there (`0061cc40`),
+    // not a hot key.
+    if !pipboy.open && free && player.ready {
+        for (n, _) in hotkeys_released
+            .iter()
+            .enumerate()
+            .filter(|&(n, &r)| r && n != ui::pipboy::items::NOT_A_HOTKEY)
+        {
+            use_hotkey(order, &mut state.0, n);
+        }
+    }
 
     // The answers to the Pip-Boy's questions (their callbacks).
     for answer in std::mem::take(&mut asks.answers) {
@@ -803,7 +1088,15 @@ fn pipboy_keys(
             asks::DROP => {
                 if let Some(form) = pipboy.drop_asked.take() {
                     if answer.value > 0 {
-                        drop_items(order, state, &mut requests, FormId(form), answer.value);
+                        drop_items(
+                            order,
+                            state,
+                            &mut requests,
+                            &collision.0,
+                            FormId(form),
+                            answer.value,
+                            view_heading(&mouse.view),
+                        );
                     }
                 }
             }
@@ -972,6 +1265,7 @@ fn pipboy_keys(
     if notches != 0 {
         actions.extend(b.pipboy.wheel(&mut b.ui, notches, &input));
     }
+    b.pipboy.hotkey_keys(&mut b.ui, pipboy.hotkeys_held, &input);
     if let Some(i) = model_button {
         actions.extend(b.pipboy.press_section(&mut b.ui, i + 1));
     }
@@ -1144,13 +1438,285 @@ fn pipboy_keys(
                         most: count,
                     });
                 } else {
-                    drop_items(order, state, &mut requests, item, 1);
+                    let heading = view_heading(&mouse.view);
+                    drop_items(order, state, &mut requests, &collision.0, item, 1, heading);
                 }
             }
             Action::ActiveQuest(form) => state.active_quest = Some(FormId(form)),
+            // `007019e0` → `004bf800`: the item onto that hot key, off any
+            // other.
+            Action::SetHotkey { slot, item } => {
+                let item = FormId(item);
+                for h in state.hotkeys.iter_mut() {
+                    if *h == Some(item) {
+                        *h = None;
+                    }
+                }
+                if let Some(h) = state.hotkeys.get_mut(slot) {
+                    *h = Some(item);
+                    println!("Hot key {}: {item}.", slot + 1);
+                }
+            }
+            Action::Notice(text) => say(text),
+            // `007f8610(0, ±fScrollKnobIncrement, fScrollKnobRate)`.
+            Action::ScrollKnob { down } => {
+                if let Some(s) = pipboy.knob_settings {
+                    let by = if down {
+                        s.scroll_increment
+                    } else {
+                        -s.scroll_increment
+                    };
+                    pipboy.knobs.turn(0, by, s.scroll_rate);
+                }
+            }
+            // `00798ad0`: the note's audio stops.
+            Action::StopNote => {
+                if let Some(p) = pipboy.note.take() {
+                    if let Some(e) = p.entity {
+                        if let Ok(mut e) = commands.get_entity(e) {
+                            e.despawn();
+                        }
+                    }
+                }
+            }
+            // `00796fd0` case 0x18 → `0079a660`: the pieces queued, the
+            // whole length their lengths and 500 ms between each two, the
+            // first started.
+            Action::PlayNote(form) => {
+                let pieces = note_pieces(&game.0, state, FormId(form));
+                if pieces.is_empty() {
+                    println!("Note {}: no audio found.", FormId(form));
+                    continue;
+                }
+                let total_ms =
+                    pieces.iter().map(|p| p.2).sum::<f32>() + (pieces.len() as f32 - 1.0) * 500.0;
+                let entity = play_piece(
+                    &mut commands,
+                    &mut oggs,
+                    &mut wavs,
+                    &pieces[0].0,
+                    pieces[0].1,
+                );
+                println!(
+                    "Note {}: {} piece(s), {:.1} s.",
+                    FormId(form),
+                    pieces.len(),
+                    total_ms / 1000.0
+                );
+                pipboy.note = Some(NotePlayback {
+                    note: FormId(form),
+                    pieces,
+                    index: 0,
+                    entity,
+                    started: now,
+                    piece_started: now,
+                    gap_from: None,
+                    total_ms,
+                    done: false,
+                });
+            }
         }
     }
 }
+/// A note's audio playing (the map menu's sound list `+0x98`, `0079a660`):
+/// its pieces in order (a sound note's one sound; a voice note's line's
+/// responses, each a voice file), their lengths, the one playing.
+struct NotePlayback {
+    note: FormId,
+    pieces: Vec<(Vec<u8>, bool, f32)>,
+    index: usize,
+    entity: Option<Entity>,
+    /// When it began, when the piece playing began, and when the last
+    /// ended (the next starts 500 ms later, `0079a660`).
+    started: f32,
+    piece_started: f32,
+    gap_from: Option<f32>,
+    total_ms: f32,
+    done: bool,
+}
+
+/// How long a sound file plays, in milliseconds: a WAV's samples over its
+/// rate; an OGG's last page's granule position over the rate its
+/// identification header gives.
+fn audio_ms(path: &str, bytes: &[u8]) -> Option<f32> {
+    if path.to_ascii_lowercase().ends_with(".wav") {
+        let pcm = cellview::sound::read_wav(bytes).ok()?;
+        let frames = pcm.samples.len() as f32 / f32::from(pcm.channels.max(1));
+        return Some(frames / pcm.rate.max(1) as f32 * 1000.0);
+    }
+    let id = bytes.windows(7).position(|w| w == b"\x01vorbis")?;
+    let rate = u32::from_le_bytes(bytes.get(id + 12..id + 16)?.try_into().ok()?);
+    let last = bytes.windows(4).rposition(|w| w == b"OggS")?;
+    let granule = u64::from_le_bytes(bytes.get(last + 6..last + 14)?.try_into().ok()?);
+    (rate > 0).then(|| granule as f32 / rate as f32 * 1000.0)
+}
+
+/// The audio a note plays (`00796fd0` case 0x18): a sound note (kind 0)
+/// its sound (`SNAM`, `005e9100`); a voice note (3) the line its speaker
+/// (`SNAM`, an NPC) says in its topic (`TNAM`, `005e9240` / `005e92a0`:
+/// the first the speaker can say, `world::dialogue::pick`), each response's
+/// voice file of the speaker's voice type.
+fn note_pieces(
+    game: &cellview::Game,
+    state: &world::scripting::GameState,
+    note: FormId,
+) -> Vec<(Vec<u8>, bool, f32)> {
+    let order = &game.order;
+    let Some((rr, record)) = order
+        .get(note)
+        .and_then(|r| r.record().ok().map(|rec| (r, rec)))
+    else {
+        return Vec::new();
+    };
+    let form = |sig: &[u8; 4]| {
+        record
+            .get(esm::FourCC::new(sig))
+            .filter(|s| s.data.len() >= 4)
+            .map(|s| {
+                rr.plugin.to_global(FormId(u32::from_le_bytes([
+                    s.data[0], s.data[1], s.data[2], s.data[3],
+                ])))
+            })
+    };
+    let kind = record
+        .get(esm::sig::DATA)
+        .and_then(|s| s.data.first().copied())
+        .unwrap_or(1);
+    let mut out = Vec::new();
+    let mut push = |path: String, bytes: Vec<u8>| {
+        if let Some(ms) = audio_ms(&path, &bytes) {
+            let ogg = path.to_ascii_lowercase().ends_with(".ogg");
+            out.push((bytes, ogg, ms));
+        }
+    };
+    match kind {
+        0 => {
+            if let Some(s) = form(b"SNAM").and_then(|s| world::sound::Sound::load(order, s)) {
+                if let Some((path, bytes)) = game.sound_file(&s, state.dice) {
+                    push(path, bytes);
+                }
+            }
+        }
+        3 => {
+            let (Some(topic), Some(speaker)) = (form(b"TNAM"), form(b"SNAM")) else {
+                return out;
+            };
+            let Some(who) = world::dialogue::Speaker::load(order, speaker, speaker) else {
+                return out;
+            };
+            let Some(voice) = who.voice else {
+                return out;
+            };
+            if let Some(info) = world::dialogue::pick(order, topic, &who, state) {
+                for response in &info.responses {
+                    let Some(path) = world::dialogue::voice_path(order, &info, response, voice)
+                    else {
+                        continue;
+                    };
+                    if let Some(bytes) = game.assets.read(&path).ok().flatten() {
+                        push(path, bytes);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// Starts a piece of a note's audio playing.
+fn play_piece(
+    commands: &mut Commands,
+    oggs: &mut Assets<AudioSource>,
+    wavs: &mut Assets<PcmSound>,
+    bytes: &[u8],
+    ogg: bool,
+) -> Option<Entity> {
+    if ogg {
+        let handle = oggs.add(AudioSource {
+            bytes: Arc::from(bytes.to_vec().into_boxed_slice()),
+        });
+        return Some(
+            commands
+                .spawn((AudioPlayer::new(handle), PlaybackSettings::DESPAWN))
+                .id(),
+        );
+    }
+    let pcm = cellview::sound::read_wav(bytes).ok()?;
+    let handle = wavs.add(crate::sounds::pcm_sound(pcm));
+    Some(
+        commands
+            .spawn((AudioPlayer(handle), PlaybackSettings::DESPAWN))
+            .id(),
+    )
+}
+
+/// A note's audio, every frame the Pip-Boy is up (`0079a660` runs with the
+/// map menu): when the piece playing has ended the next starts 500 ms
+/// later; after the last it's done. What the menu shows of it (reported
+/// done once, then let go).
+fn advance_note(
+    commands: &mut Commands,
+    pipboy: &mut Pipboy,
+    oggs: &mut Assets<AudioSource>,
+    wavs: &mut Assets<PcmSound>,
+    now: f32,
+) -> Option<ui::pipboy::NoteAudio> {
+    let p = pipboy.note.as_mut()?;
+    if p.done {
+        pipboy.note = None;
+        return None;
+    }
+    let length = p.pieces.get(p.index).map_or(0.0, |x| x.2);
+    if p.gap_from.is_none() && (now - p.piece_started) * 1000.0 >= length {
+        p.entity = None;
+        if p.index + 1 >= p.pieces.len() {
+            p.done = true;
+        } else {
+            p.gap_from = Some(now);
+        }
+    }
+    if let Some(from) = p.gap_from {
+        if (now - from) * 1000.0 > 500.0 {
+            p.index += 1;
+            let (bytes, ogg, _) = &p.pieces[p.index];
+            p.entity = play_piece(commands, oggs, wavs, bytes, *ogg);
+            p.piece_started = now;
+            p.gap_from = None;
+        }
+    }
+    Some(ui::pipboy::NoteAudio {
+        note: p.note.0,
+        elapsed_ms: (now - p.started) * 1000.0,
+        total_ms: p.total_ms,
+        done: p.done,
+    })
+}
+
+/// Uses hot key `n` (`00701e80`, `HotKeysWheel::UseHotkeyItem` (Xbox
+/// PDB)): the item on it, while carried, is taken off when equipped
+/// (`0088c790`), else equipped (`0088c650`; aid and the like are used). (The
+/// game's refusals during an attack and its check against the hand's
+/// weapon, `0058db10`, aren't made here.)
+fn use_hotkey(order: &esm::LoadOrder, state: &mut world::scripting::GameState, n: usize) {
+    let Some(item) = state.hotkeys.get(n).copied().flatten() else {
+        return;
+    };
+    if state.item_count(order, PLAYER_REF, item) <= 0 {
+        return;
+    }
+    let kind = order.get(item).map(|r| *r.entry.header.kind.as_bytes());
+    if state.is_equipped(PLAYER_REF, item) {
+        state.unequip(PLAYER_REF, item);
+        println!("Hot key {}: took off {item}.", n + 1);
+    } else if matches!(kind, Some(k) if &k == b"WEAP" || &k == b"ARMO") {
+        state.equip(order, PLAYER_REF, item);
+        println!("Hot key {}: equipped {item}.", n + 1);
+    } else if let Some(done) = world::items::use_item(order, state, PLAYER_REF, item) {
+        println!("Hot key {}: {done}", n + 1);
+    }
+}
+
 /// A text game setting as the Pip-Boy's menus read it (the plugins' `GMST`
 /// or the exe's own default); empty when there's none.
 fn setting_text(pipboy: &Pipboy, name: &str) -> String {
@@ -1168,13 +1734,51 @@ fn drop_items(
     order: &esm::LoadOrder,
     state: &mut world::scripting::GameState,
     requests: &mut SoundRequests,
+    collision: &physics::Collider,
     item: FormId,
     count: i32,
+    heading: f32,
 ) {
-    if world::more_functions::placed::drop_item(order, state, item, count).is_some() {
+    if let Some(id) = world::more_functions::placed::drop_item(order, state, item, count, heading) {
+        rest_on_ground(order, state, collision, id);
         println!("Dropped {count} of {item}.");
         if let Some(s) = world::sound::item_sound(order, item, false) {
             requests.0.push(s);
+        }
+    }
+}
+
+/// How far above the drop point the ground is looked for, and how far
+/// below (game units; the game's own drop casts the item's shape,
+/// `009614b0`, not traced into this).
+const GROUND_ABOVE: f32 = 64.0;
+const GROUND_BELOW: f32 = 1024.0;
+
+/// A dropped item set down on what's below it: the place's static
+/// collision under the drop point (a ray straight down), the item's lowest
+/// point (its `OBND`) on it. Physics takes it on from there where the
+/// physics is (another branch's).
+fn rest_on_ground(
+    order: &esm::LoadOrder,
+    state: &mut world::scripting::GameState,
+    collision: &physics::Collider,
+    id: FormId,
+) {
+    let Some(m) = state.more.placed.refs.get(&id).copied() else {
+        return;
+    };
+    let lowest = order
+        .get(m.base)
+        .and_then(|r| r.record().ok())
+        .and_then(|r| {
+            let s = r.get(esm::FourCC::new(b"OBND"))?;
+            (s.data.len() >= 6).then(|| f32::from(i16::from_le_bytes([s.data[4], s.data[5]])))
+        })
+        .unwrap_or(0.0);
+    let from = [m.position[0], m.position[1], m.position[2] + GROUND_ABOVE];
+    if let Some((d, _)) = collision.raycast(from, [0.0, 0.0, -1.0], GROUND_ABOVE + GROUND_BELOW) {
+        if let Some(r) = state.more.placed.refs.get_mut(&id) {
+            r.position[2] = from[2] - d - lowest;
         }
     }
 }
@@ -1193,6 +1797,7 @@ fn open(
     pipboy.open = true;
     pipboy.since = Some(now);
     pipboy.at_once = at_once;
+    pipboy.knobs_fresh = true;
     menus.pipboy = true;
     player.ready = false;
     if let Some(fx) = pipboy.effects.as_mut() {
@@ -1240,7 +1845,24 @@ fn whereabouts(
     state: &world::scripting::GameState,
     markers: &crate::map::MapMarkers,
     heading: f32,
+    quests: &mut QuestPoints,
 ) -> ui::pipboy::gather::Whereabouts {
+    // The quest markers' places, worked out again when the active quest,
+    // its objectives, the player's cell or what's enabled change.
+    let key = (
+        state.active_quest,
+        state.player_cell,
+        markers.world,
+        state.objectives.len(),
+        state.objectives.values().filter(|&&d| d).count(),
+        state.disabled.len(),
+    );
+    if quests.key != Some(key) {
+        quests.points = markers.world.map_or(Vec::new(), |w| {
+            ui::pipboy::gather::quest_points(order, state, &mut quests.graph, w)
+        });
+        quests.key = Some(key);
+    }
     let location = state
         .player_cell
         .and_then(|id| order.get(id))
@@ -1257,7 +1879,29 @@ fn whereabouts(
             .player_position
             .filter(|_| outdoors)
             .map(|p| (p, heading)),
+        quest: quests.points.clone(),
     }
+}
+
+/// What the quest markers' places hang on: the active quest, the player's
+/// cell, the map's worldspace, the objectives shown and done, what's
+/// enabled.
+type QuestPointsKey = (
+    Option<FormId>,
+    Option<FormId>,
+    Option<FormId>,
+    usize,
+    usize,
+    usize,
+);
+
+/// The world map's quest markers' places, kept until what they hang on
+/// changes; and the door search's doors.
+#[derive(Default)]
+struct QuestPoints {
+    key: Option<QuestPointsKey>,
+    points: Vec<[f32; 3]>,
+    graph: world::quest_targets::DoorGraph,
 }
 /// What drawing the picture needs.
 /// (Pictures, meshes and the arm's materials come through the `Spawner`.)
@@ -1282,6 +1926,7 @@ fn update_pipboy(
     mut transforms: Query<&mut Transform, (Without<FlyCamera>, Without<PipboyCamera>)>,
     mut visibility: Query<&mut Visibility>,
     piece_materials: Query<&MeshMaterial3d<GameLitMaterial>>,
+    mesh_handles: Query<&Mesh3d>,
     first_person: Query<
         &Projection,
         (
@@ -1408,6 +2053,9 @@ fn update_pipboy(
             }
         }
     }
+    // A note's audio going on.
+    let note_audio = advance_note(&mut commands, pipboy, &mut oggs, &mut wavs, now);
+
     let Some(b) = pipboy.built.as_mut() else {
         return;
     };
@@ -1436,9 +2084,28 @@ fn update_pipboy(
         let f = t.forward().as_vec3();
         f.x.atan2(-f.z).to_degrees()
     });
-    let at = whereabouts(order, &state.0, &markers, heading);
-    let input = ui::pipboy::gather::gather(order, &state.0, &at);
+    let at = whereabouts(order, &state.0, &markers, heading, &mut pipboy.quest_points);
+    let mut input = ui::pipboy::gather::gather(order, &state.0, &at);
+    input.note_audio = note_audio;
     b.pipboy.fill(&mut b.ui, &input);
+    b.pipboy.frame(&mut b.ui, f64::from(now));
+    // The knobs: set up on coming up; the tab knob to the shown menu's
+    // page or tab (`007dfc90`, `00782470`, `0079c340` → `007fa0f0`); all
+    // moved on (`007f8320`).
+    let knob_settings = *pipboy
+        .knob_settings
+        .get_or_insert_with(|| KnobSettings::load(&game.0));
+    let now_ms = now * 1000.0;
+    if std::mem::take(&mut pipboy.knobs_fresh) {
+        pipboy.knobs.init(&knob_settings, input.rads, now_ms);
+    }
+    let tab = match b.pipboy.section {
+        Section::Stats => b.pipboy.stats.page,
+        Section::Items => b.pipboy.items.tab,
+        Section::Data => b.pipboy.data.tab,
+    };
+    pipboy.knobs.tab(tab, &knob_settings);
+    pipboy.knobs.update(now_ms);
     if let Some((section, page)) = pipboy.pending.take() {
         b.pipboy.show(&mut b.ui, section);
         if let Some(p) = page {
@@ -1656,6 +2323,7 @@ fn update_pipboy(
         }
     }
     pose_arm(arm, raise_at, camera_transform, projection, &mut transforms);
+    draw_knobs(arm, &pipboy.knobs, &mut spawner.meshes, &mesh_handles);
 }
 
 /// `--pipboy`'s value: `stats`, `items` or `data`, with `:PAGE` (the stats
@@ -1793,6 +2461,42 @@ fn build_arm(
             }
         }
     }
+    // The knobs' pieces (`007f99d0`), kept with their vertices to be turned.
+    let mut shapes = Vec::new();
+    if let Some(pipboy) = order
+        .form_by_editor_id(PIPBOY_ITEM)
+        .and_then(|p| world::actor::Armor::load(order, p))
+    {
+        for model in [pipboy.male.clone(), pipboy.female.clone()]
+            .into_iter()
+            .flatten()
+        {
+            if look.parts.iter().any(|p| p.model == model) {
+                shapes.extend(knob_shapes(game, &model));
+            }
+        }
+    }
+    let mut knob_pieces = Vec::new();
+    for (data, &entity) in scene
+        .draws
+        .iter()
+        .map(|d| &scene.meshes[d.mesh])
+        .filter(|m| m.rig.is_some())
+        .zip(&pieces)
+    {
+        let name = data.shape_name.to_ascii_lowercase();
+        if let Some((_, knob, node, local)) = shapes.iter().find(|(n, ..)| *n == name) {
+            knob_pieces.push(KnobPiece {
+                knob: *knob,
+                node: *node,
+                local: *local,
+                entity,
+                positions: data.positions.clone(),
+                normals: data.normals.clone(),
+                tangents: data.tangents.clone(),
+            });
+        }
+    }
     let mut screen = None;
     let mut light_effect = Vec::new();
     let mut glows = Vec::new();
@@ -1869,7 +2573,260 @@ fn build_arm(
         glows,
         screen_pick,
         button_picks,
+        knob_pieces,
+        knobs_drawn: [f32::NAN; 3],
     })
+}
+
+/// `NiMatrix3::MakeRotation` (`004168a0`): a rotation by `angle` about the
+/// unit `axis`, as Gamebryo writes it (rows; the transpose of the usual
+/// right-handed matrix).
+// Translated from 004168a0 (decompiled, FalloutNV.exe 1.4.0.525)
+fn make_rotation(angle: f32, [x, y, z]: [f32; 3]) -> [[f32; 3]; 3] {
+    let (s, c) = angle.sin_cos();
+    let t = 1.0 - c;
+    [
+        [x * x * t + c, x * y * t + z * s, x * z * t - y * s],
+        [x * y * t - z * s, y * y * t + c, y * z * t + x * s],
+        [x * z * t + y * s, y * z * t - x * s, z * z * t + c],
+    ]
+}
+
+/// The Pip-Boy's knobs and needle (`FOPipboyManager` (Xbox PDB), `+0x10c`
+/// on: the angles now, the targets, the rates in radians a millisecond;
+/// 0 the scroll knob, 1 the radiation needle, 2 the tab knob), set up as
+/// `FOPipboyManager::InitKnobs` (`007f99d0`) does when the Pip-Boy comes
+/// up and moved as `UpdateKnobs` (`007f8320`) moves them.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Knobs {
+    now: [f32; 3],
+    target: [f32; 3],
+    rate: [f32; 3],
+    last_ms: f32,
+    /// The tab knob's five places (`+0x130` .. `+0x140`).
+    tabs: [f32; 5],
+}
+
+/// The knobs' settings (`[Pipboy]` in the INI files; the exe's defaults).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct KnobSettings {
+    tab_min: f32,
+    tab_max: f32,
+    tab_rate: f32,
+    scroll_increment: f32,
+    scroll_rate: f32,
+}
+
+impl KnobSettings {
+    fn load(game: &cellview::Game) -> KnobSettings {
+        let get = |k: &str, d: f32| {
+            game.settings
+                .get("Pipboy", k)
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(d)
+        };
+        KnobSettings {
+            tab_min: get("fTabKnobMinPosition", -0.5),
+            tab_max: get("fTabKnobMaxPosition", 1.5),
+            tab_rate: get("fTabKnobMoveRate", 0.0075),
+            scroll_increment: get("fScrollKnobIncrement", -0.1),
+            scroll_rate: get("fScrollKnobRate", 0.0015),
+        }
+    }
+}
+
+impl Knobs {
+    /// `007f99d0`: the tab knob's places from `fTabKnobMinPosition` to
+    /// `MaxPosition` in four steps, the knob at the first; the needle at
+    /// π/2 − rads ÷ 1000 × π (`007ddef0`: 1000), still.
+    // Translated from 007f99d0 (decompiled, FalloutNV.exe 1.4.0.525)
+    fn init(&mut self, s: &KnobSettings, rads: f32, now_ms: f32) {
+        let step = (s.tab_max - s.tab_min) / 4.0;
+        for (i, p) in self.tabs.iter_mut().enumerate() {
+            *p = s.tab_min + step * i as f32;
+        }
+        self.now[2] = self.tabs[0];
+        self.target[2] = self.tabs[0];
+        self.rate[2] = 0.0;
+        let needle = std::f32::consts::FRAC_PI_2 - rads / 1000.0 * std::f32::consts::PI;
+        self.now[1] = needle;
+        self.target[1] = needle;
+        self.rate[1] = 0.0;
+        self.last_ms = now_ms;
+    }
+
+    /// `007f8610`: knob `i` turned by `by` at `rate`.
+    fn turn(&mut self, i: usize, by: f32, rate: f32) {
+        self.target[i] += by;
+        self.rate[i] = rate;
+    }
+
+    /// `007fa0f0`: the tab knob to a tab's place, at `fTabKnobMoveRate`.
+    fn tab(&mut self, tab: usize, s: &KnobSettings) {
+        let to = self.tabs[tab.min(4)];
+        if to != self.target[2] {
+            self.target[2] = to;
+            self.rate[2] = s.tab_rate;
+        }
+    }
+
+    /// `007f8320`: each knob toward its target by its rate × the time
+    /// since the last frame, not past it. Which knobs moved.
+    // Translated from 007f8320 (decompiled, FalloutNV.exe 1.4.0.525)
+    fn update(&mut self, now_ms: f32) -> [bool; 3] {
+        let dt = now_ms - self.last_ms;
+        let mut moved = [false; 3];
+        for (i, m) in moved.iter_mut().enumerate() {
+            if self.now[i] < self.target[i] {
+                self.now[i] = (self.now[i] + self.rate[i] * dt).min(self.target[i]);
+                *m = true;
+            }
+            if self.target[i] < self.now[i] {
+                self.now[i] = (self.now[i] - self.rate[i] * dt).max(self.target[i]);
+                *m = true;
+            }
+        }
+        self.last_ms = now_ms;
+        moved
+    }
+}
+
+/// A knob's piece of the arm's model, kept to be turned: its knob (0
+/// scroll, 1 needle, 2 tab), its node's own transform and the piece's
+/// under it (from the model file), and the piece's vertices as built.
+struct KnobPiece {
+    knob: usize,
+    node: nif::Transform,
+    local: nif::Transform,
+    entity: Entity,
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    tangents: Option<Vec<[f32; 4]>>,
+}
+
+/// Turns the knobs' pieces to the knobs' angles where they changed: each
+/// piece's vertices moved by [`knob_delta`].
+fn draw_knobs(arm: &mut Arm, knobs: &Knobs, meshes: &mut Assets<Mesh>, handles: &Query<&Mesh3d>) {
+    for k in 0..3 {
+        if arm.knobs_drawn[k] == knobs.now[k] {
+            continue;
+        }
+        let mut all = true;
+        for p in arm.knob_pieces.iter().filter(|p| p.knob == k) {
+            let Some(mesh) = handles
+                .get(p.entity)
+                .ok()
+                .and_then(|h| meshes.get_mut(&h.0))
+            else {
+                all = false;
+                continue;
+            };
+            let d = knob_delta(k, &p.node, &p.local, knobs.now[k]);
+            let positions: Vec<[f32; 3]> = p.positions.iter().map(|&v| d.apply_point(v)).collect();
+            let normals: Vec<[f32; 3]> = p.normals.iter().map(|&n| d.apply_direction(n)).collect();
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+            if let Some(tangents) = &p.tangents {
+                let turned: Vec<[f32; 4]> = tangents
+                    .iter()
+                    .map(|t| {
+                        let [x, y, z] = d.apply_direction([t[0], t[1], t[2]]);
+                        [x, y, z, t[3]]
+                    })
+                    .collect();
+                mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, turned);
+            }
+        }
+        if all {
+            arm.knobs_drawn[k] = knobs.now[k];
+        }
+    }
+}
+
+/// The knobs' nodes (`007f99d0` finds `ScrollKnob`, `RadNeedle` and
+/// `TabKnob` in the first-person model) and the axis each turns about (the
+/// scroll knob x, the others z).
+const KNOB_NODES: [(&str, [f32; 3]); 3] = [
+    ("scrollknob", [1.0, 0.0, 0.0]),
+    ("radneedle", [0.0, 0.0, 1.0]),
+    ("tabknob", [0.0, 0.0, 1.0]),
+];
+
+/// A model's knob pieces: for each shape under a knob's node, (shape
+/// name, knob, the node's transform, the shape's).
+fn knob_shapes(
+    game: &cellview::Game,
+    model: &str,
+) -> Vec<(String, usize, nif::Transform, nif::Transform)> {
+    let Some(nif) = game
+        .assets
+        .read(&assets::mesh_path(model))
+        .ok()
+        .flatten()
+        .and_then(|b| nif::Nif::parse(b).ok())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for i in 0..nif.blocks().len() {
+        let Ok(nif::Block::Node(node)) = nif.block(i) else {
+            continue;
+        };
+        let name = node.av.net.name.to_ascii_lowercase();
+        let Some(knob) = KNOB_NODES.iter().position(|(n, _)| *n == name) else {
+            continue;
+        };
+        for &child in &node.children {
+            let Some(c) = usize::try_from(child)
+                .ok()
+                .filter(|&c| c < nif.blocks().len())
+            else {
+                continue;
+            };
+            if let Ok(nif::Block::Geometry(g)) = nif.block(c) {
+                out.push((
+                    g.av.net.name.to_ascii_lowercase(),
+                    knob,
+                    node.av.transform,
+                    g.av.transform,
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// How a knob piece's vertices move with the knob at `angle`, in the
+/// piece's own space: the node's rotation set to `make_rotation(angle,
+/// axis)` (`006404b0`, the node's own rotation replaced); for the scroll
+/// knob the node's first rotation kept under it, as `007f99d0` folds it
+/// into the piece. (Whether the needle's and tab knob's turns start from
+/// their files' poses that way isn't checked against the game.)
+fn knob_delta(
+    knob: usize,
+    node: &nif::Transform,
+    local: &nif::Transform,
+    angle: f32,
+) -> nif::Transform {
+    let axis = KNOB_NODES[knob].1;
+    let turned = nif::Transform {
+        rotation: make_rotation(angle, axis),
+        translation: node.translation,
+        scale: node.scale,
+    };
+    let under = if knob == 0 {
+        nif::Transform {
+            rotation: node.rotation,
+            translation: [0.0; 3],
+            scale: 1.0,
+        }
+        .then_child(local)
+    } else {
+        *local
+    };
+    node.then_child(local)
+        .inverse()
+        .then_child(&turned.then_child(&under))
 }
 
 /// The bone a model's top node names in its `Prn` (`nif::Nif::attach_bone`).
@@ -2055,6 +3012,135 @@ mod tests {
             .into_iter(),
         );
         assert!(r.pressed && r.released && !r.down);
+    }
+
+    /// A note's pieces' lengths: an OGG's last granule over the rate in its
+    /// identification header, a WAV's frames over its rate.
+    #[test]
+    fn sound_files_know_how_long_they_play() {
+        let mut ogg = b"OggS\0\x02".to_vec();
+        ogg.extend([0u8; 22]);
+        ogg.extend(b"\x01vorbis");
+        ogg.extend(0u32.to_le_bytes());
+        ogg.push(1);
+        ogg.extend(44_100u32.to_le_bytes());
+        ogg.extend([0u8; 16]);
+        ogg.extend(b"OggS\0\x04");
+        ogg.extend(88_200u64.to_le_bytes());
+        ogg.extend([0u8; 12]);
+        assert_eq!(audio_ms("a.ogg", &ogg), Some(2000.0));
+        let samples = 11_025u32;
+        let mut wav = b"RIFF".to_vec();
+        wav.extend((36 + samples * 2).to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(22_050u32.to_le_bytes());
+        wav.extend(44_100u32.to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(16u16.to_le_bytes());
+        wav.extend(b"data");
+        wav.extend((samples * 2).to_le_bytes());
+        wav.extend(vec![0u8; samples as usize * 2]);
+        assert_eq!(audio_ms("b.wav", &wav), Some(500.0));
+    }
+
+    /// `007f99d0`, `007f8320`, `007fa0f0`, `007f8610`: the tab knob's five
+    /// places from -0.5 to 1.5; the needle at π/2 − rads/1000 × π; knobs move
+    /// toward their targets at their rates, not past them.
+    #[test]
+    fn knobs_turn_as_the_manager_turns_them() {
+        let s = KnobSettings {
+            tab_min: -0.5,
+            tab_max: 1.5,
+            tab_rate: 0.0075,
+            scroll_increment: -0.1,
+            scroll_rate: 0.0015,
+        };
+        let mut k = Knobs::default();
+        k.init(&s, 250.0, 1000.0);
+        assert_eq!(k.tabs, [-0.5, 0.0, 0.5, 1.0, 1.5]);
+        assert_eq!(k.now[2], -0.5);
+        assert!(
+            (k.now[1] - (std::f32::consts::FRAC_PI_2 - 0.25 * std::f32::consts::PI)).abs() < 1e-6
+        );
+        k.tab(2, &s);
+        // 100 ms at 0.0075 a ms: 0.75 on, to 0.25; 100 more would pass the
+        // target 0.5: held there.
+        assert_eq!(k.update(1100.0), [false, false, true]);
+        assert!((k.now[2] - 0.25).abs() < 1e-6);
+        k.update(1200.0);
+        assert_eq!(k.now[2], 0.5);
+        k.turn(0, s.scroll_increment, s.scroll_rate);
+        k.update(1250.0);
+        assert!((k.now[0] - (-0.075)).abs() < 1e-6);
+        k.update(1300.0);
+        assert!((k.now[0] - (-0.1)).abs() < 1e-6);
+        assert_eq!(k.update(1400.0), [false; 3]);
+    }
+
+    /// `004168a0`: Gamebryo's rotation (the transpose of the usual one); a
+    /// scroll knob's piece doesn't move at angle 0 (its node's turn is
+    /// kept under it).
+    #[test]
+    fn knob_pieces_turn_about_their_nodes() {
+        let r = make_rotation(std::f32::consts::FRAC_PI_2, [0.0, 0.0, 1.0]);
+        // Rows applied to x: (0, -1, 0).
+        let x = nif::Transform {
+            rotation: r,
+            translation: [0.0; 3],
+            scale: 1.0,
+        }
+        .apply_direction([1.0, 0.0, 0.0]);
+        assert!((x[0]).abs() < 1e-6 && (x[1] + 1.0).abs() < 1e-6);
+        let node = nif::Transform {
+            rotation: make_rotation(0.3, [0.0, 0.6, 0.8]),
+            translation: [5.0, 2.0, 1.0],
+            scale: 1.0,
+        };
+        let local = nif::Transform::IDENTITY;
+        let d = knob_delta(0, &node, &local, 0.0);
+        let p = d.apply_point([1.0, 2.0, 3.0]);
+        assert!(
+            (p[0] - 1.0).abs() < 1e-4 && (p[1] - 2.0).abs() < 1e-4 && (p[2] - 3.0).abs() < 1e-4
+        );
+        // The tab knob at an angle: a point on its axis stays put.
+        let flat = nif::Transform::IDENTITY;
+        let d = knob_delta(2, &flat, &local, 1.0);
+        let p = d.apply_point([0.0, 0.0, 4.0]);
+        assert!((p[2] - 4.0).abs() < 1e-5 && p[0].abs() < 1e-5);
+    }
+
+    /// The light's place: forward is the heading's way, across to the
+    /// right.
+    #[test]
+    fn the_light_hangs_in_front_of_the_player() {
+        let at = light_point([100.0, 200.0, 0.0], 0.0, [0.0, 39.0, 142.0]);
+        assert_eq!(at, [100.0, 239.0, 142.0]);
+        let east = light_point(
+            [0.0, 0.0, 0.0],
+            std::f32::consts::FRAC_PI_2,
+            [0.0, 39.0, 0.0],
+        );
+        assert!((east[0] - 39.0).abs() < 1e-4 && east[1].abs() < 1e-4);
+    }
+
+    /// The number keys from their events: held carried over, a key's
+    /// coming up reported once; other keys ignored.
+    #[test]
+    fn hot_keys_from_their_events() {
+        use bevy::input::ButtonState::{Pressed, Released};
+        let mut held = [false; 8];
+        let up = hotkey_events(&mut held, [(KeyCode::Digit3, Pressed)].into_iter());
+        assert!(held[2] && up == [false; 8]);
+        let up = hotkey_events(
+            &mut held,
+            [(KeyCode::Digit3, Released), (KeyCode::KeyA, Released)].into_iter(),
+        );
+        assert!(!held[2] && up[2]);
+        let up = hotkey_events(&mut held, [(KeyCode::Digit9, Released)].into_iter());
+        assert_eq!(up, [false; 8]);
     }
 
     #[test]
