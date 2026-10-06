@@ -831,7 +831,7 @@ fn people_go_through_load_doors_toward_their_package() {
     assert_eq!(package.form_id, FormId(FAR_TRAVEL));
     // Not reachable on foot from here...
     assert!(ai::destination(&order, &state, doc, &package).is_none());
-    let (space, _) = ai::target_place(&order, &state, &package).unwrap();
+    let (space, _) = ai::target_place(&order, &state, doc, &package).unwrap();
     assert_eq!(space, FormId(CELL2));
     // ...but through the door at 150,150, coming out at 400,0 over there.
     let way = ai::door_toward(&order, &state, doc, space).unwrap();
@@ -890,7 +890,7 @@ fn people_go_through_load_doors_toward_their_package() {
     state.player_cell = Some(FormId(CELL));
     assert!(ai::destination(&order, &state, doc, &follow).is_none());
     assert_eq!(
-        ai::target_place(&order, &state, &follow).map(|t| t.0),
+        ai::target_place(&order, &state, doc, &follow).map(|t| t.0),
         Some(FormId(CELL))
     );
     // And back, from the far side's door.

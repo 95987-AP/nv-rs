@@ -198,6 +198,7 @@ pub fn package(state: &GameState, who: FormId) -> Option<crate::ai::Package> {
     state.living.trespass.as_ref().filter(|w| w.warner == who)?;
     Some(crate::ai::Package {
         actions: Default::default(),
+        data: Default::default(),
         form_id: FormId(0),
         editor_id: Some("TrespassPackage".into()),
         kind: PACKAGE_TYPE,

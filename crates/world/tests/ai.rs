@@ -333,9 +333,11 @@ fn wander_packages_stand_wander_and_come_back_by_their_radius() {
         ai::wander_radius(&order, &package(WANDER_IN_CELL), true),
         (800.0, true)
     );
+    // Outdoors "in a cell" has no radius: the loader drops it (`0067f060`)
+    // and the radius getter gives 0 for that kind (`0067f1c0`).
     assert_eq!(
         ai::wander_radius(&order, &package(WANDER_IN_CELL), false),
-        (300.0, true)
+        (0.0, true)
     );
     // Under 60 they stand (facing an XMarkerHeading), or go back when not
     // at the place.

@@ -209,7 +209,7 @@ pub fn ai(
     }
     let Some((to, radius)) = destination(order, &state, reference, &pkg) else {
         // Somewhere else: through a door.
-        let way = world::ai::target_place(order, &state, &pkg)
+        let way = world::ai::target_place(order, &state, reference, &pkg)
             .and_then(|(space, _)| world::ai::door_toward(order, &state, reference, space));
         match way {
             Some(d) => writeln!(

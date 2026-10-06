@@ -174,6 +174,17 @@ opening-follow-ups guess) are traced, implemented and unit-tested; not
 compared with the original. **Next action:** record a Doc Mitchell and a
 Sunny Smiles conversation in the original and compare zoom, turn and list.
 
+## M2 blocker batch: gunfight packages
+
+`claude/m2-packages` (2026-10-06): flee, guard, procedure lists, package
+type data (`PKW3`, `PKPT`, `PLD2`...) and begin/end/change action dispatch
+traced and implemented for Ghost Town Gunfight (`VMS16`). Generated
+regressions pass; not compared with the original. Finding: the gunfight's
+flee packages have no target or place, so the settlers just stop and
+stand; CF/AM guard packages send settlers back to their editor location
+after stage 70's `MoveTo`. Evidence and gaps: [PACKAGES.md](PACKAGES.md).
+**Next action:** compare both `bTrudyHelp` branches in the original game.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

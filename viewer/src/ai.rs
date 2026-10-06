@@ -177,6 +177,12 @@ pub struct Walker {
     /// walk up to the player it became: the topic and the reach.
     start: Option<(FormId, Option<FormId>)>,
     talk_to: Option<(Option<FormId>, f32)>,
+    /// The package's end action has been asked for since it began (the
+    /// process flag +0x5a8, `0091ecf0`).
+    ended: bool,
+    /// Running, not walking, along the path (a guard far from its post,
+    /// `world::ai::guard::runs`; fleeing).
+    pub(crate) run: bool,
 }
 
 /// People turn 135° a second in place until their kit is read.
@@ -257,6 +263,8 @@ impl Walker {
             home: position,
             start: None,
             talk_to: None,
+            ended: false,
+            run: false,
         }
     }
 
@@ -887,12 +895,24 @@ pub fn move_actors(
             if walker.package_kind == Some(world::ai::kinds::WANDER) {
                 crate::sitting::wander_package_frame(&mut ctx, walker, &mut life);
             }
+            // A guard package: to its post, then hold it (`00902290`).
+            if walker.package_kind == Some(world::ai::kinds::GUARD) && !life.getting_up {
+                guard_frame(&mut ctx, walker, &mut life);
+            }
+            // A flee package (`008ddac0`).
+            if walker.package_kind == Some(world::ai::kinds::FLEE) && !life.getting_up {
+                flee_frame(&mut ctx, walker);
+            }
         }
         // The game's walking speed (`world::animation::walk_speed`:
         // `fMoveBaseSpeed` 77 × SpeedMult ÷ 100 × the legs' condition),
         // times their scale; the walk animation is played at the rate that
-        // makes its root travel this (`actors`).
-        let speed = world::animation::walk_speed(order, ctx.state, me) * walker.scale;
+        // makes its root travel this (`actors`). Running: the run speed.
+        let speed = if walker.run {
+            world::animation::run_speed(order, ctx.state, me)
+        } else {
+            world::animation::walk_speed(order, ctx.state, me)
+        } * walker.scale;
         let was_on_path = walker.on_path();
         // Others in the way: wait, or a way round (`009e5ae0`).
         let mut blocked = false;
@@ -963,6 +983,14 @@ pub fn move_actors(
         // (`008e5e90` → `008bb5c0`), not while using furniture.
         if was_on_path && !on_path {
             walker.facing = walker.arrival.take();
+            // A travel package's walk over: its procedures reach `DONE`
+            // (`0091ecf0`: the end action). Not a travel to furniture
+            // (`sitting` carries that on).
+            if walker.package_kind == Some(world::ai::kinds::TRAVEL)
+                && !ctx.state.furniture.contains_key(&me)
+            {
+                package_done(ctx.state, walker);
+            }
         }
         if let Some(h) = walker.facing.filter(|_| !on_path) {
             let using =
@@ -976,6 +1004,7 @@ pub fn move_actors(
         // place first or after: not walking.
         let walking = on_path && walker.walking_now() && !blocked && !waiting;
         rig.walking = walking;
+        rig.running = walking && walker.run;
         rig.speed = if walking { speed } else { 0.0 };
         // Greeting the player, idle chatter, starting to talk with others.
         social_frame(
@@ -1128,7 +1157,7 @@ fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool) {
     // Somewhere else: the load door that leads there.
     let here = state.place(order, me).map(|p| p.0);
     let way = match (&package, near) {
-        (Some(p), None) => world::ai::target_place(order, state, p)
+        (Some(p), None) => world::ai::target_place(order, state, me, p)
             .filter(|(space, _)| Some(*space) != here)
             .and_then(|(space, _)| world::ai::door_toward(order, state, me, space)),
         _ => None,
@@ -1164,9 +1193,18 @@ fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool) {
     if using.is_some() && using != target_ref {
         state.stand(me);
     }
+    // The same package again: a forced restart (a dialogue package's).
+    let restarted = package_id == walker.package;
     walker.door = way;
     walker.package = package_id;
     walker.package_kind = package.as_ref().map(|p| p.kind);
+    walker.ended = false;
+    walker.run = false;
+    // The package begins: its begin action (`0090a1a0` → +0x598), unless
+    // `AddScriptPackage` already began it.
+    if let Some(id) = package_id.filter(|id| id.0 != 0) {
+        world::ai::actions::begin(state, me, id, restarted);
+    }
     walker.target = goal.map(|g| g.0);
     walker.target_ref = target_ref;
     walker.path_target = None;
@@ -1210,6 +1248,14 @@ fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool) {
     if life.sandbox.is_some() {
         return;
     }
+    // Guard and flee packages run their own procedures each frame
+    // (`guard_frame`, `flee_frame`).
+    if matches!(
+        walker.package_kind,
+        Some(world::ai::kinds::GUARD) | Some(world::ai::kinds::FLEE)
+    ) {
+        return;
+    }
     // A travel to a piece of furniture: to use it (the travel procedure's
     // furniture case, `00915f10`).
     if let Some(f) = target_ref.filter(|f| world::scripting::GameState::is_furniture(order, *f)) {
@@ -1236,6 +1282,10 @@ fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool) {
         .and_then(|p| world::ai::arrival_heading(order, state, me, p));
     if way.is_none() && mv::arrived(walker.position, to, radius) {
         walker.facing = arrival;
+        // Already there: the travel procedure is over at once.
+        if walker.package_kind == Some(world::ai::kinds::TRAVEL) {
+            package_done(state, walker);
+        }
         return;
     }
     if way.is_some() && distance(walker.position, to) <= radius.max(1.0) {
@@ -1314,6 +1364,8 @@ fn follow_target(ctx: &mut Ctx, walker: &mut Walker, moves: &Moves) {
         || walker.package_kind == Some(world::ai::kinds::DIALOGUE)
         || walker.package_kind == Some(world::ai::kinds::SANDBOX)
         || walker.package_kind == Some(world::ai::kinds::WANDER)
+        || walker.package_kind == Some(world::ai::kinds::GUARD)
+        || walker.package_kind == Some(world::ai::kinds::FLEE)
         || ctx.state.furniture.contains_key(&me)
     {
         return;
@@ -1355,6 +1407,190 @@ fn follow_target(ctx: &mut Ctx, walker: &mut Walker, moves: &Moves) {
         walker.arrival = world::ai::arrival_heading(order, ctx.state, me, &package);
     } else {
         walker.path_target = Some(at);
+    }
+}
+
+/// The package's procedures reached `DONE`: its end action, once per start
+/// (`0091ecf0`, process flag +0x5a8).
+fn package_done(state: &mut world::scripting::GameState, walker: &mut Walker) {
+    if walker.ended {
+        return;
+    }
+    walker.ended = true;
+    if let Some(p) = walker.package.filter(|p| p.0 != 0) {
+        world::ai::actions::end(state, walker.reference, p);
+    }
+}
+
+/// The path's length still ahead of someone on it.
+fn path_left(walker: &Walker) -> f32 {
+    if !walker.on_path() {
+        return 0.0;
+    }
+    let mut left = distance(walker.position, walker.path[walker.next]);
+    for w in walker.path[walker.next..].windows(2) {
+        left += distance(w[0], w[1]);
+    }
+    left
+}
+
+/// One frame of a guard package (`world::ai::guard`, `00902290`): a
+/// seated guard gets up; one away from its post with its mover idle goes
+/// there (through a door when its editor location is elsewhere), running
+/// or walking by the path left (`008daa20`); at its post it turns to an
+/// `XMarkerHeading` location's heading. Its wandering at a post with a
+/// radius and its intruder watch aren't carried out (no Goodsprings guard
+/// package has either).
+fn guard_frame(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life) {
+    use world::ai::guard::{self, Post};
+    let order = &ctx.game.order;
+    let me = walker.reference;
+    let Some(package) = walker
+        .package
+        .and_then(|p| world::ai::Package::load(order, p))
+    else {
+        return;
+    };
+    // Seated or asleep: up first (`00902290` → actor vfunc +0x418,
+    // `InitiateGetUpPackage` (Xbox PDB)).
+    if let Some(sitter) = ctx.state.sitters.get_mut(&me) {
+        if sitter.state != SitState::Normal {
+            if sitter.state.is_settled() {
+                sitter.stand_up();
+                life.getting_up = true;
+            }
+            return;
+        }
+    }
+    let Some(plan) = guard::plan(order, me, &package) else {
+        return;
+    };
+    let here = ctx.state.place(order, me).map(|p| p.0);
+    // The post, in the place they're in; else the door toward it.
+    let (post, elsewhere) = match plan.post {
+        Post::Editor { position } => {
+            let editor =
+                world::scripting::whereabouts(order, me).map(|w| w.world.unwrap_or(w.cell));
+            (position, editor.filter(|s| Some(*s) != here))
+        }
+        Post::Reference(r) => match ctx.state.place(order, r) {
+            Some((space, _, at, _)) => (at, Some(space).filter(|s| Some(*s) != here)),
+            None => return,
+        },
+    };
+    let at = match elsewhere {
+        Some(_) => false,
+        None if plan.has_location => destination(order, ctx.state, me, &package)
+            .is_none_or(|(to, r)| mv::arrived(walker.position, to, r)),
+        None => {
+            let d = (0..3)
+                .map(|i| (walker.position[i] - post[i]).powi(2))
+                .sum::<f32>()
+                .sqrt();
+            d < plan.radius
+        }
+    };
+    if at {
+        if walker.on_path() && walker.door.is_none() {
+            walker.clear_path();
+        }
+        walker.run = false;
+        if !walker.on_path() && walker.facing.is_none() {
+            if let Some(h) = guard::facing(order, ctx.state, &package) {
+                let off = (h - walker.heading + std::f32::consts::PI)
+                    .rem_euclid(std::f32::consts::TAU)
+                    - std::f32::consts::PI;
+                if off.abs() > mv::ONE_DEGREE {
+                    walker.facing = Some(h);
+                }
+            }
+        }
+        return;
+    }
+    if !walker.on_path() {
+        if let Some(space) = elsewhere {
+            let Some(way) = world::ai::door_toward(order, ctx.state, me, space) else {
+                return;
+            };
+            if let Some(path) = ctx.mesh.path(walker.position, way.at) {
+                walker.set_path(path, mv::REQUEST_RADIUS, true, ctx.moves);
+                walker.door = Some(way);
+            }
+        } else if let Some(path) = ctx.mesh.path(walker.position, post) {
+            walker.set_path(path, plan.path_radius, true, ctx.moves);
+            walker.door = None;
+        }
+    }
+    walker.run = guard::runs(
+        path_left(walker),
+        plan.radius,
+        walker.run,
+        package.flags,
+        false,
+    );
+}
+
+/// One frame of a flee package (`world::ai::flee`, `008ddac0`). With no
+/// one to flee from and nowhere to flee to the procedure is over at once
+/// and they stand; with a place, they run there until within its radius.
+/// The engine's flee package from a target without a place (`00897de0`'s
+/// path search, `009f1140`) isn't traced: they stand.
+fn flee_frame(ctx: &mut Ctx, walker: &mut Walker) {
+    use world::ai::flee::{self, FleeStep};
+    let order = &ctx.game.order;
+    let me = walker.reference;
+    let Some(package) = walker
+        .package
+        .and_then(|p| world::ai::Package::load(order, p))
+    else {
+        return;
+    };
+    let here = ctx.state.place(order, me).map(|p| p.0);
+    let near = |r: FormId| {
+        ctx.state
+            .place(order, r)
+            .filter(|p| Some(p.0) == here)
+            .map(|p| (r, p.2, distance(walker.position, p.2)))
+    };
+    let from = flee::flee_from(order, ctx.state, me, &package).and_then(near);
+    let to = flee::flee_to(order, me, &package).and_then(near);
+    let radius = package
+        .location
+        .map_or(0.0, |l| world::ai::location_radius_of(order, &l) as f32);
+    let step = flee::step(
+        from.map(|f| (f.0, f.2)),
+        to.map(|t| (t.0, t.2)),
+        package.target.map(|t| t.2),
+        radius,
+        package.flags,
+        walker.on_path(),
+    );
+    match step {
+        FleeStep::Done => {
+            walker.clear_path();
+            walker.run = false;
+            package_done(ctx.state, walker);
+        }
+        FleeStep::Safe { stop, finish } => {
+            if stop {
+                walker.clear_path();
+                walker.run = false;
+            }
+            if finish {
+                package_done(ctx.state, walker);
+            }
+        }
+        FleeStep::Run { to: Some(_), .. } => {
+            if !walker.on_path() {
+                if let Some((_, at, _)) = to {
+                    if let Some(path) = ctx.mesh.path(walker.position, at) {
+                        walker.set_path(path, radius.max(mv::REQUEST_RADIUS), true, ctx.moves);
+                        walker.run = true;
+                    }
+                }
+            }
+        }
+        FleeStep::Run { to: None, .. } => {}
     }
 }
 
@@ -2588,5 +2824,207 @@ mod tests {
         assert!(ctx.state.evaluate.contains(&actor));
         assert!(!ctx.state.sitters.get(&actor).unwrap().stand_requested);
         assert_eq!(walker.clock, PackageClock::default());
+    }
+    /// The package fixture's world, opened.
+    fn package_game(tag: &str) -> (testdata::TempData, cellview::Game) {
+        let data = testdata::packages::world(tag);
+        let game = cellview::Game::open(
+            data.path(),
+            &cellview::Options {
+                official: true,
+                ..default()
+            },
+        )
+        .unwrap();
+        (data, game)
+    }
+
+    fn with_package(walker: &mut Walker, package: u32, kind: u8) {
+        walker.package = Some(FormId(package));
+        walker.package_kind = Some(kind);
+    }
+
+    fn package_events(state: &world::scripting::GameState) -> Vec<(u32, PackageActionKind)> {
+        state
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                world::scripting::Event::PackageAction { package, kind, .. } => {
+                    Some((package.0, *kind))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    use world::scripting::PackageActionKind;
+
+    #[test]
+    fn a_guard_runs_to_its_heading_marker_and_turns_to_it() {
+        use testdata::packages::ids::*;
+        let (_data, game) = package_game("guard-frame");
+        let me = FormId(GUARD_REF);
+        let mut state = world::scripting::GameState::default();
+        let mut seats = Seats::new(&game.order);
+        let mesh = world::ai::NavMesh::load(&game.order, FormId(CELL));
+        let moves = MoveSettings::defaults();
+        let mut life = Life::default();
+        let mut walker = Walker::at(me, [100.0, 100.0, 0.0], 0.0, 1.0, false);
+        with_package(&mut walker, GUARD_POST, world::ai::kinds::GUARD);
+        let mut ctx = Ctx {
+            game: &game,
+            state: &mut state,
+            seats: &mut seats,
+            mesh: &mesh,
+            moves: &moves,
+            now: 1.0,
+            dt: 0.1,
+            fighting: false,
+            talking: false,
+        };
+        guard_frame(&mut ctx, &mut walker, &mut life);
+        // To the marker (800, 800), path radius max(0 × 0.5, 15), running
+        // (radius 0: any distance left).
+        assert!(walker.on_path());
+        assert_eq!(walker.radius, 15.0);
+        assert!(walker.run);
+        let end = *walker.path.last().unwrap();
+        assert!((end[0] - 800.0).abs() < 1e-3 && (end[1] - 800.0).abs() < 1e-3);
+        // There: off the path, walking again, turning to the marker's 90°.
+        walker.position = [795.0, 800.0, 0.0];
+        walker.clear_path();
+        guard_frame(&mut ctx, &mut walker, &mut life);
+        assert!(!walker.on_path());
+        assert!(!walker.run);
+        let h = walker.facing.expect("a turn to the marker's heading");
+        assert!((h - std::f32::consts::FRAC_PI_2).abs() < 1e-4, "{h}");
+    }
+
+    #[test]
+    fn a_guard_near_its_editor_location_walks_back_from_where_it_was_moved() {
+        use testdata::packages::ids::*;
+        let (_data, game) = package_game("guard-editor-frame");
+        let me = FormId(GUARD_REF);
+        let mut state = world::scripting::GameState::default();
+        // A script moved them to (700, 700).
+        state.positions.insert(me, ([700.0, 700.0, 0.0], 0.0));
+        let mut seats = Seats::new(&game.order);
+        let mesh = world::ai::NavMesh::load(&game.order, FormId(CELL));
+        let moves = MoveSettings::defaults();
+        let mut life = Life::default();
+        let mut walker = Walker::at(me, [700.0, 700.0, 0.0], 0.0, 1.0, false);
+        with_package(&mut walker, GUARD_EDITOR, world::ai::kinds::GUARD);
+        let mut ctx = Ctx {
+            game: &game,
+            state: &mut state,
+            seats: &mut seats,
+            mesh: &mesh,
+            moves: &moves,
+            now: 1.0,
+            dt: 0.1,
+            fighting: false,
+            talking: false,
+        };
+        guard_frame(&mut ctx, &mut walker, &mut life);
+        let end = *walker.path.last().expect("a path back");
+        assert!((end[0] - 100.0).abs() < 1e-3 && (end[1] - 100.0).abs() < 1e-3);
+        assert!(walker.run);
+        // Back at the editor location: no heading to turn to.
+        walker.position = [100.0, 100.0, 0.0];
+        walker.clear_path();
+        guard_frame(&mut ctx, &mut walker, &mut life);
+        assert!(!walker.on_path());
+        assert_eq!(walker.facing, None);
+    }
+
+    #[test]
+    fn a_flee_package_with_nowhere_to_go_ends_once_and_they_stand() {
+        use testdata::packages::ids::*;
+        let (_data, game) = package_game("flee-frame");
+        let me = FormId(GUARD_REF);
+        let mut state = world::scripting::GameState::default();
+        let mut seats = Seats::new(&game.order);
+        let mesh = world::ai::NavMesh::load(&game.order, FormId(CELL));
+        let moves = MoveSettings::defaults();
+        let mut walker = Walker::at(me, [100.0, 100.0, 0.0], 0.0, 1.0, false);
+        with_package(&mut walker, FLEE_NOWHERE, world::ai::kinds::FLEE);
+        walker.set_path(
+            vec![[100.0, 100.0, 0.0], [500.0, 100.0, 0.0]],
+            0.0,
+            false,
+            &moves,
+        );
+        let mut ctx = Ctx {
+            game: &game,
+            state: &mut state,
+            seats: &mut seats,
+            mesh: &mesh,
+            moves: &moves,
+            now: 1.0,
+            dt: 0.1,
+            fighting: false,
+            talking: false,
+        };
+        flee_frame(&mut ctx, &mut walker);
+        flee_frame(&mut ctx, &mut walker);
+        assert!(!walker.on_path());
+        assert_eq!(
+            package_events(ctx.state),
+            [(FLEE_NOWHERE, PackageActionKind::End)]
+        );
+        // With a place: run there.
+        let mut walker = Walker::at(me, [100.0, 100.0, 0.0], 0.0, 1.0, false);
+        with_package(&mut walker, FLEE_TO_MARKER, world::ai::kinds::FLEE);
+        flee_frame(&mut ctx, &mut walker);
+        assert!(walker.on_path() && walker.run);
+        let end = *walker.path.last().unwrap();
+        assert!((end[0] + 800.0).abs() < 1e-3 && (end[1] + 800.0).abs() < 1e-3);
+        assert_eq!(walker.radius, 256.0);
+    }
+
+    #[test]
+    fn a_new_package_begins_once_and_a_travel_already_there_ends() {
+        use testdata::packages::ids::*;
+        let (_data, game) = package_game("package-begin-end");
+        let me = FormId(GUARD_REF);
+        let mut state = world::scripting::GameState::default();
+        state.script_packages.insert(me, FormId(WITH_ACTIONS));
+        let mut seats = Seats::new(&game.order);
+        let mesh = world::ai::NavMesh::load(&game.order, FormId(CELL));
+        let moves = MoveSettings::defaults();
+        let mut life = Life::default();
+        // Standing at the travel's place already (800, 800).
+        let mut walker = Walker::at(me, [800.0, 800.0, 0.0], 0.0, 1.0, false);
+        let mut ctx = Ctx {
+            game: &game,
+            state: &mut state,
+            seats: &mut seats,
+            mesh: &mesh,
+            moves: &moves,
+            now: 1.0,
+            dt: 0.1,
+            fighting: false,
+            talking: false,
+        };
+        rethink(&mut ctx, &mut walker, &mut life, true);
+        assert_eq!(
+            package_events(ctx.state),
+            [
+                (WITH_ACTIONS, PackageActionKind::Begin),
+                (WITH_ACTIONS, PackageActionKind::End)
+            ]
+        );
+        // Looked at again: the same package goes on, nothing more.
+        rethink(&mut ctx, &mut walker, &mut life, true);
+        assert_eq!(package_events(ctx.state).len(), 2);
+        // A package `AddScriptPackage` already began isn't begun again.
+        ctx.state.events.clear();
+        ctx.state.script_packages.insert(me, FormId(GUARD_POST));
+        ctx.state
+            .package_begun
+            .insert(me, (FormId(GUARD_POST), false));
+        rethink(&mut ctx, &mut walker, &mut life, true);
+        assert_eq!(walker.package, Some(FormId(GUARD_POST)));
+        assert!(package_events(ctx.state).is_empty());
     }
 }
