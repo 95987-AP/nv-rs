@@ -237,6 +237,7 @@ pub fn stream_squares(
     mut cameras: Query<(&mut Transform, &mut FlyCamera, &mut ImageSpaceGrade)>,
     mut state: ResMut<crate::dialogue::DialogueState>,
     mut swing_doors: ResMut<crate::doors::SwingDoors>,
+    old_talkers: Res<crate::dialogue::Talkers>,
 ) {
     let Some(mut exterior) = exterior else {
         return;
@@ -435,6 +436,16 @@ pub fn stream_squares(
                 object_bounds
                     .0
                     .extend(bounds.iter().map(|b| (b.reference, (b.lo, b.hi))));
+            }
+        }
+        // People brought in from elsewhere after the place loaded
+        // (`bring_in_people`) stay among them: a dialogue package starting
+        // just after a square loaded found Sunny Smiles (moved to the first
+        // well for VCG02) missing and talked to no one.
+        let moved = world::ai::moved_into(&game.0.order, &state.0, exterior.grid.world.form_id);
+        for t in &old_talkers.0 {
+            if moved.contains(&t.reference) && !talkers.iter().any(|k| k.reference == t.reference) {
+                talkers.push(*t);
             }
         }
         commands.insert_resource(crate::dialogue::Talkers(talkers));
