@@ -853,17 +853,20 @@ fn bring_in_people(
         scene.actors.iter().map(dialogue::Talker::from_actor),
     );
     spawner.spawn_with(&scene, lighting);
-    // They can be talked to, shot and targeted like the place's own people.
-    if brought.space != Some(space) {
-        *brought = BroughtIn {
-            space: Some(space),
-            people: Default::default(),
-        };
-    }
-    for a in &scene.actors {
-        brought
-            .people
-            .insert(dialogue::Talker::from_actor(a).reference);
+    brought.remember(space, scene.actors.iter().map(|a| esm::FormId(a.reference)));
+}
+
+impl BroughtIn {
+    /// People put on screen in `space` after its squares loaded: they can be
+    /// talked to, shot and targeted like the place's own people.
+    fn remember(&mut self, space: esm::FormId, people: impl IntoIterator<Item = esm::FormId>) {
+        if self.space != Some(space) {
+            *self = BroughtIn {
+                space: Some(space),
+                people: Default::default(),
+            };
+        }
+        self.people.extend(people);
     }
 }
 
@@ -893,7 +896,7 @@ fn bring_in_enabled(
     here: Res<scripts::Here>,
     exterior: Option<Res<exterior::Exterior>>,
     mut placed: Query<(&scripts::PlacedRef, &mut Visibility)>,
-    mut talkers: ResMut<dialogue::Talkers>,
+    (mut talkers, mut brought): (ResMut<dialogue::Talkers>, ResMut<BroughtIn>),
     mut spawner: Spawner,
     mut seen: Local<EnableSeen>,
 ) {
@@ -996,6 +999,14 @@ fn bring_in_enabled(
         &mut talkers.0,
         scene.actors.iter().map(dialogue::Talker::from_actor),
     );
+    // Kept among the place's people when its loaded squares change
+    // (`exterior::stream_squares` rebuilds them from the squares, which
+    // left these out while they were disabled): before, the Powder Gangers
+    // enabled for Ghost Town Gunfight dropped out at the next square change
+    // and shots passed through them.
+    if let Some(space) = space {
+        brought.remember(space, scene.actors.iter().map(|a| esm::FormId(a.reference)));
+    }
     let lighting = spawner.place_lighting.get();
     spawner.spawn_with(&scene, lighting);
 }
@@ -2785,6 +2796,31 @@ mod tests {
         // The ones already there keep their places.
         assert_eq!(talkers[0].position[0], 0.0);
         assert_eq!(talkers[1].position[0], 5.0);
+    }
+
+    /// People a script enabled after their square loaded (the Powder Gangers
+    /// of Ghost Town Gunfight, `GoodspringsPowderGangMarker.Enable`) stay
+    /// among the place's people when the loaded squares change: before, the
+    /// rebuilt list left them out and shots passed through them.
+    #[test]
+    fn people_enabled_after_loading_stay_when_squares_change() {
+        let at = |r: u32| dialogue::Talker {
+            reference: esm::FormId(r),
+            base: esm::FormId(r + 1),
+            position: [0.0; 3],
+        };
+        let world = esm::FormId(0x000DA726);
+        let ganger = esm::FormId(0x00104C72);
+        let mut brought = BroughtIn::default();
+        brought.remember(world, [ganger]);
+        let old = vec![at(0x10), at(ganger.0)];
+        let on_screen: std::collections::HashSet<_> = [esm::FormId(0x10), ganger].into();
+        let rebuilt = exterior::with_brought_in(vec![at(0x10)], &old, &brought.people, &on_screen);
+        let refs: Vec<u32> = rebuilt.iter().map(|t| t.reference.0).collect();
+        assert_eq!(refs, [0x10, ganger.0]);
+        // Another place forgets them.
+        brought.remember(esm::FormId(0x3C), []);
+        assert!(brought.people.is_empty());
     }
 
     #[test]
