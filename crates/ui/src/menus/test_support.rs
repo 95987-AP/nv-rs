@@ -534,3 +534,59 @@ pub fn computers_menu() -> String {
         item = LIST_ITEM,
     )
 }
+
+/// A merchant's repair menu laid out like `repair_services_menu.xml`: the
+/// labels (0, 1), the list (2), the picture (3), the stats (4: condition
+/// cards 5 and 10 with `user0`, stat cards 6 and 11, the "+" texts 7 and
+/// 8, the error 9 shown while card 10 isn't, the cost 12), the buttons
+/// (13 repair, 14 Repair All, 15 Done); a line's text first, its meter
+/// (18) and its worn mark last.
+pub fn repair_services_menu() -> String {
+    let card = |name: &str, id: i32, extra: &str| {
+        format!(
+            "<rect name=\"{name}\"><id>{id}</id><_Title></_Title><_Value></_Value><user0>0</user0>{extra}</rect>"
+        )
+    };
+    format!(
+        "<menu name=\"RepairServicesMenu\"><class>&RepairServicesMenu;</class>
+           <_PCButton_A>RSM_RepairAllButton</_PCButton_A><_PCButton_E>RSM_DoneButton</_PCButton_E>
+           <rect name=\"NOGLOW_BRANCH\"><rect name=\"RSM_MainRect\"><locus>&true;</locus><width>1020</width><height>680</height>
+             <text name=\"RSM_VendorSkillLabel\"><id>0</id><string></string><font>2</font></text>
+             <text name=\"RSM_CapsLabel\"><id>1</id><string></string><font>2</font></text>
+             {}
+             <image name=\"RSM_ItemIcon\"><id>3</id><visible>&false;</visible></image>
+             <rect name=\"RSM_StatsDisplayRect\"><id>4</id><visible>&false;</visible><locus>&true;</locus>
+               {}{}
+               <text name=\"RSM_HealthImprovementText\"><id>7</id><font>4</font><string></string>
+                 <visible><copy src=\"sibling(RSM_FixedItemHealth)\" trait=\"visible\"/></visible></text>
+               <text name=\"RSM_StatImprovementText\"><id>8</id><font>4</font><string></string>
+                 <visible><copy src=\"sibling(RSM_FixedItemHealth)\" trait=\"visible\"/></visible></text>
+               <text name=\"RSM_ErrorText\"><id>9</id><font>2</font><string></string>
+                 <visible><not src=\"sibling(RSM_FixedItemHealth)\" trait=\"visible\"/></visible></text>
+               {}{}
+               <text name=\"RSM_RepairCostText\"><id>12</id><font>6</font><string></string>
+                 <visible><copy src=\"sibling(RSM_FixedItemHealth)\" trait=\"visible\"/></visible></text>
+             </rect>
+             <image name=\"RSM_RepairButton\"><id>13</id><filename>a.dds</filename><target>&true;</target></image>
+             <image name=\"RSM_RepairAllButton\"><id>14</id><filename>a.dds</filename><target>&true;</target><string></string></image>
+             <image name=\"RSM_DoneButton\"><id>15</id><filename>a.dds</filename><target>&true;</target></image>
+           </rect></rect>
+           <template name=\"RSM_RepairListTemplate\"><hotrect name=\"RSM_RepairListTemplateRect\">{LIST_ITEM}
+             <_Value></_Value><_RepairCost></_RepairCost><_CanRepair>&true;</_CanRepair>
+             <text name=\"ListItemText\"><font>2</font><string><copy src=\"parent()\" trait=\"string\"/></string><wrapwidth>260</wrapwidth></text>
+             <image name=\"RSM_Template_MeterBackground\"><filename>solid.dds</filename><width>60</width></image>
+             <image name=\"RSM_Template_Meter\"><id>18</id><filename>solid.dds</filename><width>0</width></image>
+             <image name=\"RSM_Template_ItemMarker\"><filename>square.dds</filename><visible>&false;</visible></image>
+           </hotrect></template>
+         </menu>",
+        list_box("RSM_RepairList", 2, 480.0, "580"),
+        card("RSM_BrokenItemHealth", 5, ""),
+        card("RSM_BrokenItemStat", 6, ""),
+        card("RSM_FixedItemHealth", 10, "<visible>&false;</visible>"),
+        card(
+            "RSM_FixedItemStat",
+            11,
+            "<visible><copy src=\"sibling(RSM_FixedItemHealth)\" trait=\"visible\"/></visible>"
+        ),
+    )
+}

@@ -836,8 +836,8 @@ F forces the lock (the chance is shown; failing breaks it for good, and then onl
 key opens it), E leaves. Every number, sound and timing is the game's, read from its
 code. A picked lock gives experience the first time and counts as stealing if it's
 someone else's. Too little skill gets the game's "You need a lockpick skill of 50 to
-pick this lock."; locks that need a key say so. Locked terminals still open only with
-enough Science (the hacking game isn't here).
+pick this lock."; locks that need a key say so. Locked terminals open through the
+game's hacking screen (see `docs/HACKING.md`).
 
 `nvinspect <Data> lockpick <door or container, or a lock level> [skill]` prints what
 a lock does: the sweet spot and its rings at your screen size, how long a pin lasts,
@@ -979,7 +979,16 @@ formula (the item's condition, your Barter skill, perks); clicking a line
 offers it, the running total and the caps that will change hands show at
 the bottom, Accept settles the trade, Exit with an offer asks "Cancel
 transaction?". `nvinspect "<Data folder>" barter TrudyREF` lists a
-merchant's goods and prices. Inventories start
+merchant's goods and prices.
+
+Merchants who repair (Mick in Freeside, Samuel at the 188, Old Lady
+Gibson, Raul, Calamity, Major Knight, Dale Barton, Sato) do it through the
+game's repair services screen when their dialogue says so: your damaged
+weapons and armour with what mending each costs, the condition and damage
+(or DT/DR) now and after, Repair All; how far they mend and what they ask
+come from their Repair skill by the game's own formulas (see
+`docs/REPAIR.md`). `--open-menu repair:REF` opens a vendor's for testing.
+Inventories start
 as the records list them, with leveled lists picked for your level; I
 shows what you carry (E on a skill book reads it: +3 to its skill, +4
 with Comprehension, and the book is used up, as in the game) and J your

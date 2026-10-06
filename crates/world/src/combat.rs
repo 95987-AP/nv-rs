@@ -335,6 +335,20 @@ pub fn weapon_damage(
     weapon: Option<&Weapon>,
     power: bool,
 ) -> f32 {
+    let condition = weapon.map_or(1.0, |w| weapon_condition(state, attacker, w.form_id));
+    weapon_damage_at(order, state, attacker, weapon, power, condition)
+}
+
+/// [`weapon_damage`] with the weapon at a condition (0..1) other than its
+/// own (the repair menus' "after" figures, `006450f0` with a condition).
+pub fn weapon_damage_at(
+    order: &LoadOrder,
+    state: &GameState,
+    attacker: FormId,
+    weapon: Option<&Weapon>,
+    power: bool,
+    condition: f32,
+) -> f32 {
     let setting = |n: &str, default: f32| game_setting(order, n).unwrap_or(default);
     let facts = Facts {
         order,
@@ -380,14 +394,11 @@ pub fn weapon_damage(
         1.0
     };
     let base = weapon.map_or(1.0, |w| w.damage) * setting("fDamageWeaponMult", 1.0);
-    let condition = weapon.map_or(1.0, |w| {
-        let c = weapon_condition(state, attacker, w.form_id);
-        if c > 0.75 {
-            1.0
-        } else {
-            1.0 - 0.67 * (0.75 - c)
-        }
-    });
+    let condition = if weapon.is_none() || condition > 0.75 {
+        1.0
+    } else {
+        1.0 - 0.67 * (0.75 - condition)
+    };
     let scale = state.scales.get(&attacker).copied().unwrap_or(1.0);
     (base * skill_factor * power + added) * condition * scale
 }

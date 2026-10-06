@@ -62,6 +62,7 @@ pub mod perks;
 mod placement;
 pub mod quest;
 pub mod region;
+pub mod repair;
 pub mod reputation;
 mod rotation;
 pub mod sandbox;

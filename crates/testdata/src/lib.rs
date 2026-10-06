@@ -1447,6 +1447,16 @@ pub mod quest_ids {
     /// on and 7 when they take it off (as the faction outfits' warnings).
     pub const SCRIPTED_HAT: u32 = 0xAF4;
     pub const SCRIPTED_HAT_SCRIPT: u32 = 0xAF5;
+    /// The pistol's repair list (`REPL`: `TestPistolRepairList`, the
+    /// rifle), the game data's repair settings (`fRepairSkillMax` 10,
+    /// `fItemRepairCostMult` 2; two forms from here), `JuryRigging` (entry
+    /// point 48 "Has Jury Rigging" set 1, as the game's perk) and a
+    /// revolver like the pistol (one-handed pistol, Guns; value 50, health
+    /// 100) that isn't on its list.
+    pub const REPAIR_LIST: u32 = 0xAF6;
+    pub const REPAIR_SETTINGS: u32 = 0xAF7;
+    pub const JURY_RIGGING: u32 = 0xAF9;
+    pub const REVOLVER: u32 = 0xAFA;
     /// Settings the perks' rules read (seven forms from here):
     /// `fPackRatThreshold` 2, `fPackRatModifier` 0.5, `fAgilityReloadBase`
     /// 5, `fAgilityReloadModifier` 0.1, `fDamageToWeaponValue` 0.2,
@@ -1819,6 +1829,16 @@ pub fn quests(tag: &str) -> TempData {
     weapon_dnam[104..108].copy_from_slice(&41u32.to_le_bytes()); // Guns
     weapon_dnam[116..120].copy_from_slice(&1.0f32.to_le_bytes()); // limb damage
     pistol.extend(sub(b"DNAM", &weapon_dnam.clone()));
+    pistol.extend(sub(b"REPL", &REPAIR_LIST.to_le_bytes()));
+    let mut revolver = edid("TestRevolver");
+    revolver.extend(sub(b"FULL", &zstr("Revolver")));
+    let mut revolver_data = 50i32.to_le_bytes().to_vec();
+    revolver_data.extend(100i32.to_le_bytes());
+    revolver_data.extend(1.0f32.to_le_bytes());
+    revolver_data.extend(12i16.to_le_bytes());
+    revolver_data.push(6);
+    revolver.extend(sub(b"DATA", &revolver_data));
+    revolver.extend(sub(b"DNAM", &weapon_dnam.clone()));
     // A two-handed rifle: damage 20, limb damage × 1.
     let mut rifle = edid("TestRifle");
     rifle.extend(sub(b"FULL", &zstr("Rifle")));
@@ -2171,6 +2191,7 @@ pub fn quests(tag: &str) -> TempData {
             vec![],
         ),
         (ADAMANTIUM, "Adamantium", 0, 6, 3, 3, 0.5, vec![guns(2)]),
+        (JURY_RIGGING, "JuryRigging", 0, 48, 1, 1, 1.0, vec![]),
     ] {
         perks.extend(entry_perk(
             id,
@@ -2181,6 +2202,16 @@ pub fn quests(tag: &str) -> TempData {
             tabs,
             value,
             &conditions,
+        ));
+    }
+    for (i, (name, value)) in [("fRepairSkillMax", 10.0f32), ("fItemRepairCostMult", 2.0)]
+        .into_iter()
+        .enumerate()
+    {
+        settings.extend(setting(
+            REPAIR_SETTINGS + i as u32,
+            name,
+            &value.to_le_bytes(),
         ));
     }
     for (i, (name, value)) in [
@@ -2572,11 +2603,11 @@ pub fn quests(tag: &str) -> TempData {
     plugin.extend(group(*b"AMMO", 0, &ammunition));
     let mut cowhand_list = edid("CowhandList");
     cowhand_list.extend(sub(b"LNAM", &PISTOL.to_le_bytes()));
-    plugin.extend(group(
-        *b"FLST",
-        0,
-        &record(b"FLST", COWHAND_LIST, &cowhand_list),
-    ));
+    let mut lists = record(b"FLST", COWHAND_LIST, &cowhand_list);
+    let mut repair_list = edid("TestPistolRepairList");
+    repair_list.extend(sub(b"LNAM", &RIFLE.to_le_bytes()));
+    lists.extend(record(b"FLST", REPAIR_LIST, &repair_list));
+    plugin.extend(group(*b"FLST", 0, &lists));
     let mut testville = edid("RepTestville");
     testville.extend(sub(b"FULL", &zstr("Testville")));
     testville.extend(sub(b"DATA", &20.0f32.to_le_bytes()));
@@ -2584,6 +2615,7 @@ pub fn quests(tag: &str) -> TempData {
     plugin.extend(group(*b"IMAD", 0, &record(b"IMAD", FLASH, &flash)));
     let mut weapons = record(b"WEAP", PISTOL, &pistol);
     weapons.extend(record(b"WEAP", RIFLE, &rifle));
+    weapons.extend(record(b"WEAP", REVOLVER, &revolver));
     plugin.extend(group(*b"WEAP", 0, &weapons));
     plugin.extend(group(*b"CREA", 0, &record(b"CREA", GECKO, &gecko)));
     let mut bodies = record(

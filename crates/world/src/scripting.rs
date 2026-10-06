@@ -966,6 +966,8 @@ pub enum Event {
     CharacterMenu(crate::chargen::CharacterMenu),
     /// `ShowBarterMenu`: trading with this merchant.
     Barter(FormId),
+    /// `ShowRepairMenu`: this merchant's repairs (`world::repair`).
+    RepairServices(FormId),
     /// Someone died (killed by `by`).
     Died {
         who: FormId,
@@ -2182,10 +2184,25 @@ impl Facts<'_> {
         match index {
             5..=11 => data.get(4 + usize::from(index - 5)).map(|&v| f64::from(v)),
             16 => (data.len() >= 4).then(|| f64::from(le_u32(data, 0) as i32)),
-            32..=45 => record
-                .get(DNAM)
-                .and_then(|d| d.data.get(usize::from(index - 32)).copied())
-                .map(f64::from),
+            // `DNAM`: the 14 skills, then 14 offsets (`NPC_DATA`'s `cSkill`
+            // and `cOffset`, Xbox PDB), the offset added unless the stats
+            // are worked out by the game (`ACBS` flag 0x10; `00607850`,
+            // `005f0d00`): Mick's Repair is 15 + 60.
+            32..=45 => {
+                let i = usize::from(index - 32);
+                let d = &record.get(DNAM)?.data;
+                let skill = f64::from(*d.get(i)?);
+                let auto = record
+                    .get(ACBS)
+                    .filter(|s| s.data.len() >= 4)
+                    .is_some_and(|s| le_u32(&s.data, 0) & 0x10 != 0);
+                let offset = if auto {
+                    0
+                } else {
+                    d.get(14 + i).copied().unwrap_or(0)
+                };
+                Some(skill + f64::from(offset))
+            }
             _ => None,
         }
     }
@@ -3038,6 +3055,14 @@ impl<'a> Runner<'a> {
                 preselect: args.get(1).map_or(true, |a| a.number() == 1.0),
             })),
             "ShowBarterMenu" => events.push(Event::Barter(target?)),
+            // `005d5200`: on a person or creature only (vtable +0x100), the
+            // merchants' repair menu for them (`00704690` → `007b7570`).
+            "ShowRepairMenu" => {
+                let vendor = target?;
+                if crate::script_functions::is_actor(self.order, vendor) {
+                    events.push(Event::RepairServices(vendor));
+                }
+            }
             // `VCG01TestSCRIPT` tags the exam's picks this way (slots 0 to
             // 2); the tag menu then starts with them.
             "SetPlayerTagSkill" => {
@@ -3744,6 +3769,7 @@ pub const HANDLED: &[&str] = &[
     "ResurrectActor",
     "GetEquipped",
     "ShowBarterMenu",
+    "ShowRepairMenu",
     "SetPlayerTagSkill",
     "GetPlayerControlsDisabled",
     "GetPlayerName",

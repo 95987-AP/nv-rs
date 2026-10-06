@@ -1119,6 +1119,10 @@ pub fn run_scripts(
                 waiting.push(crate::menus::Menu::Barter(merchant));
                 None
             }
+            Event::RepairServices(vendor) => {
+                waiting.push(crate::menus::Menu::RepairServices(vendor));
+                None
+            }
             // `ShowSleepWaitMenu` (its refusals already given): the game's
             // sleep/wait menu (`game_menus::sleepwait`).
             Event::SleepWaitMenu { sleep } => {

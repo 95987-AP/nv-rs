@@ -22,6 +22,7 @@ pub mod dialog;
 pub mod hacking;
 pub mod levelup;
 mod message;
+pub mod repair;
 pub mod sleepwait;
 pub mod textedit;
 pub mod traits;
@@ -89,6 +90,7 @@ pub enum OpenMenu {
     Dialog(ui::menus::dialog::DialogMenu),
     Container(Box<container::ContainerScreen>),
     Barter(Box<barter::BarterScreen>),
+    Repair(Box<repair::RepairScreen>),
     Quantity(ui::menus::quantity::QuantityMenu),
     LevelUp(Box<ui::menus::levelup::LevelUpMenu>),
     Traits(Box<ui::menus::traits::TraitMenu>),
@@ -107,6 +109,7 @@ impl OpenMenu {
             OpenMenu::Dialog(m) => m,
             OpenMenu::Container(c) => &mut c.menu,
             OpenMenu::Barter(b) => &mut b.menu,
+            OpenMenu::Repair(r) => &mut r.menu,
             OpenMenu::Quantity(m) => m,
             OpenMenu::LevelUp(m) => &mut **m,
             OpenMenu::Traits(m) => &mut **m,
@@ -125,6 +128,7 @@ impl OpenMenu {
             OpenMenu::Dialog(m) => m.menu,
             OpenMenu::Container(c) => c.menu.menu,
             OpenMenu::Barter(b) => b.menu.menu,
+            OpenMenu::Repair(r) => r.menu.menu,
             OpenMenu::Quantity(m) => m.menu,
             OpenMenu::LevelUp(m) => m.menu,
             OpenMenu::Traits(m) => m.menu,
@@ -143,6 +147,7 @@ impl OpenMenu {
             OpenMenu::Dialog(m) => m.closed,
             OpenMenu::Container(c) => c.menu.closed,
             OpenMenu::Barter(b) => b.menu.closed,
+            OpenMenu::Repair(r) => r.menu.closed,
             OpenMenu::Quantity(m) => m.closed,
             OpenMenu::LevelUp(m) => m.closed,
             OpenMenu::Traits(m) => m.closed,
@@ -215,6 +220,7 @@ fn reference_name(order: &esm::LoadOrder, reference: esm::FormId) -> String {
 }
 
 /// Opens the `--open-menu` menu once the player is in the place.
+#[allow(clippy::too_many_arguments)]
 fn start_menu(
     game: Res<GameFiles>,
     mut start: ResMut<StartMenu>,
@@ -223,8 +229,10 @@ fn start_menu(
     mut menus: ResMut<GameMenus>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut state: ResMut<crate::dialogue::DialogueState>,
+    commands: Res<crate::scripts::StartCommands>,
 ) {
-    if !player.ready {
+    // After `--run`'s lines (a menu opened first would hold them back).
+    if !player.ready || !commands.0.is_empty() {
         return;
     }
     let Some(asked) = start.0.take() else {
@@ -266,6 +274,8 @@ fn start_menu(
     let request = match (name, form) {
         ("container", Some(r)) => crate::menus::Menu::Container(r, reference_name(order, r)),
         ("barter", Some(r)) => crate::menus::Menu::Barter(r),
+        // A vendor's repairs, as `ShowRepairMenu` on them would open them.
+        ("repair", Some(r)) => crate::menus::Menu::RepairServices(r),
         // A placed terminal's own screen, as getting in would open it.
         ("terminal", Some(r)) => {
             crate::menus::Menu::Terminal(world::scripting::base_of(order, r).unwrap_or(r), r)
@@ -456,6 +466,7 @@ pub fn takes(m: &crate::menus::Menu) -> bool {
     message::takes(m)
         || container::takes(m)
         || barter::takes(m)
+        || repair::takes(m)
         || levelup::takes(m)
         || traits::takes(m)
         || chargen::takes(m)
@@ -525,6 +536,8 @@ fn open_menus(
             sounds
                 .0
                 .extend(barter::open(screen, &game.0, &mut state.0, request));
+        } else if repair::takes(&request) {
+            repair::open(screen, &game.0, &mut state.0, request);
         } else {
             sounds
                 .0
@@ -790,6 +803,9 @@ fn run_open_menus(
     sounds
         .0
         .extend(barter::after(screen, &game.0, &mut state.0));
+    sounds
+        .0
+        .extend(repair::after(screen, &game.0, &mut state.0));
     sounds
         .0
         .extend(levelup::after(screen, &game.0, &mut state.0));
