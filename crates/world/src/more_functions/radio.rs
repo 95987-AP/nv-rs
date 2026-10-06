@@ -163,7 +163,7 @@ pub(crate) fn save_lines(state: &GameState, line: &mut dyn FnMut(String)) {
     let id = |f: FormId| format!("{:08X}", f.0);
     if r.on {
         line(format!(
-            "radio on {}",
+            "scriptradio on {}",
             r.tuned.map_or("00000000".into(), id)
         ));
     }
@@ -194,7 +194,7 @@ pub(crate) fn load_line(state: &mut GameState, parts: &[&str]) -> Option<Result<
     let bad = || Err(format!("can't read '{}'", parts.join(" ")));
     let r = &mut state.more.radio;
     Some(match *parts.first()? {
-        "radio" if parts.get(1) == Some(&"on") => match form(2) {
+        "scriptradio" if parts.get(1) == Some(&"on") => match form(2) {
             Some(t) => {
                 r.on = true;
                 r.tuned = nonzero(t);
