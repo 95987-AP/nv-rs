@@ -3090,7 +3090,13 @@ impl<'a> Runner<'a> {
                 let who = target?;
                 let by = args.first().map_or(who, Value::form);
                 let full = crate::combat::max_health(self.order, self.state, who).unwrap_or(1.0);
-                crate::combat::hurt(self.order, self.state, who, full.max(1.0) * 10.0, by);
+                // `KillActor` (`005be2a0`) kills through the actor's death
+                // routine (`0089d900`), the one a fatal hit takes, so its
+                // `OnDeath` runs as for any death here (where in that
+                // routine the event is raised isn't pinned down).
+                if crate::combat::hurt(self.order, self.state, who, full.max(1.0) * 10.0, by) {
+                    self.run_event(who, "ondeath", by);
+                }
             }
             "ResurrectActor" => {
                 let who = target?;
