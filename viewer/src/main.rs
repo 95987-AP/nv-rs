@@ -200,6 +200,7 @@ fn main() {
         .init_resource::<scripts::Here>()
         .init_resource::<scripts::ScriptedTalk>()
         .init_resource::<scripts::Notices>()
+        .init_resource::<combat::ObjectShots>()
         .insert_resource(scripts::StartStage(args.stage.clone()))
         .insert_resource(scripts::StartCommands(args.run.clone()))
         .insert_resource(scripts::LaterCommands {
@@ -352,6 +353,7 @@ fn main() {
                     // Apply queued camera tracks before aiming/interactions.
                     player_idle::animate,
                     combat::player_attack,
+                    combat::object_shots,
                     combat::show_dropped_weapons,
                     scope::update_scope,
                     viewmodel::update_view_model,
