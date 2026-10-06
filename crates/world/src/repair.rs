@@ -293,7 +293,7 @@ pub fn service_lines(order: &LoadOrder, state: &GameState, skill: i32) -> (Vec<S
         .filter(|l| service_lists(order, state, l))
         .map(|l| {
             let condition = condition(state, PLAYER_REF, l.item);
-            let value = crate::barter::base_value(order, l.item);
+            let value = crate::barter::value_now(order, state, l.item);
             let cost = service_cost(order, skill, condition, value);
             ServiceLine {
                 item: l.item,

@@ -118,6 +118,15 @@ pub fn effects(order: &LoadOrder, item: FormId) -> Vec<ItemEffect> {
     out
 }
 
+/// An item's value (its `DATA` value, as [`item_info`] reads it), or as
+/// `SetItemValue` set it; 0 for a form without one.
+pub fn value(order: &LoadOrder, state: &GameState, item: FormId) -> i32 {
+    match state.more.item_values.get(&item) {
+        Some(&v) => v,
+        None => item_info(order, item).map_or(0, |i| i.value),
+    }
+}
+
 /// A default object (the `DOBJ` record `DefaultObjectManager`: its `DATA`
 /// an array of forms, `0058db10` reading slot n): 0 the Stimpak, 2 Rad-X,
 /// 3 RadAway, 21 the Doctor's Bag (the STATS menu's aid buttons,

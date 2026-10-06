@@ -142,8 +142,8 @@ pub fn chance(order: &LoadOrder, state: &GameState, target: FormId, value: f64) 
 }
 
 /// V when taking (`0075e240`): the item's value × how many.
-pub fn stack_value(order: &LoadOrder, item: FormId, count: i32) -> f64 {
-    let unit = crate::items::item_info(order, item).map_or(0, |i| i.value);
+pub fn stack_value(order: &LoadOrder, state: &GameState, item: FormId, count: i32) -> f64 {
+    let unit = crate::items::value(order, state, item);
     f64::from(unit) * f64::from(count.max(0))
 }
 
@@ -258,7 +258,7 @@ pub fn attempt(
         }
     }
     let value = if taking {
-        stack_value(order, item, count)
+        stack_value(order, state, item, count)
     } else {
         1.0
     };

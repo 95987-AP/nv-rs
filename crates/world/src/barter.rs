@@ -125,6 +125,36 @@ pub fn value_at_condition(order: &LoadOrder, value: f32, condition: f32) -> f32 
     }
 }
 
+/// Whether a form has a value (`TESValueForm`: the kinds
+/// [`base_value`] reads).
+pub fn has_value(order: &LoadOrder, item: FormId) -> bool {
+    order.get(item).is_some_and(|rr| {
+        matches!(
+            rr.entry.header.kind.as_bytes(),
+            b"MISC"
+                | b"KEYM"
+                | b"IMOD"
+                | b"WEAP"
+                | b"ARMO"
+                | b"CMNY"
+                | b"CCRD"
+                | b"AMMO"
+                | b"BOOK"
+                | b"ALCH"
+                | b"INGR"
+        )
+    })
+}
+
+/// An item's value now: as `SetItemValue` set it, else as stored
+/// ([`base_value`]).
+pub fn value_now(order: &LoadOrder, state: &GameState, item: FormId) -> f32 {
+    match state.more.item_values.get(&item) {
+        Some(&v) => v as f32,
+        None => base_value(order, item),
+    }
+}
+
 /// An item's value as stored (`0048e8a0`): `DATA` (or `ENIT` for aid) of
 /// the kinds that have one; -1 for the rest.
 pub fn base_value(order: &LoadOrder, item: FormId) -> f32 {
@@ -164,7 +194,7 @@ pub fn item_value(order: &LoadOrder, state: &GameState, holder: FormId, item: Fo
             }
         }
     };
-    let v = value_at_condition(order, base_value(order, item), condition);
+    let v = value_at_condition(order, value_now(order, state, item), condition);
     round_to(v, 0.1)
 }
 

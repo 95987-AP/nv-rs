@@ -643,3 +643,49 @@ fn fights_ranks_and_effect_seconds() {
     );
     assert!(state.unhandled.is_empty(), "{:?}", state.unhandled);
 }
+
+/// `GetShouldAttack` (`0059ed30`: 100 or 0, both people), `GetIsAlignment`
+/// (`005a4dd0`, `0047e040`'s bands), `SetItemValue` (`005d3e30`: the
+/// base's value, for every one; saved), `GetContainer` (`005ce5c0`: an
+/// item script's holder).
+#[test]
+fn attacks_alignment_values_and_holders() {
+    let (_data, order) = order("more-attack-align-value");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let q = |state: &mut GameState, e: &str| ask(&order, &scripts, state, e);
+    // Frenzied (aggression 3) attacks anyone; unaggressive, no one.
+    state.actor_values.insert((FormId(PERSON_REF), 0), 3.0);
+    assert_eq!(q(&mut state, "PersonRef.GetShouldAttack HeroRef"), 100.0);
+    state.actor_values.insert((FormId(PERSON_REF), 0), 0.0);
+    assert_eq!(q(&mut state, "PersonRef.GetShouldAttack HeroRef"), 0.0);
+    // Not a person: 0.
+    state.actor_values.insert((FormId(PERSON_REF), 0), 3.0);
+    assert_eq!(q(&mut state, "PersonRef.GetShouldAttack ChildRef"), 0.0);
+
+    // Karma 0 is neutral (1); -300 evil (2); 800 very good (3).
+    let karma = |state: &mut GameState, k: f64| {
+        state.actor_values.insert((PLAYER_REF, 23), k);
+    };
+    karma(&mut state, 0.0);
+    assert_eq!(q(&mut state, "player.GetIsAlignment 1"), 1.0);
+    assert_eq!(q(&mut state, "player.GetIsAlignment 0"), 0.0);
+    karma(&mut state, -300.0);
+    assert_eq!(q(&mut state, "player.GetIsAlignment 2"), 1.0);
+    karma(&mut state, 800.0);
+    assert_eq!(q(&mut state, "player.GetIsAlignment 3"), 1.0);
+
+    // The cup is worth 1; set on the placed one, every cup is worth 7.
+    let cup = FormId(CUP);
+    assert_eq!(world::barter::value_now(&order, &state, cup), 1.0);
+    run(&order, &scripts, &mut state, "ChildRef.SetItemValue 7");
+    assert!(state.unhandled.is_empty(), "{:?}", state.unhandled_first);
+    assert_eq!(world::barter::value_now(&order, &state, cup), 7.0);
+    assert_eq!(world::items::value(&order, &state, cup), 7);
+    let text = world::save::save(&state, None);
+    let (back, _) = world::save::load(&text).unwrap();
+    assert_eq!(back.more.item_values.get(&cup), Some(&7));
+
+    // Outside an item's own script there's no holder.
+    assert_eq!(q(&mut state, "GetContainer"), 0.0);
+}

@@ -297,7 +297,7 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
                 kind.as_bytes(),
                 b"WEAP" | b"ARMO" | b"ALCH" | b"INGR" | b"BOOK"
             ),
-            value: info.as_ref().map_or(0, |i| i.value),
+            value: world::items::value(order, state, item),
             weight: info.as_ref().map_or(0.0, |i| i.weight),
             icon: record_text(order, item, ICON),
             damage: None,

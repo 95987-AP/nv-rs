@@ -3648,6 +3648,28 @@ impl<'a> Runner<'a> {
                     }
                 }
             }
+            // `005ce5c0`: the one holding the item whose script this is
+            // (the containing object, `0084e3a0`); 0 for a script that
+            // isn't a held item's.
+            "GetContainer" => {
+                return Some(self.item.map_or(0.0, |(holder, _)| f64::from(holder.0)));
+            }
+            // `005d3e30`: the reference's base's value (`0048e960`), for
+            // every one of them. A held item's own script has no reference
+            // to give it (here `this` is its holder): nothing.
+            "SetItemValue" => {
+                let r = target?;
+                let own = self.item.is_some_and(|(holder, _)| holder == r);
+                let base = base_of(self.order, r);
+                if let Some(base) =
+                    base.filter(|b| !own && crate::barter::has_value(self.order, *b))
+                {
+                    self.state
+                        .more
+                        .item_values
+                        .insert(base, arg(0).number() as i32);
+                }
+            }
             // `005b58d0`: `ref.Drop item count`, into the world.
             "Drop" => {
                 let holder = target?;
@@ -3977,6 +3999,8 @@ pub const HANDLED: &[&str] = &[
     "SetWeaponHealthPerc",
     "ModWeaponHealthPerc",
     "GetDetected",
+    "GetContainer",
+    "SetItemValue",
     "ForceActiveQuest",
     "SetEnemy",
     "SetAlly",
