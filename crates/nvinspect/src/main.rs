@@ -287,11 +287,12 @@ COMMANDS FOR MUSIC (.mp3):
 COMMANDS FOR MOVIES (.bik):
     info                  size, frame rate, frame count, keyframes and the
                           audio tracks
-    frames [OUT]          decode every frame; write each frame's number, 0
+    frames [OUT] [bgrx]   decode every frame; write each frame's number, 0
                           (or 1 if it had an error) and the SHA-256 of its
                           Y, V and U planes, one line each, to OUT (the
                           format research/nv-oracle's nv-bink writes from
-                          the game's own library)
+                          the game's own library); with bgrx, the SHA-256 of
+                          the frame in 32-bit colour as the game shows it
     audio OUT [TRACK]     decode an audio track (default 0) to OUT as raw
                           interleaved 16-bit little-endian samples
 

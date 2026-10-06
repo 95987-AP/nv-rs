@@ -13,8 +13,9 @@ enum Command {
     Info,
     /// Decode every frame and write each plane's SHA-256, as a file
     /// (`research/nv-oracle`'s `nv-bink` writes the same format from the
-    /// game's own library) or to the output.
-    Frames(Option<String>),
+    /// game's own library) or to the output. With `bgrx`, the hash of the
+    /// frame converted to 32-bit colour as the game shows it instead.
+    Frames(Option<String>, bool),
     /// Decode an audio track to raw interleaved 16-bit little-endian PCM.
     Audio(String, usize),
 }
@@ -36,8 +37,17 @@ fn parse_command(command: &str, rest: &[String]) -> Result<Command, CliError> {
             Ok(Command::Audio(rest[0].clone(), track))
         }
         "frames" => {
-            expect_args(command, rest, 0, 1)?;
-            Ok(Command::Frames(rest.first().cloned()))
+            expect_args(command, rest, 0, 2)?;
+            let bgrx = match rest.get(1).map(String::as_str) {
+                None => false,
+                Some("bgrx") => true,
+                Some(other) => {
+                    return Err(CliError::Usage(format!(
+                        "'{other}' isn't a frame format; the only one is bgrx"
+                    )))
+                }
+            };
+            Ok(Command::Frames(rest.first().cloned(), bgrx))
         }
         other => Err(CliError::Usage(format!(
             "'{other}' isn't a movie command; for .bik files use info, frames or audio"
@@ -64,7 +74,7 @@ pub fn run_file(
     })?;
     match command {
         Command::Info => info(out, &movie, bytes.len()),
-        Command::Frames(file) => frames(out, path, &movie, file, options.force),
+        Command::Frames(file, bgrx) => frames(out, path, &movie, file, bgrx, options.force),
         Command::Audio(file, track) => audio(out, &movie, &file, track, options.force),
     }
 }
@@ -153,6 +163,7 @@ fn frames(
     path: &Path,
     m: &Movie,
     file: Option<String>,
+    bgrx: bool,
     force: bool,
 ) -> Result<(), CliError> {
     let mut target: Box<dyn Write> = match &file {
@@ -188,13 +199,18 @@ fn frames(
                 1
             }
         };
-        decoder.to_yv12(&mut buf);
-        let line = format!(
-            "{i}\t{status}\t{}\t{}\t{}",
-            crate::sha256::hex_digest(&buf[..luma]),
-            crate::sha256::hex_digest(&buf[luma..luma + chroma]),
-            crate::sha256::hex_digest(&buf[luma + chroma..luma + 2 * chroma])
-        );
+        let line = if bgrx {
+            decoder.to_bgrx(&mut buf);
+            format!("{i}\t{status}\t{}", crate::sha256::hex_digest(&buf))
+        } else {
+            decoder.to_yv12(&mut buf);
+            format!(
+                "{i}\t{status}\t{}\t{}\t{}",
+                crate::sha256::hex_digest(&buf[..luma]),
+                crate::sha256::hex_digest(&buf[luma..luma + chroma]),
+                crate::sha256::hex_digest(&buf[luma + chroma..luma + 2 * chroma])
+            )
+        };
         if file.is_some() {
             writeln!(target, "{line}")?;
         } else {

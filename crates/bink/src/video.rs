@@ -376,6 +376,25 @@ impl Decoder {
         (self.flags & FLAG_ALPHA != 0).then(|| (&self.cur[3].pixels[..], self.cur[3].stride))
     }
 
+    /// The current frame as 32-bit pixels, 4 bytes each in the order blue,
+    /// green, red, 0, rows of `width` pixels: what the game's library gives
+    /// for its 32-bit surface type, which is what the game draws (see
+    /// `color`).
+    pub fn to_bgrx(&self, out: &mut Vec<u8>) {
+        out.clear();
+        out.reserve(self.width * self.height * 4);
+        let (y_plane, u_plane, v_plane) = (&self.cur[0], &self.cur[1], &self.cur[2]);
+        for row in 0..self.height {
+            let ys = &y_plane.pixels[row * y_plane.stride..];
+            let us = &u_plane.pixels[(row >> 1) * u_plane.stride..];
+            let vs = &v_plane.pixels[(row >> 1) * v_plane.stride..];
+            for x in 0..self.width {
+                let [b, g, r] = crate::color::bgr(ys[x], us[x >> 1], vs[x >> 1]);
+                out.extend_from_slice(&[b, g, r, 0]);
+            }
+        }
+    }
+
     /// The current frame as YV12: the luma plane, then V, then U, each row
     /// exactly as wide as the picture. This is the layout the game's library
     /// gives for its YV12 surface type.

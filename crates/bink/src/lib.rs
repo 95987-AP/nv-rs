@@ -24,6 +24,7 @@
 
 mod audio;
 mod bits;
+mod color;
 mod container;
 mod tables;
 mod video;
