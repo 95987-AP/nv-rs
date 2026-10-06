@@ -142,6 +142,12 @@ pub struct ActorRig {
     reloading: bool,
     /// The 3D's plain `Death` group's sequence, if it has one.
     pub death: Option<Arc<nif::Sequence>>,
+    /// The node the `Weapon` bone hangs under: the `prn:` key of the group
+    /// that last put it there (`00923960`), once known.
+    pub weapon_parent: Option<String>,
+    /// Another weapon was put in the hand (`004ab750`): handled at the next
+    /// drive (`Picker::weapon_attached`).
+    pub weapon_attached: bool,
 }
 
 /// A dead actor's ragdoll (`preview::ragdoll`): the bodies in motion, the
@@ -194,6 +200,8 @@ impl ActorRig {
             package_flags: None,
             reloading: false,
             death: None,
+            weapon_parent: None,
+            weapon_attached: false,
             skeleton,
         };
         if let Some(idle) = rig.skeleton.idle.clone() {
@@ -204,16 +212,27 @@ impl ActorRig {
         rig
     }
 
-    /// The bones' transforms now (as `animate_actors` poses them): the
-    /// weapon hangs where it's put away until it's drawn (the equip's
-    /// `Attach` key), and again from the unequip's `Detach`.
+    /// The bones' transforms now (as `animate_actors` poses them): put
+    /// away with nothing drawing or putting it away, the weapon hangs in
+    /// its holster pose (the `Holster` group the game plays, under its
+    /// `prn:` node); otherwise the `Weapon` bone, as the playing groups move
+    /// it, hangs under the node the last reparent named
+    /// ([`ActorRig::weapon_parent`]): the equip's `prn:` (the right hand,
+    /// fists the forearm's twist bone) from its `Attach` key, the
+    /// unequip's from its `Detach`.
     pub fn pose_now(&self, _now: f32) -> Vec<nif::Transform> {
         let bones = &self.skeleton.bones;
         let mut pose = self.player.pose(bones);
-        if !self.picker.drawn {
+        let readying = matches!(
+            self.picker.action,
+            Some(world::animation::pick::Action::Equip | world::animation::pick::Action::Unequip)
+        );
+        if !self.picker.drawn && !readying {
             if let Some(h) = &self.skeleton.holster {
                 nif::hang_weapon(bones, &mut pose, h);
             }
+        } else if let Some(parent) = &self.weapon_parent {
+            nif::reparent_weapon(bones, &mut pose, parent);
         }
         if self.disarmed {
             hide_weapon(bones, &mut pose);
@@ -264,11 +283,24 @@ impl ActorRig {
                 self.picker.reload(g);
             }
         }
+        let drawn_before = self.picker.drawn;
         {
             let seat = self.dynamic_idle.clone();
             let frame = self.frame(seat.as_ref());
             let mut picker = std::mem::take(&mut self.picker);
+            // Another weapon in hand: the weapon section starts over and
+            // the weapon goes where the drawn state has it.
+            if std::mem::take(&mut self.weapon_attached) {
+                let played = picker.weapon_attached(&mut self.player, lib, &frame, bones);
+                self.weapon_parent = match played {
+                    Some(seq) => nif::weapon_parent(&seq).map(str::to_string),
+                    None => self.holster_parent(),
+                };
+            }
             picker.pick(&mut self.player, lib, &frame, bones);
+            if self.weapon_parent.is_none() || picker.drawn != drawn_before {
+                self.weapon_parent = self.reparented(&picker, lib, &frame);
+            }
             self.picker = picker;
         }
         // The overlay: whatever plays over the rest in its section (the
@@ -313,6 +345,38 @@ impl ActorRig {
         } else if let (Some((_, elapsed)), Some(s)) = (&self.overlay, self.overlay_in) {
             self.player.sync_time(s, *elapsed);
         }
+    }
+
+    /// The holster pose's `prn:` node.
+    fn holster_parent(&self) -> Option<String> {
+        self.skeleton
+            .holster
+            .as_deref()
+            .and_then(nif::weapon_parent)
+            .map(str::to_string)
+    }
+
+    /// Where the weapon bone goes as the weapon is drawn or put away
+    /// (`MiddleHighProcess::UpdateReparentWeapon`, Xbox PDB, `00923020`,
+    /// once the process's reparent flag is set: `ReparentWeapon`,
+    /// `00923960`): under the `prn:` node of the equip or unequip playing
+    /// in the weapon section; with neither playing, of the kinds' `Equip`
+    /// when drawn, else of the `Holster` group.
+    // Translated from 00923960 (decompiled, FalloutNV.exe 1.4.0.525)
+    fn reparented(&self, picker: &Picker, lib: &mut impl Library, f: &Frame) -> Option<String> {
+        let readying = self
+            .player
+            .playing(section::WEAPON)
+            .filter(|g| *g == group::EQUIP || *g == group::UNEQUIP)
+            .and_then(|_| self.player.sequence(section::WEAPON));
+        if let Some(seq) = readying {
+            return nif::weapon_parent(seq).map(str::to_string);
+        }
+        if picker.drawn {
+            let (_, seq) = picker.weapon_group(lib, f, group::EQUIP)?;
+            return nif::weapon_parent(&seq).map(str::to_string);
+        }
+        self.holster_parent()
     }
 
     /// Goes limp as the game's dead do, if its skeleton has a ragdoll:
