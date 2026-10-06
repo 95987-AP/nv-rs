@@ -791,7 +791,7 @@ pub fn stream_distant_land(
 /// The loaded squares' people to talk to (`squares`), plus those from
 /// the `old` list that were brought in after their place loaded and are
 /// still on screen (they belong to no square).
-fn with_brought_in(
+pub(crate) fn with_brought_in(
     mut squares: Vec<crate::dialogue::Talker>,
     old: &[crate::dialogue::Talker],
     brought: &HashSet<esm::FormId>,
