@@ -144,6 +144,7 @@ fn doors_that_open_own_their_leaves_and_swing_them() {
         flags: 0,
         shell: 0.0,
         material: 0,
+        body: Default::default(),
         shape: box_shape(
             [5.0, 5.0, 100.0],
             &Transform {
@@ -268,6 +269,7 @@ fn a_placed_scale_scales_the_collision() {
             flags: 0,
             shell: 0.0,
             material: 0,
+            body: Default::default(),
             shape: box_shape([10.0, 10.0, 10.0], &Transform::IDENTITY),
         }],
         root_transform: None,

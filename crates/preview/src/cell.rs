@@ -1630,6 +1630,7 @@ fn add_collision_marker(
         shape: nif::collision::box_shape(half, &Transform::IDENTITY),
         // The marker body's Havok material isn't traced: none given.
         material: physics::NO_MATERIAL,
+        body: Default::default(),
     };
     add_part(collider, &part, &place, 0);
 }

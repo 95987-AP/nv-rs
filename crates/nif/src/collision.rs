@@ -189,6 +189,50 @@ pub struct CollisionPart {
     /// field, or a packed triangle sub-part's. 0 (stone) for shapes that
     /// don't name one (the list and tree shapes pass their children's on).
     pub material: u32,
+    /// The rigid body the shape belongs to, as the file stores it: what
+    /// moves it when it's simulated (mass, inertia, damping, friction...).
+    pub body: RigidBodyInfo,
+}
+
+/// A `bhkRigidBody`'s physical values (the `hkpRigidBodyCinfo` the game
+/// hands Havok), moved into the model's space and game units. Offsets in
+/// the block (236 bytes, checked byte for byte against
+/// `clutter\junk\ssbottle02.nif`: mass 1, damping 0.1/0.05, friction 0.5,
+/// restitution 0.4, most speeds 1068/31.57, penetration depth 0.15, motion
+/// 4, deactivator 2, solver deactivation 2, quality 3): the inertia
+/// tensor's three rows (four floats each) at 116, the centre of mass at
+/// 164, mass 180, linear and angular damping 184/188, friction 192,
+/// restitution 196, most linear and angular speed 200/204, penetration
+/// depth 208, then four bytes: motion system 212, deactivator type 213,
+/// solver deactivation 214, quality type 215.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct RigidBodyInfo {
+    /// The `bhkRigidBody(T)` block: parts with the same block are one body.
+    pub block: usize,
+    /// Havok's mass units (the game calls them kilograms).
+    pub mass: f32,
+    /// The centre of mass, in the model's space (game units).
+    pub center: Vec3,
+    /// The inertia tensor about the centre of mass, turned into the
+    /// model's space (mass × game units²), row-major.
+    pub inertia: Mat3,
+    pub linear_damping: f32,
+    pub angular_damping: f32,
+    pub friction: f32,
+    pub restitution: f32,
+    /// The fastest it moves (game units a second) and turns (radians a
+    /// second).
+    pub max_linear_speed: f32,
+    pub max_angular_speed: f32,
+    /// Havok's allowed penetration (game units).
+    pub penetration_depth: f32,
+    /// Havok's motion system (`hkpMotion::MotionType` as stored: 1
+    /// dynamic, 2 sphere inertia, 3 sphere stabilized, 4 box inertia, 5
+    /// box stabilized, 6 keyframed, 7 fixed, 8 thin box, 9 character).
+    pub motion: u8,
+    pub deactivator: u8,
+    pub solver_deactivation: u8,
+    pub quality: u8,
 }
 
 /// A model's collision.
@@ -224,6 +268,9 @@ struct Body {
     motion: u8,
     /// Offset and rotation of a `bhkRigidBodyT`, in Havok units.
     transform: Option<Transform>,
+    /// Its physical values in its own frame, Havok units (moved into the
+    /// model's space by [`Nif::collision_object`]).
+    info: RigidBodyInfo,
 }
 
 /// Havok motion systems as the NIF stores them.
@@ -366,6 +413,29 @@ impl Nif {
         if let Some(t) = &body.transform {
             to_model = to_model.then_child(t);
         }
+        // The body's values into the model's space: the centre placed like
+        // the shapes, the tensor turned (R I Rᵀ) and scaled to game units².
+        let r = to_model.rotation;
+        let i = body.info.inertia;
+        let mut turned = [[0.0f32; 3]; 3];
+        for (a, row) in turned.iter_mut().enumerate() {
+            for (b, value) in row.iter_mut().enumerate() {
+                let mut sum = 0.0;
+                for k in 0..3 {
+                    for l in 0..3 {
+                        sum += r[a][k] * i[k][l] * r[b][l];
+                    }
+                }
+                *value = sum * HAVOK_SCALE * HAVOK_SCALE;
+            }
+        }
+        let info = RigidBodyInfo {
+            center: to_model.apply_point(body.info.center),
+            inertia: turned,
+            max_linear_speed: body.info.max_linear_speed * HAVOK_SCALE,
+            penetration_depth: body.info.penetration_depth * HAVOK_SCALE,
+            ..body.info
+        };
         let template = CollisionPart {
             layer: body.layer,
             dynamic: !matches!(body.motion, MOTION_KEYFRAMED | MOTION_FIXED),
@@ -379,6 +449,7 @@ impl Nif {
                 radius: 0.0,
             },
             material: 0,
+            body: info,
         };
         self.shape(body.shape, &to_model, &template, 0, out)
     }
@@ -413,13 +484,50 @@ impl Nif {
             r.f32("the body's rotation")?,
             r.f32("the body's rotation")?,
         ];
-        r.take(212 - 84, "the rigid body's physics values")?;
+        // Velocities (two Vector4s), then the values at 116.
+        r.take(32, "the body's velocities")?;
+        let mut inertia = [[0.0f32; 3]; 3];
+        for row in &mut inertia {
+            *row = r.vec3("the inertia tensor")?;
+            r.f32("the inertia tensor")?;
+        }
+        let center = r.vec3("the centre of mass")?;
+        r.f32("the centre's w")?;
+        let mass = r.f32("the mass")?;
+        let linear_damping = r.f32("the linear damping")?;
+        let angular_damping = r.f32("the angular damping")?;
+        let friction = r.f32("the friction")?;
+        let restitution = r.f32("the restitution")?;
+        let max_linear_speed = r.f32("the most linear speed")?;
+        let max_angular_speed = r.f32("the most angular speed")?;
+        let penetration_depth = r.f32("the penetration depth")?;
         let motion = r.u8("the motion system")?;
+        let deactivator = r.u8("the deactivator type")?;
+        let solver_deactivation = r.u8("the solver deactivation")?;
+        let quality = r.u8("the quality type")?;
+        let info = RigidBodyInfo {
+            block: index,
+            mass,
+            center,
+            inertia,
+            linear_damping,
+            angular_damping,
+            friction,
+            restitution,
+            max_linear_speed,
+            max_angular_speed,
+            penetration_depth,
+            motion,
+            deactivator,
+            solver_deactivation,
+            quality,
+        };
         Ok(Some(Body {
             shape,
             layer,
             flags,
             motion,
+            info,
             transform: with_transform.then(|| Transform {
                 rotation: quaternion(q),
                 translation,
