@@ -16,6 +16,7 @@ pub mod lod;
 pub mod more;
 pub mod music;
 pub mod particles;
+pub mod quest_targets;
 pub mod trees;
 pub mod vats;
 pub mod water;

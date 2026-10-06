@@ -169,7 +169,7 @@ pub const RECORDS: &[RecordEntry] = &[
     r("TLOD", "tree LOD (unused)", NA, "", "", "none in the data"),
     r("DIAL", "dialogue topic", Partial, "DATA PNAM QSTI TDUM FULL", "world::dialogue", "INFC/INFX (line order across plugins)"),
     r("INFO", "dialogue line", Partial, "DATA QSTI TRDT NAM1 CTDA TCLT NAME RNAM KNAM SCTX NEXT PNAM", "world::dialogue", "ANAM (speaker), SNAM (sound), TCLF/TCFU, LNAM, DNAM, NAM2/NAM3 (notes), the dialogue camera"),
-    r("QUST", "quest", Partial, "DATA FULL INDX QSDT CTDA CNAM QOBJ NNAM SCRI SCTX NAM0", "world::quest, world::scripting", "QSTA (objective targets: compass and map markers)"),
+    r("QUST", "quest", Partial, "DATA FULL INDX QSDT CTDA CNAM QOBJ NNAM QSTA SCRI SCTX NAM0", "world::quest, world::quest_targets, world::scripting", "Pip-Boy map quest markers"),
     r("IDLE", "idle animation", Partial, "ANAM DATA CTDA MODL", "world::idles", "upper-body idles play as whole-body"),
     r("PACK", "AI package", Partial, "PKDT PLDT PLD2 PSDT PTDT CTDA PKDD POBA POEA POCA INAM TNAM SCHR SCDA SCTX SLSD SCVR SCRO SCRV", "world::ai, world::ai::actions, world::sandbox, world::movement, world::social", "begin/end/change actions read but not dispatched; PKW3 (use weapon), PKPT (patrol), PKED/PKE2 (eat), PKFD, PKAM (ambush), PTD2 (second target), PKDD's f32 at 12 and u32 at 20, IDLA/IDLC/IDLF/IDLT, PUID, CNAM"),
     r("CSTY", "combat style", Done, "CSTD CSAD CSSD", "world::combat_ai", ""),

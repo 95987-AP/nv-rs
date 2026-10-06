@@ -928,6 +928,8 @@ pub fn set_objective(runner: &mut Runner, quest: FormId, index: i32, new: u8) {
             runner.state.objectives.insert(key, false);
             runner.state.set_by_scripts.hidden_completed.remove(&key);
             runner.state.running.insert(quest);
+            // `005ec5d0`: the quest becomes active when none is.
+            crate::quest_targets::objective_shown(runner.state, quest);
             let text = objective_text(runner, quest, index);
             runner.state.events.push(Event::Objective {
                 quest,
