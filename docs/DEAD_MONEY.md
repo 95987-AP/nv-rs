@@ -769,13 +769,91 @@ destinations, and Act 2 itself.
 
 ### Act 2 (MQ02a to c)
 
-Started, not finished. Elijah's Act 2 greeting starts the three companion
-quests and their first objectives (Dog to the Salida del Sol substation, Dean
-to the Puesta del Sol rooftop, Christine to the Puesta del Sol switching
-station). Not played: escorting each companion (telling them to wait, the
-dialogue that does it), the substation and its terminal, finding two slabs of
-ghost harvester remains for Dog, the electrical box and the elevator for
-Christine, the holograms for Dean, and the Gala Event itself (MQ02).
+Elijah's Act 2 greeting starts the three companion quests and their first
+objectives (Dog to the Salida del Sol substation, Dean to the Puesta del Sol
+rooftop, Christine to the Puesta del Sol switching station). Played one
+companion at a time, Dog first (`characters/dead-money-act2.txt`: Act 1 done,
+Elijah's greeting said, Dog hired by the game's own hire script).
+
+**Dog (MQ02a "Fires in the Sky").**
+
+* *Telling him to wait.* The "wait here" and "let's go" replies only set
+  `Dog.Waiting` and re-evaluate his packages (`FollowersWait`,
+  `FollowersLetsGo`); the waiting itself is the data's guard package
+  (`NVDLC01FollowersDogFollowPlayerWAIT`, true while `Waiting` is 1, as
+  Boone's `FollowersBooneFollowPlayerWAIT` is). nv-rs treated a teammate's
+  guard package as having nothing to do and walked them after the player
+  anyway; fixed (branch `claude/teammate-wait`): a guard package now wins.
+  Checked in the viewer: with `Waiting` 1 Dog stays while the player moves
+  away; with 0 he follows (`NVDLC01FollowersDogFollowPlayerDEFAULT`).
+* *Reaching the Gala trigger.* The trigger's script runs when Dog himself
+  enters it (it names his reference): it completes "Get Dog to the
+  Switching Substation", shows "Get Dog to wait in the Switching Substation"
+  and gives Dog the package `NVDLC01DogGalaPositionDialogue`, which walks
+  him up to the player and starts his talk. Three engine faults stood in the
+  way, each fixed on its own branch: a script that moves the player into
+  another worldspace left the old one's triggers loaded
+  (`claude/script-cell-grid-lag`); people brought into a place, such as a
+  companion who came along, were not on the list the triggers, sight tests
+  and E use (`claude/brought-in-talkers`); and a dialogue package's topic
+  (`NVDLC01DogGalaGreeting`) has no lines of its own but names two lines
+  that stand under the greeting topic, through the topic record's `INFC`
+  list (`claude/dialogue-info-links`). With them Dog walks up and says
+  "Why are we here? ..." and the reply menu opens.
+* *What the endings do.* The result scripts of one ending reply (the
+  persuade path's success reply) and of the substation terminal's "Lock
+  Gate" item were run as written (`--run`, in the state with Dog at the
+  trigger). The reply gave 70 XP, completed the objective, enabled the ghost
+  people at the north door and made the autosave; the terminal item took
+  the quest to stage 100. Whether Dog is then released from the party and
+  walks to his Gala position wasn't seen.
+* *Not played:* picking the replies by hand through to an ending (the
+  conversation has three endings: persuade, lie, or feed him; only the first
+  reply of two paths was picked in the viewer), the feeding
+  path (two slabs of ghost harvester remains, stage 40), the terminal's
+  screen in the viewer (its items were run as script lines), and Dog walking
+  to his Gala position. Not checked either: a second Dog-like actor
+  (`01013F66`) shows up at the fountain and follows with Dog's own follow
+  package; whether the original also enables it there isn't known.
+* *Guessed [G]:* that the INFC lines are used like a topic's own lines (the
+  game's topic loader, `00618aa0`, puts them in the topic's list; how a
+  conversation picks from that list isn't traced). The `nvinspect dialogue`
+  listing of Dog and Sunny Smiles is unchanged by it.
+
+Not played yet: Dean's rooftop (the holograms, the switches), Christine's
+switching station (the electrical box, the elevator, the remote terminal),
+and the Gala Event itself (MQ02).
+
+### The casino (MQ03)
+
+`characters/dead-money-casino.txt` starts in the casino (`NVDLC01Casino`,
+the cell the lobby leads to) as the Lobby's knock-out script leaves the
+player after the Gala: MQ02 done, `NVDLC01MQ03a` begun. The interior loads
+in about 5 seconds (770 objects, 43 lights, 40,000 collision triangles) and
+looks right: the arches, the slot machines, the roulette table, the lights.
+The room's scripts run.
+
+* *The power switch.* The casino's electrical switch (`01006392`, in the
+  casino) is what MQ03a "Put the Beast Down" calls its first objective. Used
+  (`--use 01006392`, the player not near it), its script ran as written: it
+  set MQ03a to stage 10 (which starts MQ03b and MQ03c: the Tampico and the
+  suites objectives appeared), enabled the slot machines, hologram dealers,
+  bartender and the collar radio stations (they came into view), and
+  Elijah's intercom said "You woke it up...". The script also disables the
+  security holograms and unlocks the lobby doors; those two weren't looked
+  at.
+* *`NVDLC01MQ03d` "Wake Up the Sierra Madre" is never started.* Nothing in
+  Dead Money starts it or sets one of its stages: no script, dialogue result,
+  terminal or other record names it (all of the plugin was searched for the
+  quest's form). Its two objectives ("Gain access to the Casino electrical
+  closet", "Restore power to the rest of the Sierra Madre") are the ones
+  MQ03a shows as its stage 10. So it is leftover content: it can't be played
+  and the original game never plays it [C: the
+  maintainer's note has the console steps to confirm it stays at stage 0].
+* *Not played:* walking from the lobby to the switch (the route, the key
+  doors, the holograms before the switch), the casino games (slots,
+  roulette, blackjack: the menus aren't built), the intercom bark triggers,
+  and the later MQ03 steps.
 
 ## The clinic basement and the Auto-Doc wing (MQ01c, stages 20 to 40)
 
