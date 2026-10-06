@@ -205,6 +205,9 @@ fn setup_hud_layer(
         TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
     let layer = images.add(image);
     commands.insert_resource(HudLayer(layer.clone()));
+    // The scope's overlay is drawn onto the picture first and clears it
+    // (`scope`); the HUD's pieces go over it.
+    crate::scope::spawn_camera(&mut commands, layer.clone());
     commands.spawn((
         Camera2d,
         Camera {
@@ -214,9 +217,9 @@ fn setup_hud_layer(
             // (`lockpick`).
             order: -4,
             // A float picture: stored values kept as they are, blended as
-            // they are.
+            // they are. The scope's camera cleared it (`scope`).
             hdr: true,
-            clear_color: ClearColorConfig::Custom(Color::NONE),
+            clear_color: ClearColorConfig::None,
             ..default()
         },
         Tonemapping::None,
@@ -450,6 +453,8 @@ pub struct HudState<'w, 's> {
     /// detect them (`ai::Walker::detected_player`), for the sneak meter.
     player: Res<'w, crate::walk::Player>,
     walkers: Query<'w, 's, &'static crate::ai::Walker>,
+    /// Through a scope (`viewmodel::Scoped`): HUD mode 0x17.
+    scoped: Res<'w, crate::viewmodel::Scoped>,
 }
 
 impl HudState<'_, '_> {
@@ -576,9 +581,17 @@ impl HudState<'_, '_> {
                 let clip = (self.attack.in_clip().unwrap_or(w.clip) as i32).min(held);
                 (clip, held - clip)
             });
+            // The loaded ammunition's abbreviation (`QNAM`), for the
+            // ammunition type label (`007721c0`).
+            let ammo_abbrev = w
+                .ammo_in_use(order, state, PLAYER_REF)
+                .and_then(|a| order.get(a))
+                .and_then(|r| r.record().ok())
+                .and_then(|r| r.get(esm::FourCC::new(b"QNAM")).map(|s| s.zstring()));
             WeaponState {
                 id: w.form_id.0,
                 ammo,
+                ammo_abbrev,
                 condition: combat::weapon_condition(state, PLAYER_REF, w.form_id),
             }
         });
@@ -660,7 +673,7 @@ impl HudState<'_, '_> {
             opacity,
             // Hidden with the sights' node kept (`00771700` clears the
             // reticle's bit when player +0xe34 is set in first person).
-            crosshair: !dead && !self.sighting.0,
+            crosshair: !dead && !self.sighting.0 && self.scoped.0.is_none(),
             subtitle: None,
             experience: Some(experience),
             menu_open: self.menu_hides_xp(),
@@ -686,7 +699,11 @@ impl HudState<'_, '_> {
     /// menu that opened from the game), and whether it's the dialogue menu.
     fn parts(&self) -> (u32, bool) {
         let first = self.game_menus.1.first().copied();
-        let parts = if first.is_none() {
+        let parts = if first.is_none() && self.scoped.0.is_some() {
+            // Through a scope (`00771700` mode 0x17): mask 8, the enemy's
+            // health only.
+            ui::hud::part::ENEMY_HEALTH
+        } else if first.is_none() {
             ui::hud::gameplay_parts(
                 self.state.0.controls_off[world::scripting::controls::MOVEMENT],
                 self.state.0.controls_off[world::scripting::controls::ROLLOVER],

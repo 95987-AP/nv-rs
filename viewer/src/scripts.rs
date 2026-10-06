@@ -602,7 +602,12 @@ fn record_name(order: &esm::LoadOrder, id: FormId) -> String {
 }
 
 /// Where F5 saves and F9 loads (in the folder the viewer runs in).
-const QUICKSAVE: &str = "nv-rs-quicksave.txt";
+pub(crate) const QUICKSAVE: &str = "nv-rs-quicksave.txt";
+
+/// A load of the most recent save asked for by the game itself (the
+/// player's death, `world::player_death`), done as F9 does it.
+#[derive(Resource, Default)]
+pub struct LoadRequest(pub bool);
 
 /// A loaded world cannot retain trigger occupancy or a seat from the world
 /// it replaces, even when the saved player is in the same cell.
@@ -702,9 +707,10 @@ pub fn save_and_load(
     mut player_idle: ResMut<crate::player_idle::PlayerIdle>,
     mut cell_scripts: ResMut<CellScripts>,
     mut seats: ResMut<crate::sitting::Seats>,
-    mut start_pitch: ResMut<crate::StartPitch>,
+    (mut start_pitch, mut request): (ResMut<crate::StartPitch>, ResMut<LoadRequest>),
 ) {
     let now = time.elapsed_secs();
+    let requested = std::mem::take(&mut request.0);
     let mut say = |text: String| {
         println!("{text}");
         notices.0.push((text, now));
@@ -735,7 +741,7 @@ pub fn save_and_load(
             Err(e) => say(format!("Couldn't save: {e}")),
         }
     }
-    if keys.just_pressed(KeyCode::F9) {
+    if keys.just_pressed(KeyCode::F9) || requested {
         let result = std::fs::read_to_string(QUICKSAVE)
             .map_err(|e| e.to_string())
             .and_then(|text| {

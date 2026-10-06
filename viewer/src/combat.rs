@@ -22,8 +22,8 @@
 //! projectiles fly and explode in `explosives`.
 //!
 //! Not yet: other projectiles in flight (the game's bullets are hitscan;
-//! missiles, flames and beams fly), auto-aim (3° toward a target), scope
-//! sway, hits on a held weapon
+//! missiles, flames and beams fly), auto-aim (3° toward a target), the
+//! gun sway's turn on shots (`world::gun_wobble`), hits on a held weapon
 //! outside V.A.T.S. (part 14: its collision isn't tested). V.A.T.S. is
 //! `vats`, which shoots through [`first_met`] too.
 
@@ -94,6 +94,30 @@ pub struct PlayerAttack {
     /// +0x404 `GetIronSights` (Xbox PDB); `world::iron_sights`): the Aim
     /// control (right mouse button) held with a gun out.
     pub iron_sights: bool,
+    /// Blocking (anim action 7, `world::melee`): the Aim control held with
+    /// a melee weapon or fists out.
+    pub blocking: bool,
+    /// When the last blocked hit's `BlockHit` started (first person).
+    pub block_hit_at: Option<f32>,
+    /// The counter-attack timer (player +0xe28): `fCounterAttackTimer`
+    /// after a blocked hit, counting down.
+    pub counter_timer: f32,
+    /// The Attack control's hold (`011e07b0`), for power attacks, and a
+    /// power attack waiting for the attack playing to end (`011e07ac` 2).
+    power_timer: f32,
+    power_queued: bool,
+    /// The animation group of the attack playing (`world::melee::group`;
+    /// 0x20 the default `AttackRight`, the weapon's own otherwise), and
+    /// whether it's a power attack.
+    pub attack_group: u8,
+    pub power: bool,
+    /// The attack's first-person length (the view says, knowing the
+    /// animation), for the power attack waiting on it.
+    pub attack_length: f32,
+    /// The Ammo Swap timer (player +0xd50).
+    ammo_swap_timer: f32,
+    /// After the player's death (`world::player_death`).
+    death: world::player_death::DeathReload,
     /// Bodies by base record: half width and height (from `OBND`).
     bodies: HashMap<FormId, (f32, f32)>,
     /// Body part data by person or creature (`world::body_parts`).
@@ -130,6 +154,9 @@ impl PlayerAttack {
     /// putting it away, 8 reloading; the attacks and the rest aren't kept
     /// here), for what waits on it (the Sneak control, `walk`).
     pub fn anim_action(&self, now: f32) -> Option<u8> {
+        if self.blocking {
+            return Some(7);
+        }
         if now < self.busy_until {
             return self
                 .readied_at
@@ -496,7 +523,11 @@ pub fn player_attack(
     cameras: Query<&Transform, With<FlyCamera>>,
     mut hud: Query<&mut Text, With<HudText>>,
     rigs: Query<(&Walker, &ActorRig)>,
-    (aim_gates, mut messages): (AimGates, ResMut<crate::hud::HudMessages>),
+    (aim_gates, mut messages, mut load): (
+        AimGates,
+        ResMut<crate::hud::HudMessages>,
+        ResMut<crate::scripts::LoadRequest>,
+    ),
 ) {
     let order = &game.0.order;
     let now = time.elapsed_secs();
@@ -553,14 +584,59 @@ pub fn player_attack(
     if !crippled.is_empty() {
         line.push_str(&format!("    Crippled: {}", crippled.join(", ")));
     }
-    if state.dead.contains(&PLAYER_REF) {
-        line = "You are dead. F9 loads the last quick save.".into();
+    let dead = state.dead.contains(&PLAYER_REF);
+    if dead {
+        line = "You are dead.".into();
     }
     for mut text in &mut hud {
         if text.0 != line {
             text.0 = line.clone();
         }
     }
+    // After death (`world::player_death`, `0093e860`): the scope goes,
+    // and after `fPlayerDeathReloadTime` the most recent save loads (the
+    // viewer's one save, its quick save), or with none the game's main
+    // menu would open (this viewer has none).
+    let dt = time.delta_secs();
+    let reload_time =
+        world::scripting::game_setting(order, "fPlayerDeathReloadTime").unwrap_or(5.0);
+    let save_exists = std::path::Path::new(crate::scripts::QUICKSAVE).exists();
+    match attack
+        .death
+        .update(dead, dead, dt, reload_time, save_exists)
+    {
+        world::player_death::DeathStep::Started => {
+            attack.iron_sights = false;
+            attack.blocking = false;
+        }
+        world::player_death::DeathStep::Reload => {
+            if save_exists {
+                println!("The player died: loading the most recent save.");
+                load.0 = true;
+            } else {
+                println!(
+                    "The player died with no save: the game would go back to its main menu \
+                     (`007d0a70`), which this viewer doesn't have."
+                );
+            }
+        }
+        world::player_death::DeathStep::Ask => {
+            // Only with `fPlayerDeathReloadTime` 0 or below (the data
+            // keeps 5): the game's message box isn't shown here.
+            println!("The player died: the game would ask to reload or go to the main menu.");
+        }
+        world::player_death::DeathStep::Wait => {}
+    }
+    // The counter-attack timer and the swap timer run on.
+    attack.counter_timer = (attack.counter_timer - dt).max(0.0);
+    attack.ammo_swap_timer += dt;
+    // Hits the player blocked (`world::melee`): the block hit plays and
+    // the counter-attack window opens.
+    if state.blocked_hits.contains(&PLAYER_REF) {
+        attack.block_hit_at = Some(now);
+        attack.counter_timer = world::melee::Settings::read(order).counter_attack_time;
+    }
+    state.blocked_hits.clear();
     let busy = !player.walking
         || !player.ready
         || conversation.0.is_some()
@@ -569,6 +645,8 @@ pub fn player_attack(
         || state.controls_off[world::scripting::controls::FIGHTING];
     if busy {
         attack.iron_sights = false;
+        attack.blocking = false;
+        state.blocking.remove(&PLAYER_REF);
         return;
     }
     // The Aim control (6, the right mouse button), as `0093e860` reads it
@@ -577,11 +655,12 @@ pub fn player_attack(
     // go down. A drawn melee weapon or fists would block (`00894cc0(1)`),
     // which isn't here.
     let (view, vats, controls) = aim_gates;
-    let aim = controls.map_or(crate::controls::Controls::default().aim, |c| c.aim);
+    let controls = controls.map_or(crate::controls::Controls::default(), |c| *c);
+    let aim = controls.aim;
     let switching = view.camera.want_third != view.camera.actually_third;
+    let readying_now = now < attack.busy_until;
+    let control = world::iron_sights::aim_control(weapon.as_ref().map(|w| w.animation), attack.out);
     if aim.pressed(&keys, &mouse) {
-        let control =
-            world::iron_sights::aim_control(weapon.as_ref().map(|w| w.animation), attack.out);
         if !attack.iron_sights
             && !switching
             && !vats.is_on()
@@ -589,8 +668,74 @@ pub fn player_attack(
         {
             attack.iron_sights = true;
         }
+        // A melee weapon or fists block (`00894cc0(1)` → `00894940`:
+        // `BlockIdle` as anim action 7), when no other action plays (anim
+        // action none, or an attack that has ended).
+        let attacking = now < attack.next;
+        if control == world::iron_sights::AimControl::Block
+            && !attack.blocking
+            && !readying_now
+            && !attacking
+            && now >= attack.reloaded_at
+            && !vats.is_on()
+        {
+            attack.blocking = true;
+        }
     } else {
         attack.iron_sights = false;
+        attack.blocking = false;
+    }
+    if control != world::iron_sights::AimControl::Block {
+        attack.blocking = false;
+    }
+    if attack.blocking {
+        let heading = cameras.single().map_or(0.0, |c| {
+            let f = c.forward().as_vec3();
+            f.x.atan2(-f.z)
+        });
+        state.blocking.insert(PLAYER_REF, heading);
+    } else {
+        state.blocking.remove(&PLAYER_REF);
+    }
+    // The Ammo Swap control (18; `world::ammo_swap`, `0093e860` →
+    // `009462c0`): the next carried kind loads, with the reload animation
+    // when the swap timer has passed and the weapon is out.
+    let swap_key = controls.ammo_swap;
+    if swap_key.just_pressed(&keys, &mouse) && attack.out && !readying_now {
+        if let Some(w) = weapon.as_ref() {
+            let (swap, reset) = world::ammo_swap::press(
+                order,
+                state,
+                PLAYER_REF,
+                w,
+                attack.out,
+                attack.ammo_swap_timer,
+            );
+            if reset {
+                attack.ammo_swap_timer = 0.0;
+            }
+            if let Some(swap) = swap {
+                state.ammo_loaded.insert(PLAYER_REF, swap.ammo);
+                let carried = state.item_count(order, PLAYER_REF, swap.ammo).max(0) as u32;
+                if swap.animated {
+                    let rate = combat::reload_rate(order, state, PLAYER_REF, Some(w)).max(1e-3);
+                    attack.in_clip = Some(w.clip.min(carried));
+                    attack.reloaded_at = now + w.reload_time / rate;
+                    attack.reload_started = Some(now);
+                    attack.reload_rate = rate;
+                } else {
+                    // `ReloadWeaponNV(…, 0, …)`: no reload animation (the
+                    // clip taken as filled at once: inferred).
+                    attack.in_clip = Some(w.clip.min(carried));
+                }
+                let name = order
+                    .get(swap.ammo)
+                    .and_then(|r| r.record().ok())
+                    .and_then(|r| r.get(esm::FourCC::new(b"FULL")).map(|s| s.zstring()))
+                    .unwrap_or_default();
+                println!("Ammo swap: {name}.");
+            }
+        }
     }
     // A reload takes the weapon's reload time at the reload rate
     // (`world::combat::reload_rate`: Agility and Rapid Reload).
@@ -629,8 +774,48 @@ pub fn player_attack(
         }
         combat::ReadyAction::Nothing => {}
     }
-    if !mouse.just_pressed(MouseButton::Left) || now < attack.next || now < attack.reloaded_at {
+    // Power attacks (`world::melee`, `00948310`): with a melee weapon or
+    // fists out, holding the Attack control past `fPowerAttackDelay` brings
+    // a power attack, after the attack playing ends.
+    let use_key = controls.attack;
+    let melee_out = attack.out && weapon.as_ref().is_none_or(|w| w.is_melee());
+    let melee_settings = world::melee::Settings::read(order);
+    let mut power_now = false;
+    if melee_out && use_key.pressed(&keys, &mouse) && !use_key.just_pressed(&keys, &mouse) {
+        if !attack.power && !attack.power_queued {
+            attack.power_timer += dt;
+        }
+        // Over-encumbered players don't (`0093e860`'s vfunc +0x358).
+        let heavy = state.over_encumbered(order, PLAYER_REF);
+        if !heavy && attack.power_timer > melee_settings.power_attack_delay {
+            attack.power_timer = 0.0;
+            let playing = attack
+                .fired_at
+                .is_some_and(|t| now < t + attack.attack_length.max(0.0));
+            if playing {
+                attack.power_queued = true;
+            } else {
+                power_now = true;
+            }
+        }
+    } else if !use_key.pressed(&keys, &mouse) {
+        attack.power_timer = 0.0;
+    }
+    if attack.power_queued {
+        let ended = attack
+            .fired_at
+            .is_none_or(|t| now >= t + attack.attack_length.max(0.0));
+        if ended {
+            attack.power_queued = false;
+            power_now = true;
+        }
+    }
+    let pressed = use_key.just_pressed(&keys, &mouse);
+    if !power_now && (!pressed || now < attack.next || now < attack.reloaded_at) {
         return;
+    }
+    if pressed {
+        attack.power_timer = 0.0;
     }
     // Attacking with the weapon holstered draws it instead (`00948310`:
     // the attack control just pressed and the weapon not out).
@@ -681,6 +866,73 @@ pub fn player_attack(
     attack.next = now + weapon.as_ref().map_or(0.5, |w| w.shot_interval());
     attack.fired_at = Some(now);
     attack.attack_rate = combat::attack_rate(order, state, PLAYER_REF, weapon.as_ref());
+    // Attacking ends a block (`00948310`: `00894cc0(0)` in anim action 7).
+    attack.blocking = false;
+    state.blocking.remove(&PLAYER_REF);
+    // Which attack (`00948310`, at `009498cf`): a melee attack while
+    // sneaking is the power attack (fists, or a melee weapon that isn't
+    // automatic); an unarmed one within the counter-attack timer with the
+    // perk the `Counter`; a power attack goes the way the player moves.
+    let sneaking = state.player_sneaking;
+    let unarmed = weapon
+        .as_ref()
+        .is_none_or(|w| w.skill == world::combat::av::UNARMED);
+    let mut group = weapon
+        .as_ref()
+        .map(|w| w.attack_animation)
+        .filter(|&a| a != 0xff)
+        .unwrap_or(world::melee::group::ATTACK_RIGHT);
+    if power_now {
+        group = world::melee::group::ATTACK_POWER;
+    }
+    if melee_out
+        && sneaking
+        && weapon
+            .as_ref()
+            .is_none_or(|w| w.flags1 & world::vats::flags::AUTOMATIC == 0)
+    {
+        group = world::melee::group::ATTACK_POWER;
+    }
+    if melee_out && world::melee::counter_attack(order, state, unarmed, attack.counter_timer) {
+        group = world::melee::group::COUNTER;
+    }
+    if group == world::melee::group::ATTACK_POWER {
+        let legs = |a: u16| {
+            world::scripting::Facts {
+                order,
+                state,
+                speaker: None,
+            }
+            .current_actor_value(PLAYER_REF, a)
+            .unwrap_or(100.0)
+                <= 0.0
+        };
+        let m = player.moving;
+        group = world::melee::power_attack_group(
+            order,
+            state,
+            world::melee::Moving {
+                forward: m.forward,
+                back: m.backward,
+                left: m.left,
+                right: m.right,
+            },
+            sneaking,
+            legs(29) && legs(30),
+            unarmed,
+        );
+    }
+    attack.attack_group = group;
+    attack.power = melee_out && world::animation::kind_of(group) == 6;
+    if attack.power {
+        state.power_attacking.insert(PLAYER_REF);
+        println!(
+            "Power attack: {}.",
+            world::melee::group_file_stem(group).unwrap_or_default()
+        );
+    } else {
+        state.power_attacking.remove(&PLAYER_REF);
+    }
     if let Some(s) = weapon.as_ref().and_then(|w| w.sound) {
         sounds.0.push(s);
     }
@@ -780,8 +1032,16 @@ pub fn player_attack(
             .detection(target, PLAYER_REF)
             .is_none_or(|v| v < 1);
         let alive = !state.dead.contains(&target);
-        let hit =
-            Runner::new(order, &scripts.0, state).hit_at(PLAYER_REF, target, pellet.as_ref(), part);
+        // A power attack's damage × `fDamagePowerAttackBonus`, not while
+        // sneaking (`009b5170`, `world::melee::power_attack_mult`).
+        let power = attack.power && !state.player_sneaking;
+        let hit = Runner::new(order, &scripts.0, state).strike_at(
+            PLAYER_REF,
+            target,
+            pellet.as_ref(),
+            part,
+            power,
+        );
         // The player's critical on someone alive (`0089a760`): "Sneak Attack
         // Critical on <name>" (hit flag 0x400) or "Critical Strike on
         // <name>", with the very happy Vault Boy.
