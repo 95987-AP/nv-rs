@@ -1860,3 +1860,41 @@ fn play_group_has_an_object_play_its_models_sequence() {
         }]
     );
 }
+
+/// Scripted items see their `OnAdd` on the holder's next script run
+/// (`00574fa0` flags it, `004d2480` runs it), each item its own copy of
+/// the script: `TestCaseBundle`'s `OnAdd Player` gives 25 cases and
+/// `RemoveMe` takes the bundle away (as the game's `Case10mmAddScript`).
+#[test]
+fn scripted_items_see_their_onadd() {
+    let (_data, order) = order("scripting-onadd");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let (bundle, case) = (FormId(CASE_BUNDLE), FormId(CASE));
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.AddItem TestCaseBundle 2",
+        None,
+        None,
+    );
+    assert_eq!(state.item_count(&order, PLAYER_REF, bundle), 2);
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(state.item_count(&order, PLAYER_REF, bundle), 0);
+    assert_eq!(state.item_count(&order, PLAYER_REF, case), 50);
+    // In a chest the block (`OnAdd Player`) doesn't run.
+    let chest = FormId(CHEST_REF);
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "ChestRef.AddItem TestCaseBundle 1",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(state.item_count(&order, chest, bundle), 1);
+    // Taken from it, it runs for the player.
+    state.move_item(&order, chest, PLAYER_REF, bundle, 1);
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(state.item_count(&order, PLAYER_REF, case), 75);
+    assert_eq!(state.item_count(&order, PLAYER_REF, bundle), 0);
+    // `RemoveMe` outside an item's own run does nothing.
+    Runner::new(&order, &scripts, &mut state).run_source("RemoveMe", None, None);
+    assert!(state.unhandled.is_empty(), "{:?}", state.unhandled_first);
+}

@@ -239,6 +239,11 @@ pub struct GameState {
     /// Holders whose contents are kept in `items` (copied from their
     /// record the first time something changes them).
     pub stocked: HashSet<FormId>,
+    /// Scripted items added to holders, one entry an item, waiting for
+    /// the holder's next script run to see their `OnAdd` (the add flags
+    /// the event, `00574fa0`; the holder's run carries it out,
+    /// `00565870` → `004d2480`). Not saved.
+    pub item_adds: Vec<(FormId, FormId)>,
     /// Topics the player has learned (`AddTopic`).
     pub topics: HashSet<FormId>,
     /// Seconds since each running quest's script last ran.
@@ -539,6 +544,7 @@ impl GameState {
         for (item, n) in &moved {
             self.items.remove(&(from, *item));
             *self.items.entry((to, *item)).or_insert(0) += n;
+            self.added(order, to, *item, *n);
         }
         moved
     }
@@ -578,6 +584,19 @@ impl GameState {
         self.equipped.get(&who).is_some_and(|w| w.contains(&item))
     }
 
+    /// Items added to a holder at runtime (an `AddItem`, a container
+    /// emptied into another, a pick-up…; not a holder's own contents): each
+    /// one with a script gets its `OnAdd` (`004821a0` adds scripted items
+    /// one at a time, each with its own script, and `00574fa0` flags the
+    /// event for the holder).
+    pub fn added(&mut self, order: &LoadOrder, holder: FormId, item: FormId, count: i32) {
+        if count > 0 && item_script(order, item).is_some() {
+            for _ in 0..count {
+                self.item_adds.push((holder, item));
+            }
+        }
+    }
+
     /// Moves up to `count` of an item from one holder to another (as the
     /// container screen does); how many moved.
     pub fn move_item(
@@ -601,6 +620,7 @@ impl GameState {
             self.items.insert((from, item), have - n);
         }
         *self.items.entry((to, item)).or_insert(0) += n;
+        self.added(order, to, item, n);
         n
     }
 
@@ -702,6 +722,7 @@ impl GameState {
     pub fn pick_up(&mut self, order: &LoadOrder, reference: FormId, item: FormId, count: i32) {
         self.stock(order, PLAYER_REF);
         *self.items.entry((PLAYER_REF, item)).or_insert(0) += count;
+        self.added(order, PLAYER_REF, item, count);
         self.disabled.insert(reference, true);
         self.events.push(Event::Enable(reference, false));
     }
@@ -1314,6 +1335,31 @@ pub fn script_of(order: &LoadOrder, owner: FormId) -> Option<FormId> {
     let record = holder.record().ok()?;
     let s = record.get(SCRI).filter(|s| s.data.len() >= 4)?;
     Some(holder.plugin.to_global(FormId(le_u32(&s.data, 0))))
+}
+
+/// Whether an event block's argument is empty or names `who` (`player`,
+/// an editor ID).
+fn names_who(order: &LoadOrder, b: &script::Block, who: FormId) -> bool {
+    match b.args.first() {
+        None => true,
+        Some(Arg::Word(w)) => {
+            let id = if w.eq_ignore_ascii_case("player") || w.eq_ignore_ascii_case("playerref") {
+                Some(PLAYER_REF)
+            } else {
+                order.form_by_editor_id(w)
+            };
+            id == Some(who)
+        }
+        Some(_) => false,
+    }
+}
+
+/// An item record's script (`SCRI` on the item itself).
+pub fn item_script(order: &LoadOrder, item: FormId) -> Option<FormId> {
+    let rr = order.get(item).filter(|r| is_item(r.entry.header.kind))?;
+    let record = rr.record().ok()?;
+    let s = record.get(SCRI).filter(|s| s.data.len() >= 4)?;
+    Some(rr.plugin.to_global(FormId(le_u32(&s.data, 0)))).filter(|f| f.0 != 0)
 }
 
 /// A script variable's name by its number (`SLSD` index, then `SCVR`).
@@ -2162,6 +2208,8 @@ pub struct Runner<'a> {
     pub owner: Option<FormId>,
     /// `GetSecondsPassed`.
     pub seconds_passed: f32,
+    /// A scripted item's own run: its holder and the item (`RemoveMe`).
+    item: Option<(FormId, FormId)>,
     depth: u8,
 }
 
@@ -2174,7 +2222,42 @@ impl<'a> Runner<'a> {
             this: None,
             owner: None,
             seconds_passed: 0.0,
+            item: None,
             depth: 0,
+        }
+    }
+
+    /// The scripted items added since the last run see their `OnAdd`
+    /// (`004d2480`): each a fresh copy of its script (`004821a0` gives
+    /// every one its own), its `OnAdd` blocks whose argument is empty or
+    /// names the holder, run with the holder as the reference it runs on.
+    pub fn run_item_adds(&mut self) {
+        let pending = std::mem::take(&mut self.state.item_adds);
+        for (holder, item) in pending {
+            let Some(script) =
+                item_script(self.order, item).and_then(|s| self.scripts.script(self.order, s))
+            else {
+                continue;
+            };
+            if !script.blocks.iter().any(|b| b.kind == "onadd") {
+                continue;
+            }
+            let order = self.order;
+            let mut locals = Locals::new(&script);
+            let saved = (self.this, self.owner, self.item);
+            self.this = Some(holder);
+            self.owner = None;
+            self.item = Some((holder, item));
+            let action = self.state.action_ref.replace(holder);
+            interp::run_blocks(
+                &script,
+                "onadd",
+                |b| names_who(order, b, holder),
+                &mut locals,
+                self,
+            );
+            self.state.action_ref = action;
+            (self.this, self.owner, self.item) = saved;
         }
     }
 
@@ -2296,6 +2379,7 @@ impl<'a> Runner<'a> {
     /// running (a guess), with `GetSecondsPassed` the time since its last
     /// run.
     pub fn update(&mut self, seconds: f32) {
+        self.run_item_adds();
         self.state.roll();
         self.state.seconds += f64::from(seconds.max(0.0));
         self.state.advance_clock(self.order, seconds);
@@ -2368,19 +2452,7 @@ impl<'a> Runner<'a> {
     /// `who`, with `who` as the action reference (`IsActionRef`).
     pub fn run_event(&mut self, reference: FormId, kind: &str, who: FormId) {
         let order = self.order;
-        let names_who = |b: &script::Block| match b.args.first() {
-            None => true,
-            Some(Arg::Word(w)) => {
-                let id = if w.eq_ignore_ascii_case("player") || w.eq_ignore_ascii_case("playerref")
-                {
-                    Some(PLAYER_REF)
-                } else {
-                    order.form_by_editor_id(w)
-                };
-                id == Some(who)
-            }
-            Some(_) => false,
-        };
+        let names_who = |b: &script::Block| names_who(order, b, who);
         let saved = self.state.action_ref.replace(who);
         self.run_blocks(reference, Some(reference), kind, names_who);
         self.state.action_ref = saved;
@@ -2397,19 +2469,7 @@ impl<'a> Runner<'a> {
         else {
             return;
         };
-        let names_who = |b: &script::Block| match b.args.first() {
-            None => true,
-            Some(Arg::Word(w)) => {
-                let id = if w.eq_ignore_ascii_case("player") || w.eq_ignore_ascii_case("playerref")
-                {
-                    Some(PLAYER_REF)
-                } else {
-                    order.form_by_editor_id(w)
-                };
-                id == Some(who)
-            }
-            Some(_) => false,
-        };
+        let names_who = |b: &script::Block| names_who(order, b, who);
         let blocks: Vec<&script::Block> = script
             .blocks
             .iter()
@@ -2873,6 +2933,7 @@ impl<'a> Runner<'a> {
                         });
                     for (item, n) in picked {
                         *self.state.items.entry((holder, item)).or_insert(0) += n;
+                        self.state.added(self.order, holder, item, n);
                     }
                     return Some(0.0);
                 }
@@ -2882,6 +2943,9 @@ impl<'a> Runner<'a> {
                 } else {
                     (*n - count).max(0)
                 };
+                if name == "AddItem" {
+                    self.state.added(self.order, holder, form, count);
+                }
             }
             // One weapon in hand; clothes take off what's on the same slots.
             "EquipItem" => {
@@ -3199,6 +3263,18 @@ impl<'a> Runner<'a> {
             }
             "ShowRaceMenu" => events.push(Event::Menu(RACE_SEX_MENU)),
             "ForceTerminalBack" => events.push(Event::TerminalBack),
+            // `005b53d0`: one of the scripted item running goes from its
+            // holder (outside an item's own run it does nothing).
+            "RemoveMe" => {
+                if let Some((holder, item)) = self.item {
+                    if let Some(n) = self.state.items.get_mut(&(holder, item)) {
+                        *n -= 1;
+                        if *n <= 0 {
+                            self.state.items.remove(&(holder, item));
+                        }
+                    }
+                }
+            }
             "SetActorValue" | "ForceActorValue" | "ModActorValue" | "DamageActorValue"
             | "RestoreActorValue" => {
                 let who = target?;
@@ -3669,6 +3745,7 @@ pub const HANDLED: &[&str] = &[
     "ShowMessage",
     "ShowRaceMenu",
     "ForceTerminalBack",
+    "RemoveMe",
     "StartConversation",
     "StartQuest",
     "StopQuest",

@@ -1435,6 +1435,10 @@ pub mod quest_ids {
     /// of the time (as the 9mm round's "Case, 9mm").
     pub const CASED_AMMO: u32 = 0xA97;
     pub const CASE: u32 = 0xA98;
+    /// A bundle of cases whose script, on reaching the player, gives 25
+    /// cases and removes itself (as the game's `Case10mmAddScript`).
+    pub const CASE_BUNDLE: u32 = 0xAF0;
+    pub const CASE_BUNDLE_SCRIPT: u32 = 0xAF1;
     /// Settings the perks' rules read (seven forms from here):
     /// `fPackRatThreshold` 2, `fPackRatModifier` 0.5, `fAgilityReloadBase`
     /// 5, `fAgilityReloadModifier` 0.1, `fDamageToWeaponValue` 0.2,
@@ -1534,6 +1538,11 @@ pub fn quests(tag: &str) -> TempData {
     caps.extend(sub(b"FULL", &zstr("Bottle Cap")));
 
     let mut scripts = script(
+        CASE_BUNDLE_SCRIPT,
+        "TestCaseBundleScript",
+        "scn TestCaseBundleScript\nBegin OnAdd Player\n\tPlayer.AddItem TestCase 25\n\tRemoveMe\nEnd\n",
+    );
+    scripts.extend(script(
         QUEST_SCRIPT,
         "TestQuestScript",
         "scn TestQuestScript\n\
@@ -1551,7 +1560,7 @@ pub fn quests(tag: &str) -> TempData {
          \t\tendif\n\
          \tendif\n\
          End",
-    );
+    ));
     scripts.extend(script(
         GECKO_SCRIPT,
         "TestGeckoScript",
@@ -2652,6 +2661,11 @@ pub fn quests(tag: &str) -> TempData {
     case_data.extend(0.0f32.to_le_bytes());
     case.extend(sub(b"DATA", &case_data));
     misc.extend(record(b"MISC", CASE, &case));
+    let mut bundle = edid("TestCaseBundle");
+    bundle.extend(sub(b"FULL", &zstr("Case Bundle")));
+    bundle.extend(sub(b"SCRI", &CASE_BUNDLE_SCRIPT.to_le_bytes()));
+    bundle.extend(sub(b"DATA", &case_data));
+    misc.extend(record(b"MISC", CASE_BUNDLE, &bundle));
     plugin.extend(group(*b"MISC", 0, &misc));
     plugin.extend(group(*b"LVLI", 0, &record(b"LVLI", LEVELED, &leveled)));
     let mut packages = record(b"PACK", TRAVEL, &travel);

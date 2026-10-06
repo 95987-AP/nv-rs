@@ -1024,6 +1024,7 @@ pub fn remove_all(
         state.unequip(from, item);
         if let Some(to) = to {
             *state.items.entry((to, item)).or_insert(0) += n;
+            state.added(order, to, item, n);
         }
     }
 }
@@ -1178,6 +1179,7 @@ fn carry_out(
                 }
                 for (i, n) in added {
                     *runner.state.items.entry((holder, i)).or_insert(0) += n;
+                    runner.state.added(order, holder, i, n);
                     if kind_of(order, i) == Some(WEAP) {
                         runner
                             .state

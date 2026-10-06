@@ -279,6 +279,7 @@ pub fn take_food(
     }
     state.stock(order, who);
     *state.items.entry((who, item)).or_insert(0) += 1;
+    state.added(order, who, item, 1);
     state.disabled.insert(reference, true);
     state
         .events
