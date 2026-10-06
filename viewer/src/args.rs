@@ -116,7 +116,12 @@ CONTROLS:
     Tab                            the Pip-Boy (held: its light)
     Pip-Boy: arrows, Enter         move, equip / use; Shift + left or
                                    right change menu; the letters
-                                   press their buttons
+                                   press their buttons; the mouse
+                                   points and clicks; right button:
+                                   drop (ITEMS), your map marker
+                                   (DATA); wheel, Page Up / Down:
+                                   zoom the map; F1-F3 STATS, ITEMS,
+                                   DATA
     F5, F9                         save, load (nv-rs-quicksave.txt)
     F12                            report something that differs from
                                    the game: a picture, where you are and

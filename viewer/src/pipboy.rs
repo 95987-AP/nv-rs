@@ -44,16 +44,19 @@
 //! The game's cursor is drawn over it (`game_menus`), hidden over DATA's
 //! map where the highlight box follows the pointer.
 //!
+//! The right button drops the chosen item on ITEMS and asks for the
+//! player's own marker on DATA's world map; the wheel and Page Up / Page
+//! Down zoom the map. Questions (fast travel, the marker, "how many?") are
+//! the game's own menus over the Pip-Boy (`game_menus::asks`), answered
+//! back here.
+//!
 //! Guesses: the picture's size in pixels (one a menu unit); the arm held at
 //! the raising animation's `Hit` key while up (where it's highest) and
 //! lowered by playing on from there.
-//! Not done: the right button's custom map marker, zooming the maps, the
-//! fast-travel question box (the travel is asked for at once), the keys
-//! held repeating, the light lighting the place
+//! Not done: the keys held repeating, the light lighting the place
 //! (only its cone on the arm shows), the world paused while it's up, the
 //! knobs, needle and buttons moving, the `xbox` button labels swapped for
-//! the PC's, Page Up / Page Down (the pad's bumpers: zooming the maps,
-//! Mod and hot keys on ITEMS).
+//! the PC's, Page Up / Page Down on ITEMS (Mod and hot keys).
 // The shader-layout derive generates checking functions the compiler
 // reports as unused.
 #![allow(dead_code)]
@@ -82,6 +85,7 @@ use ui::pipboy::{Action, Key, PipboyInput, Section};
 use world::dialogue::PLAYER_REF;
 
 use crate::dialogue::DialogueState;
+use crate::game_menus::asks::{self, Ask};
 use crate::hud::{Files, Quad, TileMaterial};
 use crate::lighting::GameLitMaterial;
 use crate::menus::Menus;
@@ -128,7 +132,11 @@ impl Plugin for PipboyPlugin {
             .add_systems(
                 Update,
                 (
-                    pipboy_keys.before(crate::menus::run_menus),
+                    // After the game's own menus: one open over the Pip-Boy
+                    // (a question, "how many?") has the input first.
+                    pipboy_keys
+                        .after(crate::game_menus::run_open_menus)
+                        .before(crate::menus::run_menus),
                     update_pipboy
                         .after(crate::scripts::run_scripts)
                         .after(crate::viewmodel::update_view_model)
@@ -355,9 +363,33 @@ pub struct Pipboy {
     /// The model's button the mouse button went down on (`011a0ba0`,
     /// 0 .. 2), kept until it comes up over the same one.
     button_down: Option<usize>,
+    /// The left and right mouse buttons held, as their events said.
+    mouse_held: [bool; 2],
+    /// The marker "Do you want to travel to ...?" asks about (the map
+    /// menu's `+0x118`), and the one to travel to once the Pip-Boy is
+    /// down (`00798710` → `0070f690`, which runs `00798a00` when it has
+    /// closed).
+    travel_asked: Option<u32>,
+    travel_after_close: Option<u32>,
+    /// Where the player's own marker was asked for (the menu's `+0xf8` ..
+    /// `+0x104`): the worldspace and the place.
+    marker_asked: Option<(FormId, [f32; 3])>,
+    /// The item waiting for "how many?" to drop.
+    drop_asked: Option<u32>,
 }
 
 impl Pipboy {
+    /// The shown menu's class number while it's up (STATS 1003, ITEMS
+    /// 1002, DATA 1023).
+    pub fn menu_class(&self) -> Option<i32> {
+        let b = self.built.as_ref().filter(|_| self.open)?;
+        Some(match b.pipboy.section {
+            Section::Stats => ui::pipboy::STATS_CLASS,
+            Section::Items => ui::pipboy::ITEMS_CLASS,
+            Section::Data => ui::pipboy::DATA_CLASS,
+        })
+    }
+
     /// Whether the game's cursor is hidden over the Pip-Boy (DATA's map
     /// under it: the highlight box stands in for it, `0079a130`).
     pub fn cursor_hidden(&self) -> bool {
@@ -549,6 +581,12 @@ fn menu_keys(keys: &ButtonInput<KeyCode>) -> Vec<Key> {
     if pressed(KeyCode::ArrowRight) {
         out.push(if shift { Key::NextSection } else { Key::Right });
     }
+    if pressed(KeyCode::PageUp) {
+        out.push(Key::PageUp);
+    }
+    if pressed(KeyCode::PageDown) {
+        out.push(Key::PageDown);
+    }
     if pressed(KeyCode::Enter) || pressed(KeyCode::NumpadEnter) {
         out.push(if shift {
             Key::ButtonX
@@ -609,6 +647,7 @@ pub struct Around<'w> {
     oggs: ResMut<'w, Assets<AudioSource>>,
     wavs: ResMut<'w, Assets<PcmSound>>,
     markers: Res<'w, crate::map::MapMarkers>,
+    asks: ResMut<'w, crate::game_menus::asks::PipboyAsks>,
 }
 
 /// The mouse as the Pip-Boy reads it: the window's pointer, the first-
@@ -625,7 +664,47 @@ pub struct Mouse<'w, 's> {
     >,
     globals: Query<'w, 's, &'static GlobalTransform>,
     buttons: ResMut<'w, ButtonInput<MouseButton>>,
+    /// The buttons' own events: the Pip-Boy keeps the mouse from the rest
+    /// of the viewer by clearing `buttons` every frame, which also drops
+    /// what `buttons` would say about a button let go later, so the
+    /// Pip-Boy reads the presses and releases themselves.
+    events: EventReader<'w, 's, bevy::input::mouse::MouseButtonInput>,
     scroll: ResMut<'w, bevy::input::mouse::AccumulatedMouseScroll>,
+}
+
+/// The mouse buttons this frame from their events, `held` carried over
+/// from earlier frames: (left, right). A button that went down and came
+/// up within one frame counts as both pressed and released.
+fn mouse_buttons(
+    held: &mut [bool; 2],
+    events: impl Iterator<Item = (MouseButton, bevy::input::ButtonState)>,
+) -> [ui::pipboy::Button; 2] {
+    let mut out = [ui::pipboy::Button::default(); 2];
+    for (button, state) in events {
+        let i = match button {
+            MouseButton::Left => 0,
+            MouseButton::Right => 1,
+            _ => continue,
+        };
+        match state {
+            bevy::input::ButtonState::Pressed => {
+                if !held[i] {
+                    out[i].pressed = true;
+                }
+                held[i] = true;
+            }
+            bevy::input::ButtonState::Released => {
+                if held[i] {
+                    out[i].released = true;
+                }
+                held[i] = false;
+            }
+        }
+    }
+    for i in 0..2 {
+        out[i].down = held[i];
+    }
+    out
 }
 
 /// The function keys that open or turn to a menu (`0070c4a0` reads the
@@ -662,15 +741,83 @@ fn pipboy_keys(
         mut requests,
         mut messages,
         markers,
+        mut asks,
         ..
     } = around;
     let order = &game.0.order;
     let now = time.elapsed_secs();
     let pipboy = &mut *pipboy;
+    // The mouse buttons, read from their events every frame (up or not,
+    // so what's held is known on opening): `buttons` is cleared below
+    // while it's up, so it would never see a button come up.
+    let [button, right] = mouse_buttons(
+        &mut pipboy.mouse_held,
+        mouse.events.read().map(|e| (e.button, e.state)),
+    );
     // Scripts can take the Pip-Boy away (`DisablePlayerControls`).
     let allowed = !state.0.controls_off[world::scripting::controls::PIPBOY];
     let free = !menus.others_open() && conversation.0.is_none();
 
+    // The answers to the Pip-Boy's questions (their callbacks).
+    for answer in std::mem::take(&mut asks.answers) {
+        let state = &mut state.0;
+        match answer.owner {
+            // `00798710`: Yes (0) puts the Pip-Boy away and travels once
+            // it's down (`0070f690` with `00798a00`); No forgets the
+            // marker.
+            asks::TRAVEL => {
+                let marker = pipboy.travel_asked.take();
+                if answer.value == 0 && pipboy.open {
+                    close(
+                        &mut commands,
+                        pipboy,
+                        &mut menus,
+                        &mut player,
+                        &conversation,
+                        now,
+                    );
+                    sound(order, &mut requests, "UIPipBoyAccessDown");
+                    pipboy.travel_after_close = marker;
+                }
+            }
+            // `00798840`: Move It (0) or Yes (3, the set box's first
+            // number) sets the marker at the place asked (`00952e60`);
+            // Remove It (1) removes it (`00952f90`); Leave It and No
+            // leave it.
+            asks::SET_MARKER => {
+                let asked = pipboy.marker_asked.take();
+                match (answer.value, asked) {
+                    (0 | 3, Some((space, at))) => {
+                        world::map::set_custom_marker(state, space, at);
+                        println!("Map marker set at {:.0}, {:.0}.", at[0], at[1]);
+                    }
+                    (1, _) => {
+                        world::map::remove_custom_marker(state);
+                        println!("Map marker removed.");
+                    }
+                    _ => {}
+                }
+            }
+            // "How many?" answered (`00780c50`): that many dropped, none
+            // for Cancel (0).
+            asks::DROP => {
+                if let Some(form) = pipboy.drop_asked.take() {
+                    if answer.value > 0 {
+                        drop_items(order, state, &mut requests, FormId(form), answer.value);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // One of the game's own menus over the Pip-Boy (the fast-travel
+    // question, "how many?") takes the keys and the mouse, as the game's
+    // interface hands them to the menu on top (`0070f6e0`; how it orders
+    // the Pip-Boy's menus under a box isn't traced further).
+    if pipboy.open && menus.game_open {
+        return;
+    }
     let section_key = section_key(&keys);
     if pipboy.open {
         // The Pip-Boy control let go again puts it away (`0070c4a0`:
@@ -763,11 +910,6 @@ fn pipboy_keys(
     }
     // The mouse is the Pip-Boy's too (no looking, attacking or the
     // flying camera's speed while it's up).
-    let button = ui::pipboy::Button {
-        down: mouse.buttons.pressed(MouseButton::Left),
-        pressed: mouse.buttons.just_pressed(MouseButton::Left),
-        released: mouse.buttons.just_released(MouseButton::Left),
-    };
     let notches = match mouse.scroll.unit {
         bevy::input::mouse::MouseScrollUnit::Line => mouse.scroll.delta.y,
         bevy::input::mouse::MouseScrollUnit::Pixel => mouse.scroll.delta.y / 40.0,
@@ -818,9 +960,15 @@ fn pipboy_keys(
         b.pipboy.items.tab,
         b.pipboy.data.tab,
     );
-    let mut actions = b
-        .pipboy
-        .pointer(&mut b.ui, at, button, f64::from(now), &input);
+    let mut actions = b.pipboy.pointer_with_right(
+        &mut b.ui,
+        at,
+        button,
+        right,
+        keys.pressed(KeyCode::Tab),
+        f64::from(now),
+        &input,
+    );
     if notches != 0 {
         actions.extend(b.pipboy.wheel(&mut b.ui, notches, &input));
     }
@@ -858,7 +1006,15 @@ fn pipboy_keys(
             }
         }
     }
+    // The limb STATS' healing mode aims at, for the effects the Stimpak
+    // adds now (`00823210` asks the stats menu, `007e06b0`).
+    let aim = b
+        .pipboy
+        .stats
+        .healing_part()
+        .filter(|_| b.pipboy.section == Section::Stats);
     let state = &mut state.0;
+    state.healing_part = aim;
     let mut say = |text: String| {
         if text.is_empty() {
             return;
@@ -882,12 +1038,25 @@ fn pipboy_keys(
             Action::Use(form) => {
                 let item = FormId(form);
                 let kind = order.get(item).map(|r| *r.entry.header.kind.as_bytes());
-                let said = match kind {
-                    Some(k) if &k == b"BOOK" => world::items::read_book(order, state, item),
-                    _ => world::items::use_item(order, state, PLAYER_REF, item),
-                };
-                say(said.unwrap_or_default());
+                match kind {
+                    // A book's own notice (its skill raised) is the
+                    // game's.
+                    Some(k) if &k == b"BOOK" => {
+                        say(world::items::read_book(order, state, item).unwrap_or_default())
+                    }
+                    // Aid: no notice (the viewer's own line on the
+                    // console only).
+                    _ => {
+                        if let Some(done) = world::items::use_item(order, state, PLAYER_REF, item) {
+                            println!("{done}");
+                        }
+                    }
+                }
             }
+            // `00796fd0` case 0x1a: when the player can fast travel from
+            // here (`0093d660`, which says why not) and to the marker
+            // (`00438ef0`), "%s %s?" with `sTravelQuestion` and the
+            // marker's name, Yes and No (`00703e80`, callback `00798710`).
             Action::Travel(reference) => {
                 let Some(m) = markers
                     .list
@@ -897,25 +1066,119 @@ fn pipboy_keys(
                 else {
                     continue;
                 };
-                match world::map::travel(order, state, &m) {
-                    Ok(_) => {
-                        say(format!("Travelling to {}.", m.name));
-                        close(
-                            &mut commands,
-                            pipboy,
-                            &mut menus,
-                            &mut player,
-                            &conversation,
-                            now,
-                        );
+                if let Some(why) = world::map::travel_refused(order, state) {
+                    say(why);
+                    continue;
+                }
+                if !world::map::can_travel(state, &m) {
+                    continue;
+                }
+                pipboy.travel_asked = Some(reference);
+                let text = |n: &str| setting_text(pipboy, n);
+                asks.asks.push(Ask::Box {
+                    owner: asks::TRAVEL,
+                    text: format!("{} {}?", text("sTravelQuestion"), m.name),
+                    buttons: vec![text("sYes"), text("sNo")],
+                    first_number: 0,
+                });
+            }
+            // `00796fd0` case 0x0c on the world map: the place under the
+            // pointer (`0079c450`), `UIPopUpMapMarkerAdded ` (the exe's
+            // name ends with a space; looked up as written), then
+            // `sMoveMarkerQuestion` with Move It, Remove It and Leave It
+            // when the player has a marker (`00798400`), else
+            // `sSetMarkerQuestion` with Yes and No answering from 3
+            // (callback `00798840`).
+            Action::PlaceMarker(at_map) => {
+                let (Some(space), Some(map)) = (markers.world, input.world_map.as_ref()) else {
+                    continue;
+                };
+                let at = world::map::map_to_world(map.corners[0], map.corners[1], at_map);
+                pipboy.marker_asked = Some((space, at));
+                sound(order, &mut requests, "UIPopUpMapMarkerAdded ");
+                let text = |n: &str| setting_text(pipboy, n);
+                let ask = if state.custom_marker.is_some() {
+                    Ask::Box {
+                        owner: asks::SET_MARKER,
+                        text: text("sMoveMarkerQuestion"),
+                        buttons: vec![
+                            text("sMoveMarker"),
+                            text("sRemoveMarker"),
+                            text("sLeaveMarker"),
+                        ],
+                        first_number: 0,
                     }
-                    Err(why) => say(why),
+                } else {
+                    Ask::Box {
+                        owner: asks::SET_MARKER,
+                        text: text("sSetMarkerQuestion"),
+                        buttons: vec![text("sYes"), text("sNo")],
+                        first_number: 3,
+                    }
+                };
+                asks.asks.push(ask);
+            }
+            // `00780140` case 7: a quest item can't be dropped
+            // (`sDropQuestItemWarning`, `007052f0`); more than
+            // `iInventoryAskQuantityAt` asks "how many?" (`007aba00`, from
+            // all of them), else one is dropped (`00780c50(1)`). (The
+            // game's other refusals: an equipped item during an action,
+            // in the air, a worn item that can't come off, no room: not
+            // checked here.)
+            Action::Drop(form) => {
+                let item = FormId(form);
+                let quest = world::items::inventory_lines(order, state, PLAYER_REF)
+                    .iter()
+                    .any(|l| l.item == item && l.quest_item);
+                if quest {
+                    say(setting_text(pipboy, "sDropQuestItemWarning"));
+                    continue;
+                }
+                let count = state.item_count(order, PLAYER_REF, item);
+                let ask_at = world::scripting::game_setting(order, "iInventoryAskQuantityAt")
+                    .map_or(5, |v| v as i32);
+                if count > ask_at {
+                    pipboy.drop_asked = Some(form);
+                    asks.asks.push(Ask::HowMany {
+                        owner: asks::DROP,
+                        most: count,
+                    });
+                } else {
+                    drop_items(order, state, &mut requests, item, 1);
                 }
             }
             Action::ActiveQuest(form) => state.active_quest = Some(FormId(form)),
         }
     }
 }
+/// A text game setting as the Pip-Boy's menus read it (the plugins' `GMST`
+/// or the exe's own default); empty when there's none.
+fn setting_text(pipboy: &Pipboy, name: &str) -> String {
+    pipboy
+        .built
+        .as_ref()
+        .and_then(|b| b.ui.setting_text(name))
+        .unwrap_or_default()
+}
+
+/// Drops `count` of an item (`00780c50` → the player's slot 0x3cc,
+/// `world::more_functions::placed::drop_item`), with the item's put-down
+/// sound (a guess at what that slot plays).
+fn drop_items(
+    order: &esm::LoadOrder,
+    state: &mut world::scripting::GameState,
+    requests: &mut SoundRequests,
+    item: FormId,
+    count: i32,
+) {
+    if world::more_functions::placed::drop_item(order, state, item, count).is_some() {
+        println!("Dropped {count} of {item}.");
+        if let Some(s) = world::sound::item_sound(order, item, false) {
+            requests.0.push(s);
+        }
+    }
+}
+
 /// Puts it up; false when the menus can't be read.
 fn open(
     pipboy: &mut Pipboy,
@@ -951,6 +1214,10 @@ fn close(
     pipboy.since = Some(now);
     pipboy.at_once = false;
     menus.pipboy = false;
+    // The stats menu closes with it, and its healing mode.
+    if let Some(b) = pipboy.built.as_mut() {
+        b.pipboy.stats.healing = false;
+    }
     if !menus.others_open() && conversation.0.is_none() {
         player.ready = true;
     }
@@ -1026,12 +1293,13 @@ fn update_pipboy(
     let Around {
         time,
         game,
-        state,
+        mut state,
         mut menus,
         mut player,
         mut oggs,
         mut wavs,
         markers,
+        mut messages,
         ..
     } = around;
     let Drawing {
@@ -1107,6 +1375,22 @@ fn update_pipboy(
         }
     }
     if !shown {
+        state.0.healing_part = None;
+        // Down after "Do you want to travel to ...?" said Yes: the trip
+        // (`00798a00` hands the marker to the player's travel, `0093be30`).
+        if let Some(reference) = pipboy.travel_after_close.take() {
+            if let Some(m) = markers.list.iter().find(|m| m.reference.0 == reference) {
+                match world::map::travel(order, &mut state.0, m) {
+                    Ok(_) => println!("Fast travel to {}.", m.name),
+                    Err(why) => {
+                        println!("{why}");
+                        if messages.on {
+                            messages.queue.push(why);
+                        }
+                    }
+                }
+            }
+        }
         return;
     }
 
@@ -1737,6 +2021,40 @@ mod tests {
         assert!(ray_triangle(Vec3::new(1.5, 1.5, 0.0), Vec3::NEG_Z, a, b, c).is_none());
         // The screen shows 0 .. 0.753 × 0 .. 0.7625 of the picture.
         assert_eq!(menu_point(Vec2::new(0.5, 0.25)), [640.0, 240.0]);
+    }
+
+    /// The mouse failure found live: the Pip-Boy clears `ButtonInput`
+    /// every frame to keep the mouse from the rest of the viewer, and a
+    /// cleared button never reports coming up, so no click ever finished.
+    /// The buttons' events still say it.
+    #[test]
+    fn a_click_finishes_although_the_buttons_are_cleared() {
+        let mut input = ButtonInput::<MouseButton>::default();
+        input.press(MouseButton::Left);
+        input.reset_all();
+        input.clear();
+        input.release(MouseButton::Left);
+        assert!(!input.just_released(MouseButton::Left));
+
+        use bevy::input::ButtonState::{Pressed, Released};
+        let mut held = [false; 2];
+        let [l, r] = mouse_buttons(&mut held, [(MouseButton::Left, Pressed)].into_iter());
+        assert!(l.pressed && l.down && !l.released);
+        assert_eq!(r, ui::pipboy::Button::default());
+        let [l, _] = mouse_buttons(&mut held, std::iter::empty());
+        assert!(l.down && !l.pressed);
+        let [l, _] = mouse_buttons(&mut held, [(MouseButton::Left, Released)].into_iter());
+        assert!(l.released && !l.down);
+        // Down and up within one frame: both.
+        let [_, r] = mouse_buttons(
+            &mut held,
+            [
+                (MouseButton::Right, Pressed),
+                (MouseButton::Right, Released),
+            ]
+            .into_iter(),
+        );
+        assert!(r.pressed && r.released && !r.down);
     }
 
     #[test]
