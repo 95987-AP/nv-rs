@@ -202,6 +202,7 @@ fn main() {
         .init_resource::<chatter::Lines>()
         .init_resource::<menus::Menus>()
         .init_resource::<map::MapMarkers>()
+        .init_resource::<hud::QuestCompass>()
         .init_resource::<daylight::Daylight>()
         .init_resource::<weather::Weathers>()
         .init_resource::<emittance::Glows>()
@@ -328,6 +329,7 @@ fn main() {
                     .chain(),
                 (
                     map::find_markers,
+                    hud::follow_quest_targets,
                     ai::move_offstage,
                     bring_in_people,
                     bring_in_made,

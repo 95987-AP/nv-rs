@@ -63,6 +63,7 @@ pub mod particles;
 pub mod perks;
 mod placement;
 pub mod quest;
+pub mod quest_targets;
 pub mod ref_scripts;
 pub mod region;
 pub mod reputation;

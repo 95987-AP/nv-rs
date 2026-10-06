@@ -2861,9 +2861,12 @@ impl<'a> Runner<'a> {
             }
             if e.flags & quest::COMPLETES_QUEST != 0 {
                 self.state.completed.insert(quest_id);
+                // `0060fb60`: no longer the active quest.
+                crate::quest_targets::quest_ended(self.state, quest_id);
             }
             if e.flags & quest::FAILS_QUEST != 0 {
                 self.state.failed.insert(quest_id);
+                crate::quest_targets::quest_ended(self.state, quest_id);
             }
             if let Some(source) = e.script {
                 self.depth += 1;
@@ -2967,6 +2970,11 @@ impl<'a> Runner<'a> {
             }
             "CompleteQuest" => {
                 self.state.completed.insert(arg(0).form());
+                // Completing a quest (`0060ca30`) announces it
+                // (`0077a480`), which stops it being the active quest.
+                // (That the command goes through `0060ca30` is assumed;
+                // its handler isn't traced here.)
+                crate::quest_targets::quest_ended(self.state, arg(0).form());
             }
             // The objective's state (`005d7c20`, `005d7d30`, `005ec5d0`: 0
             // neither, 1 shown, 2 done unseen, 3 shown and done): showing

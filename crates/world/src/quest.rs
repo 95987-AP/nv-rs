@@ -25,6 +25,7 @@ const SCTX: FourCC = FourCC::new(b"SCTX");
 const NAM0: FourCC = FourCC::new(b"NAM0");
 const QOBJ: FourCC = FourCC::new(b"QOBJ");
 const NNAM: FourCC = FourCC::new(b"NNAM");
+const QSTA: FourCC = FourCC::new(b"QSTA");
 
 /// `DATA` flag: running from the start of a new game.
 pub const START_GAME_ENABLED: u8 = 0x01;
@@ -92,7 +93,27 @@ pub struct LogEntry {
 pub struct Objective {
     pub index: i32,
     pub text: String,
+    /// Where the compass and maps point while the objective is shown
+    /// (`QSTA` each, with the `CTDA` conditions after it).
+    pub targets: Vec<QuestTarget>,
 }
+
+/// One of an objective's targets (`TESQuestTarget` (Xbox PDB): `cFlags`
+/// +0x00, `objConditions` +0x04, `m_pTargetRef` +0x0c, `m_TargetPath`
+/// +0x10). `QSTA` is 8 bytes (`00610120` reads them: the reference into
+/// +0x0c, byte 4 into the flags; bytes 5..8 are left unread).
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuestTarget {
+    pub reference: FormId,
+    pub flags: u8,
+    /// Asked about the target reference (`005ec500`: `00680c30` with the
+    /// reference as the subject and no target).
+    pub conditions: Vec<Condition>,
+}
+
+/// `QSTA` flag: the compass marker ignores locks
+/// (`TESQuestTarget::GetIgnoreLocks` (Xbox PDB), `00610190`: flags & 1).
+pub const TARGET_IGNORES_LOCKS: u8 = 0x01;
 
 impl Quest {
     pub fn load(order: &LoadOrder, id: FormId) -> Option<Quest> {
@@ -168,11 +189,30 @@ impl Quest {
                     quest.objectives.push(Objective {
                         index: le_u32(&sub.data, 0) as i32,
                         text: String::new(),
+                        targets: Vec::new(),
                     });
                 }
                 k if k == NNAM && in_objectives => {
                     if let Some(o) = quest.objectives.last_mut() {
                         o.text = sub.zstring();
+                    }
+                }
+                k if k == QSTA && in_objectives && sub.data.len() >= 8 => {
+                    if let Some(o) = quest.objectives.last_mut() {
+                        o.targets.push(QuestTarget {
+                            reference: rr.plugin.to_global(FormId(le_u32(&sub.data, 0))),
+                            flags: sub.data[4],
+                            conditions: Vec::new(),
+                        });
+                    }
+                }
+                k if k == CTDA && in_objectives => {
+                    let target = quest
+                        .objectives
+                        .last_mut()
+                        .and_then(|o| o.targets.last_mut());
+                    if let (Some(t), Some(c)) = (target, read_condition(&rr, &sub.data)) {
+                        t.conditions.push(c);
                     }
                 }
                 _ => {}

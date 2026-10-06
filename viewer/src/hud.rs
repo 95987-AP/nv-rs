@@ -407,6 +407,40 @@ pub(crate) fn quads_mesh(quads: &[Quad], k: f32, size: UVec2) -> Mesh {
     .with_inserted_indices(Indices::U32(indices))
 }
 
+/// The active quest's targets for the compass (`world::quest_targets`):
+/// where each followed reference stands this frame.
+#[derive(Resource, Default)]
+pub struct QuestCompass {
+    tracker: world::quest_targets::Tracker,
+    pub positions: Vec<[f32; 3]>,
+}
+
+/// Every frame: the current targets and what each points at (the first
+/// door on the way, else the target), placed where it stands now (people
+/// on screen where they walk, everything else where the game state has
+/// it).
+pub fn follow_quest_targets(
+    game: Res<GameFiles>,
+    state: Res<DialogueState>,
+    talkers: Res<Talkers>,
+    mut compass: ResMut<QuestCompass>,
+) {
+    let order = &game.0.order;
+    let state = &state.0;
+    let shown = compass.tracker.shown(order, state);
+    compass.positions = shown
+        .iter()
+        .filter_map(|s| {
+            talkers
+                .0
+                .iter()
+                .find(|t| t.reference == s.follow)
+                .map(|t| t.position)
+                .or_else(|| state.place(order, s.follow).map(|p| p.2))
+        })
+        .collect();
+}
+
 /// What the HUD shows, read from the game's state.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct HudState<'w, 's> {
@@ -422,6 +456,7 @@ pub struct HudState<'w, 's> {
     menus: Res<'w, crate::menus::Menus>,
     talkers: Res<'w, Talkers>,
     markers: Res<'w, crate::map::MapMarkers>,
+    quest_compass: Res<'w, QuestCompass>,
     exterior: Option<Res<'w, crate::exterior::Exterior>>,
     cameras: Query<'w, 's, &'static Transform, With<FlyCamera>>,
     /// The game's menus open, drawn over the HUD (`game_menus`).
@@ -599,6 +634,12 @@ impl HudState<'_, '_> {
             interior: !outdoors,
             markers,
             actors,
+            quests: self
+                .quest_compass
+                .positions
+                .iter()
+                .map(|&position| ui::compass::CompassQuest { position })
+                .collect(),
             opacity,
             crosshair: !dead,
             subtitle: None,
@@ -857,6 +898,7 @@ fn update_hud(
                 interior: input.interior,
                 markers: input.markers.clone(),
                 actors: input.actors.clone(),
+                quests: input.quests.clone(),
                 opacity: input.opacity * 255.0,
             };
             menu.update(&mut b.ui, &wanted);

@@ -274,6 +274,8 @@ pub struct HudInput {
     pub interior: bool,
     pub markers: Vec<CompassMarker>,
     pub actors: Vec<CompassActor>,
+    /// The active quest's targets (`crate::compass::CompassQuest`).
+    pub quests: Vec<crate::compass::CompassQuest>,
     /// `fHudOpacity` (INI, 1 by default).
     pub opacity: f32,
     /// The crosshair is shown (on foot, nothing else on screen).
@@ -331,6 +333,10 @@ pub struct Hud {
     original_x: i32,
     heading_trait: i32,
     distance_trait: i32,
+    /// `_AlphaDown`, where a quest icon keeps its blink state.
+    alpha_down_trait: i32,
+    /// The last update's time, for the blink's frame seconds.
+    last_time: Option<f32>,
     /// The compass strip's scroll (`TexScroll`: x offset, y, scale x, y).
     pub compass_scroll: [f32; 4],
     condition_alpha: Option<f32>,
@@ -368,6 +374,7 @@ impl Hud {
         let image_width = names(ui, "_ImageWidth");
         let heading_trait = names(ui, "_Heading");
         let distance_trait = names(ui, "_Distance");
+        let alpha_down_trait = names(ui, "_AlphaDown");
         let find = |ui: &Ui, n: &str| {
             ui.find(menu, n)
                 .ok_or_else(|| format!("the HUD has no {n}"))
@@ -630,6 +637,8 @@ impl Hud {
             original_x,
             heading_trait,
             distance_trait,
+            alpha_down_trait,
+            last_time: None,
             compass_scroll: [0.0, 0.0, 1.0, 1.0],
             condition_alpha: None,
             condition_down: false,
@@ -1022,10 +1031,11 @@ impl Hud {
             }
             let x = place(rel);
             ui.set_number(icon, self.heading_trait, x);
+            // Squared, as the game passes it (`004a7290`, then `fabs`).
             ui.set_number(
                 icon,
                 self.distance_trait,
-                distance_sq(m.position, input.position).sqrt(),
+                distance_sq(m.position, input.position),
             );
             ui.set_number(icon, t::VISIBLE, 1.0);
             ui.set_number(icon, t::ALPHA, fade(x));
@@ -1053,9 +1063,29 @@ impl Hud {
             ui.set_number(icon, t::SYSTEMCOLOR, if a.hostile { 2.0 } else { 1.0 });
             ui.set_number(icon, t::ALPHA, fade(x));
         }
-        for &icon in &self.tiles.compass_quests {
-            ui.set_number(icon, t::VISIBLE, 0.0);
-        }
+        // The active quest's targets, blinking (the HUD's menu state is 1).
+        let seconds = self
+            .last_time
+            .map_or(0.0, |last| (input.time - last).max(0.0));
+        self.last_time = Some(input.time);
+        crate::compass::place_quests(
+            ui,
+            &self.tiles.compass_quests,
+            [
+                self.heading_trait,
+                self.distance_trait,
+                self.alpha_down_trait,
+            ],
+            &input.quests,
+            heading,
+            input.position,
+            half,
+            opacity,
+            Some(crate::compass::BlinkClock {
+                now_ms: f64::from(input.time) * 1000.0,
+                seconds,
+            }),
+        );
         if let Some(p) = self.tiles.compass_player {
             ui.set_number(p, t::VISIBLE, 0.0);
         }
@@ -1430,6 +1460,93 @@ mod tests {
         assert_eq!(ui.number(hud.tiles.info_hotrect, t::VISIBLE), 0.0);
         assert_eq!(ui.number(hud.tiles.info_target, t::VISIBLE), 0.0);
         assert_eq!(ui.number(hud.tiles.info_pc_shortcut, t::VISIBLE), 0.0);
+    }
+
+    /// Quest icons (`00779070`): one per target, clamped to the compass's
+    /// ends rather than hidden, `_Distance` squared, the rest hidden; and
+    /// their blinking (`00778c20`).
+    #[test]
+    fn quest_targets_on_the_compass() {
+        use crate::compass::CompassQuest;
+        let (mut ui, mut hud) = hud();
+        let mut input = HudInput {
+            opacity: 1.0,
+            time: 1.0,
+            quests: vec![
+                // Ahead, behind, and far off to the left.
+                CompassQuest {
+                    position: [0.0, 300.0, 0.0],
+                },
+                CompassQuest {
+                    position: [0.0, -1000.0, 0.0],
+                },
+                CompassQuest {
+                    position: [-5000.0, 100.0, 0.0],
+                },
+            ],
+            ..HudInput::default()
+        };
+        hud.update(&mut ui, &input);
+        let icons = hud.tiles.compass_quests.clone();
+        let (heading_trait, alpha_down) = (hud.heading_trait, hud.alpha_down_trait);
+        let heading = |ui: &mut Ui, i: usize| ui.number(icons[i], heading_trait);
+        // Half the window less 35: 137; straight ahead in the middle.
+        assert_eq!(heading(&mut ui, 0), 137.0);
+        // Behind: the bearing's limit, the right end (274).
+        assert_eq!(heading(&mut ui, 1), 274.0);
+        // Far left: the left end.
+        assert_eq!(heading(&mut ui, 2), 0.0);
+        assert_eq!(ui.number(icons[0], hud.distance_trait), 90000.0);
+        assert_eq!(
+            ui.string(icons[0], t::FILENAME).as_deref(),
+            Some("Interface\\HUD\\glow_hud_compass_objective_marker.dds")
+        );
+        for (i, &icon) in icons.iter().enumerate() {
+            assert_eq!(ui.number(icon, t::VISIBLE), f32::from(i < 3), "{i}");
+        }
+
+        // Blinking: rising (state 0) from the icon's full alpha; the next
+        // frame passes full and holds (3); the hold's end (0) has passed,
+        // so then it falls (1).
+        let near = icons[0];
+        let alpha = |ui: &mut Ui| ui.number(near, t::ALPHA);
+        let state = |ui: &mut Ui| ui.number(near, alpha_down);
+        assert_eq!((alpha(&mut ui), state(&mut ui)), (255.0, 0.0));
+        input.time = 1.0 + 1.0 / 32.0;
+        hud.update(&mut ui, &input);
+        assert_eq!((alpha(&mut ui), state(&mut ui)), (255.0, 3.0));
+        input.time = 1.05;
+        hud.update(&mut ui, &input);
+        assert_eq!((alpha(&mut ui), state(&mut ui)), (255.0, 1.0));
+        // 300 away (90000 squared, under 500²): falling at
+        // 1000 + 500 × (90000 - 250000) / (65536 - 250000) a second.
+        let speed = 1000.0 + 500.0 * (90000.0 - 250000.0) / (65536.0 - 250000.0);
+        input.time = 1.1;
+        hud.update(&mut ui, &input);
+        assert!((alpha(&mut ui) - (255.0 - speed * 0.05)).abs() < 0.01);
+        // Down to nothing: rising again, the hold ending after the pause
+        // 600 - 550 × (90000 - 250000) / (65536 - 250000) ms.
+        let pause = 600.0 - 550.0 * (90000.0 - 250000.0) / (65536.0 - 250000.0);
+        let mut frames = 0;
+        while state(&mut ui) == 1.0 {
+            input.time += 0.05;
+            hud.update(&mut ui, &input);
+            frames += 1;
+            assert!(frames < 100);
+        }
+        assert_eq!((alpha(&mut ui), state(&mut ui)), (0.0, 0.0));
+        let bottom = input.time;
+        let timer = ui.number(near, t::USER0 + 10);
+        assert!((timer - (bottom * 1000.0 + pause).floor()).abs() <= 1.0);
+        // It rises to full and holds there until the pause has passed.
+        while state(&mut ui) != 1.0 {
+            input.time += 0.01;
+            hud.update(&mut ui, &input);
+            if state(&mut ui) == 3.0 {
+                assert_eq!(alpha(&mut ui), 255.0);
+            }
+        }
+        assert!(input.time * 1000.0 > timer);
     }
 
     #[test]
