@@ -189,6 +189,11 @@ fn main() {
         .init_resource::<scripts::Notices>()
         .insert_resource(scripts::StartStage(args.stage.clone()))
         .insert_resource(scripts::StartCommands(args.run.clone()))
+        .insert_resource(scripts::LaterCommands {
+            lines: args.run_at.clone(),
+            ready_at: None,
+        })
+        .insert_resource(dialogue::AutoSay(args.say.iter().cloned().collect()))
         .insert_resource(viewmodel::StartWeapon(args.weapon.clone()))
         .insert_resource(lockpick::StartLock(args.lockpick.clone()))
         .insert_resource(emittance::StartRegion(args.weather_region.clone()))
