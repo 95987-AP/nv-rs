@@ -2237,7 +2237,7 @@ fn dialogue_frame(
                     return;
                 }
                 println!("{:.1} s: {me} starts talking to the player.", ctx.now);
-                talk.0 = Some((me, topic, true));
+                talk.0 = Some((me, topic, true, false));
             } else {
                 start_chat(ctx, walker, chats, target, topic, false);
             }
@@ -2368,7 +2368,7 @@ fn talk_frame(
             walker.clear_path();
             walker.talk_to = None;
             println!("{:.1} s: {me} starts talking to the player.", ctx.now);
-            talk.0 = Some((me, topic, true));
+            talk.0 = Some((me, topic, true, false));
         }
         return;
     }

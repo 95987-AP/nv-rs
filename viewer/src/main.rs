@@ -45,6 +45,7 @@ mod scripts;
 mod sight;
 mod sitting;
 mod sounds;
+mod swaps;
 mod terrain;
 mod trees;
 mod vats;
@@ -223,6 +224,7 @@ fn main() {
         .init_resource::<scripts::ScriptedTalk>()
         .init_resource::<scripts::Notices>()
         .init_resource::<combat::ObjectShots>()
+        .init_resource::<swaps::TextureSwaps>()
         .insert_resource(scripts::StartStage(args.stage.clone()))
         .insert_resource(scripts::StartCommands(args.run.clone()))
         .insert_resource(scripts::LaterCommands {
@@ -377,6 +379,7 @@ fn main() {
                     combat::player_attack,
                     combat::object_shots,
                     actors::report_facing_up,
+                    swaps::swap_textures,
                     combat::show_dropped_weapons,
                     scope::update_scope,
                     viewmodel::update_view_model,
@@ -643,6 +646,31 @@ fn open_place(
     name: &str,
     at: Option<args::Stance>,
 ) -> Result<(Option<ViewerScene>, Option<ExteriorStart>), String> {
+    // A placed reference by editor ID (a marker, say): start standing
+    // where it stands, facing its way, in its cell or worldspace.
+    let placed = game
+        .order
+        .form_by_editor_id(name)
+        .filter(|&r| {
+            game.order.get(r).is_some_and(|rr| {
+                matches!(rr.entry.header.kind.as_bytes(), b"REFR" | b"ACHR" | b"ACRE")
+            })
+        })
+        .and_then(|r| world::scripting::whereabouts(&game.order, r));
+    if let (Some(w), None) = (placed, at) {
+        let stance = args::Stance {
+            feet: w.position,
+            heading: w.heading.to_degrees(),
+            pitch: 0.0,
+        };
+        let space = game
+            .order
+            .get(w.world.unwrap_or(w.cell))
+            .and_then(|r| r.editor_id().ok().flatten())
+            .ok_or_else(|| format!("{name}'s cell has no editor ID to open"))?;
+        println!("Starting at {name} in {space}.");
+        return open_place(game, &space, Some(stance));
+    }
     let heading = at.map_or(0.0, |a| a.heading.to_radians());
     // A worldspace by name: start where --at says, else in the middle of
     // square 0,0.
@@ -1575,6 +1603,7 @@ impl Spawner<'_, '_> {
                 transform,
                 SceneEntity,
                 scripts::PlacedRef(draw.reference),
+                swaps::PieceName(scene.meshes[draw.mesh].shape_name.clone()),
             ));
             // A glow that follows a region's weather (`emittance`).
             if let Some(link) = scene.meshes[draw.mesh].material.emittance {

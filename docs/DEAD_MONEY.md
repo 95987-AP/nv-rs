@@ -568,6 +568,33 @@ can be crafted or played yet. That is a separate piece of work, larger than a fu
 What the three numbers mean in each game isn't traced; the reference's +0x81 check for
 talking activators is taken to be met. Nothing compared in the original game.
 
+## D3: the intro slideshow and the Villa start
+
+- **`SayToDone` blocks.** A dialogue line said with `SayTo` runs the speaker's
+  `SayToDone` blocks for that topic when the line ends (block type 7, table
+  entry `0118e408`; where the game dispatches it isn't traced). A block with
+  no topic runs for every topic. The narrator's chain (IntroFNV, IntroDLC01,
+  the slides, IntroEnd) runs this way: each result script starts the next
+  line and swaps the slide.
+- **`SwapTextureOnRef`** (`005cf860`) finds the node by its exact name in the
+  reference's 3D and loads `Textures\<name>.dds` into its first slot. The
+  viewer gives the piece with that NIF shape name its own material
+  (`viewer/src/swaps.rs`). The slide's shape is `##NVDLC01_IntroMovie00:0`.
+- **Starting in the Villa.** `characters/dead-money-villa.txt` does what the
+  intro's end does (`SetInChargen 0`, the equipment container emptied, MQ00
+  finished) and the viewer starts at `DLC01StartMarker`. `CELL` may now be the
+  editor ID of a placed reference; the viewer opens the place it stands in.
+- **Persistent triggers outdoors.** Outdoor persistent references live in the
+  worldspace's persistent cell, not in the square's cell, so the fountain
+  trigger (`NVDCL01FountainTriggerRef`) never ran. Scripted lists outdoors now
+  include them (`interactive_references_outdoors`); the wake-up and
+  `NVDLC01FountainStartSequence` run.
+- **Ogg crash.** Bevy's ogg playback crashed the viewer in the Villa. Ogg is
+  now decoded in the viewer (lewton) and played as PCM like the other sounds.
+- **Not done:** references that start disabled in the current cell and that
+  scripts enable (the gas jets), the slideshow's view tilt, and checking that
+  the gear really leaves the player.
+
 ## Open questions
 
 * Which DLCs are installed in the maintainer's Data folder (the data pass's `info`)?

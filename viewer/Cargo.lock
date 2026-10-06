@@ -3053,6 +3053,7 @@ dependencies = [
  "bevy",
  "cellview",
  "esm",
+ "lewton",
  "nif",
  "physics",
  "preview",

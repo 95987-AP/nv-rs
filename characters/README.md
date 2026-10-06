@@ -14,3 +14,4 @@ Files hold record names only: no game text, models or other assets.
 | File | Where | What |
 | --- | --- | --- |
 | `dead-money-entry.txt` | `SLBoSBunkerINT` | Dead Money step D2: level 20, past character creation, the Sierra Madre broadcast followed (`NVDLC01MQ00` stage 10) |
+| `dead-money-villa.txt` | `DLC01StartMarker` | Dead Money after the intro: the D2 character gassed, gear taken, arriving at the Villa fountain (its wake-up runs) |

@@ -2556,6 +2556,22 @@ impl<'a> Runner<'a> {
         self.container = saved;
     }
 
+    /// `speaker` finished saying a line of `topic` it was told to say with
+    /// `SayTo`: its script's `SayToDone` blocks (block type 7, the block
+    /// table's entry at `0118e408`) run, those naming no topic or this one.
+    /// The game raises it when the line is done; where exactly isn't
+    /// traced (the scripts that use it chain the next line from here, as
+    /// Dead Money's narrator does).
+    pub fn say_to_done(&mut self, speaker: FormId, topic: FormId) {
+        let order = self.order;
+        let names = |b: &script::Block| match b.args.first() {
+            None => true,
+            Some(Arg::Word(w)) => order.form_by_editor_id(w) == Some(topic),
+            Some(_) => false,
+        };
+        self.run_blocks(speaker, Some(speaker), "saytodone", names);
+    }
+
     /// Several events at once, in one run of the reference's script (as
     /// `EnterTrigger` flags `OnTriggerEnter` and `OnTrigger` and runs it,
     /// `005d8cf0`): the blocks of any of the kinds whose argument is empty

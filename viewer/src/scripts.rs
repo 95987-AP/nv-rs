@@ -32,7 +32,7 @@ pub struct PlacedRef(pub u32);
 /// greeting), and whether it's a conversation (`StartConversation`) or
 /// just a line said (`SayTo`).
 #[derive(Resource, Default)]
-pub struct ScriptedTalk(pub Option<(FormId, Option<FormId>, bool)>);
+pub struct ScriptedTalk(pub Option<(FormId, Option<FormId>, bool, bool)>);
 
 /// Notices on screen, each with the time it appeared.
 #[derive(Resource, Default)]
@@ -931,7 +931,10 @@ type Starting<'w> = (
     Res<'w, crate::walk::Player>,
     ResMut<'w, crate::PendingScene>,
     ResMut<'w, crate::exterior::PendingExterior>,
-    ResMut<'w, crate::combat::ObjectShots>,
+    (
+        ResMut<'w, crate::combat::ObjectShots>,
+        ResMut<'w, crate::swaps::TextureSwaps>,
+    ),
 );
 
 /// Runs the scripts for this frame and carries out what they asked for.
@@ -946,7 +949,13 @@ pub fn run_scripts(
     conversation: Res<Conversation>,
     mut talk: ResMut<ScriptedTalk>,
     mut notices: ResMut<Notices>,
-    (mut start_stage, player, mut pending, mut pending_exterior, mut object_shots): Starting,
+    (
+        mut start_stage,
+        player,
+        mut pending,
+        mut pending_exterior,
+        (mut object_shots, mut texture_swaps),
+    ): Starting,
     mut start_commands: ResMut<StartCommands>,
     here_now: HereNow,
     cameras: Query<(&Transform, &FlyCamera, Option<&Projection>)>,
@@ -1317,7 +1326,10 @@ pub fn run_scripts(
                 } else if (to == PLAYER_REF || to.0 == 0) && talk.0.is_none() {
                     // `Say` speaks to no one in particular (`to` 0): the
                     // player hears it as a line said to them.
-                    talk.0 = Some((speaker, topic, conversation));
+                    // `SayTo` (a line to the player, not `Say`'s to no
+                    // one): its `SayToDone` blocks run when it's said.
+                    let say_to = !conversation && to == PLAYER_REF;
+                    talk.0 = Some((speaker, topic, conversation, say_to));
                 }
                 None
             }
@@ -1372,10 +1384,7 @@ pub fn run_scripts(
                 node,
                 texture,
             } => {
-                println!(
-                    "A script gives {}'s {node} the texture {texture} (not shown here).",
-                    name(what)
-                );
+                texture_swaps.0.push((what, node, texture));
                 None
             }
             Event::Enable(r, on) => {
@@ -1649,7 +1658,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(TestLoadResult(result));
         world.insert_resource(Conversation::test_active());
-        world.insert_resource(ScriptedTalk(Some((FormId(10), None, true))));
+        world.insert_resource(ScriptedTalk(Some((FormId(10), None, true, false))));
         let mut lines = crate::chatter::Lines::default();
         lines.say(
             FormId(11),
