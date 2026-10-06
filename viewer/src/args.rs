@@ -83,6 +83,9 @@ OPTIONS:
                             sleep:N also chooses N hours and presses Wait)
     --menu-pointer X,Y      for testing: put the menus' pointer at this
                             pixel (screenshots have no mouse)
+    --menu-click S[,S...]   for testing: click the menus' left button at
+                            these seconds after starting (with
+                            --menu-pointer)
 
 CONTROLS:
     right mouse button + move      look around (flying: either button)
@@ -171,6 +174,8 @@ pub struct Args {
     pub open_menu: Option<String>,
     /// `--menu-pointer`: the menus' pointer at this pixel.
     pub menu_pointer: Option<(f32, f32)>,
+    /// `--menu-click`: when to click (seconds after starting).
+    pub menu_clicks: Vec<f64>,
 }
 
 /// Where to stand, in the game's terms: feet position in game units, and
@@ -231,6 +236,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut lockpick = None;
     let mut open_menu = None;
     let mut menu_pointer = None;
+    let mut menu_clicks = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let mut value = |flag: &str| {
@@ -297,6 +303,14 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
                     _ => return Err(format!("--menu-pointer expects X,Y, got '{v}'")),
                 }
             }
+            "--menu-click" => {
+                let v = value("--menu-click")?;
+                for n in v.split(',') {
+                    menu_clicks.push(n.trim().parse::<f64>().map_err(|_| {
+                        format!("--menu-click expects seconds separated by commas, got '{v}'")
+                    })?);
+                }
+            }
             "--cloud-time" => {
                 let v = value("--cloud-time")?;
                 cloud_time = Some(
@@ -354,6 +368,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             lockpick,
             open_menu,
             menu_pointer,
+            menu_clicks,
         })),
         [] | [_] => Err("expected the Data folder and a cell".into()),
         [_, _, extra, ..] => Err(format!("unexpected argument '{extra}'")),

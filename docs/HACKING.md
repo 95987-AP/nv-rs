@@ -145,13 +145,94 @@ password, duds, the refill and the lone password. `locks_keys_and_terminals`
 (`crates/world/tests/scripting.rs`): access, hacking's experience, a hacked
 terminal's `GetLocked`, scripts' `Lock`/`Unlock`, locked out and level 5.
 
+Menu: six `ui` tests on a hand-made menu file laid out like the game's
+(the intro and its retry time, skipping by click, the dump, the pointer
+and a word's two-part highlight, wrong and right choices with the log,
+boxes and the 3 s close, the warning's flashing, the lockout's scroll,
+locked out on opening, leaving). Live on the official data
+(`NV_HACKING_SEED=7 nv-viewer <Data> GSSchoolHouse --open-menu
+hacking:GSSchoolTerminal01Ref`, `--menu-pointer`, `--menu-click`; the
+seed also makes the clock count readings so the screen repeats): the
+intro typing with the input lines' ">", 20 seven-letter words (the
+terminal's base `00064b87` is odd), the header and guess boxes, the
+hover highlight across lines with the entry typed, a wrong choice
+(">SEALING", ">Entry denied", ">4/7 correct.", a box gone), the password
+(">TESTING", ">Exact match!", …), +30 XP, and the terminal's own screen
+3 s later.
+
 Not compared with the running original game yet.
+
+## The menu (`ui::menus::hacking`, `viewer/src/game_menus/hacking.rs`)
+
+Tile ids from `hacking_menu.xml`: 0 the intro, 1 the header, 2 the screen
+(its `user0`–`user5` the highlight), 3 the log, 4 the cursor
+(`_blink_interval` 400), 5 the entry line, 6 and 7 the lockout's lines;
+the templates `hacking_intro_template`, `hacking_password_file_template`,
+`hacking_password_log_template`, `hacking_guess_template`. Read from the
+code (the menu's fields from the Xbox PDB's `HackingMenu`: `IOLines`,
+`xEntryText`, `eStage`, `bSuppressEntry`, `dwAccessTime`, `dwRetryTime`):
+
+- Typed lines (`0076b300`; a step `006ffea0`; new text `006ffda0`; at once
+  `00700110`): every `1000 / rate` ms (rounded half up, at least 1; 1000
+  below a rate of 2) the characters the time since the last step covers;
+  the line shows as it starts; done one step after its last character.
+  Rates (exe defaults, none in the data): `iHackingOutputRate` 67,
+  `iHackingInputRate` 20, `iHackingDumpRate` 500 characters a second;
+  flashing `iHackingFlashOnDuration` 750 / `OffDuration` 500 ms.
+- Opening (`00765b80`): `iYStart` 0 and `iYInterval` 30 (the constructor,
+  `007654f0`); the intro's 14 lines at rows 0, 2, 4, 6, 8, 9, 11–17, 19:
+  `sHackingSecurityReset`, `sHackingIntro01`–`13`; the 3rd, 5th, 6th and
+  last are the player's (a ">" before them, the input rate). The menu's
+  `user0` is ">". `UIHackingFanHumLP` plays.
+- The intro (`00769830`): the first unfinished line types; an input line
+  shows its ">" and waits 1 s, plays `UIHackingCharSingle` for each
+  character and `UIHackingCharEnter` when done, then waits 0.5 s; machine
+  lines play `UIHackingCharScroll`. "SECURITY RESET..." is hidden each
+  frame unless the menu last closed less than `iHackingRetryMilliseconds`
+  (10 s, the destructor `007658e0`) ago, so outside that it shows only
+  while it types. A click makes the screen at once, outside the retry
+  time only.
+- The screen (`00768aa0`): the header's lines under id 1 at y 0, 30, 90;
+  id 1's `user1` = the attempts line's x + 17 × its length, `user2` its y;
+  a guess box per attempt, shown (id 1's `user0`) once the dump reaches
+  them (an empty line, `007694f0`); the 34 lines under id 2 (`listindex`
+  the row, `user0` the column) at the dump rate, one after another; id 0
+  hidden. A click finishes the dump.
+- The pointer (`00769b50`, `00769700`): the character under it is
+  (x − the line's x) / 17; a new character or line picks again (the
+  selection's text typed on the entry line, a `UIHackingCharSingle` per
+  character, earlier ones stopped); the highlight at the line's x + 17 ×
+  the character's index, a word's second part on the next line (the next
+  column's first line from the bottom of the first; +119, the 7-character
+  address, found in the disassembly where the decompiler dropped it).
+  After a choice nothing is picked until the pointer leaves the letters
+  (`bSuppressEntry`), and the pointer off the screen clears it (`00767ff0`).
+- A choice (`00766b80`): `UIHackingCharEnter`; the log lines (`00767ef0`:
+  older lines move up by the count, the newest at the bottom); a wrong
+  guess takes a guess box and plays `UIHackingPassBad` 250 ms later, the
+  password `UIHackingPassGood`; a refill adds boxes back; the attempts
+  line rewritten.
+- One attempt left: id 1's second line becomes `sHackingWarning`, typed at
+  once, and flashes; a refill puts `sHackingHeader2` back.
+- Locked out (`0076a3f0`): the menu's `user1` rises by 30 every 50 ms
+  (`UIHackingCharScroll`) until the depth rect is above the top; then its
+  `user2` shows ids 6 and 7.
+- The password: 3 s later (`dwAccessTime`, `0076a510`) the menu closes and
+  the terminal's screen opens (`TransitionToComputersMenu`, `0076a540`).
+- Leaving: special code 10 (`00767b80`; how the PC's keys reach it isn't
+  traced: the viewer sends it for Tab and Escape).
+
+In the viewer, using a terminal decides as the game does (`00501310`):
+straight to the terminal's screen, the hacking menu, or "A Science skill of
+N is required to hack this terminal." with `UIPopUpMessageGeneral`.
+Hacking calls `world::terminal::hacked` (experience, the statistic) or
+`lock_out`. The address column's base is a random multiple of 4.
 
 ## Not done
 
-- The hacking menu itself (`hacking_menu.xml`: the typed intro, the
-  screen, the cursor, the log, the lockout scroll); the viewer counts a
-  hackable terminal as hacked.
+- The terminal's own screen is still the viewer's text panel (the game's
+  `ComputersMenu` isn't here).
+- The controller's cursor (special codes 1–4 and 9, `00767610`).
 - Crime when hacking an owned terminal with witnesses (`008c0ec0`).
 - Encounter-zone levels for leveled terminals.
 - The tutorial message the menu asks for on opening (`00718630(0x13, …)`).

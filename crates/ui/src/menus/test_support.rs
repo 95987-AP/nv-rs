@@ -449,3 +449,52 @@ pub fn sleep_wait_menu() -> String {
      </menu>"
         .to_string()
 }
+
+/// A hacking menu with the tiles, ids, traits and templates the hacking
+/// code uses (`hacking_menu.xml`'s structure: the depth rect holding the
+/// cursor and the four areas, the lockout's two lines beside it).
+pub fn hacking_menu() -> String {
+    "<menu name=\"HackingMenu\"><class>&HackingMenu;</class><locus>&true;</locus>
+       <user0></user0><user1>0</user1><user2>&false;</user2><user3>0</user3>
+       <rect name=\"depth\"><locus>&true;</locus><width>920</width><height>630</height><x>32</x>
+         <y><copy>48</copy><sub src=\"parent()\" trait=\"user1\"/></y>
+         <hotrect name=\"cursor\"><id>4</id><width>17</width><height>17</height><_blink_interval>400</_blink_interval></hotrect>
+         <rect name=\"intro\"><id>0</id><visible>&true;</visible><locus>&true;</locus></rect>
+         <rect name=\"header\"><id>1</id><locus>&true;</locus><height>150</height>
+           <visible><not src=\"sibling(intro)\" trait=\"visible\"/></visible>
+           <user0>&false;</user0><user1></user1><user2></user2></rect>
+         <rect name=\"screen\"><id>2</id><locus>&true;</locus><y>150</y><_start_col2>342</_start_col2>
+           <visible><not src=\"sibling(intro)\" trait=\"visible\"/></visible>
+           <width>665</width><height>476</height>
+           <user0></user0><user1>-1</user1><user2></user2><user3></user3><user4>-1</user4><user5></user5></rect>
+         <rect name=\"log\"><id>3</id><locus>&true;</locus><x>665</x><y>150</y><width>255</width><height>476</height>
+           <visible><not src=\"sibling(intro)\" trait=\"visible\"/></visible>
+           <text name=\"prompt\"><font>5</font><x>17</x><y>440</y><string><copy src=\"HackingMenu\" trait=\"user0\"/></string></text>
+           <text name=\"entry\"><id>5</id><font>5</font><x>38</x><y>440</y></text></rect>
+       </rect>
+       <rect name=\"locked\"><locus>&true;</locus><visible><copy src=\"parent()\" trait=\"user2\"/></visible>
+         <text name=\"locked1\"><id>6</id><font>5</font></text>
+         <text name=\"locked2\"><id>7</id><font>5</font></text></rect>
+       <template name=\"hacking_password_file_template\">
+         <hotrect name=\"row\"><visible>&false;</visible><target>&true;</target><locus>&true;</locus>
+           <width>323</width><height>17</height>
+           <x><copy src=\"HackingMenu\" trait=\"user3\"/><add><copy src=\"parent()\" trait=\"_start_col2\"/><mul src=\"me()\" trait=\"user0\"/></add></x>
+           <y><copy src=\"me()\" trait=\"height\"/><mul src=\"me()\" trait=\"listindex\"/></y>
+           <user0></user0>
+           <text name=\"row_text\"><font>5</font><string><copy src=\"parent()\" trait=\"string\"/></string><y>6</y></text></hotrect>
+       </template>
+       <template name=\"hacking_password_log_template\">
+         <text name=\"log_line\"><font>5</font><x>17</x>
+           <y><copy>440</copy><sub><copy>20</copy><mul><copy>3</copy><add src=\"me()\" trait=\"listindex\"/></mul></sub></y></text>
+       </template>
+       <template name=\"hacking_intro_template\">
+         <text name=\"intro_text\"><visible>&false;</visible><font>5</font></text>
+       </template>
+       <template name=\"hacking_guess_template\">
+         <hotrect name=\"guess\"><visible><copy src=\"parent()\" trait=\"user0\"/></visible>
+           <x><copy src=\"parent()\" trait=\"user1\"/><add><copy src=\"me()\" trait=\"listindex\"/><mul>2</mul><add>1</add><mul src=\"me()\" trait=\"width\"/></add></x>
+           <y><copy src=\"parent()\" trait=\"user2\"/></y><width>17</width><height>17</height></hotrect>
+       </template>
+     </menu>"
+        .to_string()
+}

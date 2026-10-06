@@ -8,6 +8,7 @@ pub mod barter;
 pub mod chargen;
 pub mod container;
 pub mod dialog;
+pub mod hacking;
 pub mod levelup;
 pub mod message;
 pub mod quantity;

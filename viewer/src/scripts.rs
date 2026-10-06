@@ -1034,7 +1034,16 @@ pub fn run_scripts(
                     waiting.push(crate::menus::Menu::Container(c, name));
                 }
                 Some(Used::Terminal(t, r)) => {
-                    waiting.push(crate::menus::Menu::Terminal(t, r));
+                    use crate::game_menus::hacking::{use_terminal, Using};
+                    match use_terminal(order, state, t, r) {
+                        Using::Open(m) => waiting.push(m),
+                        Using::Refused(why) => {
+                            if let Some(s) = order.form_by_editor_id(crate::lockpick::POPUP_SOUND) {
+                                sound_requests.0.push(s);
+                            }
+                            announce(why, &mut notices);
+                        }
+                    }
                 }
                 Some(Used::Lockpick(r)) => lockpicking.request = Some(r),
                 Some(Used::Sleep) => {
@@ -1339,8 +1348,21 @@ pub fn run_scripts(
                 let base = world::scripting::base_of(order, what);
                 match base.and_then(|b| order.get(b)).map(|r| r.entry.header.kind) {
                     Some(k) if k.as_bytes() == b"TERM" => {
-                        waiting.push(crate::menus::Menu::Terminal(base.unwrap_or(what), what));
-                        None
+                        use crate::game_menus::hacking::{use_terminal, Using};
+                        match use_terminal(order, state, base.unwrap_or(what), what) {
+                            Using::Open(m) => {
+                                waiting.push(m);
+                                None
+                            }
+                            Using::Refused(why) => {
+                                if let Some(s) =
+                                    order.form_by_editor_id(crate::lockpick::POPUP_SOUND)
+                                {
+                                    sound_requests.0.push(s);
+                                }
+                                Some(why)
+                            }
+                        }
                     }
                     Some(k) if k.as_bytes() == b"CONT" => {
                         match locked(order, state, what, &name(what)) {

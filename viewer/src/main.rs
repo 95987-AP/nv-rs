@@ -239,6 +239,10 @@ fn main() {
         .insert_resource(ai::FrozenAi(args.freeze_ai))
         .insert_resource(game_menus::StartMenu(args.open_menu.clone()))
         .insert_resource(game_menus::FixedPointer(args.menu_pointer))
+        .insert_resource(game_menus::FixedClicks {
+            at: args.menu_clicks.clone(),
+            release: false,
+        })
         .add_plugins((GradePlugin, GameLightingPlugin, TerrainPlugin, LodPlugin))
         // After the default plugins: they load shaders.
         .add_plugins((hud::HudPlugin, pipboy::PipboyPlugin))

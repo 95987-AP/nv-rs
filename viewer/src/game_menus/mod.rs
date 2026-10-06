@@ -18,6 +18,7 @@ pub mod barter;
 pub mod chargen;
 pub mod container;
 pub mod dialog;
+pub mod hacking;
 pub mod levelup;
 mod message;
 pub mod sleepwait;
@@ -75,6 +76,8 @@ pub struct Screen {
     fader: Option<TileId>,
     /// The Rest control (T) held down (the sleep/wait menu cancels on it).
     rest_down: bool,
+    /// The pointer this frame, in menu units.
+    pub pointer: Option<(f32, f32)>,
     sizes: HashMap<String, Option<(u32, u32)>>,
     atlases: HashMap<String, Option<ui::Atlas>>,
 }
@@ -92,6 +95,7 @@ pub enum OpenMenu {
     TextEdit(Box<ui::menus::textedit::TextEditMenu>),
     SleepWait(Box<ui::menus::sleepwait::SleepWaitMenu>),
     Vigor(Box<vigor::VigorScreen>),
+    Hacking(Box<hacking::HackingScreen>),
 }
 
 impl OpenMenu {
@@ -108,6 +112,7 @@ impl OpenMenu {
             OpenMenu::TextEdit(m) => &mut **m,
             OpenMenu::SleepWait(m) => &mut **m,
             OpenMenu::Vigor(m) => &mut m.menu,
+            OpenMenu::Hacking(m) => &mut m.menu,
         }
     }
 
@@ -124,6 +129,7 @@ impl OpenMenu {
             OpenMenu::TextEdit(m) => m.menu,
             OpenMenu::SleepWait(m) => m.menu,
             OpenMenu::Vigor(m) => m.menu.menu,
+            OpenMenu::Hacking(m) => m.menu.menu,
         }
     }
 
@@ -140,6 +146,7 @@ impl OpenMenu {
             OpenMenu::TextEdit(m) => m.closed,
             OpenMenu::SleepWait(m) => m.closed,
             OpenMenu::Vigor(m) => m.menu.closed,
+            OpenMenu::Hacking(m) => m.menu.closed,
         }
     }
 }
@@ -152,13 +159,16 @@ impl Plugin for GameMenusPlugin {
             .init_resource::<MenuDraw>()
             .init_resource::<StartMenu>()
             .init_resource::<FixedPointer>()
+            .init_resource::<FixedClicks>()
+            .init_resource::<hacking::HackingSounds>()
             .add_systems(
                 Update,
                 (start_menu, open_menus, run_open_menus, draw_menus)
                     .chain()
                     .before(crate::menus::run_menus),
             )
-            .add_systems(Update, vigor::draw.after(run_open_menus));
+            .add_systems(Update, vigor::draw.after(run_open_menus))
+            .add_systems(Update, hacking::play_sounds.after(run_open_menus));
     }
 }
 
@@ -166,6 +176,14 @@ impl Plugin for GameMenusPlugin {
 /// 1080 picture (for screenshots, which have no mouse).
 #[derive(Resource, Default)]
 pub struct FixedPointer(pub Option<(f32, f32)>);
+
+/// `--menu-click S,...`: left clicks at these seconds (pressed one frame,
+/// let go the next), for testing with `FixedPointer`.
+#[derive(Resource, Default)]
+pub struct FixedClicks {
+    pub at: Vec<f64>,
+    pub release: bool,
+}
 
 /// `--open-menu NAME[:ID]`: a menu to open once the place has loaded, for
 /// testing.
@@ -243,6 +261,10 @@ fn start_menu(
     let request = match (name, form) {
         ("container", Some(r)) => crate::menus::Menu::Container(r, reference_name(order, r)),
         ("barter", Some(r)) => crate::menus::Menu::Barter(r),
+        // A placed terminal's hacking menu, as using it would open it.
+        ("hacking", Some(r)) => {
+            crate::menus::Menu::Hacking(world::scripting::base_of(order, r).unwrap_or(r), r)
+        }
         _ => {
             println!("--open-menu: don't know how to open '{asked}'.");
             return;
@@ -316,6 +338,7 @@ impl Screen {
             fade: None,
             fader,
             rest_down: false,
+            pointer: None,
             sizes: HashMap::new(),
             atlases: HashMap::new(),
         }
@@ -430,6 +453,7 @@ pub fn takes(m: &crate::menus::Menu) -> bool {
         || textedit::takes(m)
         || sleepwait::takes(m)
         || vigor::takes(m)
+        || hacking::takes(m)
 }
 
 /// The world's requests become menus.
@@ -443,6 +467,7 @@ fn open_menus(
     mut sounds: ResMut<crate::sounds::SoundRequests>,
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time<bevy::time::Real>>,
+    hacking_sounds: Res<hacking::HackingSounds>,
 ) {
     let Some(size) = window_size(&windows) else {
         return;
@@ -458,6 +483,8 @@ fn open_menus(
     while let Some(request) = queue.take_next(takes) {
         if message::takes(&request) {
             message::open(screen, &game.0, request);
+        } else if hacking::takes(&request) {
+            hacking::open(screen, &game.0, &state.0, request, &hacking_sounds);
         } else if vigor::takes(&request) {
             sounds
                 .0
@@ -510,6 +537,7 @@ pub struct MenuInput<'w, 's> {
     typed: EventReader<'w, 's, KeyboardInput>,
     time: Res<'w, Time<bevy::time::Real>>,
     fixed: Res<'w, FixedPointer>,
+    clicks: ResMut<'w, FixedClicks>,
 }
 
 /// A key as the game's interface turns it into a menu code (`007154b0`):
@@ -554,6 +582,7 @@ fn run_open_menus(
     conversation: Res<crate::dialogue::Conversation>,
     mut sounds: ResMut<crate::sounds::SoundRequests>,
     scripts: Res<crate::scripts::Scripts>,
+    mut hacking_sounds: ResMut<hacking::HackingSounds>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         input.typed.clear();
@@ -577,6 +606,7 @@ fn run_open_menus(
             interface,
             open,
             rest_down,
+            pointer: here,
             ..
         } = &mut *screen;
         let Some(top) = open.last_mut() else {
@@ -594,6 +624,14 @@ fn run_open_menus(
                 .ok()
                 .and_then(|w| w.physical_cursor_position().map(|p| (p.x * k, p.y * k))),
         };
+        *here = pointer;
+        // `--menu-click`: pressed this frame, let go the next.
+        let release = std::mem::take(&mut input.clicks.release);
+        let press = {
+            let due = input.clicks.at.iter().position(|&t| t <= now);
+            due.map(|i| input.clicks.at.remove(i)).is_some()
+        };
+        input.clicks.release = press;
         if let Some((x, y)) = pointer {
             if let OpenMenu::Vigor(v) = top {
                 v.pointer = Some(Vec2::new(x / k, y / k));
@@ -604,9 +642,9 @@ fn run_open_menus(
                 top.code(),
                 x,
                 y,
-                input.mouse.pressed(MouseButton::Left),
-                input.mouse.just_pressed(MouseButton::Left),
-                input.mouse.just_released(MouseButton::Left),
+                input.mouse.pressed(MouseButton::Left) || press,
+                input.mouse.just_pressed(MouseButton::Left) || press,
+                input.mouse.just_released(MouseButton::Left) || release,
                 now,
             );
         }
@@ -653,6 +691,17 @@ fn run_open_menus(
                     continue;
                 }
             }
+            // Tab or Escape leave the hacking menu (its code 10).
+            if matches!(top, OpenMenu::Hacking(_))
+                && matches!(e.logical_key, Key::Escape | Key::Tab)
+            {
+                use ui::menu::MenuCode;
+                if let OpenMenu::Hacking(h) = top {
+                    h.menu
+                        .special_key(ui, ui::menus::hacking::LEAVE, now * 1000.0);
+                }
+                continue;
+            }
             // The Escape control: the message box hears it as a 1 (`0070c4a0`).
             if e.logical_key == Key::Escape {
                 if top.code().class() == ui::menus::message::CLASS {
@@ -696,6 +745,8 @@ fn run_open_menus(
             }
         }
     }
+    // The hacking menu's frame (`00767c90`), after the pointer.
+    hacking::update(screen, now * 1000.0);
     // The sleep/wait menu's frame: its clicks carried out, the hours pass
     // (`007c0580`).
     let rest_held = screen.rest_down;
@@ -726,6 +777,15 @@ fn run_open_menus(
         .0
         .extend(chargen::after(screen, &game.0, &mut state.0));
     textedit::after(screen, &mut state.0);
+    for m in hacking::after(
+        screen,
+        order,
+        &mut state.0,
+        &mut hacking_sounds,
+        now * 1000.0,
+    ) {
+        queue.push(m);
+    }
     let Screen {
         ui,
         interface,
