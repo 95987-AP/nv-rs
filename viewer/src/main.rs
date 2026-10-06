@@ -187,10 +187,13 @@ fn main() {
         .insert_resource(player_camera::PlayerView::new(&game.order, &game.settings))
         .insert_resource(controls::Controls::read(&game.settings))
         .init_resource::<player_body::PlayerBody>()
+        .insert_resource(look::LookSettings(world::look_ik::Settings::read(
+            |section, key| game.settings.float(section, key),
+        )))
         .insert_resource(GameFiles(game))
         .init_resource::<scripts::Scripts>()
         .init_resource::<player_idle::PlayerIdle>()
-        .init_resource::<look::LookSettings>()
+        .init_resource::<look::LookAnchors>()
         .init_resource::<scripts::Here>()
         .init_resource::<scripts::ScriptedTalk>()
         .init_resource::<scripts::Notices>()
@@ -378,7 +381,13 @@ fn main() {
                     report::report_key,
                     sounds::play_sounds,
                 ),
-                (look::set_up, actors::script_idles, actors::animate_actors).chain(),
+                (
+                    look::set_up,
+                    look::follow_player,
+                    actors::script_idles,
+                    actors::animate_actors,
+                )
+                    .chain(),
                 report_fps,
             )
                 .chain(),

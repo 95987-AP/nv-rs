@@ -110,6 +110,143 @@ impl Default for Settings {
     }
 }
 
+impl Settings {
+    /// The defaults with any INI value (`float(section, key)`; booleans
+    /// as numbers). Ported from the contributor branch
+    /// `playcon/claude/lookik-head-tracking` (da055f5).
+    pub fn read(float: impl Fn(&str, &str) -> Option<f32>) -> Settings {
+        let d = Settings::default();
+        let f = |key: &str, v: f32| float("LookIK", key).unwrap_or(v);
+        let b = |key: &str, v: bool| float("RagdollAnim", key).map_or(v, |x| x != 0.0);
+        Settings {
+            angle_max: f("fAngleMax", d.angle_max),
+            angle_max_ease: f("fAngleMaxEase", d.angle_max_ease),
+            ease_angle_shut_off: f("fEaseAngleShutOff", d.ease_angle_shut_off),
+            max_tracking_dist: f("fMaxTrackingDist", d.max_tracking_dist),
+            min_tracking_dist: f("fMinTrackingDist", d.min_tracking_dist),
+            look_ik: b("bLookIK", d.look_ik),
+            ragdoll_anim: b("bRagdollAnim", d.ragdoll_anim),
+        }
+    }
+}
+
+/// The FaceGen eye-tracking game settings the look controller takes when
+/// a head is attached (00607420), degrees. Registered by 00f80fc0,
+/// 00f80ff0, 00f81020 and 00f81050; `GMST` records override them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrackSettings {
+    /// `fTrackEyeXY` (28).
+    pub eye_xy: f32,
+    /// `fTrackEyeZ` (20).
+    pub eye_z: f32,
+    /// `fTrackDeadZoneXY` (20).
+    pub dead_zone_xy: f32,
+    /// `fTrackDeadZoneZ` (10).
+    pub dead_zone_z: f32,
+}
+
+impl Default for TrackSettings {
+    fn default() -> Self {
+        TrackSettings {
+            eye_xy: 28.0,
+            eye_z: 20.0,
+            dead_zone_xy: 20.0,
+            dead_zone_z: 10.0,
+        }
+    }
+}
+
+/// 01064f50 / 0101ff38: the 90-degree cap of 00649f00 and its relatives.
+const RIGHT_ANGLE: f32 = std::f32::consts::FRAC_PI_2;
+
+/// Degrees to radians kept within 0..90 degrees, as 00649f00/00649f70 do
+/// (`x * 0.0174533`, below 0 is 0, above pi/2 is pi/2).
+fn range_radians(degrees: f32) -> f32 {
+    ((degrees as f64 * DEG_TO_RAD) as f32).clamp(0.0, RIGHT_ANGLE)
+}
+
+impl TrackSettings {
+    /// The defaults with any `GMST` value (`gmst(name)`).
+    pub fn read(gmst: impl Fn(&str) -> Option<f32>) -> TrackSettings {
+        let d = TrackSettings::default();
+        TrackSettings {
+            eye_xy: gmst("fTrackEyeXY").unwrap_or(d.eye_xy),
+            eye_z: gmst("fTrackEyeZ").unwrap_or(d.eye_z),
+            dead_zone_xy: gmst("fTrackDeadZoneXY").unwrap_or(d.dead_zone_xy),
+            dead_zone_z: gmst("fTrackDeadZoneZ").unwrap_or(d.dead_zone_z),
+        }
+    }
+
+    /// 00649f00: the eye's heading range, radians.
+    pub fn eye_xy(&self) -> f32 {
+        range_radians(self.eye_xy)
+    }
+
+    /// 00649f70: the eye's pitch range, radians.
+    pub fn eye_z(&self) -> f32 {
+        range_radians(self.eye_z)
+    }
+
+    /// 00649fe0: the heading dead zone, radians, at most the range.
+    pub fn dead_zone_xy(&self) -> f32 {
+        range_radians(self.dead_zone_xy).min(self.eye_xy())
+    }
+
+    /// 0064a070: the pitch dead zone, radians, at most the range.
+    pub fn dead_zone_z(&self) -> f32 {
+        range_radians(self.dead_zone_z).min(self.eye_z())
+    }
+}
+
+/// Whom an actor looks at this update, game units: the target's look
+/// anchor (its virtual +0x194, see [`actor_anchor`]) and its position
+/// (virtual +0x1f4), from which the tracking distance is measured.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Target {
+    pub anchor: [f32; 3],
+    pub position: [f32; 3],
+}
+
+/// The bone an actor's look anchor is (`Actor` virtual +0x194,
+/// 008a2fa0): a character's bone cache (`Character` +0x1b4, filled by
+/// 004aad00 from the names at 01188b74) has `Bip01 Head` first; a
+/// creature's is found by that name (011c61ac) through its
+/// `NiControllerManager`'s object palette. Traced on the contributor
+/// branch `playcon/claude/lookik-actor-anchor` (5dfb5d9), re-checked
+/// 2026-10-06.
+pub const ANCHOR_BONE: &str = "Bip01 Head";
+
+/// 0106b9e8: how far up an actor without that bone is looked at, as a
+/// share of its height (008a30a9).
+pub const ANCHOR_HEIGHT_SHARE: f64 = 0.9;
+
+/// Where an actor other than the player in first person is looked at
+/// (008a2fa0), game units: its head node's world position (`head`), with
+/// z replaced by its own look controller's eye point (`eye_z`, 00c757b0,
+/// only when that controller has a head pose, +0x190); without the node,
+/// `position` raised by 0.9 x `height` (008853a0, see [`actor_height`]).
+pub fn actor_anchor(
+    head: Option<[f32; 3]>,
+    eye_z: Option<f32>,
+    position: [f32; 3],
+    height: f32,
+) -> [f32; 3] {
+    match head {
+        Some([x, y, z]) => [x, y, eye_z.unwrap_or(z)],
+        None => [
+            position[0],
+            position[1],
+            (height as f64 * ANCHOR_HEIGHT_SHARE + position[2] as f64) as f32,
+        ],
+    }
+}
+
+/// An actor's height for [`actor_anchor`] (008853a0): the z extent of its
+/// bounds (virtual +0x1dc max less +0x1d8 min) times its scale (00567400).
+pub fn actor_height(bound_min_z: f32, bound_max_z: f32, scale: f32) -> f32 {
+    (bound_max_z - bound_min_z) * scale
+}
+
 // ---------------------------------------------------------------------
 // Vector and quaternion helpers, in the native operation order.
 
@@ -528,6 +665,8 @@ pub struct LookIk {
     pub eye_pitch: f32,
     /// +0x1a4 `bTargetBehind`.
     pub target_behind: bool,
+    /// +0x1a8: `fTrackEyeZ` in radians (00607830); no reader found.
+    pub eye_pitch_range: f32,
     /// +0x54 `pHeadPose`: the head and the eye point.
     pub head_pose: Option<Pose>,
 }
@@ -548,6 +687,7 @@ impl Default for LookIk {
             eye_heading: 0.0,
             eye_pitch: 0.0,
             target_behind: false,
+            eye_pitch_range: 0.0,
             head_pose: None,
         }
     }
@@ -595,8 +735,9 @@ impl LookIk {
                     t: [EYE_OFFSET[0] * s, EYE_OFFSET[1] * s, 0.0, 0.0],
                     ..Qs::IDENTITY
                 };
-                // Unresolved: the head bone's local transform comes from
-                // 00a86bf0's matrix (taken here as the identity).
+                // The head bone's local transform: 00a86bf0 constructs an
+                // identity NiTransform (identity rotation, zero point,
+                // scale 1), converted by 00c74dd0 (00c7e103..00c7e118).
                 self.head_pose = Some(Pose::from_locals(vec![-1, 0], vec![Qs::IDENTITY, eye]));
                 let e = &mut self.bones[EYE_BONE];
                 e.bone = 1;
@@ -660,36 +801,75 @@ impl LookIk {
     }
 
     /// The head-tracking part of the actor update 008a3100: with a target
-    /// whose look position lies within the tracking distances the
-    /// controller is (re)activated toward it; without one an active
-    /// controller starts easing out.
+    /// whose position lies within the tracking distances of the actor's
+    /// own, the controller is (re)activated toward the target's look
+    /// anchor; a target out of range changes nothing (008a3a72/008a3a83
+    /// jump to the end, so the look stays on its stored point); without a
+    /// target an active controller starts easing out (008a3bf0(1)).
     ///
-    /// Unresolved: 008a3100's choice of target (008a3ed0 and the process
-    /// conditions around it) is not ported; callers pass their own.
+    /// The distance is between the two actors' positions (both from
+    /// virtual +0x1f4, 00457990), not from the head (settled 2026-10-06;
+    /// first found on the contributor branch `playcon/claude/lookik-
+    /// head-tracking`, da055f5). Whom to look at comes from
+    /// [`crate::head_track`] (008a3ed0 and the target slots).
     pub fn update_target(
         &mut self,
         settings: &Settings,
-        own_look_position: [f32; 3],
-        target: Option<[f32; 3]>,
+        own_position: [f32; 3],
+        target: Option<Target>,
     ) {
         if let Some(t) = target {
             let d = [
-                t[0] - own_look_position[0],
-                t[1] - own_look_position[1],
-                t[2] - own_look_position[2],
+                t.position[0] - own_position[0],
+                t.position[1] - own_position[1],
+                t.position[2] - own_position[2],
             ];
-            let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-            // 008a3e3b: distance <= fMaxTrackingDist and > fMinTrackingDist.
+            let dist = (d[2] * d[2] + d[1] * d[1] + d[0] * d[0]).sqrt();
+            // 008a3a72/008a3a83: distance <= fMaxTrackingDist and >
+            // fMinTrackingDist.
             if dist <= settings.max_tracking_dist && settings.min_tracking_dist < dist {
                 self.ease_out = false;
                 self.set_active(true);
-                self.set_target(t, true);
+                self.set_target(t.anchor, true);
             }
             return;
         }
         if self.active && !self.ease_out {
             self.ease_out = true;
         }
+    }
+
+    /// The eye limits a FaceGen head sets when it is attached (00607420,
+    /// for an actor with a look controller): the eye bone's cone is
+    /// `fTrackEyeXY` (00607810(0, ..)), `fTrackEyeZ` is stored at +0x1a8
+    /// (00607830; no reader found in the controller), and the eye's dead
+    /// zones are `fTrackDeadZoneXY`/`Z` (00c748d0(0, ..)). Beyond a dead
+    /// zone the head turns too (00c7b04f..00c7b082).
+    pub fn head_attached(&mut self, track: &TrackSettings) {
+        let (xy, z) = (track.eye_xy(), track.eye_z());
+        self.eye_pitch_range = z;
+        self.bones[EYE_BONE].max_angle = xy;
+        self.bones[EYE_BONE].dead_heading = track.dead_zone_xy();
+        self.bones[EYE_BONE].dead_pitch = track.dead_zone_z();
+    }
+
+    /// What the actor update 00888970 hands the face after the look
+    /// update (00888a20 into `fDesiredEyeHeading`/`Pitch`, +0x150/+0x154,
+    /// Xbox PDB): the eye heading and pitch while the look is on
+    /// (+0xb3, 00888a50), else zero.
+    pub fn desired_eyes(&self) -> (f32, f32) {
+        if self.active {
+            (self.eye_heading, self.eye_pitch)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
+    /// The eye point in the head bone's frame, game units, when the
+    /// controller has a head pose (00c757b0 reads the head pose's eye
+    /// bone): 00c7de60's 9, 6, 0.
+    pub fn eye_offset(&self) -> Option<[f32; 3]> {
+        (self.use_head_pose && self.init).then_some([EYE_OFFSET[0], EYE_OFFSET[1], 0.0])
     }
 
     /// `AdjustCurrentTarget` (Xbox PDB): keeps the stored target within
@@ -1336,22 +1516,98 @@ mod tests {
         assert!(ik.bones[1].limit_bone_rot);
     }
 
+    fn at(anchor: [f32; 3], position: [f32; 3]) -> Option<Target> {
+        Some(Target { anchor, position })
+    }
+
     #[test]
-    fn targets_outside_the_tracking_distances_start_easing_out() {
+    fn targets_outside_the_tracking_distances_change_nothing() {
         let s = Settings::default();
         let mut ik = LookIk {
             enable: true,
             ..LookIk::default()
         };
-        ik.update_target(&s, [0.0; 3], Some([100.0, 0.0, 0.0]));
+        // The anchor is looked at; the distance is between positions.
+        ik.update_target(&s, [0.0; 3], at([100.0, 0.0, 120.0], [100.0, 0.0, 0.0]));
         assert!(ik.active && !ik.ease_out);
         let h = havok_scale();
         assert!(close(ik.target_ws[0], 100.0 * h, 1e-6));
-        // Too close: nothing changes.
-        ik.update_target(&s, [0.0; 3], Some([1.0, 0.0, 0.0]));
+        assert!(close(ik.target_ws[2], 120.0 * h, 1e-6));
+        // Too close (12 is excluded) or too far (1500 included): nothing
+        // changes, the stored point stays.
+        ik.update_target(&s, [0.0; 3], at([1.0, 0.0, 120.0], [12.0, 0.0, 0.0]));
         assert!(ik.active && !ik.ease_out);
+        assert!(close(ik.target_ws[0], 100.0 * h, 1e-6));
+        ik.update_target(&s, [0.0; 3], at([1500.0, 0.0, 0.0], [1500.5, 0.0, 0.0]));
+        assert!(close(ik.target_ws[0], 100.0 * h, 1e-6));
+        ik.update_target(&s, [0.0; 3], at([1500.0, 0.0, 0.0], [1500.0, 0.0, 0.0]));
+        assert!(close(ik.target_ws[0], 1500.0 * h, 1e-6));
+        // No target: easing out.
         ik.update_target(&s, [0.0; 3], None);
         assert!(ik.ease_out);
+    }
+
+    #[test]
+    fn settings_read_the_ini() {
+        assert_eq!(Settings::read(|_, _| None), Settings::default());
+        let s = Settings::read(|section, key| match (section, key) {
+            ("LookIK", "fAngleMax") => Some(10.0),
+            ("RagdollAnim", "bLookIK") => Some(0.0),
+            _ => None,
+        });
+        assert_eq!(s.angle_max, 10.0);
+        assert_eq!(s.angle_max_ease, 1.0);
+        assert!(!s.look_ik && s.ragdoll_anim);
+    }
+
+    #[test]
+    fn a_head_sets_the_eye_cone_and_dead_zones() {
+        let mut ik = LookIk::default();
+        ik.head_attached(&TrackSettings::default());
+        let r = |d: f64| (d * DEG_TO_RAD) as f32;
+        assert_eq!(ik.bones[EYE_BONE].max_angle, r(28.0));
+        assert_eq!(ik.bones[EYE_BONE].dead_heading, r(20.0));
+        assert_eq!(ik.bones[EYE_BONE].dead_pitch, r(10.0));
+        assert_eq!(ik.eye_pitch_range, r(20.0));
+        // nv-call, 00649f00, 00649f70, 00649fe0 and 0064a070 on
+        // FalloutNV.exe 1.4.0.525 (AMD Ryzen AI 9 HX 370, 2026-10-06) with
+        // the settings at their defaults: bit for bit.
+        let t = TrackSettings::default();
+        assert_eq!(t.eye_xy().to_bits(), 0x3efa_35dd);
+        assert_eq!(t.eye_z().to_bits(), 0x3eb2_b8c2);
+        assert_eq!(t.dead_zone_xy().to_bits(), 0x3eb2_b8c2);
+        assert_eq!(t.dead_zone_z().to_bits(), 0x3e32_b8c2);
+        // 0..90 degrees, a dead zone no wider than its range.
+        let wide = TrackSettings {
+            eye_xy: 120.0,
+            eye_z: -5.0,
+            dead_zone_xy: 200.0,
+            dead_zone_z: 10.0,
+        };
+        ik.head_attached(&wide);
+        assert_eq!(ik.bones[EYE_BONE].max_angle, RIGHT_ANGLE);
+        assert_eq!(ik.bones[EYE_BONE].dead_heading, RIGHT_ANGLE);
+        assert_eq!(ik.bones[EYE_BONE].dead_pitch, 0.0);
+        let read = TrackSettings::read(|n| (n == "fTrackEyeXY").then_some(30.0));
+        assert_eq!(read.eye_xy, 30.0);
+        assert_eq!(read.dead_zone_z, 10.0);
+    }
+
+    #[test]
+    fn the_anchor_is_the_head_with_the_eye_height_else_nine_tenths_up() {
+        let feet = [10.0, 20.0, 30.0];
+        assert_eq!(
+            actor_anchor(Some([1.0, 2.0, 3.0]), None, feet, 128.0),
+            [1.0, 2.0, 3.0]
+        );
+        assert_eq!(
+            actor_anchor(Some([1.0, 2.0, 3.0]), Some(7.0), feet, 128.0),
+            [1.0, 2.0, 7.0]
+        );
+        let height = actor_height(-4.0, 124.0, 1.0);
+        let up = actor_anchor(None, None, feet, height);
+        assert_eq!(&up[..2], &feet[..2]);
+        assert!((up[2] - (30.0 + 0.9 * 128.0)).abs() < 1e-4);
     }
 
     #[test]
@@ -1365,11 +1621,7 @@ mod tests {
         let mut pose = Pose::from_locals(vec![-1, 0, 1], vec![Qs::IDENTITY, up(10.0), up(2.0)]);
         let mut ik = LookIk::default();
         assert!(ik.init(&mut pose, Some(2), false, 60.0));
-        ik.update_target(
-            &s,
-            [0.0, 0.0, 12.0 / havok_scale()],
-            Some([300.0, 300.0, 84.0]),
-        );
+        ik.update_target(&s, [0.0; 3], at([300.0, 300.0, 84.0], [300.0, 300.0, 0.0]));
         let world = Qs::IDENTITY;
         let mut last = 0.0;
         for _ in 0..40 {
@@ -1383,5 +1635,65 @@ mod tests {
         // The head has turned toward +x, by no more than the cone.
         assert!(last > 0.3, "{last}");
         assert!(ik.eye_heading.is_finite() && ik.eye_pitch.is_finite());
+        assert_eq!(ik.desired_eyes(), (ik.eye_heading, ik.eye_pitch));
+        ik.active = false;
+        assert_eq!(ik.desired_eyes(), (0.0, 0.0));
+    }
+
+    /// Root, neck, and a head 12 units up turned like a biped's
+    /// `Bip01 Head`: its +X up, +Y the model's forward, +Z the model's
+    /// left (so the eye point 9, 6, 0 is up and ahead).
+    fn person() -> Pose {
+        let up = |z: f32| Qs {
+            t: [0.0, 0.0, z * havok_scale(), 0.0],
+            ..Qs::IDENTITY
+        };
+        let head = Qs {
+            q: axis_angle([0.0, 1.0, 0.0, 0.0], -std::f32::consts::FRAC_PI_2),
+            ..up(12.0)
+        };
+        Pose::from_locals(vec![-1, 0, 1], vec![Qs::IDENTITY, up(100.0), head])
+    }
+
+    fn run_frames(ik: &mut LookIk, s: &Settings, head: &mut Qs, n: usize) {
+        for _ in 0..n {
+            let mut p = person();
+            p.set_local(2, *head);
+            ik.do_look_at_ik(s, &mut p, &Qs::IDENTITY);
+            *head = p.local(2);
+        }
+    }
+
+    #[test]
+    fn within_the_eyes_dead_zones_only_the_eyes_move() {
+        // 00c7aa60: the head turns only once the eye leaves its cone or
+        // its heading/pitch passes the dead zone (00607420's limits).
+        let s = Settings::default();
+        let mut pose = person();
+        let mut ik = LookIk::default();
+        assert!(ik.init(&mut pose, Some(2), false, 60.0));
+        ik.head_attached(&TrackSettings::default());
+        let rest = pose.local(2);
+        // A target 10 degrees to the side, far ahead: inside the dead zone.
+        let a = 10f32.to_radians();
+        let far = 1000.0;
+        let t = [far * a.sin(), far * a.cos(), 112.0];
+        ik.update_target(&s, [0.0; 3], at(t, [t[0], t[1], 0.0]));
+        let mut head = rest;
+        run_frames(&mut ik, &s, &mut head, 20);
+        assert!(!ik.bones[HEAD_BONE].active);
+        assert_eq!(head.q, rest.q);
+        // To the right (+x): a positive heading, the LookRight side of
+        // 0064c410.
+        assert!(ik.eye_heading > 0.05, "{}", ik.eye_heading);
+        assert!(ik.eye_pitch.abs() < 0.05, "{}", ik.eye_pitch);
+        // 40 degrees: beyond the dead zone, the head follows.
+        let a = 40f32.to_radians();
+        let t = [far * a.sin(), far * a.cos(), 112.0];
+        ik.update_target(&s, [0.0; 3], at(t, [t[0], t[1], 0.0]));
+        run_frames(&mut ik, &s, &mut head, 40);
+        assert!(ik.bones[HEAD_BONE].active);
+        let f = rotate(head.q, FORWARD);
+        assert!(f[0].abs() > 0.3, "{f:?}");
     }
 }
