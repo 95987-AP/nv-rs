@@ -21,6 +21,7 @@ viewer.
 | `nv-call` | Maps the private unpacked exe into its own process at its preferred base and calls one function by address on the real CPU, with the FPU control word and MXCSR you choose. Writes registers, x87 and SSE results and memory buffers. | Golden vectors for pure or nearly pure functions: integer logic, SSE arithmetic, x87 math, and the cases software emulators get wrong (reciprocal square root estimates, x87 transcendentals, precision-control and rounding effects). |
 | `nv-probe` | A DLL that sits inside a running game. It patches the entry of functions you list and logs each call's arguments, memory it points at, and (optionally) the return value, as JSON lines. | Live state that cannot be derived offline: real arguments in the opening sequence, a struct's bytes before and after a call, post-INI values of global settings. |
 | `nv-inject` | Starts a program suspended and loads a DLL into it, or loads a DLL into a running process. | Putting `nv-probe` into the game on a private copy. |
+| `nv-bink` | Decodes a Bink movie with the game's own `binkw32.dll` and records the SHA-256 of every frame's planes (and raw buffers of chosen frames). | Ground truth for the Rust Bink decoder (`crates/bink`): every frame of `FNVIntro.bik` must match bit for bit. |
 
 How they map to the milestone blockers: the Doc look-IK work in
 [../../docs/OPENING_LOOK_IK.md](../../docs/OPENING_LOOK_IK.md) needs two
@@ -440,6 +441,34 @@ The tool reports the module handle
 or an error. It relies on kernel32 sitting at the same address in the target
 as in `nv-inject.exe`, which Windows does for system DLLs within a boot
 session. Both processes must be 32-bit.
+
+## nv-bink
+
+```
+nv-bink <binkw32.dll> <movie.bik> <out-dir> [--surface N] [--first N] [--count N] [--dump A,B,...]
+```
+
+Loads the given `binkw32.dll` (the one in the game folder; it is only read),
+switches sound off with `BinkSetSoundTrack(0, NULL)`, opens the movie with
+`BinkOpen(name, 0)` and, for every frame, calls `BinkDoFrame`, then
+`BinkCopyToBuffer` with `BINKCOPYALL` and the chosen surface type (default 15,
+YV12), then `BinkNextFrame`. Frames before `--first` are decoded but not
+recorded, since Bink frames depend on earlier ones.
+
+It writes `header.txt` (the DLL's path and SHA-256, the movie, and the width,
+height and frame count read from the first three fields of the `HBINK` the
+library returns) and `frames.tsv`: frame number, `BinkCopyToBuffer`'s return
+value, then the SHA-256 of each plane of the copied buffer in buffer order.
+For YV12 that is the luma plane (pitch = width), then V, then U, each chroma
+plane at half width and height. `--dump` also writes those frames' buffers as
+`frame_NNNNN.raw`. Everything it writes is a recording of the user's own
+game files: keep it in the private research tree.
+
+Measured on the maintainer's machine (2026-10-06): the 1.4.0.525 install's
+`binkw32.dll` (SHA-256 `c6c06e2d…185bd`) decodes all 8692 frames of
+`FNVIntro.bik` (1280x720) in about 44 seconds. Rendering a dumped frame's
+planes as Y, then V (Cr), then U (Cb) gives the expected colours, which
+confirms the plane order above.
 
 ## Typical workflows
 
