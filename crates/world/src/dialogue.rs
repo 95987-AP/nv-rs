@@ -245,10 +245,26 @@ impl Topic {
         }
     }
 
-    /// Offered in the list of things to ask about: an ordinary topic
-    /// flagged top-level.
+    /// Flagged top-level, whatever its kind: the game adds every such topic
+    /// to the player's topics as it's loaded (`TESTopic::InitItem`, Xbox
+    /// PDB, `00619030`, tests `00619410`: `DATA` flags 0x02 only). The
+    /// hard-coded `GOODBYE` topic is one (kind 1, flags 0x02, priority 5):
+    /// Sunny Smiles' "Until next time." answers it from the main list.
     pub fn is_top_level(&self) -> bool {
-        self.kind == ORDINARY_TOPIC && self.flags & TOP_LEVEL != 0
+        self.flags & TOP_LEVEL != 0
+    }
+
+    /// The topic's Intelligence class (`0083f0d0`: `DATA` flags 0x10 → 1,
+    /// else 0x20 → 3, else 2), as for lines ([`LOW_INTELLIGENCE`],
+    /// [`HIGH_INTELLIGENCE`]).
+    pub fn intelligence_class(&self) -> u8 {
+        if self.flags & LOW_INTELLIGENCE != 0 {
+            1
+        } else if self.flags & HIGH_INTELLIGENCE != 0 {
+            3
+        } else {
+            2
+        }
     }
 
     /// What the menu shows for it when its line has no prompt of its own.
@@ -298,16 +314,33 @@ pub struct Choice {
 /// `DATA` byte 3 flag: the choice is always shown dimmed.
 pub const ALWAYS_DARKEN: u8 = 0x02;
 
+/// The hard-coded `SpeechChallengeFailure` and `InfoRefusal` topics
+/// (`0083de60` tests their form IDs, 0xFD and 0x118): never in a topic
+/// list (`0083ed50`).
+pub const SPEECH_CHALLENGE_FAILURE: FormId = FormId(0xFD);
+pub const INFO_REFUSAL: FormId = FormId(0x118);
+
 /// Each topic the speaker has a line for now, as a choice, in the order
-/// given.
+/// given (`MenuTopicManager::FillTopicList`, Xbox PDB, `0083ed50`): the
+/// two hard-coded refusal topics are left out, and topics of the wrong
+/// Intelligence class for the player ([`Topic::intelligence_class`],
+/// compared as for lines). The topic's rumor flag (0x01) and what it does
+/// there (`0042df90`, `0087f510`) are not carried out.
 fn answered(
     order: &LoadOrder,
     topics: &[&Topic],
     speaker: &Speaker,
     state: &GameState,
 ) -> Vec<Choice> {
+    let facts = crate::scripting::Facts {
+        order,
+        state,
+        speaker: Some(speaker),
+    };
     topics
         .iter()
+        .filter(|t| t.form_id != SPEECH_CHALLENGE_FAILURE && t.form_id != INFO_REFUSAL)
+        .filter(|t| suits_intelligence(order, &facts, t.intelligence_class(), PLAYER_REF))
         // Only a running quest's lines can be said; the topic's record
         // lists the quests it has lines for.
         .filter(|t| t.quests.is_empty() || t.quests.iter().any(|q| state.running.contains(q)))
@@ -420,52 +453,51 @@ pub fn check_tag_passed(
 }
 
 /// The main list of things to ask about, shown after a line with no
-/// follow-ups of its own (`TCLT`): the follow-ups of the line that opened
-/// the conversation (`opening`), every top-level topic, and every topic
-/// the player has learned (`AddTopic`, a line's `NAME`), each once, for
-/// which the speaker has a line now, highest priority first.
+/// choices of its own (`TCLT`): the player's topics (`PlayerCharacter`
+/// `+0x6a8`, `0083ec30`), which are every top-level topic (added as the
+/// game loads, `00619030`) and every topic learned since (`AddTopic`
+/// `00952830`, a said line's `NAME` via `0061f150`), each once, for which
+/// the speaker has a line now ([`answered`]), highest priority first
+/// (`0083ed50` sorts this list, not a line's choices, with `0083f110`;
+/// whether that sort keeps equal priorities in order isn't traced, they
+/// keep the files' order here).
 ///
-/// Read from Sunny Smiles' records: her greeting's follow-ups are her
-/// top-level questions plus a "Goodbye." that isn't top-level, stored in
-/// exactly descending priority (100 … 75, then 50), and "That's all I
-/// wanted to know. Let's talk about something else." has no follow-ups, so
-/// it leads back to the main list. That the main list keeps the opening
-/// line's follow-ups (so "Goodbye." stays) is a guess, not traced in the
-/// game's code.
+/// Sunny Smiles: "That's all I wanted to know. Let's talk about something
+/// else." has no choices, so it leads back here, where her top-level
+/// questions and the hard-coded `GOODBYE` topic (top-level, priority 5,
+/// her "Until next time.") are offered.
 pub fn menu_topics(
     order: &LoadOrder,
     top_level: &[Topic],
-    opening: &[FormId],
     speaker: &Speaker,
     state: &GameState,
 ) -> Vec<Choice> {
-    let mut extra: Vec<FormId> = opening.to_vec();
     let mut learned: Vec<FormId> = state.topics.iter().copied().collect();
     learned.sort_by_key(|id| id.0);
-    extra.extend(learned);
     let mut seen: std::collections::HashSet<FormId> = top_level.iter().map(|t| t.form_id).collect();
-    let extra: Vec<Topic> = extra
+    let learned: Vec<Topic> = learned
         .into_iter()
         .filter(|id| seen.insert(*id))
         .filter_map(|id| Topic::load(order, id))
         .collect();
-    let mut topics: Vec<&Topic> = extra.iter().chain(top_level).collect();
+    let mut topics: Vec<&Topic> = top_level.iter().chain(&learned).collect();
     topics.sort_by(|a, b| b.priority.total_cmp(&a.priority));
     answered(order, &topics, speaker, state)
 }
 
-/// What the player can say after a line: its follow-ups (`TCLT`) as
-/// stored, when it has any; otherwise the main list ([`menu_topics`]).
+/// What the player can say after a line (`0083ec30`): its choices
+/// (`TCLT`) in their stored order, when it has any (the menu topic's
+/// `bTopicIsChoice`, Xbox PDB, set by `0083db00` when the line's choice
+/// list isn't empty); otherwise the main list ([`menu_topics`]).
 pub fn next_choices(
     order: &LoadOrder,
     info: &Info,
     top_level: &[Topic],
-    opening: &[FormId],
     speaker: &Speaker,
     state: &GameState,
 ) -> Vec<Choice> {
     if info.choices.is_empty() {
-        return menu_topics(order, top_level, opening, speaker, state);
+        return menu_topics(order, top_level, speaker, state);
     }
     let topics: Vec<Topic> = info
         .choices
@@ -793,23 +825,6 @@ pub fn line_available(
         state,
         speaker: Some(speaker),
     };
-    if !suits_intelligence(order, &facts, info, listener) {
-        return false;
-    }
-    facts.conditions_pass(&info.conditions, speaker.reference, listener)
-}
-
-/// Translated from 0061e600 (decompiled, FalloutNV.exe 1.4.0.525): the
-/// Intelligence class of a line (`0061e720`) against the listener's
-/// Intelligence (actor value 9) and `iDialogueDummySpeakThisIntOrBelow`
-/// (exe 4, `011d0dc8`; the data sets 3). A listener whose Intelligence
-/// isn't known here passes (unresolved: the game always has one).
-fn suits_intelligence(
-    order: &LoadOrder,
-    facts: &crate::scripting::Facts<'_>,
-    info: &Info,
-    listener: FormId,
-) -> bool {
     let class = if info.flags2 & LOW_INTELLIGENCE != 0 {
         1
     } else if info.flags2 & HIGH_INTELLIGENCE != 0 {
@@ -817,6 +832,24 @@ fn suits_intelligence(
     } else {
         2
     };
+    if !suits_intelligence(order, &facts, class, listener) {
+        return false;
+    }
+    facts.conditions_pass(&info.conditions, speaker.reference, listener)
+}
+
+/// Translated from 0061e600 (decompiled, FalloutNV.exe 1.4.0.525): the
+/// Intelligence class of a line (`0061e720`), or of a topic (`0083ed50`
+/// with `0083f0d0`, the same comparison), against the listener's
+/// Intelligence (actor value 9) and `iDialogueDummySpeakThisIntOrBelow`
+/// (exe 4, `011d0dc8`; the data sets 3). A listener whose Intelligence
+/// isn't known here passes (unresolved: the game always has one).
+fn suits_intelligence(
+    order: &LoadOrder,
+    facts: &crate::scripting::Facts<'_>,
+    class: u8,
+    listener: FormId,
+) -> bool {
     if class == 2 {
         return true;
     }
@@ -961,7 +994,6 @@ pub fn after_line(
     order: &LoadOrder,
     info: &Info,
     top_level: &[Topic],
-    opening: &[FormId],
     speaker: &Speaker,
     state: &GameState,
 ) -> AfterLine {
@@ -974,7 +1006,7 @@ pub fn after_line(
     if ending != Ending::Continue {
         return AfterLine::Close;
     }
-    let list = next_choices(order, info, top_level, opening, speaker, state);
+    let list = next_choices(order, info, top_level, speaker, state);
     if list.is_empty() {
         AfterLine::Close
     } else {

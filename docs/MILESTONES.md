@@ -165,6 +165,15 @@ installed-data check pass; not compared with the game; Pip-Boy map quest
 markers and the navmesh-level path search remain. See
 [QUEST_TARGETS.md](QUEST_TARGETS.md).
 
+Dialogue NPC batch, 2026-10-06 (`claude/m1-dialogue-npc`, on
+`claude/m1-dialogue`): the menu's zoom in/out (`00762950`), the player's
+view focused on the speaker's head (`00953060`), the speaker's in-menu
+turn (`008a5580`, replacing the inferred rule) and the main topic list
+as the player's topics (`0083ec30`/`0083ed50`/`00619030`, dropping the
+opening-follow-ups guess) are traced, implemented and unit-tested; not
+compared with the original. **Next action:** record a Doc Mitchell and a
+Sunny Smiles conversation in the original and compare zoom, turn and list.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

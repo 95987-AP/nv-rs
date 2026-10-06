@@ -1225,14 +1225,7 @@ fn dialogue(out: &mut impl Write, order: &LoadOrder, target: &str) -> Result<(),
             }
             if info.flags & world::dialogue::GOODBYE == 0 {
                 let top = world::dialogue::top_level_topics(order);
-                let menu = world::dialogue::next_choices(
-                    order,
-                    &info,
-                    &top,
-                    &info.choices,
-                    &speaker,
-                    &state,
-                );
+                let menu = world::dialogue::next_choices(order, &info, &top, &speaker, &state);
                 writeln!(
                     out,
                     "Then can be asked ({} top-level topics in the game):",

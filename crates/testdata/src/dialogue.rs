@@ -52,6 +52,24 @@ pub mod ids {
     pub const SEE_YOU: u32 = 0x123B;
     /// Under `IMMEDIATE_TOPIC`: flagged 0x08, goes on to `BYE`.
     pub const IMMEDIATE_LINE: u32 = 0x123C;
+    /// The player's main list: top-level topics the doctor answers only
+    /// while `LIST_ON` is 1. The hard-coded refusal topics (top-level here,
+    /// to show they're left out anyway), a conversation-kind one (as the
+    /// game's `GOODBYE` is) of priority 5, an ordinary one of 60, and ones
+    /// for low (0x10, 70) and high (0x20, 80) Intelligence players.
+    pub const LIST_ON: u32 = 0x1204;
+    pub const SPEECH_FAILURE: u32 = 0xFD;
+    pub const REFUSAL: u32 = 0x118;
+    pub const CHAT: u32 = 0x1225;
+    pub const ASK: u32 = 0x1226;
+    pub const DUMB_ASK: u32 = 0x1227;
+    pub const SMART_ASK: u32 = 0x1228;
+    pub const FAILURE_LINE: u32 = 0x123D;
+    pub const REFUSAL_LINE: u32 = 0x123E;
+    pub const CHAT_LINE: u32 = 0x123F;
+    pub const ASK_LINE: u32 = 0x1240;
+    pub const DUMB_ASK_LINE: u32 = 0x1241;
+    pub const SMART_ASK_LINE: u32 = 0x1242;
 }
 
 /// A line: its `DATA` flags (byte 2 and 3), text, said by the doctor,
@@ -87,7 +105,11 @@ pub fn world(tag: &str) -> TempData {
     };
 
     let mut globals = Vec::new();
-    for (id, name) in [(SWITCH, "TestSwitch"), (DOOR_OPEN, "TestDoorOpen")] {
+    for (id, name) in [
+        (SWITCH, "TestSwitch"),
+        (DOOR_OPEN, "TestDoorOpen"),
+        (LIST_ON, "TestListOn"),
+    ] {
         let mut d = edid(name);
         d.extend(sub(b"FNAM", b"s"));
         d.extend(sub(b"FLTV", &0.0f32.to_le_bytes()));
@@ -171,6 +193,59 @@ pub fn world(tag: &str) -> TempData {
         7,
         &line(IMMEDIATE_LINE, 0x08, 0, "At once.", &follow(&[BYE])),
     ));
+    // The player's main list.
+    for (id, name, kind, flags, priority, line_id, text) in [
+        (
+            SPEECH_FAILURE,
+            "SpeechChallengeFailure",
+            0u8,
+            0x02u8,
+            90.0f32,
+            FAILURE_LINE,
+            "No.",
+        ),
+        (
+            REFUSAL,
+            "InfoRefusal",
+            0,
+            0x02,
+            90.0,
+            REFUSAL_LINE,
+            "Not telling.",
+        ),
+        (CHAT, "TestChat", 1, 0x02, 5.0, CHAT_LINE, "Chat."),
+        (ASK, "TestAsk", 0, 0x02, 60.0, ASK_LINE, "Ask."),
+        (
+            DUMB_ASK,
+            "TestDumbAsk",
+            0,
+            0x02 | 0x10,
+            70.0,
+            DUMB_ASK_LINE,
+            "Dumb.",
+        ),
+        (
+            SMART_ASK,
+            "TestSmartAsk",
+            0,
+            0x02 | 0x20,
+            80.0,
+            SMART_ASK_LINE,
+            "Smart.",
+        ),
+    ] {
+        let mut d = edid(name);
+        d.extend(sub(b"QSTI", &QUEST.to_le_bytes()));
+        d.extend(sub(b"FULL", &zstr(name)));
+        d.extend(sub(b"PNAM", &priority.to_le_bytes()));
+        d.extend(sub(b"DATA", &[kind, flags]));
+        dialogue.extend(record(b"DIAL", id, &d));
+        dialogue.extend(crate::group(
+            id.to_le_bytes(),
+            7,
+            &line(line_id, 0, 0, text, &condition(74, [LIST_ON, 0], 1.0)),
+        ));
+    }
 
     let mut hedr = 1.34f32.to_le_bytes().to_vec();
     hedr.extend([0; 8]);

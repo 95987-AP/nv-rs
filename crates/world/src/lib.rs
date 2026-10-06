@@ -31,6 +31,7 @@ pub mod combat_ai;
 pub mod crime;
 pub mod detection;
 pub mod dialogue;
+pub mod dialogue_view;
 pub mod doors;
 pub mod experience;
 pub mod explosions;
