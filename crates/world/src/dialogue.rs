@@ -21,6 +21,7 @@ const TCLT: FourCC = FourCC::new(b"TCLT");
 const NAME: FourCC = FourCC::new(b"NAME");
 const RNAM: FourCC = FourCC::new(b"RNAM");
 const QSTI: FourCC = FourCC::new(b"QSTI");
+const INFC: FourCC = FourCC::new(b"INFC");
 const PNAM: FourCC = FourCC::new(b"PNAM");
 const KNAM: FourCC = FourCC::new(b"KNAM");
 const TDUM: FourCC = FourCC::new(b"TDUM");
@@ -686,6 +687,33 @@ pub fn topic_lines(order: &LoadOrder, topic: FormId) -> Vec<Info> {
             Some((priority(info.quest), info))
         })
         .collect();
+    // The lines the topic is connected to (`INFC`, in the topic record):
+    // the game's topic loader puts them in the topic's list of lines
+    // (`TESTopic::vfunc_8`, `00618aa0`), though they stand under another
+    // topic. Dead Money's Dog says his Gala greeting through one.
+    // [G] that picking a line uses them as it does the topic's own.
+    if let Some(record) = order
+        .get(topic)
+        .and_then(|rr| rr.record().ok().map(|r| (rr, r)))
+    {
+        let (rr, record) = record;
+        for sub in record.get_all(INFC).filter(|s| s.data.len() >= 4) {
+            let id = global(&rr, &sub.data);
+            if lines.iter().any(|(_, i)| i.form_id == id) {
+                continue;
+            }
+            let Some(line) = order
+                .get(id)
+                .filter(|l| l.entry.header.kind == INFO && !l.entry.header.is_deleted())
+            else {
+                continue;
+            };
+            if let Ok(record) = line.record() {
+                let info = Info::parse(order, &line, &record);
+                lines.push((priority(info.quest), info));
+            }
+        }
+    }
     lines.sort_by_key(|(p, _)| std::cmp::Reverse(*p));
     lines.into_iter().map(|(_, i)| i).collect()
 }
