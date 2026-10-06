@@ -1158,6 +1158,7 @@ pub fn play(
                 format!("the {} menu opens", if *sleep { "sleep" } else { "wait" })
             }
             Event::More(shown) => world::more_functions::describe(order, &state, shown),
+            Event::TerminalBack => "the terminal menu goes back a screen".to_string(),
             Event::Enable(r, on) => format!(
                 "{} {}",
                 describe_id(order, *r),
