@@ -490,6 +490,10 @@ pub struct IdleQuestion {
     pub player: bool,
     /// `IsChild` (the race's child flag, [`is_child`]).
     pub child: bool,
+    /// `IsPC1stPerson`: the player's view is first person. Only asked
+    /// about the player here (people's questions leave it false, as
+    /// before; whether the PC's view changes their picks isn't checked).
+    pub first_person: bool,
 }
 
 /// Asks the idle tree's conditions about one actor: what
@@ -548,13 +552,13 @@ impl<'a> IdleAsker<'a> {
                 "IsLastIdlePlayed" => Some(yes(a.last_idle == Some(c.param_forms[0]))),
                 "GetIsUsedItem" => Some(yes(a.used_item == Some(c.param_forms[0]))),
                 "IsChild" => Some(yes(a.child)),
-                // Nothing hit, knocked down, greeting, in a menu, in first
-                // person, using an item or in VATS here.
+                "IsPC1stPerson" => Some(yes(a.first_person)),
+                // Nothing hit, knocked down, greeting, in a menu, using an
+                // item or in VATS here.
                 "GetHitLocation" => Some(-1.0),
                 "GetKnockedState"
                 | "IsGreetingPlayer"
                 | "MenuMode"
-                | "IsPC1stPerson"
                 | "GetUsedItemActivate"
                 | "GetIsUsedItemType"
                 | "GetVATSMode"
@@ -1035,6 +1039,30 @@ mod tests {
         assert!(clock.is_delayed(FormId(11)));
         clock.advance(10.0);
         assert!(!clock.is_delayed(FormId(11)));
+    }
+
+    #[test]
+    fn is_pc_1st_person_answers_the_players_view() {
+        let index = (0..u16::MAX)
+            .find(|&i| crate::functions::function_name(i) == "IsPC1stPerson")
+            .unwrap();
+        let c = condition(index, Comparison::Equal, 1.0);
+        let ask = |first_person: bool| {
+            IdleAsker::new(
+                crate::dialogue::PLAYER_REF,
+                IdleQuestion {
+                    player: true,
+                    first_person,
+                    ..IdleQuestion::default()
+                },
+                None,
+                1,
+            )
+            .value(&c)
+        };
+        assert_eq!(ask(true), 1.0);
+        assert_eq!(ask(false), 0.0);
+        assert!(!IdleQuestion::default().first_person);
     }
 
     #[test]

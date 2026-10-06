@@ -585,6 +585,147 @@ pub fn taken_markers(
         .collect()
 }
 
+/// What activating a piece of furniture does (`TESFurniture::Activate`,
+/// Xbox PDB name; PC `005095b0`, slot 73 of the `TESFurniture` vtable at
+/// `01026d0c`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Activation {
+    /// The activator is already in furniture (its sit/sleep state isn't
+    /// 0): it gets up (`Actor::StandUp`, actor vfunc +0x418; for the player
+    /// `PlayerCharacter::InitiateGetUpPackage`, `00953ee0`), after a
+    /// temporary third-person view begins ([`TempThirdPerson::begin`]).
+    StandUp,
+    /// No usable marker free (`005686b0` failed): the activation fails.
+    NoMarker,
+    /// A bed marker (numbers 1–9): the bed's sleep path (ownership and the
+    /// player's sleep checks, then the sleep menu).
+    Sleep(PlacedMarker),
+    /// Any other marker: the player gets a temporary third-person view
+    /// (`00950340(1)`) and a package to use the furniture
+    /// (`PlayerCharacter::InitiateSitSleepPackage`, Xbox PDB name; PC
+    /// `00953d80`: a travel package, type 6, with the furniture as its
+    /// target, which runs the sit procedure [`player_approach`] /
+    /// [`Sitter::update`]).
+    Sit(PlacedMarker),
+}
+
+/// What activating furniture does for an actor in sit state `state`,
+/// `marker` being the nearest free usable marker ([`nearest_free`]).
+// Translated from 005095b0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn activate(state: SitState, marker: Option<PlacedMarker>) -> Activation {
+    if state != SitState::Normal {
+        return Activation::StandUp;
+    }
+    let Some(marker) = marker else {
+        return Activation::NoMarker;
+    };
+    // 005094f0: marker numbers 1-9 are beds.
+    if is_sleep_marker(marker.number) {
+        Activation::Sleep(marker)
+    } else {
+        Activation::Sit(marker)
+    }
+}
+
+/// The player's approach to a marker (the sit procedure's player branch):
+/// 40 units or more from the marker, the player is put on it at once
+/// (`SetPos` to the process's marker copy, `SetAngleZ` to its heading)
+/// rather than walking there as people do; within 40 the sit update
+/// ([`Sitter::update`]) runs. True when they were put there.
+// Translated from 00904f50 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn player_approach(sitter: &mut Sitter) -> bool {
+    if sitter.state != SitState::Normal || sitter.in_reach(sitter.position) {
+        return false;
+    }
+    sitter.position = sitter.marker.position;
+    sitter.heading = sitter.marker.heading;
+    true
+}
+
+/// Whether the player's activate key is refused for the sit state alone:
+/// in states 1, 2, 3, 5, 6, 7, 8 and 10 (sitting down, getting up, the
+/// sleep equivalents), not when up (0), seated (4) or asleep (9). The
+/// player update tests `GetSitSleepState() - 1` against the byte table at
+/// `00944228` (jump table `00944220`) and then refuses the key, as it also
+/// does while an animation action plays (`008a7570() != -1`, `00940605`).
+// Translated from 009405b6..009405f0 (disassembled, FalloutNV.exe 1.4.0.525)
+pub fn player_activation_blocked(state: SitState) -> bool {
+    const TABLE: [u8; 10] = [0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
+    match state.number() {
+        0 => false,
+        n => TABLE[usize::from(n - 1)] == 0,
+    }
+}
+
+/// The player's temporary third-person view while using furniture
+/// (`PlayerCharacter` +0x64d and +0x64e: `bTemp3rdPerson` and
+/// `bTemp3rdPersonSwitchBack`, Xbox PDB names at +0x65d/+0x65e).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TempThirdPerson {
+    pub active: bool,
+    /// Begun from first person: first person comes back when it ends.
+    pub switch_back: bool,
+}
+
+impl TempThirdPerson {
+    /// Begins it (`00950340`, called with 1 by `TESFurniture::Activate`
+    /// before the sit package or the stand-up). Nothing while a temporary
+    /// view is already on (`005721e0`: +0x64f `bTemp1stPerson` or +0x64d).
+    /// True when the view must switch to third person now (the player was
+    /// in first person, `+0x64a == 0`).
+    // Translated from 00950340 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn begin(&mut self, third_person: bool, temp_first_person: bool) -> bool {
+        if temp_first_person || self.active {
+            return false;
+        }
+        self.active = true;
+        if third_person {
+            return false;
+        }
+        self.switch_back = true;
+        true
+    }
+
+    /// Each frame of the player update (`00941d83`): it ends once no
+    /// animation action plays (`GetAnimAction() == -1`, process vfunc
+    /// +0x3e4), the player isn't knocked (`GetKnockState() == 0`, +0x40c)
+    /// and the view key isn't being held (`011e07b8`/`011e07b9`). True when
+    /// the view must switch back to first person now.
+    // Translated from 009503d0 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn update(&mut self, action_playing: bool, knocked: bool, pov_key_held: bool) -> bool {
+        if !self.active || action_playing || knocked || pov_key_held {
+            return false;
+        }
+        self.active = false;
+        std::mem::take(&mut self.switch_back)
+    }
+}
+
+/// The pitch limits (`Actor::SetAngleX` path): below the double at
+/// `0108a7f0` (-1.5533430576324463) the pitch is set to the float at
+/// `0108a7ec` (-1.553343); above the float at `0108a7f8` (1.553343) it's
+/// held there, except for an actor in sit states 1–5 (sitting down,
+/// seated, getting up), whose limit is `fSittingMaxLookingDown` degrees
+/// (× the double `01023128`, π/180). Pitch is the game's: positive looks
+/// down.
+// Translated from 00931d90 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn clamp_pitch(pitch: f32, state: SitState, sitting_max_looking_down_degrees: f32) -> f32 {
+    const LOWEST: f64 = -1.553_343_057_632_446_3;
+    const LOWEST_SET: f32 = -1.553_343;
+    let highest = if (1..6).contains(&state.number()) {
+        (f64::from(sitting_max_looking_down_degrees) * 0.017_453_292_384_743_7) as f32
+    } else {
+        1.553_343
+    };
+    if f64::from(pitch) < LOWEST {
+        LOWEST_SET
+    } else if pitch <= highest {
+        pitch
+    } else {
+        highest
+    }
+}
+
 /// A form list's entries (`FLST` `LNAM`s), or the form itself.
 pub fn list_or_one(order: &LoadOrder, id: FormId) -> Vec<FormId> {
     let Some(rr) = order.get(id) else {
@@ -813,6 +954,126 @@ mod tests {
         assert_eq!(s.update(2.0, false, &mut pick, &mut Anims), Step::Settled);
         s.update(0.0, false, &mut pick, &mut Anims);
         assert_eq!(s.state, SitState::WantToStand);
+    }
+
+    #[test]
+    fn activating_furniture_follows_tesfurniture_activate() {
+        let placed = place_markers(&[front()], [0.0, 0.0, 0.0], 0.0, 1.0)[0];
+        let bed = PlacedMarker {
+            number: 1,
+            ..placed
+        };
+        assert_eq!(
+            activate(SitState::Normal, Some(placed)),
+            Activation::Sit(placed)
+        );
+        assert_eq!(
+            activate(SitState::Normal, Some(bed)),
+            Activation::Sleep(bed)
+        );
+        assert_eq!(activate(SitState::Normal, None), Activation::NoMarker);
+        // Anyone in furniture, in any state, gets up, whatever is used.
+        for s in [
+            SitState::LoadSitIdle,
+            SitState::WaitingForSitAnim,
+            SitState::Sitting,
+            SitState::Sleeping,
+        ] {
+            assert_eq!(activate(s, Some(placed)), Activation::StandUp);
+            assert_eq!(activate(s, None), Activation::StandUp);
+        }
+    }
+
+    #[test]
+    fn the_player_is_put_on_a_marker_40_or_more_away() {
+        let placed = place_markers(&[front()], [0.0, 0.0, 0.0], 0.0, 1.0)[0];
+        let mut far = Sitter::new(FormId(9), placed, chair14(), [300.0, 0.0, 0.0], 1.0);
+        assert!(player_approach(&mut far));
+        assert_eq!(far.position, placed.position);
+        assert_eq!(far.heading, placed.heading);
+        // Exactly 40 away counts as far (`!(d < 40)`).
+        let at_40 = [
+            placed.position[0] + 40.0,
+            placed.position[1],
+            placed.position[2],
+        ];
+        let mut edge = Sitter::new(FormId(9), placed, chair14(), at_40, 1.0);
+        assert!(player_approach(&mut edge));
+        let near_spot = [
+            placed.position[0] + 39.0,
+            placed.position[1],
+            placed.position[2],
+        ];
+        let mut near = Sitter::new(FormId(9), placed, chair14(), near_spot, 1.0);
+        assert!(!player_approach(&mut near));
+        assert_eq!(near.position, near_spot);
+        // Then the sit update takes them from the marker as for anyone.
+        far.update(0.0, false, &mut pick, &mut Anims);
+        assert_eq!(far.state, SitState::WaitingForSitAnim);
+        assert!(!player_approach(&mut far));
+    }
+
+    #[test]
+    fn the_activate_key_is_refused_only_between_settled_states() {
+        let refused: Vec<u8> = (0..=10u8)
+            .filter(|&n| {
+                let s = [
+                    SitState::Normal,
+                    SitState::LoadSitIdle,
+                    SitState::WantToSit,
+                    SitState::WaitingForSitAnim,
+                    SitState::Sitting,
+                    SitState::WantToStand,
+                    SitState::LoadingSleepIdle,
+                    SitState::WantToSleep,
+                    SitState::WaitingForSleepAnim,
+                    SitState::Sleeping,
+                    SitState::WantToWake,
+                ][usize::from(n)];
+                player_activation_blocked(s)
+            })
+            .collect();
+        assert_eq!(refused, [1, 2, 3, 5, 6, 7, 8, 10]);
+    }
+
+    #[test]
+    fn the_temporary_third_person_view_lasts_while_an_action_plays() {
+        let mut v = TempThirdPerson::default();
+        // From first person: switch now, and back when it ends.
+        assert!(v.begin(false, false));
+        assert!(v.active && v.switch_back);
+        // A second begin while on changes nothing.
+        assert!(!v.begin(false, false));
+        assert!(!v.update(true, false, false));
+        assert!(!v.update(false, true, false));
+        assert!(!v.update(false, false, true));
+        assert!(v.active);
+        assert!(v.update(false, false, false));
+        assert_eq!(v, TempThirdPerson::default());
+        // From third person: nothing to switch either way.
+        assert!(!v.begin(true, false));
+        assert!(v.active && !v.switch_back);
+        assert!(!v.update(false, false, false));
+        assert!(!v.active);
+        // A temporary first-person view blocks it.
+        assert!(!v.begin(false, true));
+        assert!(!v.active);
+    }
+
+    #[test]
+    fn seated_pitch_is_limited_by_fsittingmaxlookingdown() {
+        let down = 1.2;
+        assert_eq!(clamp_pitch(down, SitState::Normal, 40.0), down);
+        let limit = clamp_pitch(down, SitState::Sitting, 40.0);
+        assert!((limit - 40f32.to_radians()).abs() < 1e-5, "{limit}");
+        for s in [SitState::LoadSitIdle, SitState::WantToStand] {
+            assert_eq!(clamp_pitch(down, s, 40.0), limit);
+        }
+        // Asleep (9) isn't limited; looking up isn't either.
+        assert_eq!(clamp_pitch(down, SitState::Sleeping, 40.0), down);
+        assert_eq!(clamp_pitch(-1.0, SitState::Sitting, 40.0), -1.0);
+        assert_eq!(clamp_pitch(-2.0, SitState::Sitting, 40.0), -1.553_343);
+        assert_eq!(clamp_pitch(2.0, SitState::Normal, 40.0), 1.553_343);
     }
 
     #[test]

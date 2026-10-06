@@ -174,6 +174,7 @@ fn main() {
             &game.order,
         )))
         .insert_resource(sitting::Seats::new(&game.order))
+        .init_resource::<sitting::PlayerSeat>()
         .insert_resource(faces::Faces::new(&game))
         .insert_resource(actors::AnimSettings::read(&game.settings))
         .insert_resource(ai::Moves::new(&game))
@@ -293,6 +294,8 @@ fn main() {
                 (
                     viewmodel::give_start_weapon,
                     walk::walk,
+                    // The player in furniture: on the seat, turned with it.
+                    sitting::player_furniture,
                     // Apply queued camera tracks before aiming/interactions.
                     player_idle::animate,
                     combat::player_attack,

@@ -85,6 +85,16 @@ running and jumping; a jump drops the run-up and air steering closes 0.3
 of the gap a frame. Tested, not compared. Evidence and gaps (slopes,
 per-direction animation speeds, camera): [MOVEMENT.md](MOVEMENT.md).
 
+Player furniture batch, 2026-10-06 (`claude/m1-sitting`): E on furniture
+now runs the game's own activation and sit procedure for the player
+(`TESFurniture::Activate` `005095b0`, approach `00904f50`, temporary third
+person `00950340`/`009503d0`, activate-key gate, seated pitch limit,
+first-person seated loop with its Camera1st track); E on nothing while
+seated gets up. Unit and generated-plugin regressions pass; no live couch
+run or original comparison yet; no third-person camera exists for the
+entry/exit. Evidence and gaps: [FURNITURE.md](FURNITURE.md). **Next:** live
+`--stage VCG01 27` couch run through Doc's questionnaire.
+
 Outstanding M1 gates:
 - Exact opening camera transition replay and Doc/player assistance timing.
 - Doc head/eye tracking: ported and unit-tested; the original-game
