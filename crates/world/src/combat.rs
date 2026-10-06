@@ -1270,14 +1270,19 @@ pub fn creature_damage(order: &LoadOrder, who: FormId) -> Option<f32> {
 /// game waits for its queued weapon action, `008a7570() == -1`); with
 /// the weapon holstered the first frame draws it; with it out, a weapon
 /// that can't reload (nothing loaded: fists, melee weapons) is put away at
-/// once, a gun once the key has been held for the game's hold time (a
-/// setting read at `011cdfcc` whose name and value aren't traced: not done
-/// here); releasing the key with a gun out before that reloads (as long as
-/// it was held at all). Letting go resets the timer and the press. Each
+/// once, a gun once the key has been held longer than
+/// `fPlayerWeaponReloadTimer` ([`RELOAD_TIMER`]); releasing the key with a
+/// gun out before that reloads (as long as it was held at all,
+/// `00948310`). Letting go resets the timer and the press. Each
 /// press draws or puts away once (`011e0bec`). Attacking with the weapon
 /// holstered draws it instead of attacking (`00948310`); changing weapons
 /// puts it away (`0088db20`, `0088d7d0`), and a new game starts with it
 /// away (`process+0x135` starts 0).
+/// `fPlayerWeaponReloadTimer` (the setting at `011cdfcc`, made by the
+/// static initializer `00f5bd60` with 0.5): how long the Ready Item key is
+/// held before a gun is put away instead of reloaded.
+pub const RELOAD_TIMER: f32 = 0.5;
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ReadyKey {
     /// How long the key has been held this press, seconds.
@@ -1310,6 +1315,8 @@ impl ReadyKey {
     /// weapon is out; `reloadable`: it has ammunition loaded (a gun with
     /// its ammunition equipped, `00525980`); `readying`: a drawing or
     /// putting away still plays.
+    // Translated from 009466d0 and 00948310 (decompiled, FalloutNV.exe
+    // 1.4.0.525)
     pub fn update(
         &mut self,
         key: KeyState,
@@ -1326,7 +1333,7 @@ impl ReadyKey {
                 } else if !out {
                     self.handled = true;
                     ReadyAction::Draw
-                } else if !reloadable {
+                } else if !reloadable || self.held > RELOAD_TIMER {
                     self.handled = true;
                     ReadyAction::PutAway
                 } else {
@@ -1334,7 +1341,8 @@ impl ReadyKey {
                 }
             }
             KeyState::Released => {
-                let reload = out && !readying && reloadable && self.held > 0.0;
+                let reload =
+                    out && !readying && reloadable && self.held > 0.0 && self.held < RELOAD_TIMER;
                 *self = ReadyKey::default();
                 if reload {
                     ReadyAction::Reload
@@ -1366,12 +1374,17 @@ mod tests {
         assert_eq!(key.update(Released, 0.02, true, true, true), Nothing);
         assert_eq!(key.update(Up, 0.02, true, true, false), Nothing);
         // A gun out: a tap reloads on release; while it's held nothing
-        // happens (the put-away after the hold time isn't done).
+        // happens until the hold time (0.5 s) is passed: then it's put
+        // away, and letting go doesn't reload.
         assert_eq!(key.update(Held, 0.02, true, true, false), Nothing);
         assert_eq!(key.update(Held, 0.02, true, true, false), Nothing);
         assert!((key.held - 0.04).abs() < 1e-6);
         assert_eq!(key.update(Released, 0.02, true, true, false), Reload);
         assert_eq!(key.held, 0.0);
+        assert_eq!(key.update(Held, 0.3, true, true, false), Nothing);
+        assert_eq!(key.update(Held, 0.3, true, true, false), PutAway);
+        assert_eq!(key.update(Held, 0.3, false, true, true), Nothing);
+        assert_eq!(key.update(Released, 0.02, false, true, false), Nothing);
         // Fists or a melee weapon out: the press puts them away at once.
         assert_eq!(key.update(Held, 0.02, true, false, false), PutAway);
         assert_eq!(key.update(Held, 0.02, false, false, true), Nothing);
