@@ -641,6 +641,13 @@ pub fn choose_weapon(
     {
         return false;
     }
+    // What they carry, leveled lists resolved (`GameState::stock`), so the
+    // guns and rounds their base's leveled entries give them count (a base
+    // with only `WithAmmoNVVarmintRifleLoot` and the like otherwise has
+    // nothing but its outfit). When the game resolves a reference's leveled
+    // contents (its container changes being made) isn't traced: here, at the
+    // first arsenal.
+    state.stock(order, who);
     let a = arsenal(order, state, who, style, target_distance, s);
     state
         .npc_combat

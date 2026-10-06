@@ -69,6 +69,12 @@ pub mod ids {
     /// (`TestRaiderScript`: `Begin OnStartCombat player`) adds 1 to.
     pub const FIGHT_GLOBAL: u32 = 0xB33;
     pub const RAIDER_SCRIPT: u32 = 0xB34;
+    /// A leveled list giving all of the rifle and 20 rounds (`LVLF` 0x04),
+    /// and a townsman (unaggressive) carrying only that list, placed 3000
+    /// units west.
+    pub const RIFLE_KIT: u32 = 0xB35;
+    pub const GUNMAN: u32 = 0xB36;
+    pub const GUNMAN_REF: u32 = 0xB37;
     /// The player's faction, as in the game.
     pub const PLAYER_FACTION: u32 = 0x1B2A4;
 }
@@ -404,7 +410,29 @@ pub fn fighting(tag: &str) -> TempData {
         }
         record(b"NPC_", id, &d)
     };
+    // A gunman whose only entry is a leveled list giving all of: the
+    // rifle and 20 rounds (as `WithAmmoNVVarmintRifleLoot`, `LVLF` 0x04).
+    let mut kit = edid("TestRifleKit");
+    kit.extend(sub(b"LVLD", &[0]));
+    kit.extend(sub(b"LVLF", &[0x04]));
+    for (item, count) in [(RIFLE, 1i16), (ROUND, 20)] {
+        let mut lvlo = 1i16.to_le_bytes().to_vec();
+        lvlo.extend([0, 0]);
+        lvlo.extend(item.to_le_bytes());
+        lvlo.extend(count.to_le_bytes());
+        lvlo.extend([0, 0]);
+        kit.extend(sub(b"LVLO", &lvlo));
+    }
+    let leveled_items = record(b"LVLI", RIFLE_KIT, &kit);
     let mut npcs = npc(GUARD, "TestGuard", (1, 3, 1), GUARDS, Some(PISTOL), None);
+    npcs.extend(npc(
+        GUNMAN,
+        "TestGunman",
+        (0, 3, 0),
+        TOWN,
+        Some(RIFLE_KIT),
+        None,
+    ));
     npcs.extend(npc(
         TOWNSPERSON,
         "TestTownsperson",
@@ -441,6 +469,12 @@ pub fn fighting(tag: &str) -> TempData {
         "TestRaiderRef",
     ));
     refs.extend(actor(GECKO_REF, GECKO, [0.0, 1000.0, 0.0], "TestGeckoRef"));
+    refs.extend(actor(
+        GUNMAN_REF,
+        GUNMAN,
+        [-3000.0, 0.0, 0.0],
+        "TestGunmanRef",
+    ));
     refs.extend(actor(GIANT_REF, GIANT, [5000.0, 0.0, 0.0], "TestGiantRef"));
     refs.extend(actor(
         SPAWNED_REF,
@@ -471,6 +505,7 @@ pub fn fighting(tag: &str) -> TempData {
     plugin.extend(group(*b"WEAP", 0, &weapons));
     plugin.extend(group(*b"CREA", 0, &creatures));
     plugin.extend(group(*b"LVLC", 0, &leveled));
+    plugin.extend(group(*b"LVLI", 0, &leveled_items));
     plugin.extend(group(*b"NPC_", 0, &npcs));
     plugin.extend(cells);
     data.write("FalloutNV.esm", &plugin);

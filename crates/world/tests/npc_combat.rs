@@ -116,6 +116,28 @@ fn guns_need_their_ammunition_and_far_targets_keep_the_best_gun() {
 }
 
 #[test]
+fn a_gun_from_a_leveled_list_is_chosen_with_its_rounds() {
+    // The gunman's base carries only a leveled list (the rifle and its
+    // rounds, "use all"), as the Powder Gangers' `WithAmmoNVVarmintRifle
+    // Loot`: the fight's first arsenal resolves it, so he takes up the
+    // rifle rather than his fists.
+    let (_data, order) = order("npcc-leveled");
+    let settings = SettingCache::default();
+    let s = |n: &str, d: f32| settings.get(&order, n, d);
+    let gunman = FormId(GUNMAN_REF);
+    let style = CombatStyle::of(&order, gunman);
+    let mut state = GameState::new(&order);
+    state.player_cell = Some(FormId(CELL));
+    npc_combat::choose_weapon(&order, &mut state, gunman, &style, Some(600.0), &s);
+    assert_eq!(
+        combat::weapon_in_hand(&order, &state, gunman).map(|w| w.form_id),
+        Some(FormId(RIFLE))
+    );
+    assert_eq!(state.item_count(&order, gunman, FormId(ROUND)), 20);
+    assert!(!state.npc_combat.unarmed.contains(&gunman));
+}
+
+#[test]
 fn clips_empty_and_reload_and_teammates_use_rounds_up() {
     let (_data, order) = order("npcc-reload");
     let guard = FormId(GUARD_REF);
