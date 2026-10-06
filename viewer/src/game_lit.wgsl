@@ -270,7 +270,8 @@ struct GameLighting {
     // The surface's own glow; w is 1 when the glow map masks it.
     emissive: vec4<f32>,
     // x: the luminance shown at full brightness at the starting exposure,
-    // which cancels the camera's exposure there; y: how many lights.
+    // which cancels the camera's exposure there; y: how many lights; z: 1
+    // when the ambient, sun and fog are the hour's shared light outdoors.
     scale: vec4<f32>,
     // The fog's color as stored, and its power in w.
     fog_color: vec4<f32>,
@@ -302,6 +303,15 @@ struct GameLighting {
     hair_tint: vec4<f32>,
 }
 
+// The hour's light outdoors, shared by every surface (`shared_light.rs`).
+struct SharedLight {
+    ambient: vec4<f32>,
+    directional_color: vec4<f32>,
+    directional_direction: vec4<f32>,
+    fog_color: vec4<f32>,
+    fog_range: vec4<f32>,
+}
+
 @group(2) @binding(100) var<uniform> game: GameLighting;
 @group(2) @binding(101) var glow_texture: texture_2d<f32>;
 @group(2) @binding(102) var glow_sampler: sampler;
@@ -311,6 +321,43 @@ struct GameLighting {
 @group(2) @binding(106) var environment_sampler: sampler;
 @group(2) @binding(107) var environment_mask: texture_2d<f32>;
 @group(2) @binding(108) var environment_mask_sampler: sampler;
+@group(2) @binding(109) var<storage, read> shared_light: SharedLight;
+
+// The ambient, the sun and the fog: the surface's own, or the hour's
+// shared light outdoors.
+fn outdoors() -> bool {
+    return game.scale.z > 0.5;
+}
+fn ambient_light() -> vec4<f32> {
+    if (outdoors()) {
+        return shared_light.ambient;
+    }
+    return game.ambient;
+}
+fn directional_color() -> vec4<f32> {
+    if (outdoors()) {
+        return shared_light.directional_color;
+    }
+    return game.directional_color;
+}
+fn directional_direction() -> vec4<f32> {
+    if (outdoors()) {
+        return shared_light.directional_direction;
+    }
+    return game.directional_direction;
+}
+fn fog_color() -> vec4<f32> {
+    if (outdoors()) {
+        return shared_light.fog_color;
+    }
+    return game.fog_color;
+}
+fn fog_range() -> vec4<f32> {
+    if (outdoors()) {
+        return shared_light.fog_range;
+    }
+    return game.fog_range;
+}
 
 // The sRGB curve both ways, exactly as the GPU applies it to sRGB textures
 // and to the screen, so encoding undoes its decoding.
@@ -386,7 +433,7 @@ fn fragment(
         } else if (game.surface.w > 0.5) {
             shaded *= 1.0 - fog;
         } else {
-            shaded = mix(shaded, game.fog_color.rgb, fog);
+            shaded = mix(shaded, fog_color().rgb, fog);
         }
     } else {
     var n = vertex_normal;
@@ -428,11 +475,11 @@ fn fragment(
     let bent = normalize(0.5 * n + vertex_normal);
     var hair_specular = vec3<f32>(0.0);
 
-    var light = game.ambient.rgb;
-    let sun = normalize(game.directional_direction.xyz);
+    var light = ambient_light().rgb;
+    let sun = normalize(directional_direction().xyz);
     // Skin's directional pass (`SLS1002`) gets the light times the image
     // space's factor, its highlight too.
-    var sun_color = game.directional_color.rgb;
+    var sun_color = directional_color().rgb;
     if (is_skin) {
         sun_color *= game.actor.y;
     }
@@ -500,7 +547,7 @@ fn fragment(
 
     // Specular is added before fog, as the game draws it (in one pass, or
     // in passes added before its fog pass).
-    shaded = mix(surface * light + specular, game.fog_color.rgb, fog);
+    shaded = mix(surface * light + specular, fog_color().rgb, fog);
 
     // The reflection, added on top of the finished surface (the game's
     // separate pass blends ONE + ONE). On an alpha-blended surface it's
@@ -572,14 +619,15 @@ fn stored_surface(in: VertexOutput, base: vec3<f32>, textured: bool) -> vec3<f32
 // saturate((d - near) / (far - near)) ^ power. The game works it out per
 // vertex; the fragment shader calls this at the triangle's corners.
 fn fog_amount(p: vec3<f32>) -> f32 {
-    if (game.fog_range.w < 0.5) {
+    let range = fog_range();
+    if (range.w < 0.5) {
         return 0.0;
     }
     let v = view_bindings::view.view_from_world * vec4<f32>(p, 1.0);
     let projection = view_bindings::view.clip_from_view;
-    let d = length(vec3<f32>(v.x * projection[0][0], v.y * projection[1][1], -v.z - game.fog_range.z));
-    let span = max(game.fog_range.y - game.fog_range.x, 1e-4);
-    return pow(saturate((d - game.fog_range.x) / span), game.fog_color.w);
+    let d = length(vec3<f32>(v.x * projection[0][0], v.y * projection[1][1], -v.z - range.z));
+    let span = max(range.y - range.x, 1e-4);
+    return pow(saturate((d - range.x) / span), fog_color().w);
 }
 
 // The reflection pass (`SLS2057`; window reflections `SLS2058`), with its

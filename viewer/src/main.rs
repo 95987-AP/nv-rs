@@ -45,6 +45,7 @@ mod report;
 mod scope;
 mod scripts;
 mod sight;
+mod shared_light;
 mod sitting;
 mod sounds;
 mod swaps;
@@ -74,7 +75,7 @@ use bevy::render::render_resource::{
 };
 use bevy::render::renderer::RenderDevice;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
-use bevy::window::WindowResolution;
+use bevy::window::{CursorGrabMode, PrimaryWindow, WindowResolution};
 use cellview::{space, Blend, Game, GpuFormat, TextureData, ViewerScene};
 use exterior::{ExteriorStart, PendingExterior};
 use grade::{GradePlugin, ImageSpaceGrade};
@@ -334,6 +335,7 @@ fn main() {
         .insert_resource(scripts::StartUse(args.use_on.clone()))
         .insert_resource(game_menus::FixedPointer(args.menu_pointer))
         .add_plugins((GradePlugin, GameLightingPlugin, TerrainPlugin, LodPlugin))
+        .add_plugins(shared_light::SharedLightPlugin)
         // After the default plugins: they load shaders.
         .add_plugins((hud::HudPlugin, pipboy::PipboyPlugin))
         .add_plugins(game_menus::GameMenusPlugin)
@@ -1912,6 +1914,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2024,6 +2027,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2103,6 +2107,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2168,6 +2173,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2253,12 +2259,14 @@ fn srgb_decode(c: f32) -> f32 {
     }
 }
 
-/// `--fps`: frames counted, and the time since the last report.
+/// `--fps`: frames counted, the time since the last report and the
+/// longest frame in it (a hitch).
 #[derive(Resource, Default)]
 struct FrameCounter {
     on: bool,
     frames: u32,
     seconds: f32,
+    longest: f32,
 }
 
 fn report_fps(time: Res<Time>, mut counter: ResMut<FrameCounter>) {
@@ -2267,14 +2275,17 @@ fn report_fps(time: Res<Time>, mut counter: ResMut<FrameCounter>) {
     }
     counter.frames += 1;
     counter.seconds += time.delta_secs();
+    counter.longest = counter.longest.max(time.delta_secs());
     if counter.seconds >= 2.0 {
         println!(
-            "{:.0} frames per second ({:.1} ms a frame)",
+            "{:.0} frames per second ({:.1} ms a frame, longest {:.1} ms)",
             counter.frames as f32 / counter.seconds,
-            1000.0 * counter.seconds / counter.frames as f32
+            1000.0 * counter.seconds / counter.frames as f32,
+            1000.0 * counter.longest
         );
         counter.frames = 0;
         counter.seconds = 0.0;
+        counter.longest = 0.0;
     }
 }
 
@@ -2425,6 +2436,7 @@ fn lit_material(
             _ => 0.0,
         };
         GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 emissive: Vec4::new(ur, ug, ub, 0.0),
                 surface: Vec4::new(0.0, 0.0, 1.0, fog_mode),
@@ -2458,6 +2470,7 @@ fn lit_material(
             .and_then(|(e, _)| e.mask)
             .and_then(|i| textures[i].clone());
         GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 emissive: Vec4::new(er, eg, eb, flag(glow.is_some())),
                 specular,
@@ -2588,7 +2601,7 @@ fn help_text(ev100: f32, speed: f32, walking: bool) -> String {
             .to_string()
     } else {
         format!(
-            "Flying: hold a mouse button to look; WASD, Space/Ctrl up/down, Shift faster, \
+            "Flying: the mouse looks; WASD, Space/Ctrl up/down, Shift faster, \
              wheel: speed ({speed:.1} m/s), E to use things"
         )
     };
