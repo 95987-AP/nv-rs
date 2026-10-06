@@ -1494,6 +1494,12 @@ pub mod quest_ids {
     /// `WNM1` `1stPersonModGunExt` (`Weapons\1stModGunExt.NIF`).
     pub const FIRST_PERSON_GUN: u32 = 0xB5E;
     pub const FIRST_PERSON_GUN_EXT: u32 = 0xB5F;
+    /// Noise: `TestLoudGun` (a pistol, `VNAM` 0 loud) whose first slot is
+    /// `TestSilencer` (effect 11), and `TestKnife` (one-handed melee). The
+    /// gecko's `NAM5` is 0 (loud).
+    pub const LOUD_GUN: u32 = 0xB60;
+    pub const SILENCER: u32 = 0xB61;
+    pub const KNIFE: u32 = 0xB62;
     /// Caravan: `TestCardAce` (hearts ace), `TestCardQueen` (spades queen),
     /// both with `TestCardScript` (the game's `CardAddToPlayerScript`:
     /// `OnAdd`, held by the player, `AddCardToPlayer` and `RemoveMe`), and
@@ -1941,6 +1947,7 @@ End
     gecko_data.extend(8i16.to_le_bytes());
     gecko_data.extend([5; 7]);
     gecko.extend(sub(b"DATA", &gecko_data));
+    gecko.extend(sub(b"NAM5", &0u32.to_le_bytes()));
     let mut bottle = edid("TestBottle");
     bottle.extend(sub(b"SCRI", &BOTTLE_SCRIPT.to_le_bytes()));
     // A healing item: its effect restores health (archetype 0, actor
@@ -2780,6 +2787,21 @@ End
     }
     mod_gun.extend(sub(b"DNAM", &mod_dnam));
     weapons.extend(record(b"WEAP", MOD_GUN, &mod_gun));
+    let mut loud_gun = edid("TestLoudGun");
+    loud_gun.extend(sub(b"WMI1", &SILENCER.to_le_bytes()));
+    loud_gun.extend(sub(b"DATA", &mod_gun_data));
+    let mut loud_dnam = weapon_dnam.clone();
+    loud_dnam[0] = 3;
+    loud_dnam[140..144].copy_from_slice(&11u32.to_le_bytes());
+    loud_gun.extend(sub(b"DNAM", &loud_dnam));
+    loud_gun.extend(sub(b"VNAM", &0u32.to_le_bytes()));
+    weapons.extend(record(b"WEAP", LOUD_GUN, &loud_gun));
+    let mut knife = edid("TestKnife");
+    knife.extend(sub(b"DATA", &mod_gun_data));
+    let mut knife_dnam = weapon_dnam.clone();
+    knife_dnam[0] = 1;
+    knife.extend(sub(b"DNAM", &knife_dnam));
+    weapons.extend(record(b"WEAP", KNIFE, &knife));
     plugin.extend(group(*b"WEAP", 0, &weapons));
     let first_person = |id: u32, name: &str, model: &str| {
         let mut d = edid(name);
@@ -2808,6 +2830,7 @@ End
     let mut mods = weapon_mod(EXT_MAG, "TestExtMag");
     mods.extend(weapon_mod(BARREL, "TestBarrel"));
     mods.extend(weapon_mod(LIGHT_FRAME, "TestLightFrame"));
+    mods.extend(weapon_mod(SILENCER, "TestSilencer"));
     plugin.extend(group(*b"IMOD", 0, &mods));
     plugin.extend(group(*b"CREA", 0, &record(b"CREA", GECKO, &gecko)));
     let mut bodies = record(

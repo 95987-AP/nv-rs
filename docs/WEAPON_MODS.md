@@ -70,7 +70,9 @@ most condition), `weight_off` (in `GameState::inventory_weight`),
 `worth_added` (in `barter::item_value`), `attach`, `fitting`, `model`
 and `player_model` (the viewer's first-person weapon and the Pip-Boy
 arm's: the 9mm with Extended Mags holds `9mmExtClip.NIF`, the fire axe
-`1stFireAxe.NIF`); damage in
+`1stFireAxe.NIF`); silence in `world::noise` (an attack's noise, which
+detection hears: a silenced gun's is `iSoundLevelSilent`, `008ba600`);
+damage in
 `combat::weapon_damage_at`; the V.A.T.S. to-hit in `vats::part_chance`.
 
 The mod screen (`ItemModMenu`, class 1061, `menus\item_mod_menu.xml`):
@@ -93,7 +95,7 @@ Checks: `crates/world/tests/weapon_mods.rs`, `world::weapon_mods::tests`,
 
 - The mod screen's hold-to-confirm meter (a controller's), its sort's
   exact trait (`00783810`), and the weapon taken off while it's modded.
-- Split beam's damage scale, projectile speed, silence, sights, the ammo
+- Split beam's damage scale, projectile speed, sights, the ammo
   regeneration and equip speed effects. Other people's modded weapons
   (they're built from their base record, without mods).
 - Mods are kept per holder and weapon (as its condition is), where the

@@ -59,6 +59,7 @@ pub mod modifier;
 pub mod more_functions;
 pub mod movement;
 pub mod music;
+pub mod noise;
 pub mod particles;
 pub mod perks;
 mod placement;

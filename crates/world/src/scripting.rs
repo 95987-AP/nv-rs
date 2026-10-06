@@ -423,6 +423,9 @@ pub struct GameState {
     /// weapon start holstered; the Ready Item key and attacking draw it).
     /// Not saved.
     pub weapon_out: HashSet<FormId>,
+    /// The noise of each attacker's last attack, while it lasts
+    /// (`world::noise`). Not saved.
+    pub noise: HashMap<FormId, crate::noise::Noise>,
     /// Faction relations scripts changed (`SetEnemy`, `SetAlly`): (faction,
     /// other) → reaction (0 neutral, 1 enemy, 2 ally, 3 friend).
     pub faction_relations: HashMap<(FormId, FormId), u8>,
@@ -2151,7 +2154,7 @@ impl Facts<'_> {
             running,
             sneaking: player && s.player_sneaking,
             light: 50.0,
-            shot_noise: 0.0,
+            shot_noise: crate::noise::value(s, other) as f32,
             armour_weight: 0.0,
             armour_penalty: 0.0,
             perception: av(who, 6),

@@ -45,8 +45,8 @@ pub struct Inputs {
     pub sneaking: bool,
     /// The target's light level, 0–100.
     pub light: f32,
-    /// The noise of the target's last shot (100 loud, 50 normal, 10
-    /// silent), 0 for none.
+    /// The noise of the target's last attack (`world::noise`: 100 loud,
+    /// 50 normal, 0 silent), 0 for none.
     pub shot_noise: f32,
     /// The weight of the target's body armour, and its stealth penalty
     /// (`iHeavyArmorStealthPenalty` 20, `iMediumArmorStealthPenalty` 10).
