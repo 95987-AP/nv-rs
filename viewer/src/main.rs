@@ -614,6 +614,7 @@ const BRING_IN_REACH: f32 = 2.5 * world::land::CELL_SIZE;
 /// after their square loaded (`world::ai::enabled_since_load`), who isn't
 /// drawn yet is spawned, lit as the place is; outdoors, those within the
 /// loaded squares.
+#[allow(clippy::too_many_arguments)]
 fn bring_in_people(
     time: Res<Time>,
     game: Res<GameFiles>,
