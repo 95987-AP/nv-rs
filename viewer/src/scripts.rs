@@ -1123,6 +1123,10 @@ pub fn run_scripts(
                 waiting.push(crate::menus::Menu::RepairServices(vendor));
                 None
             }
+            Event::TeammateContainer(who) => {
+                waiting.push(crate::menus::Menu::Teammate(who));
+                None
+            }
             // `ShowSleepWaitMenu` (its refusals already given): the game's
             // sleep/wait menu (`game_menus::sleepwait`).
             Event::SleepWaitMenu { sleep } => {

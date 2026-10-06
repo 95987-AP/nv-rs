@@ -993,6 +993,9 @@ pub enum Event {
     Barter(FormId),
     /// `ShowRepairMenu`: this merchant's repairs (`world::repair`).
     RepairServices(FormId),
+    /// `OpenTeammateContainer`: trading things with a companion (the
+    /// container menu's mode 3).
+    TeammateContainer(FormId),
     /// Someone died (killed by `by`).
     Died {
         who: FormId,
@@ -3395,6 +3398,18 @@ impl<'a> Runner<'a> {
                 let stat = crate::stats::index(&stat)?;
                 crate::stats::bump(self.state, stat, arg(1).number() as i64);
             }
+            // `005d9430`: on a person or creature that's the player's
+            // teammate, or anyone when the number given isn't 0, the
+            // container menu on their things in mode 3 (`00709470`).
+            "OpenTeammateContainer" => {
+                let who = target?;
+                let anyone = args.first().is_some_and(|a| a.number() != 0.0);
+                if crate::script_functions::is_actor(self.order, who)
+                    && (anyone || self.state.teammates.contains(&who))
+                {
+                    events.push(Event::TeammateContainer(who));
+                }
+            }
             "SetPlayerTeammate" => {
                 let who = target?;
                 if arg(0).number() != 0.0 {
@@ -3805,6 +3820,7 @@ pub const HANDLED: &[&str] = &[
     "GetEquipped",
     "ShowBarterMenu",
     "ShowRepairMenu",
+    "OpenTeammateContainer",
     "SetPlayerTagSkill",
     "GetPlayerControlsDisabled",
     "GetPlayerName",

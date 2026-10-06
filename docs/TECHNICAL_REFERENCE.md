@@ -990,6 +990,12 @@ weapons and armour with what mending each costs, the condition and damage
 (or DT/DR) now and after, Repair All; how far they mend and what they ask
 come from their Repair skill by the game's own formulas (see
 `docs/REPAIR.md`). `--open-menu repair:REF` opens a vendor's for testing.
+
+Companions trade things with you when their dialogue says so ("Let's
+trade equipment."): the game's container screen on their things, without
+Take All; they refuse what they've no room for ("Cass can't carry any
+more.") and say their trading lines (see `docs/COMPANIONS.md`).
+`--open-menu teammate:REF` opens one for testing.
 Inventories start
 as the records list them, with leveled lists picked for your level; I
 shows what you carry (E on a skill book reads it: +3 to its skill, +4

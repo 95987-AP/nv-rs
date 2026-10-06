@@ -80,6 +80,7 @@ OPTIONS:
                             menus as the game would: container:REF (a
                             container or a body), barter:REF (a merchant),
                             repair:REF (a merchant's repairs),
+                            teammate:REF (trading with a companion),
                             quantity:N (how many, up to N), levelup (the
                             player goes up a level; levelup:perks also
                             gives the points and goes on to the perks),

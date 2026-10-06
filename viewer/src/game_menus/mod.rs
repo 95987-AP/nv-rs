@@ -276,6 +276,8 @@ fn start_menu(
         ("barter", Some(r)) => crate::menus::Menu::Barter(r),
         // A vendor's repairs, as `ShowRepairMenu` on them would open them.
         ("repair", Some(r)) => crate::menus::Menu::RepairServices(r),
+        // A companion's things, as `OpenTeammateContainer` would open them.
+        ("teammate", Some(r)) => crate::menus::Menu::Teammate(r),
         // A placed terminal's own screen, as getting in would open it.
         ("terminal", Some(r)) => {
             crate::menus::Menu::Terminal(world::scripting::base_of(order, r).unwrap_or(r), r)

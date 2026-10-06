@@ -333,6 +333,49 @@ pub fn weight(order: &LoadOrder, item: FormId, hardcore: bool) -> f32 {
     w.unwrap_or(NONE)
 }
 
+/// What someone carries and can carry, as trading with a companion asks
+/// it: the most is their Carry Weight (actor value 13) through the
+/// holder's perks' "Get Max Carry Weight" (entry point 22, the player's
+/// only; `008a0c20`); what they carry is their things' weight, for anyone
+/// but the player at most that (`00577250`).
+pub fn carry(order: &LoadOrder, state: &GameState, who: FormId) -> (f32, f32) {
+    let value = crate::scripting::Facts {
+        order,
+        state,
+        speaker: None,
+    }
+    .current_actor_value(who, 13)
+    .unwrap_or(0.0) as f32;
+    let most = crate::perks::apply_for(
+        order,
+        state,
+        who,
+        crate::perks::entry::GET_MAX_CARRY_WEIGHT,
+        value,
+        &[],
+    );
+    let mut carried = state.inventory_weight(order, who);
+    if who != crate::dialogue::PLAYER_REF {
+        carried = carried.min(most);
+    }
+    (carried, most)
+}
+
+/// Whether a companion has room for `count` more of an item (`0075dc80`
+/// in mode 3): what they carry plus the item's weight × `count`, at most
+/// the most they can carry.
+pub fn has_room(
+    order: &LoadOrder,
+    state: &GameState,
+    who: FormId,
+    item: FormId,
+    count: i32,
+) -> bool {
+    let (carried, most) = carry(order, state, who);
+    let each = weight(order, item, false).max(0.0);
+    each * count as f32 + carried <= most
+}
+
 /// One thing someone holds, as the game's item menus read it (the
 /// container menu's filling `0075c280`, `00719ef0`, `0075cfc0`, its filter
 /// `0075e650` and its labels `0075d160`).

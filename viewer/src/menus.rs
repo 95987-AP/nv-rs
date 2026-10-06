@@ -39,6 +39,9 @@ pub enum Menu {
     Barter(FormId),
     /// A merchant's repairs (their reference, `ShowRepairMenu`).
     RepairServices(FormId),
+    /// Trading things with a companion (their reference,
+    /// `OpenTeammateContainer`).
+    Teammate(FormId),
     /// A computer terminal used (`world::terminal`): its record and the
     /// placed terminal.
     Terminal(FormId, FormId),
@@ -195,6 +198,7 @@ fn open(
         Menu::Container(..)
         | Menu::Barter(..)
         | Menu::RepairServices(..)
+        | Menu::Teammate(..)
         | Menu::LevelUp(..)
         | Menu::Character(CharacterMenu::Traits { .. })
         | Menu::Character(CharacterMenu::TagSkills { .. })
