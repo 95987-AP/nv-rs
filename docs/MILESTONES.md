@@ -113,6 +113,16 @@ constructors are now identified; runtime configuration and original comparison
 remain unverified. Do not repeat the established
 package-look lock or tester activation fixes.
 
+M2 blocker batch, 2026-10-06 (`claude/m2-cell-scripts`): object scripts
+now run for every attached cell (the interior, or the 5×5 grid with the
+game's re-centring margin, including persistent objects), disabled ones
+too; `OnLoad` fires once per cell attach or enable; triggers follow the
+traced one-event-per-step occupancy; the pass stops after `Activate`/
+`MoveTo`-type commands. Traced addresses, tests and gaps:
+[SCRIPTS_RUNTIME.md](SCRIPTS_RUNTIME.md). Generated-world tests only; not
+compared with the original. **Next action:** play Goodsprings to VCG02
+stage 20 and compare trigger/`OnLoad` timing with the original.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,
