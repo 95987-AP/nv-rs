@@ -135,7 +135,7 @@ pub fn after(
     for m in screen.open.iter_mut() {
         match m {
             OpenMenu::Container(_) => below = true,
-            OpenMenu::Barter(_) => below = false,
+            OpenMenu::Barter(_) | OpenMenu::Recipe(_) => below = false,
             OpenMenu::Quantity(q) => {
                 if below {
                     if let Some(n) = q.answer.take() {

@@ -45,9 +45,16 @@ pub const MOST: u32 = 100;
 pub const ITEMS_CRAFTED: u8 = 0x20;
 
 /// The settings the "added" notice is made of (`007284f0`):
-/// `sAddItemtoInventory` (`011d4e7c`) and `sPlural` (`011d3114`).
-const ADDED: &str = "sAddItemtoInventory";
-const PLURAL: &str = "sPlural";
+/// `sAddItemtoInventory` (`011d4e7c`) and `sPlural` (`011d3114`), with the
+/// values the exe gives them where no plugin sets them (their static
+/// initializers `00f6d140`: "added", `00f6d0e0`: "(s)"; the official master
+/// sets neither).
+const ADDED: (&str, &str) = ("sAddItemtoInventory", "added");
+const PLURAL: (&str, &str) = ("sPlural", "(s)");
+
+fn text_setting(order: &LoadOrder, (name, default): (&str, &str)) -> String {
+    crate::scripting::game_setting_text(order, name).unwrap_or_else(|| default.to_string())
+}
 
 /// The notice's icon (`007284f0`).
 pub const NOTICE_ICON: &str = "Interface\\Icons\\Message Icons\\glow_message_giftbox.dds";
@@ -369,8 +376,8 @@ pub fn make(
     if !chips_first {
         crate::stats::bump(state, ITEMS_CRAFTED, i64::from(times));
     }
-    let added = crate::scripting::game_setting_text(order, ADDED).unwrap_or_default();
-    let plural = crate::scripting::game_setting_text(order, PLURAL).unwrap_or_default();
+    let added = text_setting(order, ADDED);
+    let plural = text_setting(order, PLURAL);
     let mut notices = Vec::new();
     for c in &recipe.outputs {
         let n = (c.count * times) as i32;

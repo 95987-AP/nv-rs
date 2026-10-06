@@ -62,7 +62,7 @@ component is added to its list once it has an item and a count other than
 - **Order** (`00728c10`): lines that can be made first, then by name with
   `_mbscmp` (byte order, case-sensitive). Lines that can't be made are
   drawn at alpha 0x7f.
-- **Making** (`007284f0`, n times): each ingredient's count × n removed
+- **Making** (`007284f0`, n times; then the menu closes): each ingredient's count × n removed
   (an equipped weapon the actor holds only one of is unequipped first);
   "Items Crafted" (misc stat 0x20) + n unless the first ingredient is
   casino chips (form type 0x6C); each output's count × n added, weapons
@@ -85,11 +85,51 @@ the top.
 
 Not compared with the running original game yet.
 
+## The menu (`ui::menus::recipe`, `viewer/src/game_menus/recipe.rs`)
+
+Tile ids from `recipe_menu.xml`: 0 and 2 the filter arrows, 1 the filter's
+title, 3 the recipes, 4 the category, 5 the skill, 6 the ingredients, 7
+Accept, 8 Exit, 9 the picture, 10 the item card, 11-13 the headings; the
+line template `RM_list_template` (id 15). From the code:
+
+- Opening (`00726ff0`): both lists ask for `CM_list_template` (the file
+  has `RM_list_template`); `sRecipes` (1), `sSkillRequirement` (13),
+  `sIngredients` (11), `sMadeAt` (12), `sAccept` (7), `sExit` (8) (the
+  settings' objects `011d2088`, `011d2b08`, `011d3090`, `011d50f8`,
+  `011d26f4`, `011d33fc`); Accept and Exit 20 units further left.
+- A line's alpha goes on the line's first child, its text (`007b5370`).
+- The filter index (`0119fbf4`) starts at -1 in the exe's data and is a
+  global, so it is kept from one opening to the next.
+- The pointer on a line (`00727b10`, the menu's +0x10, id 15): the
+  category (alpha 127 when it isn't the menu's), the heading (the
+  subcategory's name and the products, as "name (n)", for a recipe of one
+  ingredient and several products), the ingredients as
+  "name (have/need)" sorted by name (`00728cd0`, alpha 127 when short), the
+  skill "name (current/required)" (alpha 127 when too low), Accept's
+  `target` only when it can be made, the first product's picture.
+- Accept (7, `007274b0` case 7): the quantity menu with the most that can be
+  made (`007aba00`, which always opens), then `007284f0`, which ends by
+  closing the menu (`00727430`: `LEAVE_STACK` 1): every craft needs the
+  bench again. 0 makes nothing and the menu stays.
+- The settings the menu and notice read are exe defaults (the official
+  master sets none of them): `sPlural` is "(s)", so "3 Stimpak(s) added".
+
+Checked: two `ui` tests (opening, filter wrap and memory, details, Accept
+only when possible, Exit); live in the viewer on the official data
+(`--run "player.ShowRecipeMenu CampfireRecipes"` with ingredients given
+and `--menu-pointer` on the first line): the layout, the dim lines, the
+highlight, the details and the picture as the file and code give them.
+Not compared with the running original game.
+
 ## Not done
 
-- The menu itself (`ui` and the viewer): the request is reported, not
-  drawn. Its pieces are traced above (clicks, details pane, filter,
-  quantity menu).
+- The `HelpCrafting` tutorial message the first time (`00726ff0`:
+  tutorial flag 0x26); the game's tutorial help messages aren't in the
+  viewer at all yet.
+- The item card (`00728da0`, `RecipeMenu::PopulateItemStatsDisplay`), the
+  ingredient list's own pointer (an ingredient's picture), the
+  controller's list switching (special codes 0xd, 0xe) and the cross-fade
+  (`00728a70`).
 - The challenge events crafting raises (`005f5950(0xc, ...)` and the misc
   stat's), and the HUD ammo refresh when the ingredient is the equipped
   weapon's ammunition.

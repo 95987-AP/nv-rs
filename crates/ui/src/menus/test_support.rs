@@ -449,3 +449,41 @@ pub fn sleep_wait_menu() -> String {
      </menu>"
         .to_string()
 }
+
+/// A recipe menu laid out like `recipe_menu.xml`: the filter (0-2), the
+/// two lists (3, 6), the right side's fields (4, 5, 11-13), Accept (7),
+/// Exit (8), the picture (9) and card (10), and its only template
+/// `RM_list_template` (the code asks for `CM_list_template`).
+pub fn recipe_menu() -> String {
+    format!(
+        "<menu name=\"RecipeMenu\"><class>&RecipeMenu;</class>
+           <rect name=\"NOGLOW_BRANCH\">
+             <rect name=\"RM_ItemsRect\"><locus>&true;</locus><width>464</width><height>480</height>
+               <image name=\"RM_Items_LeftFilterArrow\"><id>0</id><target>&true;</target></image>
+               <text name=\"RM_ItemsTitle\"><id>1</id><font>6</font><target>&true;</target></text>
+               <image name=\"RM_Items_RightFilterArrow\"><id>2</id><target>&true;</target></image>
+               {}
+             </rect>
+             <rect name=\"RM_ContainerRect\"><locus>&true;</locus><width>464</width><height>480</height>
+               <text name=\"RM_ContainerTitle\"><id>12</id><font>6</font></text>
+               <text name=\"RM_MadeAtVariable\"><id>4</id><font>3</font></text>
+               <text name=\"RM_SkillRequirementHeader\"><id>13</id><font>6</font></text>
+               <text name=\"RM_SkillRequirement\"><id>5</id><font>3</font></text>
+               <text name=\"RM_Items_IngredientList\"><id>11</id><font>6</font></text>
+               {}
+             </rect>
+             <image name=\"RM_ButtonX\"><id>7</id><x>1273</x><target>&false;</target>
+               <text name=\"button_text\"><font>2</font><string><copy src=\"parent()\" trait=\"string\"/></string></text></image>
+             <image name=\"RM_ButtonB\"><id>8</id><x>1307</x><target>&true;</target>
+               <text name=\"button_text\"><font>2</font><string><copy src=\"parent()\" trait=\"string\"/></string></text></image>
+             <image name=\"RM_ItemIcon\"><id>9</id><visible>&false;</visible></image>
+             <rect name=\"RM_ItemData\"><id>10</id><visible>&false;</visible></rect>
+           </rect>
+           <template name=\"RM_list_template\"><hotrect name=\"RM_list_template_container\">{LIST_ITEM}<id>15</id>
+             <text name=\"ListItemText\"><font>2</font><string><copy src=\"parent()\" trait=\"string\"/></string></text>
+           </hotrect></template>
+         </menu>",
+        list_box("RM_Items_InventoryList", 3, 462.0, "365"),
+        list_box("RM_Items_IngredientList", 6, 442.0, "225"),
+    )
+}
