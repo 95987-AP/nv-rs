@@ -679,6 +679,17 @@ pub fn move_actors(
             }
             continue;
         }
+        // Knocked out by a script (`SetUnconscious 1`, life state 3): they
+        // notice nobody, fight nobody and follow no package until woken
+        // (inferred from the process update skipping the unconscious;
+        // how they lie isn't shown).
+        if state.unconscious.contains(&me) {
+            rig.walking = false;
+            rig.running = false;
+            rig.speed = 0.0;
+            rig.fighting = false;
+            continue;
+        }
         if walker.kit.is_none() {
             let kit = crate::fighting::Kit::read(order, state, walker, &rig.skeleton);
             // Their turning speed and in-place rates (`world::movement`).
@@ -727,9 +738,13 @@ pub fn move_actors(
             crate::fighting::detect(&noticing, state, walker, &others);
         }
         // A fight over (its target dead, or a script's `StopCombat`): back
-        // to their package.
-        if !state.combat.contains_key(&me) && walker.fight.is_some() {
-            crate::fighting::end_fight(walker, now);
+        // to their package; the next fight starts afresh
+        // (`world::npc_combat`).
+        if !state.combat.contains_key(&me) {
+            world::npc_combat::combat_over(state, me);
+            if walker.fight.is_some() {
+                crate::fighting::end_fight(walker, now);
+            }
         }
         rig.fighting = state.combat.contains_key(&me);
         if rig.fighting {
@@ -805,6 +820,17 @@ pub fn move_actors(
                 dt,
             };
             let frame = crate::fighting::fight(&mut ctx, state, walker, &kit, target);
+            // Their script's `OnStartCombat`, once the target is detected
+            // (seen with a detection value above 0; `world::npc_combat`).
+            let detected = walker
+                .fight
+                .as_ref()
+                .is_some_and(|f| f.memory.times_seen > 0);
+            world::npc_combat::start_combat_event(
+                &mut world::scripting::Runner::new(order, &scripts.0, state),
+                me,
+                detected,
+            );
             rig.walking = frame.gait.is_some();
             rig.running = frame.gait == Some(world::combat_ai::Gait::Run);
             rig.speed = frame.gait.map_or(0.0, |g| {

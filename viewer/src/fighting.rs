@@ -27,9 +27,16 @@
 //! from the threat until they no longer notice it; paths toward a moving
 //! target are made again every half second. Not done: crouching, dodging,
 //! cover, blocking (no block animations are played, so the block score is 0
-//! as for those without one), suppressive fire, reloads, spread (every shot
-//! hits), the hit landing at the attack animation's hit key, switching to a
-//! grenade (the planner's weapon choice: only the weapon in hand is used).
+//! as for those without one), suppressive fire, spread (every shot hits),
+//! the hit landing at the attack animation's hit key, the reload and equip
+//! animations (the reload only waits its time).
+//!
+//! People choose what they fight with (`world::npc_combat`): when the fight
+//! starts and every 5 s, the best weapon of each kind they carry with
+//! ammunition, guns rated out of play when they don't reach, the cheapest
+//! attack kind, fists included; clips empty and are reloaded, and only
+//! weapons flagged "NPCs use ammo" (dynamite) or a teammate's use rounds
+//! up. Their script's `OnStartCombat` runs once their target is detected.
 //!
 //! Someone holding a grenade or dynamite keeps out of its blast (the band's
 //! minimum is at least its radius) and throws it at the target's pace of
@@ -413,6 +420,16 @@ pub(crate) fn fight(
         end_fight(walker, c.now);
         return FightFrame::default();
     }
+    // What they fight with (`world::npc_combat`: at the fight's start and
+    // every `fCombatInventoryUpdateTimer`).
+    if world::npc_combat::choose_weapon(order, state, me, &kit.style, Some(d), &s) {
+        let held = world::combat::weapon_in_hand(order, state, me);
+        println!(
+            "{:.1} s: {me} takes up {}.",
+            c.now,
+            held.map_or("their fists".to_string(), |w| w.name)
+        );
+    }
     let mut dice = Dice::new(state);
     let frame = if fight.memory.searching(c.now, &s) {
         search(c, state, walker, kit, &mut fight, &mut dice)
@@ -650,9 +667,26 @@ fn ranged(
         && combat_ai::within_targeting_fov(&kit.style, yaw)
         && (combat_ai::within_aim_arc(w.aim_arc, yaw, pitch) || d < band.min);
     let attack = kit.attack_seconds(Some(w));
-    let shoots = fight
-        .ranged
-        .update(now, w, &kit.style, aimed, attack, dice.unit(), &s);
+    // Not while reloading (`world::npc_combat`).
+    let reloading = world::npc_combat::reloading(state, walker.reference);
+    let shoots = !reloading
+        && fight
+            .ranged
+            .update(now, w, &kit.style, aimed, attack, dice.unit(), &s);
+    if shoots {
+        match world::npc_combat::fired(order, state, walker.reference, w) {
+            world::npc_combat::AfterShot::Reloading(t) => {
+                println!("{now:.1} s: {} reloads ({t:.1} s).", walker.reference)
+            }
+            world::npc_combat::AfterShot::Dry => {
+                println!(
+                    "{now:.1} s: {} has no more for {}.",
+                    walker.reference, w.name
+                )
+            }
+            world::npc_combat::AfterShot::Ready => {}
+        }
+    }
     if shoots && world::explosions::is_thrown(w) {
         // Grenades and dynamite are thrown at where the target stands
         // (`explosives`: the arc, `CombatProcedureAttackGrenade`).
