@@ -799,18 +799,35 @@ Played at the rules level (`world`, with the real data) and in the viewer (`--us
   first test run. Also: a speaker's first run after loading sets `bActive` to 1, so turning it off
   before it has ever run is overwritten; the test marks them initialised first.
 * **Not played by hand**: the terminal's screen in the viewer (no unattended way to pick a terminal
-  item), walking the route between the basement and the wing, and the exit package's finish.
+  item), and walking the route between the basement and the wing.
 
-**Found, not fixed: a package's End action.** Christine's exit package
+**A package's End action** (branch `claude/package-end-action`, from main). Christine's exit package
 (`NVDLC01ChristineExitAutoDocPackage`, a Travel package) has an End action, the script
-`StartConversation Player`, which is what makes her talk to the player once she's out. nv-rs reads
-the package's Begin, End and Change actions and dispatches Begin and Change when `AddScriptPackage`
-assigns a package, but nothing runs the End action when a package finishes, so the scene stops with
-Christine standing in the doorway and the player's controls still off (nothing in the data gives them
-back but the conversation and the Auto-Doc timer quest). When the original ends a package isn't traced
-here yet; guessing "when the walk arrives" would be a guess [G]. Also seen: a script's
-`Ref.Activate Player` on a scripted object doesn't run that object's `OnActivate` block here; only E
-does [C: check whether the original runs it].
+`StartConversation Player`, which makes her talk to the player once she's out. Read from the game's
+code: the process runs a package's actions through three virtual functions (slots 358, 359 and 360,
+`0x598`, `0x59c`, `0x5a0`), each running the action's script with the person as its reference, then
+its topic and idle; slot 360 is the End action, called when the process finishes a package (it sets
+the package's `0x400` flag first, then runs the End action, then starts the next package's Begin).
+nv-rs now has `PackageActionKind::End`, `GameState::end_script_package` (once for each time a script
+package is given), `Runner::package_action` (runs an action's script) and `world::ai::finish_travel`;
+the viewer asks for the End action when a script's Travel package has no destination (as "near the
+current location") or has arrived, and runs its script. With it the scene plays on: the End script
+ran, Christine talked within 2 seconds, the controls came back, MQ01c went to 40 and, through her
+conversation, to 100 with Christine recruited.
+* **Guessed [G]**: that a Travel package finishes when its person has arrived (or has nowhere to go).
+  What finishes a package of each kind isn't traced; the game finishes some kinds in other ways (the
+  completion tests for the process's procedure types were only glanced at).
+* **Not done**: the Begin and Change scripts still don't run (the same function family runs them; one
+  line more in the viewer), and the End action's idle and topic.
+
+**A script's `Activate`** needed no fix. Main already does what the code does (`005b59f0`): a second
+argument of 1 runs the target's `OnActivate` block (not past 5 deep) and without it the usual
+activation happens at once with the block skipped (two flags are raised around the call; the
+activation function then skips the script). Dead Money uses it for hiring and firing companions
+(`NVDLC01HireTriggerREF.Activate NVDLC01ChristineREF 1`). My test's `Activate Player` without the 1
+was correctly not running the block. One more thing the handler does: a call on the player itself
+(`player.Activate X`) is refused with the warning "SCRIPTS: Never have the player character activate
+something in a script very Bad"; no script in the base game or Dead Money does that, so it isn't built.
 
 **Test flag**: `--use REF` presses E on an object once the place is loaded (branch
 `claude/viewer-use-flag`, from main). Used for the scene above, after `--run` lines that set MQ01c's
