@@ -95,6 +95,18 @@ run or original comparison yet; no third-person camera exists for the
 entry/exit. Evidence and gaps: [FURNITURE.md](FURNITURE.md). **Next:** live
 `--stage VCG01 27` couch run through Doc's questionnaire.
 
+Third-person batch, 2026-10-06 (`claude/m2-third-person`, unmerged): the
+player camera's first/third person, view key (F; walk/fly moved to `),
+wheel zoom, vanity mode, temporary views (furniture, Pip-Boy, dialogue)
+and the chase camera with wall collision are translated from
+`0094ae40`/`0094a0c0`/`00950110`… into `world::player_camera`; the
+player's third-person body is built from the record and game state
+(`world::actor::player_look`) and animated through the NPC path
+(idle, directional walk/run, weapon, sitting). Tested, not compared.
+Evidence and gaps (sneak/jump groups, body fade, pivot node term):
+[CAMERA.md](CAMERA.md). **Next:** compare F/wheel/wall behaviour and the
+couch entry framing in the original.
+
 Outstanding M1 gates:
 - Exact opening camera transition replay and Doc/player assistance timing.
 - Doc head/eye tracking: ported and unit-tested; the original-game
