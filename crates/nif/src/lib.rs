@@ -40,8 +40,8 @@ pub mod skin;
 pub mod tri;
 
 pub use anim::{
-    hang_weapon, posed, posed_layers, posed_over, sample_curve, Bone, FloatKey, MaterialKeys,
-    MaterialTarget, MaterialTrack, Motion, Pose, Sequence, Track,
+    hang_weapon, posed, posed_layers, posed_over, reparent_weapon, sample_curve, weapon_parent,
+    Bone, FloatKey, MaterialKeys, MaterialTarget, MaterialTrack, Motion, Pose, Sequence, Track,
 };
 pub use blocks::{
     AlphaProperty, AvObject, Block, Falloff, Geometry, GeometryData, MaterialProperty, Node,
