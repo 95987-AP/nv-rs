@@ -37,6 +37,8 @@ pub enum Menu {
     Container(FormId, String),
     /// Trading with a merchant (their reference).
     Barter(FormId),
+    /// The recipe menu (`ShowRecipeMenu`): the category it lists, if any.
+    Recipes(Option<FormId>),
     /// A computer terminal used (`world::terminal`): its record and the
     /// placed terminal.
     Terminal(FormId, FormId),
@@ -211,6 +213,7 @@ fn open(
         // Only the game's own menus show these (`game_menus`).
         Menu::Container(..)
         | Menu::Barter(..)
+        | Menu::Recipes(..)
         | Menu::LevelUp(..)
         | Menu::Character(CharacterMenu::Traits { .. })
         | Menu::Character(CharacterMenu::TagSkills { .. })

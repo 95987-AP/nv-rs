@@ -177,8 +177,8 @@ nvinspect <Data> play 60 --official --character characters\dead-money-entry.txt 
   viewer issue, not Dead Money's.
 * The slideshow's first view looked tilted; check against the game in D3.
 * That the gear really moves to the equipment container isn't checked yet (D3).
-* The bunker's vending machine, workbench and reloading bench open the recipe menu, which
-  nv-rs doesn't have (see "Crafting and casino menus").
+* The bunker's vending machine, workbench and reloading bench open the recipe menu (see
+  "Crafting").
 * Calls from other quests that aren't carried out, seen running headless: Lonesome Road's
   `AddItemToLeveledList`, and base-game scripts' `GetInSameCell`, `GetDetected`, and
   `GetAngle` / `GetDistance` on the player (the viewer knows where the player is; the
@@ -576,11 +576,64 @@ yet; a ragdoll asleep keeps its last report. The player isn't reported (counts a
 opened and closed at once, so the scripts' `MenuMode` blocks run. Test:
 `recipe_and_casino_menus_open_with_their_data`. nvinspect: 199 of 199.
 
-**Not done**: nv-rs has no crafting (recipes `RCPE`, categories `RCCT`, the recipe menu)
-and no casino games (slots, blackjack, roulette, the `CSNO` data, winnings), so nothing
-can be crafted or played yet. That is a separate piece of work, larger than a function.
+**Not done**: nv-rs has no casino games (slots, blackjack, roulette, the `CSNO` data,
+winnings), so nothing can be played yet (crafting is done: see "Crafting"). That is a separate
+piece of work, larger than a function.
 What the three numbers mean in each game isn't traced; the reference's +0x81 check for
 talking activators is taken to be met. Nothing compared in the original game.
+
+## Crafting (`RCPE`, `RCCT`)
+
+`world::crafting`; `nvinspect <Data> craft [CATEGORY]` lists what a new character is offered.
+
+**Read from the data** (the records, not the game's code):
+
+* A recipe's `DATA` is four numbers: the skill it asks for (an actor value number; `0xFFFFFFFF`
+  for none, as the Sierra Madre vending machine's), the level, its category (`RCCT`: Workbench,
+  Campfire, Reloading Bench, `NVDLC01VendingMachineRecipes`) and its sub-category (Aid, Weapons,
+  Ammo, Chems, Food, Misc ...). `RCIL` + `RCQY` pairs are what it uses, `RCOD` + `RCQY` pairs what it
+  makes (a breakdown makes several things); `CTDA` conditions say when it is on offer.
+* Learnt recipes' conditions ask `GetHasNote` for their recipe note, which the note's script gives
+  (`player.AddNote`) when the recipe item is picked up. The three bench scripts
+  (`CraftingWorkbenchRecipesScript` and the campfire's and reloading bench's) call
+  `player.ShowRecipeMenu <category>` when the player activates them; the Dead Money vending
+  machines do the same with `NVDLC01VendingMachineRecipes` (the first use shows a message instead).
+* Against the real data a new character is offered 14 vending machine recipes (all priced in Sierra
+  Madre chips, from 5 to 55, and the "[Return]" ones that pay chips for cigarettes), 41 workbench and
+  68 campfire ones.
+
+**In code**: `Recipe::load`, `offers` (the list for a category), `sub_categories`, `can_make`,
+`make`. Tests: `crates/world/tests/crafting.rs`.
+
+**The menu**: `ui::menus::recipe` (class 1077, `menusecipe_menu.xml`; 6 tests) and
+`viewer/src/game_menus/recipe.rs`. A script's `ShowRecipeMenu` opens it on the category
+(`Shown::RecipeMenu`); `--open-menu recipes:CampfireRecipes` opens it for testing. It fills the
+file's own tiles: recipes in a list (id 3), the title (1) with the filter arrows (0, 2), "Made at"
+(4), the skill requirement (5), the ingredients' list (6, "have/need" on the right), the picture of
+the first output (9), Accept (7, key A) and Exit (8, key X, also Escape). Accept makes the chosen
+recipe through `world::crafting::make` and refills the lists. Seen with the real data: the
+vending machine's 14 recipes under the file's own layout. The pointer path (choosing a row with the
+mouse, Accept) is unit-tested only, not tried by hand.
+
+**Not done**: the item data card under the list (`RM_ItemData`: damage, weight, value ...) stays
+empty; no crafting sound; no experience.
+
+**Guessed, to check in the original game**:
+
+* A recipe is listed when its conditions pass, and also when the player lacks the skill or an
+  ingredient (shown as not makeable). The original may hide those.
+* The skill check is the player's current value (chems and gear counted) at least the recipe's level.
+* With no category given, `ShowRecipeMenu` lists every category's recipes.
+* Making one uses up each ingredient in full and adds the outputs; "Items Crafted" (misc stat 32)
+  goes up by one for each recipe made, whatever it makes. No experience, no skill gain, no sound.
+* The list is sorted by name; the filter arrows go through the sub-categories in the order they first
+  appear, "all" first, wrapping round, and the title shows the sub-category's name in capitals.
+* Clicking a row makes it, as the Accept button does; the button is off (answering a key with the
+  cancel sound) while nothing makeable is chosen. Whether the original needs a second click is
+  unknown.
+* The ingredients show "have/need" on the right; a recipe that can't be made, and an ingredient the
+  player lacks, get the failed-check look.
+* "Made at" shows the category's name, and only once a recipe is chosen.
 
 ## D3: the intro slideshow and the Villa start
 
@@ -723,6 +776,63 @@ station). Not played: escorting each companion (telling them to wait, the
 dialogue that does it), the substation and its terminal, finding two slabs of
 ghost harvester remains for Dog, the electrical box and the elevator for
 Christine, the holograms for Dean, and the Gala Event itself (MQ02).
+
+## The clinic basement and the Auto-Doc wing (MQ01c, stages 20 to 40)
+
+Played at the rules level (`world`, with the real data) and in the viewer (`--use`, see below):
+
+* **The basement terminal** (`NVDLC01ClinicBasementTerminal`, the Clinic Power Status terminal). Its
+  screens follow its own switch (`bSwitchState`): while the power is on it offers "Disengage Main
+  Power"; once off it shows the other status screen. The item's result script disables the clinic's
+  parent group, turns the two shielded speakers off (`bActive` 0), plays the power-off sound and moves
+  MQ01c from "turn off the power" (objective 20) to "find Christine" (objective 30). Checked headlessly:
+  the objective events, the speakers' flags and the screens' conditions all come out as above.
+* **Christine's Auto-Doc** (`NVDLC01ClinicAutoDocChristineRef`). Using it runs a short scene: controls
+  off, the player moved to `NVDLC01ClinicPlayerMarker`, the pod's Forward group played, the pounding
+  object disabled, and Christine given the exit package. In the viewer the pod opens and Christine is
+  standing in it, collar and all.
+* **The collar rule is the game's own and it bites.** The shielded speakers count the player in their
+  radius through `NVDLC01BombCollarQuest.iNumRadii`. A speaker turned off by setting `bActive` to 0
+  (which is all the terminal does) never takes the player out of the count if they were inside the
+  radius at that moment; only destruction or the speaker's own radio switch do. In the real route the
+  player is down in the basement when the speakers go off, so it doesn't matter; with the player
+  already inside the radius the collar kills them a few seconds later, which is what nv-rs showed in a
+  first test run. Also: a speaker's first run after loading sets `bActive` to 1, so turning it off
+  before it has ever run is overwritten; the test marks them initialised first.
+* **Not played by hand**: the terminal's screen in the viewer (no unattended way to pick a terminal
+  item), and walking the route between the basement and the wing.
+
+**A package's End action** (branch `claude/package-end-action`, from main). Christine's exit package
+(`NVDLC01ChristineExitAutoDocPackage`, a Travel package) has an End action, the script
+`StartConversation Player`, which makes her talk to the player once she's out. Read from the game's
+code: the process runs a package's actions through three virtual functions (slots 358, 359 and 360,
+`0x598`, `0x59c`, `0x5a0`), each running the action's script with the person as its reference, then
+its topic and idle; slot 360 is the End action, called when the process finishes a package (it sets
+the package's `0x400` flag first, then runs the End action, then starts the next package's Begin).
+nv-rs now has `PackageActionKind::End`, `GameState::end_script_package` (once for each time a script
+package is given), `Runner::package_action` (runs an action's script) and `world::ai::finish_travel`;
+the viewer asks for the End action when a script's Travel package has no destination (as "near the
+current location") or has arrived, and runs its script. With it the scene plays on: the End script
+ran, Christine talked within 2 seconds, the controls came back, MQ01c went to 40 and, through her
+conversation, to 100 with Christine recruited.
+* **Guessed [G]**: that a Travel package finishes when its person has arrived (or has nowhere to go).
+  What finishes a package of each kind isn't traced; the game finishes some kinds in other ways (the
+  completion tests for the process's procedure types were only glanced at).
+* **Not done**: the Begin and Change scripts still don't run (the same function family runs them; one
+  line more in the viewer), and the End action's idle and topic.
+
+**A script's `Activate`** needed no fix. Main already does what the code does (`005b59f0`): a second
+argument of 1 runs the target's `OnActivate` block (not past 5 deep) and without it the usual
+activation happens at once with the block skipped (two flags are raised around the call; the
+activation function then skips the script). Dead Money uses it for hiring and firing companions
+(`NVDLC01HireTriggerREF.Activate NVDLC01ChristineREF 1`). My test's `Activate Player` without the 1
+was correctly not running the block. One more thing the handler does: a call on the player itself
+(`player.Activate X`) is refused with the warning "SCRIPTS: Never have the player character activate
+something in a script very Bad"; no script in the base game or Dead Money does that, so it isn't built.
+
+**Test flag**: `--use REF` presses E on an object once the place is loaded (branch
+`claude/viewer-use-flag`, from main). Used for the scene above, after `--run` lines that set MQ01c's
+stages and the speakers' flags.
 
 ## Open questions
 

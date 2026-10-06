@@ -31,6 +31,7 @@ pub mod character;
 pub mod chargen;
 pub mod combat;
 pub mod combat_ai;
+pub mod crafting;
 pub mod crime;
 pub mod detection;
 pub mod dialogue;

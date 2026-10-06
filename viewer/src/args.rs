@@ -91,6 +91,8 @@ OPTIONS:
     --open-menu MENU[:ID]   for testing: once loaded, open one of the game's
                             menus as the game would: container:REF (a
                             container or a body), barter:REF (a merchant),
+                            recipes:CATEGORY (the recipe menu, e.g.
+                            recipes:CampfireRecipes),
                             quantity:N (how many, up to N), levelup (the
                             player goes up a level; levelup:perks also
                             gives the points and goes on to the perks),
