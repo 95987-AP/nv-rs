@@ -45,6 +45,7 @@ mod scripts;
 mod sitting;
 mod sounds;
 mod terrain;
+mod test_keys;
 mod trees;
 mod vats;
 mod viewmodel;
@@ -105,6 +106,18 @@ fn main() {
         }
         Err(message) => {
             eprintln!("error: {message}\n\n{}", args::USAGE);
+            std::process::exit(2);
+        }
+    };
+    let key_presses = match args
+        .key_at
+        .iter()
+        .map(|(at, key)| test_keys::parse(*at, key))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(p) => p,
+        Err(message) => {
+            eprintln!("error: {message}");
             std::process::exit(2);
         }
     };
@@ -206,6 +219,7 @@ fn main() {
             ready_at: None,
         })
         .insert_resource(dialogue::AutoSay(args.say.iter().cloned().collect()))
+        .insert_resource(test_keys::TestKeys::new(key_presses))
         .insert_resource(viewmodel::StartWeapon(args.weapon.clone()))
         .insert_resource(lockpick::StartLock(args.lockpick.clone()))
         .insert_resource(emittance::StartRegion(args.weather_region.clone()))
@@ -294,6 +308,10 @@ fn main() {
         // moves it once everything has used it, and the eye comes back
         // first thing next frame (`player_camera`).
         .add_systems(PreUpdate, player_camera::restore_eye)
+        .add_systems(
+            PreUpdate,
+            test_keys::press_test_keys.after(bevy::input::InputSystem),
+        )
         .add_systems(
             PostUpdate,
             player_camera::place_view.before(bevy::transform::TransformSystem::TransformPropagate),
