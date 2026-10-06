@@ -92,6 +92,28 @@ impl PlayerIdle {
         Ok(idle)
     }
 
+    /// The first-person seated loop (the furniture's dynamic idle for the
+    /// first-person view, `1stP_ChairDynamicIdle.kf`): played in the idle
+    /// section, looping, so its `Camera1st` track places the seated eye;
+    /// `None` eases it out (`004994f0`). The sit procedure
+    /// (`sitting::player_furniture`) decides when.
+    pub fn set_seated_loop(
+        &mut self,
+        game: &cellview::Game,
+        sequence: Option<std::sync::Arc<nif::Sequence>>,
+    ) {
+        match sequence {
+            Some(seq) if self.load(game) => {
+                let PlayerIdle {
+                    animation, bones, ..
+                } = self;
+                animation.play(animation::group::IDLE, &seq, -1, bones);
+            }
+            Some(_) => {}
+            None => self.animation.stop_section(section::IDLE),
+        }
+    }
+
     fn load(&mut self, game: &cellview::Game) -> bool {
         if self.camera.is_some() && self.looking.is_some() {
             return true;

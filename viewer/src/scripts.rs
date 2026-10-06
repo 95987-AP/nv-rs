@@ -64,8 +64,6 @@ pub struct CellScripts {
     pub refs: Vec<Interactive>,
     /// (trigger, who) for everyone inside a trigger.
     inside: HashSet<(FormId, FormId)>,
-    /// Where the player sat down, while they sit.
-    seat: Option<[f32; 3]>,
 }
 
 /// World-space bounds of rendered placed objects in the loaded cell(s).
@@ -125,10 +123,6 @@ fn hidden_by_surface(collision: &physics::Collider, eye: [f32; 3], dir: [f32; 3]
         .raycast(eye, dir, d)
         .is_some_and(|(wall, _)| wall < d - 10.0)
 }
-
-/// How far the player can move from where they sat down before they've
-/// got up (they don't move onto the seat yet).
-const LEAVE_SEAT: f32 = 40.0;
 
 /// The object in view that E would use, and the prompt for it ("Take
 /// Bottle Cap", "Open Chest", "Vit-o-matic Vigor Tester"), which
@@ -284,6 +278,8 @@ enum Used {
     Lockpick(FormId),
     /// A bed's sleep menu (the game's checks passed).
     Sleep,
+    /// Furniture to sit in or get up from (`sitting::player_furniture`).
+    Furniture(FormId),
 }
 
 /// E on an object: its `OnActivate` script runs, if it has one, and its
@@ -341,6 +337,11 @@ fn use_object(
             Some(Locked::Says(why)) => Used::Notice(why),
         });
     }
+    // Any furniture while in furniture gets the player up
+    // (`TESFurniture::Activate`, `world::furniture::activate`).
+    if r.is_furniture() && state.furniture.contains_key(&PLAYER_REF) {
+        return Some(Used::Furniture(r.reference));
+    }
     // A bed: the game's checks (`world::living::sleep::may_sleep_in`; the
     // player doesn't lie down), then its sleep menu (the game's,
     // `game_menus::sleepwait`).
@@ -351,10 +352,8 @@ fn use_object(
         };
     }
     if r.is_furniture() {
-        // Sitting: scripts see it (`IsCurrentFurnitureRef`,
-        // `GetSitting`); the player stays where they are (no sitting
-        // animation or seat position yet).
-        state.sit(PLAYER_REF, r.reference);
+        // Sitting: the sit procedure (`sitting::player_furniture`).
+        return Some(Used::Furniture(r.reference));
     }
     if r.is_terminal() {
         return Some(Used::Terminal(r.base, r.reference));
@@ -851,6 +850,7 @@ pub struct HereNow<'w> {
     player_idle: ResMut<'w, crate::player_idle::PlayerIdle>,
     seats: Res<'w, crate::sitting::Seats>,
     object_bounds: Option<Res<'w, ObjectBounds>>,
+    player_seat: ResMut<'w, crate::sitting::PlayerSeat>,
 }
 
 /// Runs the scripts for this frame and carries out what they asked for.
@@ -897,6 +897,7 @@ pub fn run_scripts(
         mut player_idle,
         seats,
         object_bounds,
+        mut player_seat,
     } = here_now;
     let order = &game.0.order;
     let now = time.elapsed_secs();
@@ -981,14 +982,6 @@ pub fn run_scripts(
         }
     }
     refresh_cell_scripts(order, &scripts.0, state, &mut cell_scripts);
-    // Walking away from a seat gets the player up.
-    if let Some(seat) = cell_scripts.seat {
-        let d = ((feet[0] - seat[0]).powi(2) + (feet[1] - seat[1]).powi(2)).sqrt();
-        if d > LEAVE_SEAT || !state.furniture.contains_key(&PLAYER_REF) {
-            state.stand(PLAYER_REF);
-            cell_scripts.seat = None;
-        }
-    }
     // Time stands still in the dialogue menu (not while a line is said)
     // and in the other menus.
     let dt = time.delta_secs();
@@ -1026,7 +1019,13 @@ pub fn run_scripts(
                 .collect();
             world::living::sleep::menu_mode(&mut Runner::new(order, &scripts.0, state), &refs);
         }
-        if let Some(r) = activate_request.0.take() {
+        // Sitting down or getting up, E does nothing
+        // (`world::furniture::player_activation_blocked`; also while the
+        // entry or exit plays).
+        let refused = state.sitters.get(&PLAYER_REF).is_some_and(|s| {
+            world::furniture::player_activation_blocked(s.state) || s.playing.is_some()
+        });
+        if let Some(r) = activate_request.0.take().filter(|_| !refused) {
             let object = cell_scripts.refs.iter().find(|o| o.reference == r);
             match object.and_then(|o| use_object(order, &scripts.0, state, o)) {
                 Some(Used::Notice(n)) => announce(n, &mut notices),
@@ -1040,6 +1039,7 @@ pub fn run_scripts(
                 Some(Used::Sleep) => {
                     waiting.push(crate::menus::Menu::SleepWait { sleep: true });
                 }
+                Some(Used::Furniture(f)) => player_seat.activated = Some(f),
                 None => {}
             }
             // A taken item's pick-up sound.
@@ -1049,9 +1049,6 @@ pub fn run_scripts(
                         sound_requests.0.push(s);
                     }
                 }
-            }
-            if state.furniture.contains_key(&PLAYER_REF) && cell_scripts.seat.is_none() {
-                cell_scripts.seat = Some(feet);
             }
         }
     }
@@ -1733,10 +1730,8 @@ mod tests {
         let mut state = GameState::new(&game.order);
         state.stages.insert(FormId(0x104c1c), 55);
         let before = world::save::save(&state, None);
-        let mut cells = CellScripts {
-            seat: Some([1.0; 3]),
-            ..default()
-        };
+        let mut cells = CellScripts::default();
+        cells.inside.insert((FormId(1), PLAYER_REF));
         let mut idle = crate::player_idle::PlayerIdle::default();
         idle.requests.push(FormId(42));
         let mut pending = crate::PendingScene(None);
@@ -1761,7 +1756,7 @@ mod tests {
             )
             .is_err());
             assert_eq!(world::save::save(&state, None), before);
-            assert_eq!(cells.seat, Some([1.0; 3]));
+            assert!(cells.inside.contains(&(FormId(1), PLAYER_REF)));
             assert_eq!(idle.requests, [FormId(42)]);
             assert!(pending.0.is_none());
             assert!(exterior.0.is_none());
@@ -1788,7 +1783,7 @@ mod tests {
         )
         .unwrap());
         assert_eq!(state.stages[&FormId(0x104c1c)], 60);
-        assert!(cells.seat.is_none());
+        assert!(cells.inside.is_empty());
         assert!(idle.requests.is_empty());
         assert_eq!(pitch.0, 0.0);
         let start = &pending.0.as_ref().unwrap().start;
@@ -1865,7 +1860,6 @@ mod tests {
         // at stage55 in that same volume. Old occupancy must not suppress it.
         run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016);
         assert!(!cells.inside.is_empty());
-        cells.seat = Some([1.0; 3]);
         let mut loaded = GameState::new(&order);
         loaded.player_cell = Some(FormId(HOUSE));
         loaded.stages.insert(FormId(VIGOR_QUEST), 55);
@@ -1873,7 +1867,6 @@ mod tests {
         refresh_cell_scripts(&order, &cache, &mut state, &mut cells);
         run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016);
         assert_eq!(state.stages.get(&FormId(VIGOR_QUEST)), Some(&60));
-        assert!(cells.seat.is_none());
     }
 
     #[test]

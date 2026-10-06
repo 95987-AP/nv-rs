@@ -305,6 +305,7 @@ fn question(
         female: walker.female,
         player: false,
         child: world::idles::is_child(order, walker.reference),
+        first_person: false,
     }
 }
 
@@ -481,6 +482,372 @@ fn seat_at_once(
     walker.clear_path();
     ctx.state.sitters.insert(me, sitter);
     true
+}
+
+/// The player using furniture (`world::furniture`, the game's own code
+/// for the player): what E activated, and the temporary third-person view
+/// the game gives while sitting down and getting up.
+#[derive(Resource, Default)]
+pub struct PlayerSeat {
+    /// Furniture the player activated this frame (`scripts::use_object`).
+    pub activated: Option<FormId>,
+    /// The temporary third-person view (`TempThirdPerson`). The viewer has
+    /// no third-person camera or player body: while it's on, the view stays
+    /// at eye height over the player as the entry or exit moves them. That
+    /// presentation is not the original's (left out, not substituted).
+    pub view: furniture::TempThirdPerson,
+    /// The heading last given to the camera, so looking around while
+    /// seated isn't undone.
+    applied_heading: Option<f32>,
+    /// The first-person seated loop given to the view (its `.kf`).
+    first_person_loop: Option<String>,
+    /// The tree was asked for that loop since the view came back.
+    loop_asked: bool,
+}
+
+/// What the idle tree's furniture branch asks about the player: the sit
+/// values, and whether the view is first person (`IsPC1stPerson`).
+fn player_question((sitting, sleeping, marker): (u8, u8, u8), first_person: bool) -> IdleQuestion {
+    IdleQuestion {
+        sitting,
+        sleeping,
+        marker,
+        procedure: procedures::NONE,
+        player: true,
+        first_person,
+        ..IdleQuestion::default()
+    }
+}
+
+/// The idle the tree gives the player now, as (idle, `.kf`).
+fn pick_player_idle(
+    order: &LoadOrder,
+    state: &GameState,
+    tree: &IdleTree,
+    roots: &[FormId],
+    values: (u8, u8, u8),
+    first_person: bool,
+    seed: u64,
+) -> Option<(FormId, String)> {
+    let facts = Facts {
+        order,
+        state,
+        speaker: None,
+    };
+    let asker = IdleAsker::new(
+        world::dialogue::PLAYER_REF,
+        player_question(values, first_person),
+        Some(&facts),
+        seed,
+    );
+    tree.evaluate(roots, &|i| asker.passes(i), &|_| false)
+        .map(|i| (i.form_id, i.model.clone()))
+}
+
+/// The player's skeleton (for the idle tree's roots).
+fn player_skeleton(order: &LoadOrder) -> String {
+    world::actor_look(order, world::dialogue::PLAYER_BASE)
+        .map(|l| l.skeleton)
+        .unwrap_or_default()
+}
+
+/// E on furniture (`TESFurniture::Activate`, `world::furniture::activate`):
+/// up if in furniture, else the nearest free usable marker is theirs, the
+/// temporary third-person view begins and the sit procedure starts.
+fn player_activates(
+    game: &cellview::Game,
+    state: &mut GameState,
+    seats: &mut Seats,
+    seat: &mut PlayerSeat,
+    furniture_ref: FormId,
+    (feet, heading): ([f32; 3], f32),
+) {
+    use world::dialogue::PLAYER_REF;
+    let order = &game.order;
+    let current = state
+        .sitters
+        .get(&PLAYER_REF)
+        .map_or(SitState::Normal, |s| s.state);
+    let in_furniture = state.furniture.contains_key(&PLAYER_REF);
+    let marker = world::scripting::base_of(order, furniture_ref).and_then(|base| {
+        seats.markers(game, base);
+        let (placed, flags) = placed_markers(order, state, &seats.markers, furniture_ref)?;
+        let taken = furniture::taken_markers(state, furniture_ref, PLAYER_REF);
+        furniture::nearest_free(&placed, flags, |i| taken.contains(&i), feet)
+    });
+    let current = if in_furniture && current == SitState::Normal {
+        // Seated at once (no procedure yet): in furniture all the same.
+        SitState::Sitting
+    } else {
+        current
+    };
+    match furniture::activate(current, marker) {
+        furniture::Activation::StandUp => {
+            seat.view.begin(false, false);
+            seat.loop_asked = false;
+            if let Some(s) = state.sitters.get_mut(&PLAYER_REF) {
+                s.stand_up();
+            }
+            println!("The player gets up from {furniture_ref}.");
+        }
+        furniture::Activation::NoMarker => {
+            println!("{furniture_ref} has no free marker to use.");
+        }
+        // Beds take the sleep path before this (`scripts::use_object`).
+        furniture::Activation::Sleep(_) => {}
+        furniture::Activation::Sit(marker) => {
+            seat.view.begin(false, false);
+            seat.loop_asked = false;
+            let settings = seats.marker_settings(order, marker.number);
+            let sitter = Sitter::new(furniture_ref, marker, settings, feet, heading);
+            println!(
+                "The player uses {furniture_ref} (marker {}, number {}).",
+                marker.index, marker.number
+            );
+            state.furniture.insert(PLAYER_REF, furniture_ref);
+            state.sitters.insert(PLAYER_REF, sitter);
+            seat.applied_heading = None;
+        }
+    }
+}
+
+/// The player's furniture each frame, after walking and before the camera
+/// tracks: E on furniture or, seated, E on nothing (the player update's
+/// fallback, `0094076c`..`009407c8`: when nothing under the crosshair was
+/// activated, the current furniture is, which gets them up); put on the
+/// marker (`player_approach`) and the sit or stand procedure run as for
+/// anyone (`Sitter::update`: the entry and exit from the idle tree, moving
+/// the player by their root); the view's heading and pitch limit
+/// (`clamp_pitch`) follow; once the temporary view ends seated, the
+/// first-person seated loop the tree gives (`1stP_ChairDynamicIdle.kf`,
+/// its `Camera1st` track placing the seated eye) plays in the view.
+/// Someone the state has in furniture with no procedure (a loaded game) is
+/// seated at once (`0088d2f0`). Not modelled: movement keys while seated
+/// (their handling isn't traced; the player is held on the seat), the
+/// player's seated idles (third person only), the HUD mode change
+/// (`00771700`) and holstering.
+#[allow(clippy::too_many_arguments)]
+pub fn player_furniture(
+    time: bevy::prelude::Res<bevy::prelude::Time>,
+    keys: bevy::prelude::Res<bevy::prelude::ButtonInput<bevy::prelude::KeyCode>>,
+    game: bevy::prelude::Res<crate::GameFiles>,
+    mut state: bevy::prelude::ResMut<crate::dialogue::DialogueState>,
+    (mut seats, mut seat, mut idle): (
+        bevy::prelude::ResMut<Seats>,
+        bevy::prelude::ResMut<PlayerSeat>,
+        bevy::prelude::ResMut<crate::player_idle::PlayerIdle>,
+    ),
+    mut player: bevy::prelude::ResMut<crate::walk::Player>,
+    (activatable, talk_target, conversation, menus): (
+        bevy::prelude::Res<crate::scripts::Activatable>,
+        bevy::prelude::Res<crate::dialogue::TalkTarget>,
+        bevy::prelude::Res<crate::dialogue::Conversation>,
+        bevy::prelude::Res<crate::menus::Menus>,
+    ),
+    (doors, collision): (
+        bevy::prelude::Res<crate::walk::Doors>,
+        bevy::prelude::Res<crate::walk::CellCollision>,
+    ),
+    mut cameras: bevy::prelude::Query<(&mut bevy::prelude::Transform, &mut crate::FlyCamera)>,
+) {
+    use bevy::prelude::*;
+    use world::dialogue::PLAYER_REF;
+    if !player.walking || !player.ready {
+        return;
+    }
+    let Ok((mut transform, mut camera)) = cameras.single_mut() else {
+        return;
+    };
+    let game = &game.0;
+    let order = &game.order;
+    let state = &mut state.0;
+    let feet = player.character.feet;
+    let heading = (-camera.yaw).rem_euclid(std::f32::consts::TAU);
+    // E on furniture this frame.
+    if let Some(f) = seat.activated.take() {
+        player_activates(game, state, &mut seats, &mut seat, f, (feet, heading));
+    }
+    // Seated, E on nothing usable (no door, person or object): the
+    // current furniture is activated, so they get up. Only with the
+    // crosshair's use allowed, as everything E does here.
+    let seated = state
+        .sitters
+        .get(&PLAYER_REF)
+        .is_some_and(|s| s.state == SitState::Sitting && s.playing.is_none());
+    if seated
+        && keys.just_pressed(KeyCode::KeyE)
+        && activatable.0.is_none()
+        && talk_target.0.is_none()
+        && conversation.0.is_none()
+        && !menus.is_open()
+        && !state.controls_off[world::scripting::controls::ROLLOVER]
+    {
+        let f = transform.forward().as_vec3();
+        let eye = crate::walk::game_point(transform.translation);
+        let door = crate::walk::door_in_view(&doors.0, &collision.0, eye, [f.x, -f.z, f.y]);
+        if door.is_none() {
+            if let Some(&f) = state.furniture.get(&PLAYER_REF) {
+                player_activates(game, state, &mut seats, &mut seat, f, (feet, heading));
+            }
+        }
+    }
+    // In furniture with no procedure (a loaded game, a script): seated at
+    // once, in first person.
+    if let Some(&f) = state.furniture.get(&PLAYER_REF) {
+        if !state.sitters.contains_key(&PLAYER_REF) {
+            let marker = world::scripting::base_of(order, f).and_then(|base| {
+                seats.markers(game, base);
+                let (placed, flags) = placed_markers(order, state, &seats.markers, f)?;
+                let taken = furniture::taken_markers(state, f, PLAYER_REF);
+                furniture::nearest_free(&placed, flags, |i| taken.contains(&i), feet)
+                    .or_else(|| placed.first().copied())
+            });
+            match marker {
+                Some(marker) => {
+                    let settings = seats.marker_settings(order, marker.number);
+                    let roots = seats.roots(&player_skeleton(order));
+                    let seed = state.roll();
+                    let sitter = {
+                        let (snapshot, tree) = (&*state, &seats.tree);
+                        let mut pick = |sitting: u8, sleeping: u8, number: u8| {
+                            pick_player_idle(
+                                order,
+                                snapshot,
+                                tree,
+                                &roots,
+                                (sitting, sleeping, number),
+                                true,
+                                seed,
+                            )
+                        };
+                        Sitter::seated(f, marker, settings, 1.0, &mut pick)
+                    };
+                    state.sitters.insert(PLAYER_REF, sitter);
+                    seat.applied_heading = None;
+                    seat.view = furniture::TempThirdPerson::default();
+                    seat.loop_asked = false;
+                }
+                None => state.stand(PLAYER_REF),
+            }
+        }
+    }
+    let dt = if menus.is_open() {
+        0.0
+    } else {
+        time.delta_secs()
+    };
+    let Some(mut sitter) = state.sitters.remove(&PLAYER_REF) else {
+        // Up: the view comes back to first person once nothing plays.
+        seat.view.update(false, false, false);
+        if seat.first_person_loop.take().is_some() {
+            idle.set_seated_loop(game, None);
+        }
+        seat.applied_heading = None;
+        return;
+    };
+    // On the way: put on the marker (the player doesn't walk there).
+    if sitter.state == SitState::Normal {
+        sitter.position = feet;
+        sitter.heading = heading;
+        furniture::player_approach(&mut sitter);
+    }
+    let before = sitter.state;
+    let first_person = !seat.view.active;
+    let roots = seats.roots(&player_skeleton(order));
+    let asks =
+        sitter.state == SitState::Normal || (sitter.state.is_settled() && sitter.stand_requested);
+    let seed = if asks { state.roll() } else { 0 };
+    let step = {
+        let snapshot = &*state;
+        let Seats {
+            tree, sequences, ..
+        } = &mut *seats;
+        let tree = &*tree;
+        let mut pick = |sitting: u8, sleeping: u8, number: u8| {
+            pick_player_idle(
+                order,
+                snapshot,
+                tree,
+                &roots,
+                (sitting, sleeping, number),
+                first_person,
+                seed,
+            )
+        };
+        let mut anims = Anims { game, sequences };
+        sitter.update(dt, false, &mut pick, &mut anims)
+    };
+    if sitter.state != before {
+        println!(
+            "Player: {} -> {}{}",
+            before.name(),
+            sitter.state.name(),
+            sitter
+                .playing
+                .as_ref()
+                .map(|p| format!(", playing {}", p.model))
+                .unwrap_or_default()
+        );
+    }
+    // Getting up: the first-person loop stops as the third-person view
+    // takes over.
+    if seat.view.active && seat.first_person_loop.take().is_some() {
+        idle.set_seated_loop(game, None);
+    }
+    // The body where the procedure has it; the camera turned with it when
+    // the procedure turns them.
+    player.character = physics::Character::new(sitter.position);
+    if seat.applied_heading != Some(sitter.heading) {
+        camera.yaw = -sitter.heading;
+        seat.applied_heading = Some(sitter.heading);
+    }
+    let max_down = world::scripting::game_setting(order, "fSittingMaxLookingDown").unwrap_or(40.0);
+    camera.pitch = -furniture::clamp_pitch(-camera.pitch, sitter.state, max_down);
+    transform.rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
+    let [x, y, z] = sitter.position;
+    transform.translation = Vec3::from(cellview::space::point([x, y, z + cellview::EYE_HEIGHT]));
+    let switch_back = seat.view.update(sitter.playing.is_some(), false, false);
+    match step {
+        Step::Released | Step::Failed => {
+            if step == Step::Failed {
+                println!("The player has no way to sit in {}.", sitter.furniture);
+            }
+            state.stand(PLAYER_REF);
+            seat.applied_heading = None;
+            if seat.first_person_loop.take().is_some() {
+                idle.set_seated_loop(game, None);
+            }
+        }
+        Step::Busy | Step::Settled => {
+            // Back in first person seated: the tree's first-person seated
+            // loop (asked at `GetSitting` 1 with `IsPC1stPerson`; which of
+            // the player's two animation sets the game reloads it into on
+            // the switch, `00950110` → `00951a10`, isn't traced).
+            if switch_back {
+                seat.loop_asked = false;
+            }
+            if !seat.loop_asked && !seat.view.active && sitter.state.is_settled() {
+                seat.loop_asked = true;
+                let seed = state.roll();
+                let found = pick_player_idle(
+                    order,
+                    state,
+                    &seats.tree,
+                    &roots,
+                    (1, 0, sitter.marker.number),
+                    true,
+                    seed,
+                );
+                let model = found.map(|(_, m)| m);
+                if model != seat.first_person_loop {
+                    let seq = model.as_deref().and_then(|m| seats.sequence(game, m));
+                    idle.set_seated_loop(game, seq);
+                    seat.first_person_loop = model;
+                }
+            }
+            state.sitters.insert(PLAYER_REF, sitter);
+        }
+    }
 }
 
 /// Lets go of a sandbox choice that couldn't be carried out: its target
