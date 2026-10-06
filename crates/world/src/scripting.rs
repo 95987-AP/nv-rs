@@ -1211,8 +1211,17 @@ impl Interactive {
     /// How far along a ray (from `eye`, unit `dir`) it meets the object's
     /// bounds, if it does.
     pub fn ray_hit(&self, eye: [f32; 3], dir: [f32; 3]) -> Option<f32> {
+        self.ray_hit_within(eye, dir, 0.0)
+    }
+
+    /// [`Self::ray_hit`] with the bounds grown by `margin` world units on
+    /// every side: where a sphere of that radius cast along the ray first
+    /// touches them (the corners rounded off aside), as the activation
+    /// pick's sphere does (`world::activation::PICK_RADIUS`).
+    pub fn ray_hit_within(&self, eye: [f32; 3], dir: [f32; 3], margin: f32) -> Option<f32> {
         let (lo, hi) = self.bounds?;
         let s = if self.scale > 0.0 { self.scale } else { 1.0 };
+        let (lo, hi) = (lo.map(|v| v - margin / s), hi.map(|v| v + margin / s));
         let o = self.local(eye, true).map(|v| v / s);
         let d = self.local(dir, false).map(|v| v / s);
         let (mut near, mut far) = (0.0f32, f32::INFINITY);

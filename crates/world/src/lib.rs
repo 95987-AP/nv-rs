@@ -19,6 +19,7 @@
 //! # Ok::<(), world::Error>(())
 //! ```
 
+pub mod activation;
 pub mod actor;
 pub mod ai;
 pub mod animation;
@@ -44,6 +45,7 @@ pub mod grass;
 pub mod idles;
 mod image_space;
 pub mod impacts;
+pub mod iron_sights;
 pub mod items;
 pub mod land;
 pub mod leveled;
