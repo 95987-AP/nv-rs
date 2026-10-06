@@ -946,6 +946,57 @@ pub fn perks(out: &mut impl Write, order: &LoadOrder, entry: Option<u8>) -> Resu
     Ok(())
 }
 
+/// `craft`: the recipe menu's list for a category as a new character sees it
+/// (`world::crafting`): known recipes (those whose conditions pass), each with
+/// its skill, ingredients and outputs.
+pub fn craft(
+    out: &mut impl Write,
+    order: &LoadOrder,
+    category: Option<&str>,
+) -> Result<(), CliError> {
+    let category = match category {
+        Some(c) => Some(crate::records::find_record(order, c)?.form_id),
+        None => None,
+    };
+    let state = GameState::new(order);
+    let offers = world::crafting::offers(order, &state, category);
+    let name = |f: esm::FormId| {
+        world::items::item_info(order, f).map_or_else(|| describe_id(order, f), |i| i.name)
+    };
+    let list = |items: &[(esm::FormId, i32)]| {
+        items
+            .iter()
+            .map(|&(f, n)| format!("{n} {}", name(f)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    writeln!(
+        out,
+        "{} recipes on offer to a new character (hidden ones wait for their notes)",
+        offers.len()
+    )?;
+    for o in &offers {
+        let r = &o.recipe;
+        let skill = r.skill.map_or(String::from("no skill"), |av| {
+            format!(
+                "{} {}",
+                world::chargen::actor_value_name(order, av),
+                r.level
+            )
+        });
+        writeln!(
+            out,
+            "  {:<38} {} / {} ({skill}): {} -> {}",
+            r.name,
+            world::crafting::category_name(order, r.category),
+            world::crafting::category_name(order, r.sub_category),
+            list(&r.ingredients),
+            list(&r.outputs)
+        )?;
+    }
+    Ok(())
+}
+
 /// `barter`: what a merchant sells (their own things and their merchant
 /// container's, stocked as a new game would, those their services cover)
 /// and the prices a new character sees in the barter menu

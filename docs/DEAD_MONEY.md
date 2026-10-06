@@ -582,6 +582,40 @@ can be crafted or played yet. That is a separate piece of work, larger than a fu
 What the three numbers mean in each game isn't traced; the reference's +0x81 check for
 talking activators is taken to be met. Nothing compared in the original game.
 
+## Crafting (`RCPE`, `RCCT`)
+
+`world::crafting`; `nvinspect <Data> craft [CATEGORY]` lists what a new character is offered.
+
+**Read from the data** (the records, not the game's code):
+
+* A recipe's `DATA` is four numbers: the skill it asks for (an actor value number; `0xFFFFFFFF`
+  for none, as the Sierra Madre vending machine's), the level, its category (`RCCT`: Workbench,
+  Campfire, Reloading Bench, `NVDLC01VendingMachineRecipes`) and its sub-category (Aid, Weapons,
+  Ammo, Chems, Food, Misc ...). `RCIL` + `RCQY` pairs are what it uses, `RCOD` + `RCQY` pairs what it
+  makes (a breakdown makes several things); `CTDA` conditions say when it is on offer.
+* Learnt recipes' conditions ask `GetHasNote` for their recipe note, which the note's script gives
+  (`player.AddNote`) when the recipe item is picked up. The three bench scripts
+  (`CraftingWorkbenchRecipesScript` and the campfire's and reloading bench's) call
+  `player.ShowRecipeMenu <category>` when the player activates them; the Dead Money vending
+  machines do the same with `NVDLC01VendingMachineRecipes` (the first use shows a message instead).
+* Against the real data a new character is offered 14 vending machine recipes (all priced in Sierra
+  Madre chips, from 5 to 55, and the "[Return]" ones that pay chips for cigarettes), 41 workbench and
+  68 campfire ones.
+
+**In code**: `Recipe::load`, `offers` (the list for a category), `sub_categories`, `can_make`,
+`make`. Tests: `crates/world/tests/crafting.rs`.
+
+**Guessed, to check in the original game**:
+
+* A recipe is listed when its conditions pass, and also when the player lacks the skill or an
+  ingredient (shown as not makeable). The original may hide those.
+* The skill check is the player's current value (chems and gear counted) at least the recipe's level.
+* With no category given, `ShowRecipeMenu` lists every category's recipes.
+* Making one uses up each ingredient in full and adds the outputs; "Items Crafted" (misc stat 32)
+  goes up by one for each recipe made, whatever it makes. No experience, no skill gain, no sound.
+* The list is sorted by name; the filter arrows go through the sub-categories in the order they first
+  appear.
+
 ## D3: the intro slideshow and the Villa start
 
 - **`SayToDone` blocks.** A dialogue line said with `SayTo` runs the speaker's

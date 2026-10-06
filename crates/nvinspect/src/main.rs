@@ -99,6 +99,11 @@ COMMANDS FOR PLUGINS AND DATA FOLDERS:
                           where it leads and the navmesh path there
     barter <REF>          what a merchant sells (their merchant
                           container) and the prices a new character pays
+    craft [CATEGORY]      the recipes the recipe menu lists for a category
+                          (an RCCT editor ID: CampfireRecipes, WorkbenchRecipes,
+                          ReloadingBenchRecipes ...; every category without
+                          one) for a new character: skill, ingredients and
+                          what each makes
     vats <ID> [WEAPON] [DISTANCE]
                           what V.A.T.S. offers a new character against a
                           person or creature with a weapon (else fists):
