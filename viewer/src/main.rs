@@ -207,6 +207,7 @@ fn main() {
         .insert_resource(viewmodel::ShowInPictures(args.weapon.is_some()))
         .init_resource::<scripts::CellScripts>()
         .init_resource::<ai::CellNav>()
+        .init_resource::<ai::PathQueue>()
         .init_resource::<ai::CombatSettings>()
         .init_resource::<fighting::NpcShots>()
         .init_resource::<ai::Moved>()

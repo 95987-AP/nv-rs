@@ -11,11 +11,12 @@
 //!   PDB) does (`physics::impulses::projectile_impulse`, from
 //!   `hiteffects::HitReports::shot_on_world`); explosions push the bodies in
 //!   their sphere (`physics::impulses::explosion_push`, from
-//!   `explosives`); the player walking into one pushes it.
+//!   `explosives`); the player, and people on their character controllers
+//!   (`ai::move_body`, [`walkers`]), walking into one push it.
 //! - Where a moved body is goes into the game state every frame it moves,
 //!   so a save, or the place loading again, keeps it.
 //!
-//! Not done: people other than the player pushing clutter, grabbing with
+//! Not done: grabbing with
 //! the Z key (`0095f930`/`00960520`, its `fZKey…` settings traced but not
 //! implemented), damage from flying objects (`fPhysicsDamage…`,
 //! `0062be90`), models with more than one moving body (left solid where
@@ -60,6 +61,17 @@ pub(crate) enum Push {
 /// as the throw queue in `explosives` is: no system parameters change).
 static ARRIVED: Mutex<Vec<DynamicBody>> = Mutex::new(Vec::new());
 static PUSHES: Mutex<Vec<Push>> = Mutex::new(Vec::new());
+/// The people (not the player) walking this frame, as their character
+/// controllers want to move (`ai::move_body`): they push what they walk
+/// into as the player does.
+static WALKERS: Mutex<Vec<Mover>> = Mutex::new(Vec::new());
+
+/// The people's walkers for the next update (replacing the last list).
+pub(crate) fn walkers(list: Vec<Mover>) {
+    if let Ok(mut q) = WALKERS.lock() {
+        *q = list;
+    }
+}
 
 /// A spawned place's bodies, for the simulation.
 pub(crate) fn arrive(bodies: &[DynamicBody]) {
@@ -260,7 +272,7 @@ fn simulate(
     // The player pushes what they walk into.
     let c = &player.character;
     let shape = physics::CharacterShape::PLAYER;
-    clutter.world.set_movers(if player.walking && player.ready {
+    let mut movers = if player.walking && player.ready {
         vec![Mover {
             feet: c.feet,
             radius: shape.radius,
@@ -269,7 +281,12 @@ fn simulate(
         }]
     } else {
         Vec::new()
-    });
+    };
+    // And the people walking about (`ai::move_body`).
+    if let Ok(q) = WALKERS.lock() {
+        movers.extend(q.iter().copied());
+    }
+    clutter.world.set_movers(movers);
     // Shots and blasts.
     let pushes: Vec<Push> = PUSHES
         .lock()
