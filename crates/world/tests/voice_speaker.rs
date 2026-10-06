@@ -40,7 +40,11 @@ fn a_line_with_its_own_speaker_uses_that_speakers_voice_type() {
     let mut people = npc(NARRATOR, "Narrator", NARRATOR_VOICE);
     people.extend(npc(ELIJAH, "Elijah", ELIJAH_VOICE));
     plugin.extend(group(*b"NPC_", 0, &people));
-    plugin.extend(group(*b"QUST", 0, &record(b"QUST", QUEST, &edid("TestIntro"))));
+    plugin.extend(group(
+        *b"QUST",
+        0,
+        &record(b"QUST", QUEST, &edid("TestIntro")),
+    ));
     let line = |id: u32, speaker: Option<u32>| {
         let mut d = sub(b"DATA", &[0, 0, 0, 0]);
         d.extend(sub(b"QSTI", &QUEST.to_le_bytes()));
@@ -72,7 +76,11 @@ fn a_line_with_its_own_speaker_uses_that_speakers_voice_type() {
         dialogue::voice_path(&order, &info, &response, FormId(NARRATOR_VOICE)).unwrap()
     };
     // No speaker of its own: the one saying it gives the voice type.
-    assert!(path(OWN_LINE).contains("\\narratorvoice\\"), "{}", path(OWN_LINE));
+    assert!(
+        path(OWN_LINE).contains("\\narratorvoice\\"),
+        "{}",
+        path(OWN_LINE)
+    );
     // Elijah's line, said by the narrator: Elijah's voice type.
     assert!(
         path(ELIJAHS_LINE).contains("\\elijahvoice\\"),

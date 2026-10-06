@@ -951,9 +951,7 @@ pub fn hurt(
         // (`SetEssentialDownTimer`, process +0xe8) with its health and
         // conditions restored (`008a0960`).
         if crate::more_functions::is_essential(order, state, who) {
-            if state.unconscious.contains(&who)
-                || state.set_by_scripts.restrained.contains(&who)
-            {
+            if state.unconscious.contains(&who) || state.set_by_scripts.restrained.contains(&who) {
                 let regain = f64::from(
                     crate::scripting::game_setting(order, "fEssentialHealthPercentReGain")
                         .unwrap_or(0.3),

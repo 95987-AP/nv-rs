@@ -39,7 +39,10 @@ fn with_guesses_on_teammates_follow_and_people_on_their_feet_animate() {
     state.teammates.remove(&who);
 
     // A person on their feet is playing an animation; one who is down isn't.
-    assert_eq!(ask(&order, &scripts, &mut state, "PersonRef.IsAnimPlaying"), 1.0);
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "PersonRef.IsAnimPlaying"),
+        1.0
+    );
     Runner::new(&order, &scripts, &mut state).run_source(
         "PersonRef.SetActorRefEssential 1",
         None,
@@ -47,7 +50,10 @@ fn with_guesses_on_teammates_follow_and_people_on_their_feet_animate() {
     );
     world::combat::hurt(&order, &mut state, who, 100000.0, PLAYER_REF);
     assert!(state.more.down.contains_key(&who));
-    assert_eq!(ask(&order, &scripts, &mut state, "PersonRef.IsAnimPlaying"), 0.0);
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "PersonRef.IsAnimPlaying"),
+        0.0
+    );
 
     world::guesses::set(false);
 }

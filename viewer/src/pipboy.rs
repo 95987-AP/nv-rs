@@ -1487,12 +1487,7 @@ fn pipboy_keys(
                 }
                 let total_ms =
                     pieces.iter().map(|p| p.2).sum::<f32>() + (pieces.len() as f32 - 1.0) * 500.0;
-                let entity = play_piece(
-                    &mut commands,
-                    &mut wavs,
-                    &pieces[0].0,
-                    pieces[0].1,
-                );
+                let entity = play_piece(&mut commands, &mut wavs, &pieces[0].0, pieces[0].1);
                 println!(
                     "Note {}: {} piece(s), {:.1} s.",
                     FormId(form),
