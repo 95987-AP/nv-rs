@@ -16,6 +16,7 @@
 
 pub mod barter;
 pub mod chargen;
+pub mod companion_wheel;
 pub mod computers;
 pub mod container;
 pub mod dialog;
@@ -91,6 +92,7 @@ pub enum OpenMenu {
     Container(Box<container::ContainerScreen>),
     Barter(Box<barter::BarterScreen>),
     Repair(Box<repair::RepairScreen>),
+    CompanionWheel(Box<companion_wheel::WheelScreen>),
     Quantity(ui::menus::quantity::QuantityMenu),
     LevelUp(Box<ui::menus::levelup::LevelUpMenu>),
     Traits(Box<ui::menus::traits::TraitMenu>),
@@ -110,6 +112,7 @@ impl OpenMenu {
             OpenMenu::Container(c) => &mut c.menu,
             OpenMenu::Barter(b) => &mut b.menu,
             OpenMenu::Repair(r) => &mut r.menu,
+            OpenMenu::CompanionWheel(w) => &mut w.menu,
             OpenMenu::Quantity(m) => m,
             OpenMenu::LevelUp(m) => &mut **m,
             OpenMenu::Traits(m) => &mut **m,
@@ -129,6 +132,7 @@ impl OpenMenu {
             OpenMenu::Container(c) => c.menu.menu,
             OpenMenu::Barter(b) => b.menu.menu,
             OpenMenu::Repair(r) => r.menu.menu,
+            OpenMenu::CompanionWheel(w) => w.menu.menu,
             OpenMenu::Quantity(m) => m.menu,
             OpenMenu::LevelUp(m) => m.menu,
             OpenMenu::Traits(m) => m.menu,
@@ -148,6 +152,7 @@ impl OpenMenu {
             OpenMenu::Container(c) => c.menu.closed,
             OpenMenu::Barter(b) => b.menu.closed,
             OpenMenu::Repair(r) => r.menu.closed,
+            OpenMenu::CompanionWheel(w) => w.menu.closed,
             OpenMenu::Quantity(m) => m.closed,
             OpenMenu::LevelUp(m) => m.closed,
             OpenMenu::Traits(m) => m.closed,
@@ -171,6 +176,7 @@ impl Plugin for GameMenusPlugin {
             .init_resource::<FixedPointer>()
             .init_resource::<FixedClicks>()
             .init_resource::<hacking::HackingSounds>()
+            .init_resource::<companion_wheel::WheelVoices>()
             .add_systems(
                 Update,
                 (start_menu, open_menus, run_open_menus, draw_menus)
@@ -178,7 +184,8 @@ impl Plugin for GameMenusPlugin {
                     .before(crate::menus::run_menus),
             )
             .add_systems(Update, vigor::draw.after(run_open_menus))
-            .add_systems(Update, hacking::play_sounds.after(run_open_menus));
+            .add_systems(Update, hacking::play_sounds.after(run_open_menus))
+            .add_systems(Update, companion_wheel::play_voices.after(run_open_menus));
     }
 }
 
@@ -278,6 +285,8 @@ fn start_menu(
         ("repair", Some(r)) => crate::menus::Menu::RepairServices(r),
         // A companion's things, as `OpenTeammateContainer` would open them.
         ("teammate", Some(r)) => crate::menus::Menu::Teammate(r),
+        // A companion's wheel, as using them would bring it up.
+        ("wheel", Some(r)) => crate::menus::Menu::CompanionWheel(r),
         // A placed terminal's own screen, as getting in would open it.
         ("terminal", Some(r)) => {
             crate::menus::Menu::Terminal(world::scripting::base_of(order, r).unwrap_or(r), r)
@@ -469,6 +478,7 @@ pub fn takes(m: &crate::menus::Menu) -> bool {
         || container::takes(m)
         || barter::takes(m)
         || repair::takes(m)
+        || companion_wheel::takes(m)
         || levelup::takes(m)
         || traits::takes(m)
         || chargen::takes(m)
@@ -491,6 +501,7 @@ fn open_menus(
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time<bevy::time::Real>>,
     hacking_sounds: Res<hacking::HackingSounds>,
+    scripts: Res<crate::scripts::Scripts>,
 ) {
     let Some(size) = window_size(&windows) else {
         return;
@@ -540,6 +551,8 @@ fn open_menus(
                 .extend(barter::open(screen, &game.0, &mut state.0, request));
         } else if repair::takes(&request) {
             repair::open(screen, &game.0, &mut state.0, request);
+        } else if companion_wheel::takes(&request) {
+            companion_wheel::open(screen, &game.0, &scripts.0, &mut state.0, request);
         } else {
             sounds
                 .0
@@ -611,6 +624,7 @@ fn run_open_menus(
     scripts: Res<crate::scripts::Scripts>,
     mut hacking_sounds: ResMut<hacking::HackingSounds>,
     mut hud_messages: ResMut<crate::hud::HudMessages>,
+    mut wheel_voices: ResMut<companion_wheel::WheelVoices>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         input.typed.clear();
@@ -626,6 +640,7 @@ fn run_open_menus(
     container::update(screen);
     textedit::update(screen, now * 1000.0);
     vigor::update(screen, dt);
+    companion_wheel::update(screen, &mut wheel_voices, now * 1000.0);
     // The Rest control (T) this frame, for the sleep/wait menu.
     let mut rest_pressed = false;
     {
@@ -719,13 +734,19 @@ fn run_open_menus(
                     continue;
                 }
             }
-            // Tab or Escape leave the hacking and terminal menus (their
-            // code 10).
-            if matches!(top, OpenMenu::Hacking(_) | OpenMenu::Computers(_))
-                && matches!(e.logical_key, Key::Escape | Key::Tab)
+            // Tab or Escape leave the hacking and terminal menus and the
+            // companion wheel (their code 10).
+            if matches!(
+                top,
+                OpenMenu::Hacking(_) | OpenMenu::Computers(_) | OpenMenu::CompanionWheel(_)
+            ) && matches!(e.logical_key, Key::Escape | Key::Tab)
             {
                 use ui::menu::MenuCode;
                 match top {
+                    OpenMenu::CompanionWheel(w) => {
+                        w.menu
+                            .special_key(ui, ui::menus::companion_wheel::LEAVE, now * 1000.0);
+                    }
                     OpenMenu::Hacking(h) => {
                         h.menu
                             .special_key(ui, ui::menus::hacking::LEAVE, now * 1000.0);
@@ -808,6 +829,14 @@ fn run_open_menus(
     sounds
         .0
         .extend(repair::after(screen, &game.0, &mut state.0));
+    sounds.0.extend(companion_wheel::after(
+        screen,
+        &game.0,
+        &scripts.0,
+        &mut state.0,
+        &mut wheel_voices,
+        now * 1000.0,
+    ));
     sounds
         .0
         .extend(levelup::after(screen, &game.0, &mut state.0));

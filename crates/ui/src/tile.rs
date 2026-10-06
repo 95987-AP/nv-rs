@@ -239,8 +239,9 @@ impl Ui {
                 self.set_number(id, t::SYSTEMCOLOR, 1.0);
                 self.set_number(id, t::VISIBLE, 0.0);
             }
-            // `00a1f6e0`.
-            kind::IMAGE | kind::HOTRECT => {
+            // `00a1f6e0` (a radial tile's too: `RadialTile` is an image
+            // with its own picking).
+            kind::IMAGE | kind::HOTRECT | kind::RADIAL => {
                 for trait_id in [t::BRIGHTNESS, t::RED, t::GREEN, t::BLUE, t::ALPHA] {
                     self.set_number(id, trait_id, 255.0);
                 }

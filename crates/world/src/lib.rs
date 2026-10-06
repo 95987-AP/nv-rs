@@ -28,6 +28,7 @@ mod cell;
 pub mod chargen;
 pub mod combat;
 pub mod combat_ai;
+pub mod companions;
 pub mod crime;
 pub mod detection;
 pub mod dialogue;

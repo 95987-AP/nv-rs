@@ -490,9 +490,9 @@ fn using_a_person_picks_their_pockets_while_sneaking() {
     assert_eq!(used(&state, mark), pickpocket::Use::Talk);
     state.player_sneaking = true;
     assert_eq!(used(&state, mark), pickpocket::Use::Pickpocket);
-    // Not the player's companions.
+    // Not the player's companions: their wheel of orders (`005fa330`).
     run(&order, &scripts, &mut state, "PalRef.SetPlayerTeammate 1");
-    assert_eq!(used(&state, FormId(PAL_REF)), pickpocket::Use::Talk);
+    assert_eq!(used(&state, FormId(PAL_REF)), pickpocket::Use::Wheel);
     assert_eq!(
         pickpocket::use_person(&order, &state, mark, true),
         pickpocket::Use::Refused("Owner is fleeing.".into())

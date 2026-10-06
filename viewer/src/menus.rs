@@ -42,6 +42,9 @@ pub enum Menu {
     /// Trading things with a companion (their reference,
     /// `OpenTeammateContainer`).
     Teammate(FormId),
+    /// A companion's wheel of orders (their reference: the player using a
+    /// teammate).
+    CompanionWheel(FormId),
     /// A computer terminal used (`world::terminal`): its record and the
     /// placed terminal.
     Terminal(FormId, FormId),
@@ -199,6 +202,7 @@ fn open(
         | Menu::Barter(..)
         | Menu::RepairServices(..)
         | Menu::Teammate(..)
+        | Menu::CompanionWheel(..)
         | Menu::LevelUp(..)
         | Menu::Character(CharacterMenu::Traits { .. })
         | Menu::Character(CharacterMenu::TagSkills { .. })

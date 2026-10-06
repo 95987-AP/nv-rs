@@ -6,6 +6,7 @@
 
 pub mod barter;
 pub mod chargen;
+pub mod companion_wheel;
 pub mod computers;
 pub mod container;
 pub mod dialog;

@@ -118,6 +118,20 @@ pub fn effects(order: &LoadOrder, item: FormId) -> Vec<ItemEffect> {
     out
 }
 
+/// A default object (the `DOBJ` record `DefaultObjectManager`: its `DATA`
+/// an array of forms, `0058db10` reading slot n): 0 the Stimpak, 2 Rad-X,
+/// 3 RadAway, 21 the Doctor's Bag (the STATS menu's aid buttons,
+/// `007da2c0`).
+pub fn default_object(order: &LoadOrder, index: usize) -> Option<FormId> {
+    let rr = order.records_of_type(FourCC::new(b"DOBJ")).next()?;
+    let rr = order.get(rr.form_id)?;
+    let record = rr.record().ok()?;
+    let data = record.get(esm::sig::DATA)?.data.clone();
+    let at = index * 4;
+    let raw = u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?);
+    (raw != 0).then(|| rr.plugin.to_global(FormId(raw)))
+}
+
 /// An aid item's (`ALCH`) `ENIT` flags (u8 at 4): 0x01 no auto-calculate,
 /// 0x02 a food item, 0x04 a medicine (the Stimpak's 0x05). `None` for
 /// anything but an aid item.

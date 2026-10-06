@@ -1470,6 +1470,17 @@ pub mod quest_ids {
     pub const KEEPSAKE_SCRIPT: u32 = 0xAFE;
     pub const REFUSED_GIFT: u32 = 0xAFF;
     pub const REFUSED_GIFT_SCRIPT: u32 = 0xB20;
+    /// The companion wheel's: `FollowersWait`, Doc's line for it ("I'll sit
+    /// tight.", begin `set DocRef.Waiting to 1`, end `set TestGlobal to
+    /// 7`, as Boone's), `Regenerating` and his line for it ("Much
+    /// better."), and the default objects (`DOBJ`, the Stimpak first:
+    /// `TestStimpak`). `TestDocScript` has the four variables the wheel
+    /// reads.
+    pub const FOLLOWERS_WAIT: u32 = 0xB50;
+    pub const WAIT_LINE: u32 = 0xB51;
+    pub const REGENERATING: u32 = 0xB52;
+    pub const REGENERATING_LINE: u32 = 0xB53;
+    pub const DEFAULT_OBJECTS: u32 = 0xB54;
     /// Settings the perks' rules read (seven forms from here):
     /// `fPackRatThreshold` 2, `fPackRatModifier` 0.5, `fAgilityReloadBase`
     /// 5, `fAgilityReloadModifier` 0.1, `fDamageToWeaponValue` 0.2,
@@ -1639,6 +1650,8 @@ End
         DOC_SCRIPT,
         "TestDocScript",
         "scn TestDocScript\nshort iTalked\nshort iByDoor\n\
+         short Waiting\nshort FollowerSwitchAggressive\nshort IsFollowingLong\n\
+         short CombatStyleRanged\n\
          Begin OnActivate Player\n\tset iTalked to iTalked + 1\nEnd\n\
          Begin OnActivate DoorRef\n\tset iByDoor to 1\nEnd",
     ));
@@ -2344,6 +2357,42 @@ End
     lines.extend(record(b"INFO", OTHER_LINE, &other));
     let mut dialogue = greeting;
     dialogue.extend(group(GREETING.to_le_bytes(), 7, &lines));
+    // The companion wheel's topics (the game's `FollowersWait`,
+    // `Regenerating`), with Doc's lines.
+    for (topic, info, name, said, scripts) in [
+        (
+            FOLLOWERS_WAIT,
+            WAIT_LINE,
+            "FollowersWait",
+            "I'll sit tight.",
+            Some(("set DocRef.Waiting to 1", "set TestGlobal to 7")),
+        ),
+        (
+            REGENERATING,
+            REGENERATING_LINE,
+            "Regenerating",
+            "Much better.",
+            None,
+        ),
+    ] {
+        let mut d = edid(name);
+        d.extend(sub(b"QSTI", &QUEST.to_le_bytes()));
+        d.extend(sub(b"DATA", &[0, 0]));
+        dialogue.extend(record(b"DIAL", topic, &d));
+        let mut line = sub(b"DATA", &[0, 0, 0, 0]);
+        line.extend(sub(b"QSTI", &QUEST.to_le_bytes()));
+        line.extend(sub(b"TRDT", &[0; 24]));
+        line.extend(sub(b"NAM1", &zstr(said)));
+        line.extend(condition(72, [DOC, 0], 1.0));
+        if let Some((begin, end)) = scripts {
+            line.extend(sub(b"SCHR", &[0; 20]));
+            line.extend(sub(b"SCTX", begin.as_bytes()));
+            line.extend(sub(b"NEXT", &[]));
+            line.extend(sub(b"SCHR", &[0; 20]));
+            line.extend(sub(b"SCTX", end.as_bytes()));
+        }
+        dialogue.extend(group(topic.to_le_bytes(), 7, &record(b"INFO", info, &line)));
+    }
     // Topics to ask about: (topic, its line, name, top-level, priority,
     // who answers, the line's prompt, a topic the line teaches).
     let topics = [
@@ -2811,6 +2860,16 @@ End
     plugin.extend(group(*b"DOOR", 0, &record(b"DOOR", DOOR, &door)));
     plugin.extend(group(*b"CONT", 0, &record(b"CONT", CHEST, &chest)));
     plugin.extend(group(*b"DIAL", 0, &dialogue));
+    // The default objects: the Stimpak first.
+    let mut objects = edid("DefaultObjectManager");
+    let mut slots = STIMPAK.to_le_bytes().to_vec();
+    slots.extend([0; 4 * 33]);
+    objects.extend(sub(b"DATA", &slots));
+    plugin.extend(group(
+        *b"DOBJ",
+        0,
+        &record(b"DOBJ", DEFAULT_OBJECTS, &objects),
+    ));
     plugin.extend(cells);
     data.write("FalloutNV.esm", &plugin);
     data

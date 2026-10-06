@@ -541,6 +541,55 @@ pub fn computers_menu() -> String {
 /// 8, the error 9 shown while card 10 isn't, the cost 12), the buttons
 /// (13 repair, 14 Repair All, 15 Done); a line's text first, its meter
 /// (18) and its worn mark last.
+/// The companion wheel's tiles as `companion_wheel_menu.xml` has them:
+/// eight `radial` slices round the screen's centre (radius 76 to 332;
+/// four on the right from 30 to 150 degrees, four on the left from 210 to
+/// 330, the file's angles), the texts, Exit.
+pub fn companion_wheel_menu() -> String {
+    let angles = [
+        ("0.523598", "1.047196"),
+        ("1.047196", "1.5707943"),
+        ("1.5707943", "2.094329"),
+        ("2.094329", "2.61799"),
+        ("3.665186", "4.188784"),
+        ("4.188784", "4.7123823"),
+        ("4.7123823", "5.235980"),
+        ("5.235980", "5.759578"),
+    ];
+    let slices: String = angles
+        .iter()
+        .enumerate()
+        .map(|(i, (from, to))| {
+            format!(
+                "<radial name=\"CWM_Slice{i}\"><id>{i}</id><filename>a.dds</filename>
+                   <target>&true;</target><width>760</width><height>760</height>
+                   <user0>960</user0><user1>540</user1><user2>{from}</user2><user3>{to}</user3>
+                   <user4>76</user4><user5>332</user5><user10>0</user10><user11>0</user11></radial>"
+            )
+        })
+        .collect();
+    let text = |name: &str, id: i32| {
+        format!("<text name=\"{name}\"><id>{id}</id><font>2</font><string></string></text>")
+    };
+    format!(
+        "<menu name=\"CompanionWheelMenu\"><class>&CompanionWheelMenu;</class>
+           <rect name=\"NOGLOW_BRANCH\"><hotrect name=\"CWM_MainRect\"><locus>&true;</locus>
+             <x>580</x><y>160</y><width>760</width><height>760</height>
+             {}{}{}
+             <rect name=\"CWM_ExitButton\"><id>11</id><target>&true;</target><string></string></rect>
+             {}{}{}{}{slices}
+           </hotrect></rect>
+         </menu>",
+        text("CWM_RadialLabel", 8),
+        text("CWM_ButtonPreviewText", 9),
+        text("CWM_ButtonContextText", 10),
+        text("CWM_Subtitle", 12),
+        text("CWM_ExitCallout", 13),
+        text("CWM_SelectCallout", 14),
+        text("CWM_NavigateCallout", 15),
+    )
+}
+
 pub fn repair_services_menu() -> String {
     let card = |name: &str, id: i32, extra: &str| {
         format!(

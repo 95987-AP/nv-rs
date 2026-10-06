@@ -122,19 +122,7 @@ pub fn date_time(state: &GameState, order: &LoadOrder) -> String {
     )
 }
 
-/// A default object (the `DOBJ` record `DefaultObjectManager`: its `DATA`
-/// an array of forms, `0058db10` reading slot n): 0 the Stimpak, 2 Rad-X,
-/// 3 RadAway, 21 the Doctor's Bag (the STATS menu's aid buttons,
-/// `007da2c0`).
-pub fn default_object(order: &LoadOrder, index: usize) -> Option<FormId> {
-    let rr = order.records_of_type(FourCC::new(b"DOBJ")).next()?;
-    let rr = order.get(rr.form_id)?;
-    let record = rr.record().ok()?;
-    let data = record.get(esm::sig::DATA)?.data.clone();
-    let at = index * 4;
-    let raw = u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?);
-    (raw != 0).then(|| rr.plugin.to_global(FormId(raw)))
-}
+pub use world::items::default_object;
 
 /// The world map for a worldspace: its `ICON` picture, `MNAM` (usable
 /// width and height u32, then the north-west and south-east cells' x, y
