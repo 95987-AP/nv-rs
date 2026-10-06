@@ -124,7 +124,7 @@ pub fn uses_iron_sights(distance: f32, sight_usage: f32, melee: bool, s: Setting
 /// `009295c0`.
 // Translated from 00523150 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn npc_cone(weapon_cone: f32, wobble: f32, max_wobble_degrees: f32) -> f32 {
-    // `_DAT_01023128` is π/180 (double).
+    // The double at `01023128` is π/180.
     weapon_cone + wobble * max_wobble_degrees * std::f32::consts::PI / 180.0
 }
 
@@ -190,17 +190,18 @@ pub struct TargetCandidate {
 
 /// The target a combat group member fights next: among those with a
 /// detection level of at least 1, the highest score (when the group has
-/// more than one target; else 0): + 1000 in view, + 100 in sight, + 100
-/// the current target (+ 1000 more when out of view but seen within 2 s),
-/// + 100 when both fight alike, + (1 − min(d², 2048²) ÷ 2048²) × 1000,
-/// + 0 when others attack it too (`011f18b0` is 0 in the file and never
-/// written), − 500 when it is down. With none detected, the most recently
-/// detected (the timestamp comparison is inferred from the decompiler's
-/// output), else the last one weighed. Not modelled: the style's targeting
-/// field of view, which the caller applies; teammates' rule (`00566950` →
-/// `008b06d0`), the cell checks (`FUN_00408d60` flag, `0084e3a0`), the
-/// unreachable-location penalty (2000, `009a0f40`), the unloaded-area
-/// penalty (2500, `009a96f0`) and `008a6650` (500).
+/// more than one target; else 0), adding 1000 in view, 100 in sight, 100
+/// for the current target (1000 more when out of view but seen within
+/// 2 s), 100 when both fight alike, (1 − min(d², 2048²) ÷ 2048²) × 1000,
+/// 0 when others attack it too (`011f18b0` is 0 in the file and never
+/// written), and taking 500 when it is down. With none detected, the most
+/// recently detected (the timestamp comparison is inferred from the
+/// decompiler's output), else the last one weighed. Not modelled: the
+/// style's targeting field of view, which the caller applies; teammates'
+/// rule (`00566950` → `008b06d0`), the cell checks (the flag `00408d60`
+/// returns, `0084e3a0`), the unreachable-location penalty (2000,
+/// `009a0f40`), the unloaded-area penalty (2500, `009a96f0`) and
+/// `008a6650` (500).
 // Translated from 00986c60 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn best_target(candidates: &[TargetCandidate]) -> Option<FormId> {
     // `0108d540` FLT_MAX; `011a4d50`–`011a4d78` the weights.
@@ -211,7 +212,7 @@ pub fn best_target(candidates: &[TargetCandidate]) -> Option<FormId> {
     let several = candidates.len() > 1;
     for c in candidates {
         if c.detection < 1 {
-            if freshest.is_none_or(|(t, _)| c.last_detected > t) {
+            if freshest.map_or(true, |(t, _)| c.last_detected > t) {
                 freshest = Some((c.last_detected, c.reference));
             }
         } else {

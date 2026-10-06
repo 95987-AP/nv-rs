@@ -39,7 +39,9 @@
 //! past 512 × the weapon's sight usage count), and flies as a ray to the
 //! first body (its skeleton's capsules; the player's bounds), scripted
 //! object or wall within the projectile's range: shots miss and hit
-//! bystanders. Missiles that fly in the game are rays here too.
+//! bystanders. Someone other than their targets first on the straight
+//! line holds the shot (`009a6e90`). Missiles that fly in the game are
+//! rays here too.
 //!
 //! Their targets (`Targets`): everyone they start a fight with or notice
 //! rising while fighting and would attack; when the target dies or is
