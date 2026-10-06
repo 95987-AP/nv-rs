@@ -89,9 +89,10 @@ Movie batch, 2026-10-06 (Claude, branch `claude/m1-bink-intro`): new
 compare them frame by frame. All 8,692 intro frames match in Y, U and V;
 982 core tests pass. The shipped `VCG00` plays `FNVIntro.bik` and jumps to
 stage 90, so the burial stages (and `TriggerScreenSplatter`) never run.
-Evidence: [MOVIES.md](MOVIES.md). **Next action:** Bink audio (DCT, 48 kHz
-stereo), then the `PlayBink` handler's presentation in Ghidra and viewer
-playback.
+Audio (`bink::AudioDecoder`, `nvinspect <movie.bik> audio`) matches the
+DLL's `BinkGetTrackData` output in length and within one step on all
+27.8 million samples. Evidence: [MOVIES.md](MOVIES.md). **Next action:** the
+`PlayBink` handler's presentation in Ghidra, then viewer playback.
 
 Outstanding M1 gates:
 - Exact opening camera transition replay and Doc/player assistance timing.
@@ -99,10 +100,10 @@ Outstanding M1 gates:
   ([OPENING_LOOK_IK.md](OPENING_LOOK_IK.md)).
 - Original face editor instead of auto-accept
   ([FACE_CREATION.md](FACE_CREATION.md)).
-- Opening movie playback ([MOVIES.md](MOVIES.md)): video decoding done and
+- Opening movie playback ([MOVIES.md](MOVIES.md)): video decoding is
   bit-exact with the game's `binkw32.dll` on all 8,692 frames of
-  `FNVIntro.bik`; audio, `PlayBink` presentation and viewer playback
-  remain.
+  `FNVIntro.bik`, audio within one step on every sample (99.98% exact);
+  `PlayBink` presentation and viewer playback remain.
 - In-progress animation save restoration, full character-creation route,
   exit to Goodsprings and save/restart/reload acceptance.
 - SPECIAL's remaining visual/input fidelity and progression comparison

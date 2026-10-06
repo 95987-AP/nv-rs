@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Instant;
 
-use bink::{Decoder, Movie};
+use bink::{AudioDecoder, Decoder, Movie};
 
 use crate::fmt::{human_bytes, thousands};
 use crate::{expect_args, CliError, Options};
@@ -15,6 +15,8 @@ enum Command {
     /// (`research/nv-oracle`'s `nv-bink` writes the same format from the
     /// game's own library) or to the output.
     Frames(Option<String>),
+    /// Decode an audio track to raw interleaved 16-bit little-endian PCM.
+    Audio(String, usize),
 }
 
 fn parse_command(command: &str, rest: &[String]) -> Result<Command, CliError> {
@@ -23,12 +25,22 @@ fn parse_command(command: &str, rest: &[String]) -> Result<Command, CliError> {
             expect_args(command, rest, 0, 0)?;
             Ok(Command::Info)
         }
+        "audio" => {
+            expect_args(command, rest, 1, 2)?;
+            let track = match rest.get(1) {
+                Some(t) => t
+                    .parse()
+                    .map_err(|_| CliError::Usage(format!("'{t}' isn't a track number")))?,
+                None => 0,
+            };
+            Ok(Command::Audio(rest[0].clone(), track))
+        }
         "frames" => {
             expect_args(command, rest, 0, 1)?;
             Ok(Command::Frames(rest.first().cloned()))
         }
         other => Err(CliError::Usage(format!(
-            "'{other}' isn't a movie command; for .bik files use info or frames"
+            "'{other}' isn't a movie command; for .bik files use info, frames or audio"
         ))),
     }
 }
@@ -53,6 +65,7 @@ pub fn run_file(
     match command {
         Command::Info => info(out, &movie, bytes.len()),
         Command::Frames(file) => frames(out, path, &movie, file, options.force),
+        Command::Audio(file, track) => audio(out, &movie, &file, track, options.force),
     }
 }
 
@@ -195,6 +208,63 @@ fn frames(
         m.frame_count(),
         started.elapsed().as_secs_f64(),
         failed
+    )?;
+    Ok(())
+}
+
+fn audio(
+    out: &mut impl Write,
+    m: &Movie,
+    file: &str,
+    track: usize,
+    force: bool,
+) -> Result<(), CliError> {
+    let Some(t) = m.audio.get(track) else {
+        return Err(CliError::Usage(format!(
+            "the movie has {} audio track(s); there is no track {track}",
+            m.audio.len()
+        )));
+    };
+    if Path::new(file).exists() && !force {
+        return Err(CliError::Usage(format!(
+            "'{file}' already exists; add --force to overwrite it"
+        )));
+    }
+    let mut decoder =
+        AudioDecoder::new(t.sample_rate as u32, t.channels(), t.flags).map_err(|e| {
+            CliError::InFile {
+                path: format!("audio track {track}"),
+                message: e.to_string(),
+            }
+        })?;
+    let started = Instant::now();
+    let mut samples = Vec::new();
+    for i in 0..m.frame_count() {
+        let p = m.packet(i).map_err(|e| CliError::InFile {
+            path: format!("frame {i}"),
+            message: e.to_string(),
+        })?;
+        decoder
+            .decode_packet(p.audio[track], &mut samples)
+            .map_err(|e| CliError::InFile {
+                path: format!("frame {i}, audio track {track}"),
+                message: e.to_string(),
+            })?;
+    }
+    let mut bytes = Vec::with_capacity(samples.len() * 2);
+    for v in &samples {
+        bytes.extend_from_slice(&v.to_le_bytes());
+    }
+    std::fs::write(file, &bytes)?;
+    let frames = samples.len() / t.channels() as usize;
+    writeln!(
+        out,
+        "{} samples per channel ({:.3} s at {} Hz, {} channel(s)) decoded in {:.1} s to {file}",
+        thousands(frames),
+        frames as f64 / t.sample_rate as f64,
+        t.sample_rate,
+        t.channels(),
+        started.elapsed().as_secs_f64()
     )?;
     Ok(())
 }

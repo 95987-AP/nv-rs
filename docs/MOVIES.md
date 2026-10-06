@@ -73,9 +73,64 @@ Only revision `i` was compared. The decoder also accepts revisions `b` to
 `k` (revision `k`'s whole-plane fill and the pre-`i` colour coding are
 handled as publicly described) but those paths have no evidence here.
 
+## Audio decoder: `bink::AudioDecoder`
+
+Bink audio, DCT variant. From the DLL (read in Ghidra):
+
+- Raw track interface: `BinkGetTrackData` (0x18012eb0) walks the frame's
+  audio packets, takes the first u32 of the track's packet as the number of
+  PCM bytes to produce, and runs the block decoder (0x18018800) until it
+  has them; the last block's output may be cut short.
+- Set-up (0x180185d0): frame length 512, 1024 or 2048 below 22050 Hz,
+  below 44100 Hz, and otherwise. Band edges in units of two coefficients:
+  `max(1, f * (N / 2) / ((rate + 1) / 2))` for the band frequencies at
+  0x1805e710 (0, 100, 200 ... 15500 Hz; the list starts at 0) up to the first
+  that is not below half the rate, then `N / 2`. Scale `2 / sqrt(N)`.
+- Block (0x18018210): two unused bits; per channel two 29-bit leading
+  coefficients (5-bit exponent, 23-bit mantissa, sign), each the mantissa
+  times the float at 0x1805eb78 + 4 * exponent (2^(e - 23); entries 24 and up
+  are not powers of two, see `audio.rs`); one 8-bit level code per band,
+  looked up in the 256 floats at 0x1805e778 (1.1652^code, not clamped); then
+  the coefficients (0x18017f20): a run flag (8 coefficients, or 8 times the
+  entry of the run table at 0x1805e700 picked by 4 bits), a 4-bit width,
+  and either zeros or width-bit magnitudes with a sign bit, times the
+  current band's level. The block ends at the next 32-bit word.
+- Each channel goes through an inverse DCT with weight 1 on coefficient 0
+  (Takuya Ooura's `ddct(n, 1, ...)`, single-precision x87 code).
+- Output (0x18017e40): sample times the scale, rounded by `FISTP` (to
+  nearest even), saturated to 16 bits, interleaved.
+- Overlap (0x18018800): the first N/16 samples per channel of each block
+  but the first are crossfaded with the previous block's last N/16 in
+  integers, `(prev * (n - i) + cur * i)` divided by `n` as an unsigned
+  number (n counts interleaved samples), and each block outputs its first
+  `N - N/16` samples per channel.
+
+`crates/bink` follows all of this except the transform, which it computes in
+double precision through a complex FFT; the DLL's single-precision x87
+transform gives results that depend on the thread's precision control.
+
+### Checked against the game's library
+
+`nv-bink ... --audio 0 --precision 24|53` records the DLL's output through
+`BinkGetTrackData` with the x87 precision control set to 24 or 53 bits (the
+DLL left it unchanged). `nvinspect FNVIntro.bik audio OUT` writes the Rust
+decoder's.
+
+| Compared | Samples | Identical | Differ by 1 | Larger |
+| --- | --- | --- | --- | --- |
+| DLL at 24 bits vs DLL at 53 bits | 27,814,372 | 99.9799% | 5,588 | 0 |
+| `crates/bink` vs DLL at 24 bits | 27,814,372 | 99.9825% | 4,863 | 0 |
+| `crates/bink` vs DLL at 53 bits | 27,814,372 | 99.9847% | 4,269 | 0 |
+
+Same length (289.733 s at 48 kHz, stereo) and never more than one step
+apart, which is as close as the library is to itself under the two
+precision settings. Which setting the game's decoding thread has is not
+established yet (Direct3D 9 lowers it to 24 bits unless the device is created
+with `D3DCREATE_FPU_PRESERVE`, and Bink may decode on its own thread).
+Decoding the whole track takes 0.6 s.
+
 ## Not done yet
 
-- Audio (Bink audio, DCT variant, 48 kHz stereo) is not decoded.
 - How the game shows the movie: the `PlayBink` arguments (`1 1 0 1`), the
   YUV-to-RGB conversion and scaling, whether and how it can be skipped,
   sound volume, and what the game does when it ends. These need the

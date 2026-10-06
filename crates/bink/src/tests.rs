@@ -137,3 +137,103 @@ fn an_empty_frame_leaves_the_planes_alone() {
     d.to_yv12(&mut out);
     assert_eq!(out.len(), 64 * 48 + 2 * 32 * 24);
 }
+
+/// Writes bits low-first into 32-bit little-endian words, as Bink reads them.
+struct BitWriter {
+    bytes: Vec<u8>,
+    bits: usize,
+}
+
+impl BitWriter {
+    fn new() -> Self {
+        BitWriter {
+            bytes: Vec::new(),
+            bits: 0,
+        }
+    }
+
+    fn put(&mut self, value: u32, n: u32) {
+        for i in 0..n {
+            if self.bits % 8 == 0 {
+                self.bytes.push(0);
+            }
+            let bit = (value >> i) & 1;
+            *self.bytes.last_mut().unwrap() |= (bit as u8) << (self.bits % 8);
+            self.bits += 1;
+        }
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        while self.bytes.len() % 4 != 0 {
+            self.bytes.push(0);
+        }
+        self.bytes
+    }
+}
+
+/// One DCT block for `channels` channels: leading coefficients from
+/// `lead` (raw 29-bit fields), all band levels at code `level`, and the
+/// rest of the coefficients zero in runs of 64 * 8.
+fn silent_block(w: &mut BitWriter, channels: usize, lead: [u32; 2], level: u32) {
+    w.put(0, 2);
+    for _ in 0..channels {
+        w.put(lead[0], 29);
+        w.put(lead[1], 29);
+        for _ in 0..25 {
+            w.put(level, 8);
+        }
+        let mut i = 2;
+        while i < 2048 {
+            // A run of 64 * 8 coefficients of width 0.
+            w.put(1, 1);
+            w.put(15, 4);
+            w.put(0, 4);
+            i += 512;
+        }
+    }
+}
+
+#[test]
+fn a_silent_audio_block_decodes_to_silence() {
+    let mut d = crate::AudioDecoder::new(48000, 2, crate::AUDIO_DCT | AUDIO_STEREO).unwrap();
+    assert_eq!(d.block_samples(), 3840);
+    let mut w = BitWriter::new();
+    silent_block(&mut w, 2, [0, 0], 0);
+    let block = w.finish();
+    let mut packet = (3840u32 * 2).to_le_bytes().to_vec();
+    packet.extend_from_slice(&block);
+    let mut out = Vec::new();
+    d.decode_packet(&packet, &mut out).unwrap();
+    assert_eq!(out.len(), 3840);
+    assert!(out.iter().all(|&s| s == 0));
+}
+
+#[test]
+fn a_constant_first_coefficient_gives_a_constant_level() {
+    // Coefficient 0 alone: the inverse DCT gives the same value at every
+    // sample, scaled by 2 / sqrt(2048) when converted. Exponent 23 with
+    // mantissa 724 is 724.0; 724 * 0.0441942 = 31.997, rounding to 32.
+    let mut d = crate::AudioDecoder::new(48000, 1, crate::AUDIO_DCT).unwrap();
+    let mut w = BitWriter::new();
+    silent_block(&mut w, 1, [(724 << 5) | 23, 0], 0);
+    let block = w.finish();
+    let mut packet = (1920u32 * 2).to_le_bytes().to_vec();
+    packet.extend_from_slice(&block);
+    let mut out = Vec::new();
+    d.decode_packet(&packet, &mut out).unwrap();
+    assert_eq!(out.len(), 1920);
+    assert!(out.iter().all(|&s| s == 32), "{:?}", &out[..8]);
+
+    // A second identical block crossfades its start with the end of the
+    // first: equal values stay equal.
+    let mut packet2 = (1920u32 * 2).to_le_bytes().to_vec();
+    packet2.extend_from_slice(&block);
+    let mut out2 = Vec::new();
+    d.decode_packet(&packet2, &mut out2).unwrap();
+    assert!(out2.iter().all(|&s| s == 32));
+}
+
+#[test]
+fn rdft_audio_is_refused() {
+    assert!(crate::AudioDecoder::new(48000, 2, AUDIO_STEREO).is_err());
+}

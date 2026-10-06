@@ -292,6 +292,8 @@ COMMANDS FOR MOVIES (.bik):
                           Y, V and U planes, one line each, to OUT (the
                           format research/nv-oracle's nv-bink writes from
                           the game's own library)
+    audio OUT [TRACK]     decode an audio track (default 0) to OUT as raw
+                          interleaved 16-bit little-endian samples
 
 COMMANDS FOR A FOLDER OF MP3s:
     check                 decode every track, one line each
@@ -307,8 +309,8 @@ OPTIONS:
                       Documents\\My Games\\FalloutNV, else the install's
                       Fallout_default.ini
     --all-meshes      check-assets: also check meshes no record uses
-    --force           extract, obj, png, dump, wav, frames: overwrite existing
-                      files
+    --force           extract, obj, png, dump, wav, frames, audio: overwrite
+                      existing files
 
 RENDER-CELL OPTIONS:
     --variants        render with both rotation orders (xyz, the game's,
@@ -508,7 +510,7 @@ fn run(args: &[String]) -> Result<(), CliError> {
         )
     {
         return Err(CliError::Usage(
-            "--force only applies to extract, obj, png, dump, wav and frames".into(),
+            "--force only applies to extract, obj, png, dump, wav, frames and audio".into(),
         ));
     }
 

@@ -19,13 +19,16 @@
 //! this decoder, so the two files can be compared line by line. The
 //! results of that comparison are kept in `docs/MOVIES.md`.
 //!
-//! Audio is not decoded yet.
+//! [`AudioDecoder`] decodes an audio track's packets (the DCT variant) into
+//! interleaved 16-bit samples.
 
+mod audio;
 mod bits;
 mod container;
 mod tables;
 mod video;
 
+pub use audio::{AudioDecoder, AudioError};
 pub use container::{
     AudioTrack, Error, Movie, Packet, AUDIO_16BIT, AUDIO_DCT, AUDIO_STEREO, FLAG_ALPHA, FLAG_GRAY,
 };

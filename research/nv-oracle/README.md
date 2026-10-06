@@ -446,6 +446,7 @@ session. Both processes must be 32-bit.
 
 ```
 nv-bink <binkw32.dll> <movie.bik> <out-dir> [--surface N] [--first N] [--count N] [--dump A,B,...]
+        [--audio T] [--precision 24|53|64]
 ```
 
 Loads the given `binkw32.dll` (the one in the game folder; it is only read),
@@ -463,6 +464,16 @@ For YV12 that is the luma plane (pitch = width), then V, then U, each chroma
 plane at half width and height. `--dump` also writes those frames' buffers as
 `frame_NNNNN.raw`. Everything it writes is a recording of the user's own
 game files: keep it in the private research tree.
+
+`--audio T` also opens audio track `T` with `BinkOpenTrack` and calls
+`BinkGetTrackData` for every frame after `BinkDoFrame`, writing the samples
+to `audio.pcm` (as the library returns them: interleaved 16-bit
+little-endian for a 16-bit track) and `audio.tsv` (frame, byte count,
+SHA-256 of that frame's bytes); `header.txt` gains the track's rate, bits,
+channels and largest size from the `HBINKTRACK`. The library's audio code is
+x87 floating point, so `--precision` sets the x87 precision control first
+(and the tool checks the library left it alone); the header records the
+control word.
 
 Measured on the maintainer's machine (2026-10-06): the 1.4.0.525 install's
 `binkw32.dll` (SHA-256 `c6c06e2d…185bd`) decodes all 8692 frames of
