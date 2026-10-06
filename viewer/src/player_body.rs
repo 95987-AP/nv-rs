@@ -140,8 +140,10 @@ pub fn update_player_body(
                 r.player.clone(),
                 r.picker.clone(),
                 bone_names(&r.skeleton.bones),
+                r.weapon_parent.clone(),
             )
         });
+        let weapon_changed = body.built.as_ref().map(|b| b.weapon) != Some(wanted.weapon);
         if let Some(old) = body.holder.take() {
             if let Ok(mut e) = commands.get_entity(old) {
                 e.despawn();
@@ -167,16 +169,33 @@ pub fn update_player_body(
         let mut rig = ActorRig::new(skeleton, look.scale, 0.0);
         rig.joints = joints;
         // A rebuilt body carries on what played; a first one starts as the
-        // weapon is: drawn or not (`ForceWeaponDrawnSheathed`, process
-        // vtable +0x1cc, puts the weapon where it belongs).
+        // weapon is: drawn or not.
         match carried {
-            Some((player, picker, names)) if names == bone_names(&rig.skeleton.bones) => {
+            Some((player, picker, names, parent)) if names == bone_names(&rig.skeleton.bones) => {
                 rig.player = player;
                 rig.picker = picker;
+                rig.weapon_parent = parent;
             }
             _ => rig.picker.drawn = attack.out,
         }
+        // Another weapon in hand: equipping or unequipping one sets the
+        // weapon put away (`0088db20` / `0088d7d0`: `SetWeaponDrawn(0)`,
+        // process vfunc +0x458; `combat` has it wanted away too), unless
+        // `--weapon` drew it at once; then its model is attached and the
+        // process puts it where that state has it (`004ab750` →
+        // `ForceWeaponDrawnSheathed`, `Picker::weapon_attached`): before,
+        // the old weapon's aim (the fists' raised guard) went on playing
+        // with the new weapon, and its `Weapon` track, made for the
+        // forearm's twist bone, put the gun in front of the body.
+        if weapon_changed {
+            rig.picker.drawn = attack.out;
+            rig.weapon_attached = weapon.is_some();
+        }
         rig.want_drawn = attack.out;
+        rig.character = true;
+        rig.weapon_kind = weapon
+            .as_ref()
+            .map(|w| world::animation::groups::weapon_kind(w.animation));
         commands.entity(root).insert(rig);
         body.root = Some(root);
         return;
@@ -234,6 +253,13 @@ pub fn update_player_body(
         _ => group::ATTACK_RIGHT,
     };
     rig.attack_at = attack.fired_at;
+    // The reload under way: the weapon's reload group (`ReloadA` …
+    // `ReloadZ`, as for people). Before, the third-person body never
+    // played it.
+    rig.reload_at = match (attack.reload_started, weapon.as_ref()) {
+        (Some(at), Some(w)) => Some((at, group::RELOAD_A + w.reload_animation.min(22))),
+        _ => None,
+    };
     // The procedure turned the player: no blend (`cSkipNextBlend`).
     if std::mem::take(&mut seat.skip_next_blend) {
         rig.player.skip_next_blend();

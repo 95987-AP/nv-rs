@@ -103,6 +103,16 @@ OPTIONS:
                             player's crosshair were on it
     --menu-pointer X,Y      for testing: put the menus' pointer at this
                             pixel (screenshots have no mouse)
+    --key-at SECONDS KEY[:HOLD]
+                            for testing: press a key (a letter or digit,
+                            mouse-left, mouse-right, mouse-x=COUNTS: the
+                            mouse moving sideways each frame, or
+                            wheel=NOTCHES, negative out) that
+                            many seconds after you're placed, held HOLD
+                            seconds (0.1): F third person, R:1 put the
+                            weapon away, F:9 with mouse-x=20:1 turn the
+                            third-person camera around you; can be given
+                            more than once
 
 CONTROLS:
     mouse                          look around (walking; flying: hold
@@ -210,6 +220,8 @@ pub struct Args {
     pub use_on: Option<String>,
     /// `--menu-pointer`: the menus' pointer at this pixel.
     pub menu_pointer: Option<(f32, f32)>,
+    /// `--key-at`: keys to press: when, and the key (`KEY[:HOLD]`).
+    pub key_at: Vec<(f32, String)>,
 }
 
 /// Where to stand, in the game's terms: feet position in game units, and
@@ -275,6 +287,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut open_menu = None;
     let mut use_on = None;
     let mut menu_pointer = None;
+    let mut key_at = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let mut value = |flag: &str| {
@@ -339,6 +352,15 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
                     .filter(|s| s.is_finite() && *s >= 0.0)
                     .ok_or_else(|| format!("--run-at expects seconds and a line, got '{v}'"))?;
                 run_at.push((at, value("--run-at")?));
+            }
+            "--key-at" => {
+                let v = value("--key-at")?;
+                let at = v
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|s| s.is_finite() && *s >= 0.0)
+                    .ok_or_else(|| format!("--key-at expects seconds and a key, got '{v}'"))?;
+                key_at.push((at, value("--key-at")?));
             }
             "--say" => say.push(value("--say")?),
             "--weather-region" => weather_region = Some(value("--weather-region")?),
@@ -425,6 +447,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             open_menu,
             use_on,
             menu_pointer,
+            key_at,
         })),
         [] | [_] => Err("expected the Data folder and a cell".into()),
         [_, _, extra, ..] => Err(format!("unexpected argument '{extra}'")),

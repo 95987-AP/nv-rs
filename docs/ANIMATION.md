@@ -219,3 +219,100 @@ conversation gestures, hit reactions.
 - Stagger (no character files; creatures' not wired), knockdown
   (`GetKnockedState`), `Recoil`/`BlockHit`.
 - Replay delays counting in menu mode; `008dab40`'s `00437bf0`.
+
+## Batch 3: the third-person weapon in hand
+
+Branch `claude/m2-third-person-weapon`, 2026-10-06. The maintainer saw,
+in third person, "the gun floats in front of him while his fists are
+up". Private exports (decompiles, logs, pictures) in
+`%USERPROFILE%\nv-re\work\tpweapon-2026-10-06`.
+
+### Causes
+
+1. The weapon kind changed under a playing aim. The body is built before
+   `--weapon` (or an equip) puts the gun in hand, so it drew the fists
+   (`Equip` 0x0118) and played the unarmed aim; when the pistol arrived
+   the body was rebuilt with the old animation state and nothing restarted
+   the weapon section, so `h2haim.kf` (fists up) kept looping with a
+   pistol (`weapon_kind` 4).
+2. `h2haim.kf` moves the `Weapon` bone for a parent of `Bip01 R
+   ForeTwist` (its `prn:` key), but the skeleton keeps `Weapon` under
+   `Bip01 R Hand`: the gun sat off the hand, in front of the body.
+3. The third-person body never got the reload; a gun couldn't be put
+   away (the Ready Item key's hold time wasn't traced).
+
+### What the game does
+
+| Address | What | Used for |
+| --- | --- | --- |
+| `004ab750` | the biped's weapon attach (string "Weapon"; `TESObjectREFR::AttachWeapon` in the Xbox PDB): model loaded under the `Weapon` node (`004aeed0`: root reset to identity, `AttachChild`), then, with animation data, `004994f0(4, 0)` (weapon section stopped) and process `ForceWeaponDrawnSheathed` (+0x1cc) with `GetWeaponDrawn` (+0x454, `008a16d0`) | `Picker::weapon_attached`, `ActorRig::weapon_attached` |
+| `009231d0` | `ForceWeaponDrawnSheathed`: the player at once through `ReparentWeapon`; others set the reparent flag (+0xe2) | player only (the viewer's NPC weapons don't change in hand) |
+| `00923960` | `MiddleHighProcess::ReparentWeapon` (Xbox PDB): unless an `Equip`/`Unequip` plays in section 4, plays `Equip` (drawn; anim action 0, vfunc +0x3ec) or `Holster` (0x17); the weapon bone (`GetWeaponBone`, +0x190) attached to the node the group's parent name gives | `Picker::weapon_attached`, `ActorRig::reparented` |
+| `00923020` | `UpdateReparentWeapon` (+0x1d8): with the flag, `ReparentWeapon` with the process's drawn state | `ActorRig::reparented` when `drawn` flips at `Attach`/`Detach` |
+| `005f3a20` | text key `prn:` (any case, one space skipped) → `TESAnimGroup` +0x30 `pParentName` (Xbox PDB) | `nif::weapon_parent` |
+| `0088db20`, `0088d7d0` | equipping/unequipping a weapon: `SetWeaponDrawn(0)` (+0x458) | the rebuilt body's `picker.drawn` = the weapon wanted out (`--weapon` draws at once) |
+| `009466d0`, `00948310` | Ready Item: held longer than `fPlayerWeaponReloadTimer` (`011cdfcc`, 0.5 from `00f5bd60`) puts a gun away (`SetWeaponOut(0)`); released before it reloads | `world::combat::ReadyKey`, `RELOAD_TIMER` |
+
+The files' `prn:` keys (male skeleton folder): every weapon kind's
+`equip` names `Bip01 R Hand`; `holster`/`unequip`: pistols, one-handed
+melee, thrown and mines `Bip01 Pelvis`; rifles, automatic rifles,
+two-handed melee and launchers `Bip01 Spine2`; heavy weapons (`2hh`)
+`Bip01 R Hand`; fists `Bip01 R ForeTwist` throughout; `1mdholster.kf`
+has `prn: Bip01 R Hand  -at none`, naming no node (the bone stays put).
+Aims also carry `prn:` keys (`h2haim` the fore-twist, `2hmaim` the left
+hand) but `ReparentWeapon` reads only equip/unequip/holster.
+
+### Implemented and tested
+
+- `nif::weapon_parent`, `nif::reparent_weapon` (the bone's local
+  transform kept under the new parent, bones under it carried);
+  `nif::hang_weapon` now hangs from the holster's `prn:` node (was: the
+  deepest bone the file moves, which put heavy weapons on a non-hand
+  bone). Tests `a_put_away_weapon_hangs_from_the_holsters_prn_bone`,
+  `a_drawn_weapon_moves_under_the_equips_prn_bone_keeping_its_own_transform`.
+- `world::animation::pick::Picker::weapon_attached`, `weapon_group`;
+  test `another_weapon_in_hand_starts_the_weapon_section_over` (fists'
+  aim 0x0111 goes on when only the kind changes; after the attach the
+  pistol's `Equip` 0x0418 plays with the weapon in hand, then its aim
+  0x0411).
+- `ActorRig::weapon_parent`/`weapon_attached`/`reparented`, `pose_now`
+  (holster pose while put away with nothing readying, else the `Weapon`
+  bone under the last reparent's node); people and the player alike.
+- `player_body`: a change of weapon sets the drawn state and asks for the
+  attach; the reload group (`ReloadA` + the weapon's reload animation).
+- `world::combat::RELOAD_TIMER`, `ReadyKey` hold and release (test
+  extended).
+- Viewer testing aid `--key-at SECONDS KEY[:HOLD]` (`test_keys`: letters,
+  digits, mouse buttons, `mouse-x=`, `wheel=`), so third person and the
+  Ready Item key can be driven for pictures without sending input to the
+  desktop.
+
+### Verified live (installed data, release viewer)
+
+`WastelandNV --at -67845,3000,8400,180[,45] --walk --no-hud --key-at 2 f`
+(third person), `--weapon WeapNV9mmPistol` / `WeapNVVarmintRifle` /
+`none`, `--key-at 4 r:1` (put away), `--key-at 4 mouse-left`,
+`--key-at 5 r` (reload). Before (log): `Equip (0118)` with the pistol,
+the fists' groups (no picture from the front was taken). After: `Equip (0418)` / `(0518)` and the pistol in the right hand
+in the pistol aim; put away (`Unequip` 0x0419 at 0.5 s of R, put away at
+the `Detach`), the pistol in its hip holster and the arms relaxed; the
+varmint rifle slung on the back (`Unequip` 0x0519); fists: `Equip`
+0x0118 and the unarmed guard, put away with `Unequip` 0x0119; attacks
+`Attack` 0x0420 (pistol `AttackRight`); reload `Reload` 0x04bc
+(`ReloadL`, the 9mm's reload animation 11).
+
+### Gaps (not implemented, not substituted)
+
+- Not compared with the original game (poses, holster placement, timing).
+- A node keeps the transform a sequence last gave it once nothing
+  animates it (Gamebryo); `Player::pose` uses the skeleton's own instead.
+  After an equip ends, `1hpaim.kf` doesn't move `Weapon`, so the bone
+  takes the skeleton's transform rather than the equip's last one.
+- The `Holster` group isn't played in section 4; its pose is applied as
+  the holster pose (`hang_weapon`).
+- Removing the weapon (back to fists) only sets the drawn state; what the
+  game does with the playing aim then isn't traced.
+- NPCs' `ForceWeaponDrawnSheathed` path (flag +0xe2, process flags
+  0x40/0x100 through vfunc +0x614) isn't used: their weapon in hand doesn't
+  change in the viewer; their reparent at `Attach`/`Detach` is the same
+  rule.

@@ -445,6 +445,21 @@ not compared with the original. Evidence and gaps:
 [ANIMATION.md](ANIMATION.md). **Next action:** record a ganger drawing
 and a settler greeting in the original and compare.
 
+Third-person weapon fix (`claude/m2-third-person-weapon`, 2026-10-06):
+the player's gun floated in front of a fists-up body. Fixed as traced:
+another weapon in hand restarts the weapon section and puts the weapon
+where its drawn state has it (`004ab750` → `ForceWeaponDrawnSheathed`
+`009231d0` → `ReparentWeapon` `00923960`: the kind's `Equip` plays), so
+the pistol's or rifle's aim replaces the fists' guard; the `Weapon` bone
+hangs under the `prn:` node of the group that put it there (`005f3a20`;
+holsters: pistol hip, rifle back, heavy weapons hand); the third-person
+reload plays; a gun is put away after R is held `fPlayerWeaponReloadTimer`
+(0.5 s, `009466d0`). `--key-at` drives keys for pictures. Verified live
+in third person (pistol and varmint rifle drawn and holstered, fists,
+attack 0x0420, reload 0x04bc); not compared with the original. Details:
+[ANIMATION.md](ANIMATION.md). **Next action:** compare the drawn and
+holstered poses with the original game.
+
 M2 batch (`claude/m2-physics-2`, 2026-10-06): physics completion. Traced
 and translated: the collision filter's layer table (`00c828f0`, shots
 cast on the projectile layer), contact friction/restitution (`00cfd800`),

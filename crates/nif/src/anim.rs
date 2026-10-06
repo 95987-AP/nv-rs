@@ -1035,14 +1035,79 @@ pub fn posed_over(
     world
 }
 
-/// A weapon put away: a holster pose (`<kind>holster.kf`, 0.1 s) moves
-/// the `Weapon` node and names the bone it hangs from while put away, with
-/// the bones above that (`2hrholster.kf`: `Bip01 Spine2`, `Weapon`,
-/// `Bip01 NonAccum`, and a weapon-model node; `1hpholster.kf`: `Bip01
-/// Pelvis`, …). So the weapon goes to the deepest of those bones in the
-/// skeleton (the spine for rifles, on the back; the pelvis for pistols and
-/// melee weapons, at the hip) at the file's `Weapon` transform; the rest of
-/// the pose is left as it is. Read from the files, not from the game's code.
+/// The node a group's `prn:` text key names (the group's parent name,
+/// `TESAnimGroup` +0x30 `pParentName`, Xbox PDB): the text after `prn:`
+/// (any case) and one space, as the text-key parser keeps it
+/// (`005f3a20`). The weapon bone is moved under it when the weapon is
+/// drawn or put away (`00923960`, `MiddleHighProcess::ReparentWeapon`,
+/// Xbox PDB): `1hpequip.kf` names `Bip01 R Hand`, `1hpholster.kf` `Bip01
+/// Pelvis`, `2hrholster.kf` `Bip01 Spine2`, `2hhholster.kf` `Bip01 R Hand`
+/// (heavy weapons stay in hand).
+// Translated from 005f3a20 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn weapon_parent(sequence: &Sequence) -> Option<&str> {
+    sequence.text_keys.iter().rev().find_map(|(_, text)| {
+        let head = text.get(..4)?;
+        if !head.eq_ignore_ascii_case("prn:") {
+            return None;
+        }
+        let rest = &text[4..];
+        Some(rest.strip_prefix(' ').unwrap_or(rest))
+    })
+}
+
+/// The skeleton's `Weapon` bone moved under `parent` (by name, any case):
+/// its own transform kept relative to its new parent, as `NiNode::
+/// AttachChild` keeps a child's local transform (`00923960` attaches the
+/// weapon bone, vfunc +0xdc), and the bones under it carried along. A
+/// parent the skeleton lacks leaves it where it is (the game logs the
+/// missing `prn:` node and doesn't reparent).
+pub fn reparent_weapon(skeleton: &[Bone], pose: &mut [Transform], parent: &str) {
+    let index = |name: &str| {
+        skeleton
+            .iter()
+            .position(|b| b.name.eq_ignore_ascii_case(name))
+    };
+    let (Some(weapon), Some(to)) = (index("Weapon"), index(parent)) else {
+        return;
+    };
+    let Some(from) = skeleton[weapon].parent else {
+        return;
+    };
+    if from == to || weapon >= pose.len() || to >= pose.len() {
+        return;
+    }
+    let local = pose[from].inverse().then_child(&pose[weapon]);
+    move_weapon(skeleton, pose, weapon, pose[to].then_child(&local));
+}
+
+/// The `Weapon` bone placed at `at` (model space), the bones under it
+/// following.
+fn move_weapon(skeleton: &[Bone], pose: &mut [Transform], weapon: usize, at: Transform) {
+    let was = pose[weapon].inverse();
+    pose[weapon] = at;
+    let under = |mut i: usize| {
+        while let Some(p) = skeleton[i].parent {
+            if p == weapon {
+                return true;
+            }
+            i = p;
+        }
+        false
+    };
+    for i in 0..skeleton.len().min(pose.len()) {
+        if i != weapon && under(i) {
+            pose[i] = at.then_child(&was.then_child(&pose[i]));
+        }
+    }
+}
+
+/// A weapon put away: the holster pose (`<kind>holster.kf`, the `Holster`
+/// group the game plays when it puts the weapon away at once, `00923960`)
+/// gives the `Weapon` bone's transform, under the node its `prn:` key
+/// names ([`weapon_parent`]): the spine for rifles, on the back; the
+/// pelvis for pistols and melee weapons, at the hip; the right hand for
+/// heavy weapons. A `prn:` naming no bone of the skeleton keeps the bone's
+/// own parent. The rest of the pose is left as it is.
 pub fn hang_weapon(skeleton: &[Bone], pose: &mut [Transform], holster: &Sequence) {
     let index = |name: &str| {
         skeleton
@@ -1059,25 +1124,14 @@ pub fn hang_weapon(skeleton: &[Bone], pose: &mut [Transform], holster: &Sequence
     else {
         return;
     };
-    let depth = |mut i: usize| {
-        let mut d = 0;
-        while let Some(p) = skeleton[i].parent {
-            d += 1;
-            i = p;
-        }
-        d
-    };
-    let parent = holster
-        .tracks
-        .iter()
-        .filter(|t| !t.node.eq_ignore_ascii_case("Weapon"))
-        .filter_map(|t| index(&t.node))
-        .max_by_key(|&i| depth(i));
-    let (Some(parent), true) = (parent, weapon < pose.len()) else {
+    let parent = weapon_parent(holster)
+        .and_then(index)
+        .or(skeleton[weapon].parent);
+    let Some(parent) = parent.filter(|&p| p < pose.len() && weapon < pose.len()) else {
         return;
     };
     let local = track.sample(holster.start).apply(&skeleton[weapon].local);
-    pose[weapon] = pose[parent].then_child(&local);
+    move_weapon(skeleton, pose, weapon, pose[parent].then_child(&local));
 }
 
 #[cfg(test)]
@@ -1212,7 +1266,7 @@ mod tests {
     }
 
     #[test]
-    fn a_put_away_weapon_hangs_from_the_holsters_deepest_bone() {
+    fn a_put_away_weapon_hangs_from_the_holsters_prn_bone() {
         let bone = |name: &str, parent: Option<usize>, z: f32| Bone {
             name: name.into(),
             parent,
@@ -1246,20 +1300,67 @@ mod tests {
             looping: false,
             accum_root: Some("Bip01".into()),
             materials: Vec::new(),
-            text_keys: Vec::new(),
+            // As `2hrholster.kf` has them.
+            text_keys: vec![
+                (0.0, "start".into()),
+                (0.033, "Blend: 1".into()),
+                (0.067, "prn: Bip01 Spine2".into()),
+                (0.1, "end".into()),
+            ],
             tracks: vec![
                 at("Bip01", [0.0; 3]),
-                at("Bip01 Spine2", [0.0, 0.0, 10.0]),
                 at("Weapon", [0.0, -7.0, 0.0]),
                 at("##ModelPart", [1.0; 3]),
             ],
         };
+        assert_eq!(weapon_parent(&holster), Some("Bip01 Spine2"));
         let mut pose = posed(&bones, None, 0.0);
         assert_eq!(pose[3].translation, [0.0, 0.0, 55.0]);
         hang_weapon(&bones, &mut pose, &holster);
         // On the spine's back, not in the hand; the rest as it was.
         assert_eq!(pose[3].translation, [0.0, -7.0, 10.0]);
         assert_eq!(pose[2].translation, [0.0, 0.0, 50.0]);
+        // Heavy weapons' holster names the hand (`2hhholster.kf`): it stays
+        // there, at the file's transform; a name the skeleton lacks keeps
+        // the bone's own parent too.
+        for prn in ["Prn:Bip01 R Hand", "prn: Bip01 R Hand  -at none"] {
+            let in_hand = Sequence {
+                text_keys: vec![(0.0, prn.into())],
+                ..holster.clone()
+            };
+            let mut pose = posed(&bones, None, 0.0);
+            hang_weapon(&bones, &mut pose, &in_hand);
+            assert_eq!(pose[3].translation, [0.0, -7.0, 50.0]);
+        }
+    }
+
+    #[test]
+    fn a_drawn_weapon_moves_under_the_equips_prn_bone_keeping_its_own_transform() {
+        let bone = |name: &str, parent: Option<usize>, z: f32| Bone {
+            name: name.into(),
+            parent,
+            local: Transform {
+                translation: [0.0, 0.0, z],
+                ..Transform::IDENTITY
+            },
+        };
+        let bones = vec![
+            bone("Bip01", None, 0.0),
+            bone("Bip01 R ForeTwist", Some(0), 30.0),
+            bone("Bip01 R Hand", Some(1), 18.0),
+            bone("Weapon", Some(2), 6.0),
+            bone("Under", Some(3), 1.0),
+        ];
+        let mut pose = posed(&bones, None, 0.0);
+        reparent_weapon(&bones, &mut pose, "bip01 r foretwist");
+        assert_eq!(pose[3].translation, [0.0, 0.0, 36.0]);
+        assert_eq!(pose[4].translation, [0.0, 0.0, 37.0]);
+        // Its own parent, or a bone the skeleton lacks: nothing moves.
+        let before = posed(&bones, None, 0.0);
+        let mut same = before.clone();
+        reparent_weapon(&bones, &mut same, "Bip01 R Hand");
+        reparent_weapon(&bones, &mut same, "Bip01 Nowhere");
+        assert_eq!(same, before);
     }
 
     #[test]
