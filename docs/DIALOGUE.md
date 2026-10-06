@@ -149,9 +149,10 @@ and the head bound especially need a recording of a conversation.
 - Which update calls `0095de30` (the FOV return) is untraced; the
   first-person view model's own FOV isn't zoomed (it is hidden during
   conversations).
-- The speaker's dialogue animation and emotion handling in
-  `UpdateInDialogue` (`+0xb4` cases 1/5/8), dialogue idles and
-  `GetIsTalking`-conditioned idles are not traced.
+- The speaker's talking idles in the menu are now traced and played
+  ([ANIMATION.md](ANIMATION.md)); the face emotion handling in
+  `UpdateInDialogue` (`+0xb4` cases 1/5/8) and idles for lines said
+  outside the menu are not.
 - `0083e850`'s random speech challenge (0x80 lines), the loss pop-back,
   XP and disposition change; rumors (topic flag 0x01, `0042df90`);
   `InfoRefusal` lines; say once a day (`00935a40`); the `+0x24`

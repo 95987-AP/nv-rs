@@ -121,6 +121,12 @@ impl Menus {
             || self.game_open
     }
 
+    /// Whether nothing but the game's own menus (`game_open`) is up: no
+    /// viewer menu open or waiting, no Pip-Boy, no lockpicking.
+    pub fn only_game_menus(&self) -> bool {
+        self.open.is_none() && self.queue.is_empty() && !self.pipboy && !self.lockpicking
+    }
+
     /// Whether one of these menus (not the Pip-Boy) is up or waiting.
     pub fn others_open(&self) -> bool {
         self.open.is_some() || !self.queue.is_empty() || self.lockpicking || self.game_open

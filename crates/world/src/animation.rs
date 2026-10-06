@@ -672,6 +672,13 @@ pub struct Player {
     pub movement_rate: f32,
     /// The weapon animations' rate (+0x110).
     pub weapon_rate: f32,
+    /// `cSkipNextBlend` (Xbox PDB name of `Animation` +0x120, the same
+    /// offset on PC): set, the next group played or section stopped
+    /// switches at once instead of blending (`004949a0` takes blend 0,
+    /// `004994f0` stops with blend 0, `00496080` deactivates at once);
+    /// cleared at the end of the next update (`00491180`). Set through
+    /// [`Self::skip_next_blend`].
+    skip_blend: bool,
 }
 
 impl Default for Player {
@@ -695,7 +702,24 @@ impl Player {
             settings,
             movement_rate: 1.0,
             weapon_rate: 1.0,
+            skip_blend: false,
         }
+    }
+
+    /// The next group change switches without a blend, until the next
+    /// [`Self::update`] ends (`004974a0` sets `cSkipNextBlend`, Xbox PDB).
+    /// The furniture procedures set it wherever they turn the actor by the
+    /// marker's heading delta or half a turn, so the animation's body turn
+    /// and the actor's heading change in the same frame (`009213e0` after
+    /// the entry, `00921e80` as the exit starts and after it ends).
+    // Translated from 004974a0 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn skip_next_blend(&mut self) {
+        self.skip_blend = true;
+    }
+
+    /// Whether the next group change skips its blend.
+    pub fn skips_next_blend(&self) -> bool {
+        self.skip_blend
     }
 
     /// The index of the sequence playing in a section (not one easing
@@ -773,7 +797,12 @@ impl Player {
             }
         }
         let data = GroupData::read(seq);
-        let blend = blend_seconds(old.map(|i| &self.active[i].data), &data, &self.settings);
+        // `cSkipNextBlend`: no blend (`004949a0`).
+        let blend = if self.skip_blend {
+            0.0
+        } else {
+            blend_seconds(old.map(|i| &self.active[i].data), &data, &self.settings)
+        };
         let bone_tracks = bone_tracks(seq, bones);
         let mut new = Active {
             seq: Some(seq.clone()),
@@ -916,7 +945,12 @@ impl Player {
     /// blend-out time (the default without one).
     pub fn stop_section(&mut self, section: u8) {
         if let Some(i) = self.current(section) {
-            let blend = stop_blend_seconds(&self.active[i].data, &self.settings);
+            // `cSkipNextBlend`: gone at once (`004994f0` blend 0).
+            let blend = if self.skip_blend {
+                0.0
+            } else {
+                stop_blend_seconds(&self.active[i].data, &self.settings)
+            };
             self.ease_out(i, blend);
         }
     }
@@ -1012,11 +1046,17 @@ impl Player {
         for f in &finished {
             if let Some(i) = self.current(f.section) {
                 if self.active[i].group == f.group {
-                    let blend = stop_blend_seconds(&self.active[i].data, &self.settings);
+                    let blend = if self.skip_blend {
+                        0.0
+                    } else {
+                        stop_blend_seconds(&self.active[i].data, &self.settings)
+                    };
                     self.ease_out(i, blend);
                 }
             }
         }
+        // The update over, `cSkipNextBlend` is cleared (`00491180`).
+        self.skip_blend = false;
         finished
     }
 
@@ -1779,6 +1819,52 @@ mod tests {
         assert!(p.all().contains(&(group::ATTACK_RIGHT, State::EaseOut)));
         p.update(0.25);
         assert_eq!(p.all(), vec![(group::IDLE, State::Animating)]);
+    }
+
+    #[test]
+    fn skip_next_blend_switches_at_once_for_one_update() {
+        // Sitting down as the game ends it: the entry (Blend:15, 0.5 s)
+        // over the seated loop; the procedure turns the actor and sets
+        // `cSkipNextBlend` before freeing the entry (`009213e0`).
+        let bones = skeleton();
+        let seat = Arc::new(still("Seat", "Arm", [0.0, 0.0, 5.0], 35, &[(0.0, "start")]));
+        let entry = Arc::new(still(
+            "Entry",
+            "Arm",
+            [0.0, 0.0, 50.0],
+            80,
+            &[(0.0, "start"), (0.5, "Blend:15"), (1.0, "end")],
+        ));
+        let mut p = Player::default();
+        p.play(group::DYNAMIC_IDLE, &seat, -1, &bones);
+        p.play(group::SPECIAL_IDLE, &entry, 0, &bones);
+        p.update(0.6);
+        // Without the flag the entry would ease out over its 15 frames.
+        let mut eased = p.clone();
+        eased.stop_section(section::SPECIAL_IDLE);
+        assert!(eased.all().contains(&(group::SPECIAL_IDLE, State::EaseOut)));
+        // With it the entry is gone at once and the seated loop shows.
+        p.skip_next_blend();
+        p.stop_section(section::SPECIAL_IDLE);
+        assert_eq!(p.all(), vec![(group::DYNAMIC_IDLE, State::Animating)]);
+        let arm = p.locals(&bones)[1].translation;
+        assert_eq!(arm, [0.0, 0.0, 5.0]);
+        // A group started while it's set cuts in without a blend too.
+        let exit = Arc::new(still(
+            "Exit",
+            "Arm",
+            [0.0, 0.0, 40.0],
+            80,
+            &[(0.0, "start"), (0.6, "Blend:15")],
+        ));
+        assert!(p.play(group::SPECIAL_IDLE, &exit, 0, &bones));
+        assert_eq!(p.state(section::SPECIAL_IDLE), Some(State::Animating));
+        assert_eq!(p.locals(&bones)[1].translation, [0.0, 0.0, 40.0]);
+        // The update clears it: the next change blends again.
+        p.update(0.1);
+        assert!(!p.skips_next_blend());
+        p.stop_section(section::SPECIAL_IDLE);
+        assert!(p.all().contains(&(group::SPECIAL_IDLE, State::EaseOut)));
     }
 
     #[test]

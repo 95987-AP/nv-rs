@@ -297,6 +297,19 @@ Generated regressions pass; not compared with the original. Evidence:
 **Next action:** record where Sunny stops in the original when the player
 stays behind the saloon.
 
+NPC animation batch (`claude/m2-npc-anims`, 2026-10-06): Doc's chair
+"jump" was the entry easing out over 0.5 s after the heading had turned
+half a turn; the game swaps without a blend there (`cSkipNextBlend`,
+`004974a0`, set by `009213e0`/`00921e80`), now carried out. People in the
+dialogue menu were frozen because the dialogue menu's own screen counted
+as a menu for animation; the speaker now animates and plays the game's
+talking idles (`008a5580`/`008a20d0`/`008dab40`, `SNAM` speaker idles,
+`MenuMode`/`IsTalking`/`GetDialogueEmotion`). Verified live with screen
+captures (chair before/after, Sunny and seated Doc talking); not compared
+with the original. Evidence and gaps (lines outside the menu, listener
+idles, holstering): [ANIMATION.md](ANIMATION.md). **Next action:** record
+Doc sitting down and a Sunny conversation in the original and compare.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

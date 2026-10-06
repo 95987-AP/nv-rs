@@ -79,6 +79,7 @@ pub mod scripting;
 pub mod social;
 pub mod sound;
 pub mod stats;
+pub mod talk_idles;
 pub mod terminal;
 pub mod tree;
 pub mod vats;

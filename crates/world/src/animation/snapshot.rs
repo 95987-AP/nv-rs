@@ -248,6 +248,8 @@ impl Snapshot {
             settings: self.settings,
             movement_rate: self.movement_rate,
             weapon_rate: self.weapon_rate,
+            // Lasts one update at most: nothing to restore.
+            skip_blend: false,
         })
     }
 }
