@@ -888,6 +888,14 @@ pub enum Event {
     CharacterMenu(crate::chargen::CharacterMenu),
     /// `ShowBarterMenu`: trading with this merchant.
     Barter(FormId),
+    /// `ShowRecipeMenu`: the crafting menu of a recipe category
+    /// (`world::crafting`) for the reference it was called on
+    /// (`005deb10` opens it, `00726ff0`, only for an actor: "Recipe menu
+    /// called with NULL vendor!" otherwise).
+    RecipeMenu {
+        actor: FormId,
+        category: FormId,
+    },
     /// Someone died (killed by `by`).
     Died {
         who: FormId,
@@ -2847,6 +2855,10 @@ impl<'a> Runner<'a> {
                 preselect: args.get(1).map_or(true, |a| a.number() == 1.0),
             })),
             "ShowBarterMenu" => events.push(Event::Barter(target?)),
+            "ShowRecipeMenu" => events.push(Event::RecipeMenu {
+                actor: target?,
+                category: arg(0).form(),
+            }),
             // `VCG01TestSCRIPT` tags the exam's picks this way (slots 0 to
             // 2); the tag menu then starts with them.
             "SetPlayerTagSkill" => {
@@ -3553,6 +3565,7 @@ pub const HANDLED: &[&str] = &[
     "IsPlayerInRegion",
     "PlayBink",
     "PlayMusic",
+    "ShowRecipeMenu",
     "ReleaseWeatherOverride",
     "RemoveImageSpaceModifier",
     "SetQuestDelay",

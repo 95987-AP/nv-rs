@@ -20,6 +20,7 @@ pub mod container;
 pub mod dialog;
 pub mod levelup;
 mod message;
+pub mod recipe;
 pub mod sleepwait;
 pub mod textedit;
 pub mod traits;
@@ -85,6 +86,7 @@ pub enum OpenMenu {
     Dialog(ui::menus::dialog::DialogMenu),
     Container(Box<container::ContainerScreen>),
     Barter(Box<barter::BarterScreen>),
+    Recipe(Box<recipe::RecipeScreen>),
     Quantity(ui::menus::quantity::QuantityMenu),
     LevelUp(Box<ui::menus::levelup::LevelUpMenu>),
     Traits(Box<ui::menus::traits::TraitMenu>),
@@ -101,6 +103,7 @@ impl OpenMenu {
             OpenMenu::Dialog(m) => m,
             OpenMenu::Container(c) => &mut c.menu,
             OpenMenu::Barter(b) => &mut b.menu,
+            OpenMenu::Recipe(r) => &mut r.menu,
             OpenMenu::Quantity(m) => m,
             OpenMenu::LevelUp(m) => &mut **m,
             OpenMenu::Traits(m) => &mut **m,
@@ -117,6 +120,7 @@ impl OpenMenu {
             OpenMenu::Dialog(m) => m.menu,
             OpenMenu::Container(c) => c.menu.menu,
             OpenMenu::Barter(b) => b.menu.menu,
+            OpenMenu::Recipe(r) => r.menu.menu,
             OpenMenu::Quantity(m) => m.menu,
             OpenMenu::LevelUp(m) => m.menu,
             OpenMenu::Traits(m) => m.menu,
@@ -133,6 +137,7 @@ impl OpenMenu {
             OpenMenu::Dialog(m) => m.closed,
             OpenMenu::Container(c) => c.menu.closed,
             OpenMenu::Barter(b) => b.menu.closed,
+            OpenMenu::Recipe(r) => r.menu.closed,
             OpenMenu::Quantity(m) => m.closed,
             OpenMenu::LevelUp(m) => m.closed,
             OpenMenu::Traits(m) => m.closed,
@@ -424,6 +429,7 @@ pub fn takes(m: &crate::menus::Menu) -> bool {
     message::takes(m)
         || container::takes(m)
         || barter::takes(m)
+        || recipe::takes(m)
         || levelup::takes(m)
         || traits::takes(m)
         || chargen::takes(m)
@@ -486,6 +492,8 @@ fn open_menus(
             sounds
                 .0
                 .extend(barter::open(screen, &game.0, &mut state.0, request));
+        } else if recipe::takes(&request) {
+            recipe::open(screen, &game.0, &mut state.0, request);
         } else {
             sounds
                 .0
@@ -554,6 +562,7 @@ fn run_open_menus(
     conversation: Res<crate::dialogue::Conversation>,
     mut sounds: ResMut<crate::sounds::SoundRequests>,
     scripts: Res<crate::scripts::Scripts>,
+    mut hud: ResMut<crate::hud::HudMessages>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         input.typed.clear();
@@ -716,6 +725,8 @@ fn run_open_menus(
     sounds
         .0
         .extend(barter::after(screen, &game.0, &mut state.0));
+    hud.queue
+        .extend(recipe::after(screen, &game.0, &mut state.0));
     sounds
         .0
         .extend(levelup::after(screen, &game.0, &mut state.0));

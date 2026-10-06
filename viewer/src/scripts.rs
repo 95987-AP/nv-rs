@@ -1113,6 +1113,11 @@ pub fn run_scripts(
                 waiting.push(crate::menus::Menu::Barter(merchant));
                 None
             }
+            // `game_menus::recipe`, with `world::crafting`'s rules.
+            Event::RecipeMenu { actor, category } => {
+                waiting.push(crate::menus::Menu::Recipe { actor, category });
+                None
+            }
             // `ShowSleepWaitMenu` (its refusals already given): the game's
             // sleep/wait menu (`game_menus::sleepwait`).
             Event::SleepWaitMenu { sleep } => {

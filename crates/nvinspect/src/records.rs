@@ -61,6 +61,9 @@ enum Command {
     Ai(String, Option<(String, u16)>),
     /// What a merchant sells, and the prices.
     Barter(String),
+    /// A recipe category's crafting menu for a new character, with items
+    /// given (`ITEM:N`) and skills set (`AV=VALUE`).
+    Recipes(String, Vec<String>),
     /// What V.A.T.S. offers a new character against someone: target,
     /// weapon, distance.
     Vats(String, Option<String>, Option<f32>),
@@ -253,6 +256,14 @@ fn parse_command(command: &str, rest: &[String]) -> Result<Command, CliError> {
         "barter" => {
             expect_args(command, rest, 1, 0)?;
             (Command::Barter(rest[0].clone()), 1)
+        }
+        "recipes" => {
+            if rest.is_empty() {
+                return Err(CliError::Usage(
+                    "recipes: give a recipe category, e.g. recipes CampfireRecipes".into(),
+                ));
+            }
+            return Ok(Command::Recipes(rest[0].clone(), rest[1..].to_vec()));
         }
         "vats" => {
             expect_args(command, rest, 1, 2)?;
@@ -646,6 +657,9 @@ fn execute(
             stage.as_ref().map(|(q, s)| (q.as_str(), *s)),
         ),
         Command::Barter(target) => crate::play_cmd::barter(out, order, &target),
+        Command::Recipes(category, extra) => {
+            crate::play_cmd::recipes(out, order, &category, &extra)
+        }
         Command::Vats(target, weapon, distance) => {
             crate::vats_cmd::vats(out, order, &target, weapon.as_deref(), distance)
         }
