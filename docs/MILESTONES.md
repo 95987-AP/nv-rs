@@ -82,6 +82,13 @@ in a four-export probe. Full indexing is deferred; source snapshots, hashes,
 DB and inventory remain private. Shared query workflow and limitations:
 [RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md).
 
+Movement batch (`claude/m1-movement`, unmerged): the player's speed now
+follows `00647d10` in `world::locomotion` (weapon away × 1.1, armour and
+drawn-weapon penalties, run perk on running only); over-encumbered blocks
+running and jumping; a jump drops the run-up and air steering closes 0.3
+of the gap a frame. Tested, not compared. Evidence and gaps (slopes,
+per-direction animation speeds, camera): [MOVEMENT.md](MOVEMENT.md).
+
 Outstanding M1 gates:
 - Exact opening camera transition replay and Doc/player assistance timing.
 - Native Doc head/eye tracking; final rotation math remains unresolved
