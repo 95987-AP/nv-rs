@@ -81,6 +81,9 @@ OPTIONS:
                             gives the points and goes on to the perks),
                             wait or sleep (the sleep/wait menu; wait:N or
                             sleep:N also chooses N hours and presses Wait)
+    --use REF               for testing: once loaded, press E on this
+                            object (editor ID or form ID), as if the
+                            player's crosshair were on it
     --menu-pointer X,Y      for testing: put the menus' pointer at this
                             pixel (screenshots have no mouse)
 
@@ -169,6 +172,8 @@ pub struct Args {
     pub lockpick: Option<String>,
     /// `--open-menu`: a game menu to open once loaded (`name[:id]`).
     pub open_menu: Option<String>,
+    /// `--use`: an object to use (E) once loaded.
+    pub use_on: Option<String>,
     /// `--menu-pointer`: the menus' pointer at this pixel.
     pub menu_pointer: Option<(f32, f32)>,
 }
@@ -230,6 +235,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut pipboy = None;
     let mut lockpick = None;
     let mut open_menu = None;
+    let mut use_on = None;
     let mut menu_pointer = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -289,6 +295,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
                 pipboy = Some(v);
             }
             "--open-menu" => open_menu = Some(value("--open-menu")?),
+            "--use" => use_on = Some(value("--use")?),
             "--menu-pointer" => {
                 let v = value("--menu-pointer")?;
                 let p: Vec<f32> = v.split(',').filter_map(|n| n.trim().parse().ok()).collect();
@@ -353,6 +360,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             pipboy,
             lockpick,
             open_menu,
+            use_on,
             menu_pointer,
         })),
         [] | [_] => Err("expected the Data folder and a cell".into()),
@@ -504,6 +512,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(args.open_menu.as_deref(), Some("container:Box"));
+        let args = parse(&strings(&["Data", "Cell", "--use", "TerminalRef"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(args.use_on.as_deref(), Some("TerminalRef"));
+        assert!(parse(&strings(&["Data", "Cell", "--use"])).is_err());
         let args = parse(&strings(&["Data", "Cell", "--menu-pointer", "10,20.5"]))
             .unwrap()
             .unwrap();

@@ -238,6 +238,7 @@ fn main() {
         .insert_resource(hud::ShowHud(args.hud))
         .insert_resource(ai::FrozenAi(args.freeze_ai))
         .insert_resource(game_menus::StartMenu(args.open_menu.clone()))
+        .insert_resource(scripts::StartUse(args.use_on.clone()))
         .insert_resource(game_menus::FixedPointer(args.menu_pointer))
         .add_plugins((GradePlugin, GameLightingPlugin, TerrainPlugin, LodPlugin))
         // After the default plugins: they load shaders.
@@ -302,7 +303,13 @@ fn main() {
                     .chain(),
                 (dialogue::talk, chatter::say_lines).chain(),
                 // The scripts, then E on doors, then the doors' swings.
-                (scripts::run_scripts, walk::doors, doors::update_doors).chain(),
+                (
+                    scripts::start_use,
+                    scripts::run_scripts,
+                    walk::doors,
+                    doors::update_doors,
+                )
+                    .chain(),
                 walk::toggle_walking,
                 adjust_exposure,
                 // The cell's grade, then the screen effects scripts applied.
