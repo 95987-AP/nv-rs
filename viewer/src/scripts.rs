@@ -707,7 +707,11 @@ pub fn save_and_load(
     mut player_idle: ResMut<crate::player_idle::PlayerIdle>,
     mut cell_scripts: ResMut<CellScripts>,
     mut seats: ResMut<crate::sitting::Seats>,
-    (mut start_pitch, mut request): (ResMut<crate::StartPitch>, ResMut<LoadRequest>),
+    (mut start_pitch, mut request, mut menu_saves): (
+        ResMut<crate::StartPitch>,
+        ResMut<LoadRequest>,
+        ResMut<crate::game_menus::start::SaveFiles>,
+    ),
 ) {
     let now = time.elapsed_secs();
     let requested = std::mem::take(&mut request.0);
@@ -715,7 +719,21 @@ pub fn save_and_load(
         println!("{text}");
         notices.0.push((text, now));
     };
-    if keys.just_pressed(KeyCode::F5) {
+    // The start menu's Save and Load pages name their file
+    // (`game_menus::start`); F5 and F9 the quick save.
+    use crate::game_menus::start::SaveFile;
+    let asked = menu_saves.0.take();
+    let save_to = match &asked {
+        Some(SaveFile::Save(p)) => Some(p.to_string_lossy().to_string()),
+        _ if keys.just_pressed(KeyCode::F5) => Some(QUICKSAVE.to_string()),
+        _ => None,
+    };
+    let load_from = match &asked {
+        Some(SaveFile::Load(p)) => Some(p.to_string_lossy().to_string()),
+        _ if keys.just_pressed(KeyCode::F9) || requested => Some(QUICKSAVE.to_string()),
+        _ => None,
+    };
+    if let Some(save_to) = save_to {
         let place = cameras.single().ok().and_then(|(t, input)| {
             let eye = game_point(t.translation);
             let f = t.forward().as_vec3();
@@ -735,14 +753,14 @@ pub fn save_and_load(
                 &seats,
                 cameras.single().map_or(0.0, |(_, input)| input.pitch),
             )
-            .and_then(|camera| save_camera(QUICKSAVE, &mut state.0, place, camera));
+            .and_then(|camera| save_camera(&save_to, &mut state.0, place, camera));
         match result {
-            Ok(()) => say(format!("Saved ({QUICKSAVE}).")),
+            Ok(()) => say(format!("Saved ({save_to}).")),
             Err(e) => say(format!("Couldn't save: {e}")),
         }
     }
-    if keys.just_pressed(KeyCode::F9) || requested {
-        let result = std::fs::read_to_string(QUICKSAVE)
+    if let Some(load_from) = load_from {
+        let result = std::fs::read_to_string(&load_from)
             .map_err(|e| e.to_string())
             .and_then(|text| {
                 load_saved_world(
@@ -761,7 +779,7 @@ pub fn save_and_load(
         match result {
             Ok(true) => say("Loaded.".into()),
             Ok(false) => say("Loaded (the save doesn't say where the player was).".into()),
-            Err(e) => say(format!("Couldn't load {QUICKSAVE}: {e}")),
+            Err(e) => say(format!("Couldn't load {load_from}: {e}")),
         }
     }
 }

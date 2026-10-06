@@ -104,6 +104,7 @@ pub struct TileParams {
 
 /// One HUD piece's material: its texture, colour and shader.
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
+#[bind_group_data(TileBlend)]
 pub struct TileMaterial {
     #[uniform(0)]
     pub(crate) params: TileParams,
@@ -113,6 +114,37 @@ pub struct TileMaterial {
     #[texture(3)]
     #[sampler(4)]
     pub(crate) alpha_map: Handle<Image>,
+    /// A model piece's own blending (`ui::DrawKind::Model`): Gamebryo's
+    /// source and destination factors; `None` the HUD's.
+    pub(crate) blend: Option<(u8, u8)>,
+}
+
+/// The pipeline key: a piece's blending.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TileBlend(Option<(u8, u8)>);
+
+impl From<&TileMaterial> for TileBlend {
+    fn from(m: &TileMaterial) -> Self {
+        TileBlend(m.blend)
+    }
+}
+
+/// Gamebryo's blend factor numbers (`NiAlphaProperty`) as wgpu's.
+fn blend_factor(n: u8) -> bevy::render::render_resource::BlendFactor {
+    use bevy::render::render_resource::BlendFactor as F;
+    match n {
+        0 => F::One,
+        1 => F::Zero,
+        2 => F::Src,
+        3 => F::OneMinusSrc,
+        4 => F::Dst,
+        5 => F::OneMinusDst,
+        6 => F::SrcAlpha,
+        7 => F::OneMinusSrcAlpha,
+        8 => F::DstAlpha,
+        9 => F::OneMinusDstAlpha,
+        _ => F::SrcAlphaSaturated,
+    }
 }
 
 impl TileMaterial {
@@ -128,6 +160,7 @@ impl TileMaterial {
             },
             texture,
             alpha_map: white,
+            blend: None,
         }
     }
 }
@@ -140,6 +173,34 @@ impl Material2d for TileMaterial {
     fn alpha_mode(&self) -> AlphaMode2d {
         // Source alpha over inverse source alpha, as the game's HUD.
         AlphaMode2d::Blend
+    }
+
+    fn specialize(
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::render::mesh::MeshVertexBufferLayoutRef,
+        key: bevy::sprite::Material2dKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        use bevy::render::render_resource::{BlendComponent, BlendOperation, BlendState};
+        if let (Some((src, dst)), Some(fragment)) =
+            (key.bind_group_data.0, &mut descriptor.fragment)
+        {
+            for target in fragment.targets.iter_mut().flatten() {
+                target.blend = Some(BlendState {
+                    color: BlendComponent {
+                        src_factor: blend_factor(src),
+                        dst_factor: blend_factor(dst),
+                        operation: BlendOperation::Add,
+                    },
+                    // The picture's coverage stays what's under the piece.
+                    alpha: BlendComponent {
+                        src_factor: bevy::render::render_resource::BlendFactor::Zero,
+                        dst_factor: bevy::render::render_resource::BlendFactor::One,
+                        operation: BlendOperation::Add,
+                    },
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -362,6 +423,29 @@ pub(crate) fn upload_font_picture(
     );
     image.sampler = sampler(false, false);
     Some(images.add(image))
+}
+
+/// A model piece's triangles in menu units ((x, y), (u, v)) as a mesh in
+/// the HUD camera's pixels, the same way as [`quads_mesh`].
+pub(crate) fn triangles_mesh(triangles: &[[([f32; 2], [f32; 2]); 3]], k: f32, size: UVec2) -> Mesh {
+    let (w, h) = (size.x as f32, size.y as f32);
+    let point = |p: [f32; 2]| [p[0] * k + 0.5 - w / 2.0, h / 2.0 - (p[1] * k + 0.5), 0.0];
+    let mut positions = Vec::with_capacity(triangles.len() * 3);
+    let mut uvs = Vec::with_capacity(triangles.len() * 3);
+    for tri in triangles {
+        for (p, uv) in tri {
+            positions.push(point(*p));
+            uvs.push(*uv);
+        }
+    }
+    let indices: Vec<u32> = (0..positions.len() as u32).collect();
+    Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_indices(Indices::U32(indices))
 }
 
 /// Quads in menu units (x, y, width, height; texture coordinates of the
@@ -1070,6 +1154,47 @@ fn update_hud(
                     }
                 }
             }
+            DrawKind::Model {
+                texture,
+                triangles,
+                blend,
+            } => {
+                let texture = match texture {
+                    Some(path) => {
+                        let key = (path.clone(), false, false);
+                        b.images
+                            .entry(key)
+                            .or_insert_with(|| {
+                                upload_picture(&mut images, game, path, (false, false), compressed)
+                            })
+                            .clone()
+                    }
+                    None => Some(white.clone()),
+                };
+                let Some(texture) = texture else {
+                    continue;
+                };
+                let mesh = meshes.add(triangles_mesh(triangles, k, size));
+                let material = materials.add(TileMaterial {
+                    params: TileParams {
+                        tint,
+                        scroll: Vec4::new(0.0, 0.0, 1.0, 1.0),
+                        mode: Vec4::ZERO,
+                    },
+                    texture,
+                    alpha_map: white.clone(),
+                    blend: *blend,
+                });
+                let entity = commands
+                    .spawn((
+                        Mesh2d(mesh.clone()),
+                        MeshMaterial2d(material.clone()),
+                        Transform::from_xyz(0.0, 0.0, i as f32 * 0.01),
+                        RenderLayers::layer(HUD_LAYER),
+                    ))
+                    .id();
+                b.drawn.push((entity, mesh, material));
+            }
         }
         for Piece {
             texture,
@@ -1087,6 +1212,7 @@ fn update_hud(
                 },
                 texture,
                 alpha_map: alpha_map.unwrap_or_else(|| white.clone()),
+                blend: None,
             });
             // Back to front in the list's order.
             let entity = commands

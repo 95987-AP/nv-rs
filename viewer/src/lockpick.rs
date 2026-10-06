@@ -689,6 +689,7 @@ impl MenuPictures {
                     ];
                     pieces.push((handle, vec![(*rect, corners)]));
                 }
+                DrawKind::Model { .. } => continue,
                 DrawKind::Text { font, glyphs } => {
                     let Some(f) = ui.fonts.get(font - 1).cloned().flatten() else {
                         continue;
@@ -727,6 +728,7 @@ impl MenuPictures {
                     },
                     texture,
                     alpha_map: white.clone(),
+                    blend: None,
                 });
                 let entity = commands
                     .spawn((
