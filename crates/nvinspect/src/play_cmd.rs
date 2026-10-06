@@ -1105,6 +1105,11 @@ pub fn play(
             ),
             Event::CharacterMenu(m) => format!("character menu opened: {m:?}"),
             Event::Barter(m) => format!("trading with {}", describe_id(order, *m)),
+            Event::RecipeMenu { actor, category } => format!(
+                "crafting ({}) for {}",
+                describe_id(order, *category),
+                describe_id(order, *actor)
+            ),
             Event::Died { who, by } => format!(
                 "{} killed by {}",
                 describe_id(order, *who),
@@ -1223,6 +1228,88 @@ pub fn play(
         for (owner, e) in state.broken.iter().take(show) {
             writeln!(out, "  {}: {e}", describe_id(order, *owner))?;
         }
+    }
+    Ok(())
+}
+
+/// `recipes <CATEGORY> [ITEM:N ...] [AV=VALUE ...]`: what the crafting menu
+/// of a category shows a new character (`world::crafting`), after giving
+/// items and setting actor values (skills by number, 32 Barter to 45
+/// Unarmed).
+pub fn recipes(
+    out: &mut impl Write,
+    order: &LoadOrder,
+    category: &str,
+    extra: &[String],
+) -> Result<(), CliError> {
+    use world::crafting;
+    use world::dialogue::PLAYER_REF;
+    let cat = crate::records::find_record(order, category)?.form_id;
+    let mut state = GameState::new(order);
+    state.stock(order, PLAYER_REF);
+    for e in extra {
+        if let Some((av, v)) = e.split_once('=') {
+            let av: u16 = av
+                .parse()
+                .map_err(|_| CliError::Usage(format!("'{av}' isn't an actor value number")))?;
+            let v: f64 = v
+                .parse()
+                .map_err(|_| CliError::Usage(format!("'{v}' isn't a number")))?;
+            state.actor_values.insert((PLAYER_REF, av), v);
+        } else {
+            let (item, n) = e.split_once(':').unwrap_or((e.as_str(), "1"));
+            let id = crate::records::find_record(order, item)?.form_id;
+            let n: i32 = n
+                .parse()
+                .map_err(|_| CliError::Usage(format!("'{n}' isn't a count")))?;
+            *state.items.entry((PLAYER_REF, id)).or_insert(0) += n;
+        }
+    }
+    let list = crafting::listing(order, &state, PLAYER_REF, cat, None);
+    writeln!(
+        out,
+        "{} ({}): {} recipes listed, {} can be made; filter: {}",
+        crafting::category_name(order, cat),
+        describe_id(order, cat),
+        list.lines.len(),
+        list.makeable,
+        list.subcategories
+            .iter()
+            .map(|s| crafting::category_name(order, *s))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )?;
+    for line in &list.lines {
+        let r = crafting::Recipe::load(order, line.recipe)
+            .ok_or_else(|| CliError::NotFound(format!("recipe {} vanished", line.recipe)))?;
+        let skill = match r.skill {
+            Some(s) => format!(
+                "{} {}",
+                world::chargen::actor_value_name(order, s),
+                r.skill_level
+            ),
+            None => "no skill".into(),
+        };
+        let parts = |cs: &[crafting::Component]| {
+            cs.iter()
+                .map(|c| format!("{} x{}", describe_id(order, c.item), c.count))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        };
+        writeln!(
+            out,
+            "  {:<32} {:>3}  [{}] {} -> {}{}",
+            line.text,
+            line.makeable,
+            skill,
+            parts(&r.ingredients),
+            parts(&r.outputs),
+            if r.conditions.is_empty() {
+                String::new()
+            } else {
+                format!("  ({} conditions)", r.conditions.len())
+            }
+        )?;
     }
     Ok(())
 }
