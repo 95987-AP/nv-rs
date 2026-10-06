@@ -66,6 +66,47 @@ rifle drawn count `nTargetCount` to 3, complete objective 10 and queue
 Sunny's package evaluation (`GetWeaponAnimType` 5). Aiming at the bottles
 in the viewer was not driven.
 
+### Sunny walking herself (long paths, `claude/m2-long-paths`)
+
+Re-run 2026-10-06 on the long-path branch (evidence:
+[PATHING.md](PATHING.md); logs private in
+`%USERPROFILE%\nv-re\work\longpaths-2026-10-06`, runs a5, b1, c2). The
+same opening lines and bottle-hit lines as above, `--say "I'm in"`,
+`--say "Sure, I'll come"`, `--say "Couldn't hurt"`, and **no** `MoveTo`
+for Sunny or Cheyenne and no `SetStage VCG02 30`/`40` or `SunnyREF.evp`.
+
+- **Player following** (run a5, c2): `--run-at 90,110,…,210,270,290,310
+  "player.MoveTo SunnyREF"` stands in for the player walking after her.
+  At 50 s Sunny plans the long way (5 nodes, 3 on attached cells) and
+  walks 8,649 units, stops at the edge of the attached cells, walks on as
+  the grid follows the player, and arrives at the first well:
+  `VCG02SunnyTravelToWell1`'s end action sets stage 30, her sneak line
+  (0010A1ED, stage 35, "Follow Sunny" completed), her walk
+  `VCG02SunnySneakCloserToWell` and its end action (stage 40), the bark
+  0010A1E7 and stage 45 ("Kill the Geckos at the well") follow by
+  themselves. Run c2 then kills the first-well geckos (console), takes
+  "Sure, I'll come with you." and Sunny walks `VCG02SunnyTravelToWell2`
+  (5,059 + 3,856 units; she and Cheyenne kill the well-2 geckos) and
+  `VCG02SunnyTravelToWell3` (7,636 units); the well-3 geckos are killed by
+  console, the reward conversation (`StartConversation`) and "Couldn't
+  hurt." complete the quest: `CompleteQuest VCG02`, XP +50, 50 caps,
+  VCG03 10, and Sunny sets off on `VCG03SunnyTravelToCampfire` (10,876
+  units). In run c1 the well-2 geckos killed Cheyenne first, so the
+  reward took the Cheyenne-dead branch (0010B3D9).
+- **Player ahead** (run b1): `--run-at 70 "player.MoveTo
+  VCG02SunnyWellMarker1"` only. Sunny is then beyond the attached cells:
+  out of sight, she walks the long way's nodes in game-time steps, comes
+  back into sight at 106.5 s about 8,000 units out, walks the rest and
+  arrives (end action, stage 30 at ~214 s), then the same chain to stage
+  45.
+
+Still simulated in these runs: the quest start, the bottle hits, the
+gecko kills at wells 1 and 3, the player's following (as `MoveTo`
+jumps) and the reward request. Fixed on the way: `player.MoveTo
+<someone>` took the player to that person's editor cell (into the saloon
+for Sunny); it now goes where the state has them (`scripts.rs`
+`move_player`). Not compared with the original game.
+
 ## Fixes (one commit each)
 
 | Commit | What blocked | Fix and provenance |
@@ -94,15 +135,12 @@ in the viewer was not driven.
    the viewer, yet the quest's own design needs "Doc Mitchell said you
    could teach me…" (in 00104E7E's topics) to be reachable. Unresolved;
    needs the original game. Dialogue owners' area.
-2. **Long travel has no path.** `VCG02SunnyTravelToWell1` (about 15,000
-   units, five grid squares) gets no path: the viewer's path search covers
-   only the 3 × 3 squares around the player (`ai::CellNav`, untraced), so
-   Sunny stands still. The game's long-distance pathing is not traced. AI
-   owners' area.
-3. **Package end actions are not run.** `VCG02SunnyTravelToWell1` ends with
-   `SetStage VCG02 30`, `VCG02SunnySneakCloserToWell` with `SetStage VCG02
-   40`; the viewer only reports begin/change actions. Another batch owns
-   package actions.
+2. ~~Long travel has no path.~~ Fixed on `claude/m2-long-paths`: the
+   navmesh info map route and the attached cells' detailed path
+   ([PATHING.md](PATHING.md)); Sunny's walks complete by themselves (see
+   above).
+3. ~~Package end actions are not run.~~ They run now (`docs/PACKAGES.md`);
+   both end actions fire in the long-path runs.
 4. Not driven: aiming at the bottles, the player following Sunny, the
    player starting the reward conversation, gecko fights.
 5. Seen in passing, not investigated: a sandboxing settler (00104F03)
@@ -118,8 +156,9 @@ Everything above: trigger timing, enable timing and drawing, Sunny's
 walking, dialogue choice, the reward amounts on screen.
 
 **Next action:** settle blocker 1 in the original game (record which line
-Sunny greets with after Doc's farewell), then remove the simulated steps
-as packages' end actions and long paths land.
+Sunny greets with after Doc's farewell), and record in the original how
+far Sunny walks toward the first well while the player stays behind the
+saloon (the traced rule says she waits at the edge of the attached cells).
 
 # Goodsprings route acceptance
 
