@@ -140,7 +140,8 @@ dynamite_keeps_its_thrower_out_of_the_blast`; integration test
 - Throw origin (eye for the player, 60 units up for people), immediate
   release (no throw animation timing), target height 128 for the aim.
 - Not done: models (projectile, explosion), light, image space, decals,
-  camera shake, the countdown sound, forces on bodies/objects, knockdowns,
+  camera shake, the countdown sound, forces on bodies (forces on clutter:
+  [PHYSICS.md](PHYSICS.md), `009b0920`), knockdowns,
   limb damage from blasts, mines/proximity, damage to destructible
   objects, the planner switching NPCs to grenades (only the weapon in hand
   is thrown), `CheckExplosionAttack` (`00992720`, friends in the blast).
