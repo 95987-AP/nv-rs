@@ -171,7 +171,7 @@ pub const RECORDS: &[RecordEntry] = &[
     r("INFO", "dialogue line", Partial, "DATA QSTI TRDT NAM1 CTDA TCLT NAME RNAM KNAM SCTX NEXT PNAM", "world::dialogue", "ANAM (speaker), SNAM (sound), TCLF/TCFU, LNAM, DNAM, NAM2/NAM3 (notes), the dialogue camera"),
     r("QUST", "quest", Partial, "DATA FULL INDX QSDT CTDA CNAM QOBJ NNAM SCRI SCTX NAM0", "world::quest, world::scripting", "QSTA (objective targets: compass and map markers)"),
     r("IDLE", "idle animation", Partial, "ANAM DATA CTDA MODL", "world::idles", "upper-body idles play as whole-body"),
-    r("PACK", "AI package", Partial, "PKDT PLDT PLD2 PSDT PTDT CTDA PKDD POBA POEA POCA INAM TNAM SCHR SCDA SCTX SLSD SCVR SCRO SCRV", "world::ai, world::ai::actions, world::sandbox, world::movement, world::social", "begin/end/change actions read but not dispatched; PKW3 (use weapon), PKPT (patrol), PKED/PKE2 (eat), PKFD, PKAM (ambush), PTD2 (second target), PKDD's f32 at 12 and u32 at 20, IDLA/IDLC/IDLF/IDLT, PUID, CNAM"),
+    r("PACK", "AI package", Partial, "PKDT PLDT PLD2 PSDT PTDT PTD2 CTDA PKDD PKW3 PKPT PKE2 PKFD POBA POEA POCA INAM TNAM SCHR SCDA SCTX SLSD SCVR SCRO SCRV", "world::ai, world::ai::actions, world::ai::data, world::ai::flee, world::ai::guard, world::sandbox, world::movement, world::social", "use weapon, use item at, ambush wait and patrol procedures; guard intruder scan/warnings; PKAM/PKED are markers the loader skips; PKDD's f32 at 12 and u32 at 20, IDLA/IDLC/IDLF/IDLT, PUID, CNAM"),
     r("CSTY", "combat style", Done, "CSTD CSAD CSSD", "world::combat_ai", ""),
     r("LSCR", "load screen", No, "", "", "ICON, DESC, LNAM, WMI1: no loading screens"),
     r("LVSP", "leveled spell (unused)", NA, "", "", "none in the data"),

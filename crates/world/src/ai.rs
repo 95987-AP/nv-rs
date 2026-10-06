@@ -38,6 +38,10 @@ use crate::movement::Spot;
 use crate::scripting::{Facts, GameState};
 
 pub mod actions;
+pub mod data;
+pub mod flee;
+pub mod guard;
+pub mod procedures;
 
 const PACK: FourCC = FourCC::new(b"PACK");
 const PKDT: FourCC = FourCC::new(b"PKDT");
@@ -54,18 +58,68 @@ const NVEX: FourCC = FourCC::new(b"NVEX");
 const NVDP: FourCC = FourCC::new(b"NVDP");
 const XLKR: FourCC = FourCC::new(b"XLKR");
 
-/// Package types.
+/// Package types (`PKDT` byte 4; the procedure each runs:
+/// [`procedures::of_kind`]).
 pub mod kinds {
     pub const FIND: u8 = 0;
     pub const FOLLOW: u8 = 1;
     pub const ESCORT: u8 = 2;
+    pub const EAT: u8 = 3;
+    pub const SLEEP: u8 = 4;
     pub const WANDER: u8 = 5;
     pub const TRAVEL: u8 = 6;
     pub const ACCOMPANY: u8 = 7;
+    pub const USE_ITEM_AT: u8 = 8;
+    pub const AMBUSH: u8 = 9;
+    pub const FLEE: u8 = 10;
     pub const SANDBOX: u8 = 12;
     pub const PATROL: u8 = 13;
     pub const GUARD: u8 = 14;
     pub const DIALOGUE: u8 = 15;
+    pub const USE_WEAPON: u8 = 16;
+}
+
+/// A `PLDT`/`PLD2` as the loader keeps it (`0067f060`: kind i32, form u32,
+/// radius i32 on disk): "in a cell" (1) has no radius, "near the current
+/// location" (2) and "near the editor location" (3) no form.
+// Translated from 0067f060 (decompiled, FalloutNV.exe 1.4.0.525).
+pub(crate) fn read_location(data: &[u8], global: impl Fn(FormId) -> FormId) -> Location {
+    let kind = le_u32(data, 0) as i32;
+    let raw = le_u32(data, 4);
+    let form = match kind {
+        // A reference, a cell, an object.
+        0 | 1 | 4 => global(FormId(raw)),
+        2 | 3 => FormId(0),
+        _ => FormId(raw),
+    };
+    let radius = if kind == 1 { 0 } else { le_u32(data, 8) as i32 };
+    Location { kind, form, radius }
+}
+
+/// A reference's linked reference (`XLKR`; New Vegas's is a keyword then
+/// the reference, or just the reference).
+pub fn linked_ref(order: &LoadOrder, reference: FormId) -> Option<FormId> {
+    let rr = order.get(reference)?;
+    let record = rr.record().ok()?;
+    let s = record.get(XLKR).filter(|s| s.data.len() >= 4)?;
+    let at = if s.data.len() >= 8 { 4 } else { 0 };
+    Some(rr.plugin.to_global(FormId(le_u32(&s.data, at)))).filter(|f| f.0 != 0)
+}
+
+/// A package location's radius as the procedures read it (`00676280`):
+/// its own (0 for "in a cell"), except that a reference to an activator
+/// with radius 0 gives round(half its bounds' diagonal).
+pub fn location_radius_of(order: &LoadOrder, loc: &Location) -> u32 {
+    let own = loc.radius.max(0) as u32;
+    if own == 0 && loc.kind == 0 {
+        let activator = crate::scripting::base_of(order, loc.form)
+            .and_then(|b| order.get(b))
+            .is_some_and(|rr| rr.entry.header.kind.as_bytes() == b"ACTI");
+        if activator {
+            return half_bounds_diagonal(order, loc.form).round().max(0.0) as u32;
+        }
+    }
+    own
 }
 
 /// Where a package takes place (`PLDT`).
@@ -145,6 +199,8 @@ pub struct Package {
     /// from its ordinary idle list; the opening uses them for the player's
     /// wakeup, situp and standup animations.
     pub actions: actions::PackageActions,
+    /// Its type's own data (`PKW3`, `PKPT`, `PKE2`, `PKFD`, `PLD2`).
+    pub data: data::TypeData,
 }
 
 impl Package {
@@ -152,21 +208,10 @@ impl Package {
         let rr = order.get(id).filter(|r| r.entry.header.kind == PACK)?;
         let record = rr.record().ok()?;
         let pkdt = record.get(PKDT).filter(|s| s.data.len() >= 5)?;
-        let location = record.get(PLDT).filter(|s| s.data.len() >= 12).map(|s| {
-            let kind = le_u32(&s.data, 0) as i32;
-            // Kinds that name a record: a reference, a cell, an object.
-            let raw = le_u32(&s.data, 4);
-            let form = if matches!(kind, 0 | 1 | 4) {
-                rr.plugin.to_global(FormId(raw))
-            } else {
-                FormId(raw)
-            };
-            Location {
-                kind,
-                form,
-                radius: le_u32(&s.data, 8) as i32,
-            }
-        });
+        let location = record
+            .get(PLDT)
+            .filter(|s| s.data.len() >= 12)
+            .map(|s| read_location(&s.data, |id| rr.plugin.to_global(id)));
         let schedule = record
             .get(PSDT)
             .filter(|s| s.data.len() >= 8)
@@ -214,7 +259,13 @@ impl Package {
             target,
             topic,
             actions: actions::PackageActions::read(&record, |id| rr.plugin.to_global(id)),
+            data: data::read(&record, |id| rr.plugin.to_global(id)),
         })
+    }
+
+    /// The procedures its type runs, when known ([`procedures::of_kind`]).
+    pub fn procedures(&self) -> Option<&'static [u8]> {
+        procedures::of_kind(self.kind)
     }
 }
 
@@ -260,18 +311,7 @@ pub fn second_location(order: &LoadOrder, package: FormId) -> Option<Location> {
     let rr = order.get(package).filter(|r| r.entry.header.kind == PACK)?;
     let record = rr.record().ok()?;
     let s = record.get(PLD2).filter(|s| s.data.len() >= 12)?;
-    let kind = le_u32(&s.data, 0) as i32;
-    let raw = le_u32(&s.data, 4);
-    let form = if matches!(kind, 0 | 1 | 4) {
-        rr.plugin.to_global(FormId(raw))
-    } else {
-        FormId(raw)
-    };
-    Some(Location {
-        kind,
-        form,
-        radius: le_u32(&s.data, 8) as i32,
-    })
+    Some(read_location(&s.data, |id| rr.plugin.to_global(id)))
 }
 
 /// What a reference is, for its radius ([`crate::movement::Spot`]):
@@ -543,7 +583,8 @@ pub fn wander_step(radius: f32, own_place: bool, at_place: bool, to_middle: f32)
 /// is their own position (`008ed420`): the package's `PLDT` radius
 /// (`00676280`: for an activator with radius 0, half its bounds' diagonal,
 /// rounded); "in a cell" (kind 1) puts the middle on the person, and indoors
-/// the spots then come from a radius of 800.
+/// the spots then come from a radius of 800 (outdoors it has none: the
+/// loader drops that kind's radius, [`read_location`]).
 pub fn wander_radius(order: &LoadOrder, package: &Package, interior: bool) -> (f32, bool) {
     let Some(loc) = package.location else {
         return (0.0, false);
@@ -699,15 +740,7 @@ pub fn destination(
     let target = match loc.kind {
         0 => loc.form,
         3 => actor,
-        6 => {
-            let rr = order.get(actor)?;
-            let record = rr.record().ok()?;
-            let s = record.get(XLKR).filter(|s| s.data.len() >= 4)?;
-            // New Vegas's XLKR: a keyword then the reference, or just the
-            // reference.
-            let at = if s.data.len() >= 8 { 4 } else { 0 };
-            rr.plugin.to_global(FormId(le_u32(&s.data, at)))
-        }
+        6 => linked_ref(order, actor)?,
         _ => return None,
     };
     if loc.kind == 3 {

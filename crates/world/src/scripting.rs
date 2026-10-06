@@ -301,6 +301,10 @@ pub struct GameState {
     /// Packages scripts gave people (`AddScriptPackage`), followed before
     /// their own.
     pub script_packages: HashMap<FormId, FormId>,
+    /// The package whose begin action was last requested for each person
+    /// (`world::ai::actions::begin`): a package `AddScriptPackage` already
+    /// began doesn't begin again when the AI takes it up. Not saved.
+    pub package_begun: HashMap<FormId, FormId>,
     /// People whose packages are to be looked at again at once: scripts
     /// asked (`EvaluatePackage`, `ResetAI`) or changed them
     /// (`AddScriptPackage`, `RemoveScriptPackage`); packages are otherwise
@@ -907,9 +911,10 @@ pub enum Event {
         who: FormId,
         idle: FormId,
     },
-    /// An AI package lifecycle action requested by `AddScriptPackage`.
-    /// The referenced `PACK` record holds the action's idle, topic and
-    /// embedded script; dispatchers must read those fields from the package.
+    /// An AI package lifecycle action requested by `AddScriptPackage` or
+    /// the AI (`world::ai::actions`). The referenced `PACK` record holds
+    /// the action's idle, topic and embedded script
+    /// (`world::ai::actions::perform` carries it out).
     PackageAction {
         who: FormId,
         package: FormId,
@@ -932,11 +937,12 @@ pub enum Event {
     More(crate::more_functions::Shown),
 }
 
-/// Which package lifecycle action `AddScriptPackage` requested.
+/// Which package lifecycle action is requested (`world::ai::actions`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageActionKind {
     Begin,
     Change,
+    End,
 }
 
 /// The face and body menu (`ShowRaceMenu`): `VCG01SCRIPT` opens it at
@@ -3284,8 +3290,10 @@ impl<'a> Runner<'a> {
             // action through +0x598 (`00903a80`), before installing it.
             // There is no identity comparison: assigning the same package
             // requests both actions too. Keep these as ordered requests;
-            // action scripts/idles/topics are read from the PACK record by
-            // the eventual dispatcher, not run here.
+            // `world::ai::actions::perform` carries them out from the PACK
+            // record. The package is installed at once (actor vfunc +0x2f4,
+            // `PutCreatedPackage` (Xbox PDB)), so the AI taking it up
+            // doesn't begin it again (`package_begun`).
             "AddScriptPackage" => {
                 let who = target?;
                 // `exe005cc4f0` resolves the target as an actor; preserve
@@ -3314,6 +3322,7 @@ impl<'a> Runner<'a> {
                     package,
                     kind: PackageActionKind::Begin,
                 });
+                self.state.package_begun.insert(who, new_package.form_id);
                 self.state.script_packages.insert(who, new_package.form_id);
                 self.state.evaluate.insert(who);
             }
