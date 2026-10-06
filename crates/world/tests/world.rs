@@ -484,6 +484,29 @@ fn keeps_only_what_the_game_shows_at_first() {
     assert_eq!(hum.base_editor_id.as_deref(), Some("Hum"));
 }
 
+/// `VCG02BottleMarkerREF.Enable`: the disabled marker's `Enable` brings in
+/// the crate that follows it and takes away the one doing the opposite.
+#[test]
+fn a_parents_enable_brings_in_its_children() {
+    let order = order();
+    let refs = [0x1005, 0x1006, 0x1007, 0x1001].map(FormId);
+    let before = world::Disabled::new();
+    let mut now = before.clone();
+    now.insert(FormId(0x1005), false);
+    assert_eq!(
+        world::newly_enabled(&order, refs, &before, &now),
+        [FormId(0x1005), FormId(0x1006)]
+    );
+    // Disabled again: those two go, the opposite one comes back.
+    let mut later = now.clone();
+    later.insert(FormId(0x1005), true);
+    assert_eq!(
+        world::newly_enabled(&order, refs, &now, &later),
+        [FormId(0x1007)]
+    );
+    assert!(world::newly_enabled(&order, refs, &now, &now).is_empty());
+}
+
 #[test]
 fn reads_placement_models_and_lights() {
     let order = order();

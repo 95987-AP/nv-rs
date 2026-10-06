@@ -193,6 +193,11 @@ fn main() {
         .init_resource::<scripts::Notices>()
         .insert_resource(scripts::StartStage(args.stage.clone()))
         .insert_resource(scripts::StartCommands(args.run.clone()))
+        .insert_resource(scripts::LaterCommands {
+            lines: args.run_at.clone(),
+            ready_at: None,
+        })
+        .insert_resource(dialogue::AutoSay(args.say.iter().cloned().collect()))
         .insert_resource(viewmodel::StartWeapon(args.weapon.clone()))
         .insert_resource(lockpick::StartLock(args.lockpick.clone()))
         .insert_resource(emittance::StartRegion(args.weather_region.clone()))
@@ -358,6 +363,7 @@ fn main() {
                     ai::move_offstage,
                     bring_in_people,
                     bring_in_made,
+                    bring_in_enabled,
                     ai::move_actors,
                     scripts::save_and_load,
                     report::report_key,
@@ -610,19 +616,23 @@ const BRING_IN_REACH: f32 = 2.5 * world::land::CELL_SIZE;
 
 /// People the game has taken into this place after it loaded (through a
 /// door, or by a script's `MoveTo`) come on screen: once a second, anyone
-/// the state has here (`world::ai::moved_into`), or whom a script enabled
-/// after their square loaded (`world::ai::enabled_since_load`), who isn't
-/// drawn yet is spawned, lit as the place is; outdoors, those within the
-/// loaded squares.
+/// the state has here (`world::ai::moved_into`) who isn't drawn yet is
+/// spawned, lit as the place is; outdoors, those within the loaded
+/// squares. They join the place's people ([`dialogue::Talkers`]: talking,
+/// trigger volumes, combat), and are put back among them when an outdoor
+/// square load rebuilds that list from the squares' own people. Without
+/// this Sunny Smiles, walking out of the saloon for `VCG02`, never counted
+/// in `VCG02SunnyPatrolTrigger` (its `OnTrigger SunnyREF` sets stage 20).
+/// Those a script enabled after their square loaded come in through
+/// [`bring_in_enabled`].
 #[allow(clippy::too_many_arguments)]
 fn bring_in_people(
     time: Res<Time>,
     game: Res<GameFiles>,
     state: Res<dialogue::DialogueState>,
     player: Res<walk::Player>,
-    walkers: Query<&ai::Walker>,
-    exterior: Option<Res<exterior::Exterior>>,
-    (mut talkers, mut brought): (Option<ResMut<dialogue::Talkers>>, ResMut<BroughtIn>),
+    walkers: Query<(&ai::Walker, &Visibility)>,
+    (mut talkers, mut brought): (ResMut<dialogue::Talkers>, ResMut<BroughtIn>),
     mut spawner: Spawner,
     mut last: Local<f32>,
 ) {
@@ -637,7 +647,19 @@ fn bring_in_people(
         return;
     };
     let shown: std::collections::HashSet<esm::FormId> =
-        walkers.iter().map(|w| w.reference).collect();
+        walkers.iter().map(|(w, _)| w.reference).collect();
+    let moved = world::ai::moved_into(order, state, space);
+    add_talkers(
+        &mut talkers.0,
+        walkers
+            .iter()
+            .filter(|(w, v)| **v != Visibility::Hidden && moved.contains(&w.reference))
+            .map(|(w, _)| dialogue::Talker {
+                reference: w.reference,
+                base: world::scripting::base_of(order, w.reference).unwrap_or(w.reference),
+                position: w.position,
+            }),
+    );
     let near = |r: esm::FormId| {
         state.player_world.is_none()
             || state
@@ -647,19 +669,10 @@ fn bring_in_people(
                     (p[0] - me[0]).hypot(p[1] - me[1]) <= BRING_IN_REACH
                 })
     };
-    // Also those the loaded squares left out as disabled whom a script
-    // has enabled since (an enable parent's `Enable`).
-    let enabled = exterior
-        .as_deref()
-        .map(|e| world::ai::enabled_since_load(order, state, space, &e.disabled_people()))
-        .unwrap_or_default();
-    let mut new: Vec<esm::FormId> = world::ai::moved_into(order, state, space)
+    let new: Vec<esm::FormId> = moved
         .into_iter()
-        .chain(enabled)
         .filter(|r| !shown.contains(r) && near(*r))
         .collect();
-    new.sort();
-    new.dedup();
     if new.is_empty() {
         return;
     }
@@ -668,6 +681,10 @@ fn bring_in_people(
     for r in &new {
         println!("{r} comes into view");
     }
+    add_talkers(
+        &mut talkers.0,
+        scene.actors.iter().map(dialogue::Talker::from_actor),
+    );
     spawner.spawn_with(&scene, lighting);
     // They can be talked to, shot and targeted like the place's own people.
     if brought.space != Some(space) {
@@ -677,12 +694,9 @@ fn bring_in_people(
         };
     }
     for a in &scene.actors {
-        let talker = dialogue::Talker::from_actor(a);
-        brought.people.insert(talker.reference);
-        if let Some(t) = talkers.as_deref_mut() {
-            t.0.retain(|t| t.reference != talker.reference);
-            t.0.push(talker);
-        }
+        brought
+            .people
+            .insert(dialogue::Talker::from_actor(a).reference);
     }
 }
 
@@ -693,6 +707,150 @@ fn bring_in_people(
 pub struct BroughtIn {
     space: Option<esm::FormId>,
     pub people: std::collections::HashSet<esm::FormId>,
+}
+
+/// References a script's `Enable` / `Disable` changed after their place
+/// loaded: those of the loaded place now shown (themselves, or through
+/// their enable parent: `world::newly_enabled`) come on screen, drawn if
+/// they were left out when it loaded (people join its people); drawn ones
+/// now hidden through their parent are hidden. Their own `Enable` is
+/// carried out by `run_scripts`; this covers what wasn't drawn and the
+/// children (`VCG02BottleMarkerREF.Enable` shows the tutorial's bottles,
+/// `VCG02Gecko1REF.Enable` brings in a gecko left out at load). The game
+/// loads an enabled reference's 3D (`005c43d0` → `005aa5d0`).
+#[allow(clippy::too_many_arguments)]
+fn bring_in_enabled(
+    game: Res<GameFiles>,
+    state: Res<dialogue::DialogueState>,
+    player: Res<walk::Player>,
+    here: Res<scripts::Here>,
+    exterior: Option<Res<exterior::Exterior>>,
+    mut placed: Query<(&scripts::PlacedRef, &mut Visibility)>,
+    mut talkers: ResMut<dialogue::Talkers>,
+    mut spawner: Spawner,
+    mut seen: Local<EnableSeen>,
+) {
+    let state = &state.0;
+    if !player.ready {
+        return;
+    }
+    let space = state.player_world.or(state.player_cell);
+    let mut squares: Vec<(i32, i32)> = match (&exterior, state.player_world) {
+        (Some(e), Some(_)) => e.loaded_squares().into_iter().collect(),
+        _ => Vec::new(),
+    };
+    squares.sort();
+    // Looked at again when scripts enable or disable something, and when
+    // the place or its loaded squares change (a square that was loading
+    // while a script enabled something may have left it out).
+    let place = (space, squares);
+    let moved_on = seen.place != place;
+    if !moved_on && seen.disabled == state.disabled {
+        return;
+    }
+    let before = std::mem::replace(&mut seen.disabled, state.disabled.clone());
+    seen.place = place;
+    let order = &game.0.order;
+    let refs: Vec<esm::FormId> = match (&exterior, state.player_world, here.0) {
+        (Some(e), Some(_), _) => seen
+            .place
+            .1
+            .iter()
+            .flat_map(|&square| {
+                let mut refs: Vec<esm::FormId> = e
+                    .grid
+                    .cell_at(square)
+                    .map(|c| {
+                        order
+                            .references_in_cell(c)
+                            .into_iter()
+                            .map(|rr| rr.form_id)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                refs.extend_from_slice(e.grid.persistent_in(square));
+                refs
+            })
+            .collect(),
+        (_, None, Some(cell)) => order
+            .references_in_cell(esm::FormId(cell))
+            .into_iter()
+            .map(|rr| rr.form_id)
+            .collect(),
+        _ => return,
+    };
+    // Drawn ones whose state changed since the last look (only then, so
+    // people hidden for being elsewhere stay hidden).
+    let (came, went) = if moved_on {
+        (Vec::new(), Vec::new())
+    } else {
+        (
+            world::newly_enabled(order, refs.iter().copied(), &before, &state.disabled),
+            world::newly_enabled(order, refs.iter().copied(), &state.disabled, &before),
+        )
+    };
+    let mut drawn = std::collections::HashSet::new();
+    for (p, mut visibility) in &mut placed {
+        let r = esm::FormId(p.0);
+        drawn.insert(r);
+        if came.contains(&r) {
+            *visibility = Visibility::Inherited;
+        } else if went.contains(&r) {
+            *visibility = Visibility::Hidden;
+        }
+    }
+    // Shown now but left out when loaded (as the data has them at first),
+    // still here and not drawn.
+    let shown_now = world::newly_enabled(
+        order,
+        refs.iter().copied(),
+        &world::Disabled::new(),
+        &state.disabled,
+    );
+    let new: Vec<world::Placement> = shown_now
+        .iter()
+        .filter(|r| !drawn.contains(r) && !state.dead.contains(r))
+        .filter(|&&r| state.place(order, r).is_some_and(|p| Some(p.0) == space))
+        .filter_map(|&r| world::placement_of(order, r))
+        .filter(|p| !world::is_marker(p.base, p.base_type, p.model.as_deref()))
+        .collect();
+    if new.is_empty() {
+        return;
+    }
+    for p in &new {
+        println!(
+            "{} ({}) comes into view (enabled)",
+            p.form_id,
+            p.base_editor_id.as_deref().unwrap_or("?")
+        );
+    }
+    let scene = game.0.made_scene(new);
+    add_talkers(
+        &mut talkers.0,
+        scene.actors.iter().map(dialogue::Talker::from_actor),
+    );
+    let lighting = spawner.place_lighting.get();
+    spawner.spawn_with(&scene, lighting);
+}
+
+/// What [`bring_in_enabled`] last looked at: the place (interior cell or
+/// worldspace, and the loaded squares) and the scripts' enable state.
+#[derive(Default)]
+struct EnableSeen {
+    place: (Option<esm::FormId>, Vec<(i32, i32)>),
+    disabled: world::Disabled,
+}
+
+/// Adds people to the place's people, each once.
+fn add_talkers(
+    talkers: &mut Vec<dialogue::Talker>,
+    people: impl IntoIterator<Item = dialogue::Talker>,
+) {
+    for p in people {
+        if !talkers.iter().any(|t| t.reference == p.reference) {
+            talkers.push(p);
+        }
+    }
 }
 
 /// References scripts made (`PlaceAtMe`, `world::more_functions::placed`)
@@ -2389,6 +2547,25 @@ fn quit_on_escape(keys: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sunny Smiles walking out of the saloon (`VCG02`) must join the
+    /// outdoor people, once, so trigger volumes see her.
+    #[test]
+    fn people_brought_in_join_the_place_once() {
+        let at = |r: u32, x: f32| dialogue::Talker {
+            reference: esm::FormId(r),
+            base: esm::FormId(r + 1),
+            position: [x, 0.0, 0.0],
+        };
+        let mut talkers = vec![at(0x10, 0.0)];
+        add_talkers(&mut talkers, [at(0x00104E85, 5.0), at(0x10, 9.0)]);
+        add_talkers(&mut talkers, [at(0x00104E85, 7.0)]);
+        let refs: Vec<u32> = talkers.iter().map(|t| t.reference.0).collect();
+        assert_eq!(refs, [0x10, 0x00104E85]);
+        // The ones already there keep their places.
+        assert_eq!(talkers[0].position[0], 0.0);
+        assert_eq!(talkers[1].position[0], 5.0);
+    }
 
     #[test]
     fn mouse_motion_cannot_turn_player_during_script_package_and_releases_afterward() {

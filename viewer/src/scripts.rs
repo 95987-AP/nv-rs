@@ -54,6 +54,33 @@ pub struct StartStage(pub Option<(String, u16)>);
 #[derive(Resource, Default)]
 pub struct StartCommands(pub Vec<String>);
 
+/// `--run-at`: for testing, script lines to run this many seconds after
+/// the place has loaded (in order of time), and when it was up.
+#[derive(Resource, Default)]
+pub struct LaterCommands {
+    pub lines: Vec<(f32, String)>,
+    pub ready_at: Option<f32>,
+}
+
+impl LaterCommands {
+    /// The lines due `now` (seconds since the start), taken out in order;
+    /// the clock starts at the first call.
+    pub fn due(&mut self, now: f32) -> Vec<String> {
+        let since = now - *self.ready_at.get_or_insert(now);
+        let mut due: Vec<(f32, String)> = Vec::new();
+        self.lines.retain(|(at, line)| {
+            if *at <= since {
+                due.push((*at, line.clone()));
+                false
+            } else {
+                true
+            }
+        });
+        due.sort_by(|a, b| a.0.total_cmp(&b.0));
+        due.into_iter().map(|(_, l)| l).collect()
+    }
+}
+
 /// The objects of the attached cells (the interior, or outdoors the
 /// `uGridsToLoad` grid's loaded squares), whose scripts run
 /// (`world::ref_scripts`) and which the player can use.
@@ -844,6 +871,7 @@ pub struct HereNow<'w> {
     seats: Res<'w, crate::sitting::Seats>,
     object_bounds: Option<Res<'w, ObjectBounds>>,
     player_seat: ResMut<'w, crate::sitting::PlayerSeat>,
+    later: ResMut<'w, LaterCommands>,
 }
 
 /// Runs the scripts for this frame and carries out what they asked for.
@@ -891,6 +919,7 @@ pub fn run_scripts(
         seats,
         object_bounds,
         mut player_seat,
+        mut later,
     } = here_now;
     let order = &game.0.order;
     let now = time.elapsed_secs();
@@ -972,6 +1001,13 @@ pub fn run_scripts(
         for line in std::mem::take(&mut start_commands.0) {
             let flow = Runner::new(order, &scripts.0, state).run_source(&line, None, None);
             println!("{line}: {flow:?}");
+        }
+        // `--run-at`: later, in game mode.
+        if conversation.0.as_ref().is_none_or(|t| t.is_line_only()) && !waiting.is_open() {
+            for line in later.due(now) {
+                let flow = Runner::new(order, &scripts.0, state).run_source(&line, None, None);
+                println!("{now:.1} s: {line}: {flow:?}");
+            }
         }
     }
     let attached = attached_cells(
@@ -1456,6 +1492,19 @@ mod tests {
 
     #[derive(Resource)]
     struct TestLoadResult(Result<bool, String>);
+
+    #[test]
+    fn later_lines_run_once_when_due_in_time_order() {
+        let mut later = LaterCommands {
+            lines: vec![(30.0, "b".into()), (10.0, "a".into()), (30.0, "c".into())],
+            ready_at: None,
+        };
+        // The clock starts at the first look.
+        assert!(later.due(100.0).is_empty());
+        assert_eq!(later.due(111.0), ["a"]);
+        assert_eq!(later.due(140.0), ["b", "c"]);
+        assert!(later.due(500.0).is_empty());
+    }
 
     fn queue_test_reload_cleanup(mut commands: Commands, result: Res<TestLoadResult>) {
         queue_reload_cleanup(&mut commands, &result.0);

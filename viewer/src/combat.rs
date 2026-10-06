@@ -210,12 +210,10 @@ pub(crate) fn first_met(
             }
         }
     }
-    // Trigger volumes aren't solid: shots go through them (the player
-    // standing in one caught every shot at 0 units before).
     for r in cell_scripts
         .refs
         .iter()
-        .filter(|r| r.script.is_some() && r.trigger.is_none())
+        .filter(|r| meetable(order, state, r))
     {
         if let Some(d) = r.ray_hit(eye, dir) {
             if d <= reach && best.is_none_or(|(bd, _, _)| d < bd) {
@@ -232,6 +230,22 @@ pub(crate) fn first_met(
         },
         None => Met::Nothing(wall.is_some()),
     }
+}
+
+/// A scripted object a shot or blow can meet. Trigger volumes aren't solid:
+/// shots go through them (the player standing in one caught every shot at
+/// 0 units before). A disabled reference has no 3D to meet (inferred from
+/// the reference-script pass `0054c740`, which treats "has 3D"
+/// (`Get3D` `0043fcd0`) and "disabled" as the two separate cases): before
+/// `VCG02BottleMarkerREF.Enable` the tutorial's unseen bottles counted hits.
+pub(crate) fn meetable(
+    order: &esm::LoadOrder,
+    state: &world::scripting::GameState,
+    r: &world::scripting::Interactive,
+) -> bool {
+    r.script.is_some()
+        && r.trigger.is_none()
+        && world::enabled_now(order, r.reference, &state.disabled)
 }
 
 /// Says what a hit did, as the attacks print it.
@@ -689,6 +703,35 @@ pub fn player_attack(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shots_meet_only_shown_scripted_objects() {
+        let order = esm::LoadOrder::from_plugins(Vec::new()).unwrap();
+        let mut state = world::scripting::GameState::default();
+        let bottle = world::scripting::Interactive {
+            reference: FormId(0x0010A209),
+            base: FormId(0x0010A1F6),
+            script: Some(FormId(0x0010A1EF)),
+            count: 1,
+            position: [0.0; 3],
+            rotation: [0.0; 3],
+            scale: 1.0,
+            trigger: None,
+            bounds: None,
+            name: None,
+            kind: esm::FourCC::new(b"MISC"),
+        };
+        assert!(meetable(&order, &state, &bottle));
+        state.disabled.insert(bottle.reference, true);
+        assert!(!meetable(&order, &state, &bottle));
+        state.disabled.insert(bottle.reference, false);
+        assert!(meetable(&order, &state, &bottle));
+        let unscripted = world::scripting::Interactive {
+            script: None,
+            ..bottle.clone()
+        };
+        assert!(!meetable(&order, &state, &unscripted));
+    }
 
     #[test]
     fn rays_meet_a_body_of_its_own_size() {

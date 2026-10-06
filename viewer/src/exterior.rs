@@ -57,7 +57,10 @@ enum Square {
         talkers: Vec<crate::dialogue::Talker>,
         /// People it left out as disabled when it loaded
         /// (`world::ai::disabled_people_in_square`), who come in once a
-        /// script enables them (`bring_in_people`).
+        /// script enables them. Unused since `bring_in_enabled` (merged from
+        /// the VCG02 route) brings them in; kept until the two paths are
+        /// unified.
+        #[allow(dead_code)]
         disabled_people: Vec<esm::FormId>,
     },
 }
@@ -140,6 +143,7 @@ impl Exterior {
     }
 
     /// The people the loaded squares left out as disabled when they loaded.
+    #[allow(dead_code)]
     pub fn disabled_people(&self) -> Vec<esm::FormId> {
         self.squares
             .values()
@@ -468,10 +472,21 @@ pub fn stream_squares(
             }
         }
         // People brought in after their place loaded (`bring_in_people`)
-        // stay, as long as they're on screen.
+        // stay, as long as they're on screen; so do those moved in from
+        // elsewhere: a dialogue package starting just after a square loaded
+        // found Sunny Smiles (moved to the first well for VCG02) missing and
+        // talked to no one.
         if let Some(old) = &old_talkers {
             let on_screen: HashSet<esm::FormId> = shown.iter().map(|w| w.reference).collect();
             talkers = with_brought_in(talkers, &old.0, &brought.people, &on_screen);
+            let moved = world::ai::moved_into(&game.0.order, &state.0, exterior.grid.world.form_id);
+            for t in &old.0 {
+                if moved.contains(&t.reference)
+                    && !talkers.iter().any(|k| k.reference == t.reference)
+                {
+                    talkers.push(*t);
+                }
+            }
         }
         commands.insert_resource(crate::dialogue::Talkers(talkers));
         // The loaded squares' doors that swing (their leaves are put where

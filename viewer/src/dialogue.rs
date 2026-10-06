@@ -62,6 +62,24 @@ pub struct DialogueState(pub GameState);
 #[derive(Resource, Default)]
 pub struct AutoTalk(pub bool);
 
+/// `--say`: for testing, topics to choose when the menu offers some, in
+/// order: each the first offered whose text contains it (ignoring case).
+#[derive(Resource, Default)]
+pub struct AutoSay(pub std::collections::VecDeque<String>);
+
+impl AutoSay {
+    /// The offered topic (by its text) the next `--say` names, which is
+    /// then used up; none if it names none of them.
+    pub fn pick(&mut self, offered: &[&str]) -> Option<usize> {
+        let wanted = self.0.front()?.to_lowercase();
+        let i = offered
+            .iter()
+            .position(|t| t.to_lowercase().contains(&wanted))?;
+        self.0.pop_front();
+        Some(i)
+    }
+}
+
 /// The person looked at, and their name.
 #[derive(Resource, Default)]
 pub struct TalkTarget(pub Option<(Talker, String)>);
@@ -336,6 +354,7 @@ type TalkExtras<'w, 's> = (
     Query<'w, 's, &'static crate::ai::Walker>,
     ResMut<'w, crate::game_menus::GameMenus>,
     ResMut<'w, DialogueView>,
+    ResMut<'w, AutoSay>,
 );
 
 /// Looking for someone to talk to, and the conversation itself.
@@ -349,10 +368,16 @@ pub fn talk(
     talkers: Res<Talkers>,
     collision: Res<CellCollision>,
     mut target: ResMut<TalkTarget>,
-    (mut auto_talk, scripts, mut scripted, mut menus, walkers, mut game_menus, mut view): TalkExtras<
-        '_,
-        '_,
-    >,
+    (
+        mut auto_talk,
+        scripts,
+        mut scripted,
+        mut menus,
+        walkers,
+        mut game_menus,
+        mut view,
+        mut auto_say,
+    ): TalkExtras<'_, '_>,
     mut conversation: ResMut<Conversation>,
     mut player: ResMut<Player>,
     mut audio: ResMut<Assets<AudioSource>>,
@@ -483,7 +508,14 @@ pub fn talk(
                             talk.since = now;
                             talk.voice = play_voice(&mut commands, &mut audio, &game.0, talk);
                         }
-                        dialogue::AfterLine::Topics(list) => talk.choices = Some(list),
+                        dialogue::AfterLine::Topics(list) => {
+                            if !auto_say.0.is_empty() {
+                                let offered: Vec<&str> =
+                                    list.iter().map(|c| c.label.as_str()).collect();
+                                println!("Topics offered: {}", offered.join(" | "));
+                            }
+                            talk.choices = Some(list);
+                        }
                         // A line said on its own just ends; the menu zooms
                         // out first (state 4, `00762ff0`, `00762950`).
                         dialogue::AfterLine::Close if !talk.line_only => {
@@ -518,6 +550,13 @@ pub fn talk(
                 _ if screen.is_some() => None,
                 _ => digits.iter().position(|k| keys.just_pressed(*k)),
             };
+            // `--say` (testing).
+            let picked = picked.or_else(|| {
+                let offered: Vec<&str> = list.iter().map(|c| c.label.as_str()).collect();
+                let i = auto_say.pick(&offered)?;
+                println!("--say: {} (of {})", offered[i], offered.join(" | "));
+                Some(i)
+            });
             match picked {
                 Some(i) if i < list.len() => {
                     let info = list[i].info.clone();
@@ -1072,6 +1111,21 @@ pub fn focus_camera(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn say_picks_the_named_topic_once_in_order() {
+        let mut say = AutoSay(["i'm IN".to_string(), "sure".to_string()].into());
+        let offered = [
+            "Okay, I'm in.",
+            "[END TUTORIAL] I think I've learned enough.",
+        ];
+        // Not offered: nothing chosen, the wish kept.
+        assert_eq!(say.pick(&["Goodbye."]), None);
+        assert_eq!(say.pick(&offered), Some(0));
+        assert_eq!(say.pick(&offered), None);
+        assert_eq!(say.pick(&["No.", "Sure, I'll come with you."]), Some(1));
+        assert!(say.0.is_empty());
+    }
 
     #[test]
     fn rays_find_people_in_front_at_body_height() {

@@ -192,8 +192,14 @@ fn the_killing_blow_is_kept_for_how_the_body_falls() {
     let (_data, order) = order("scripting-blow");
     let scripts = ScriptCache::default();
     let mut state = GameState::new(&order);
+    let before = state.globals[&FormId(GLOBAL)];
     Runner::new(&order, &scripts, &mut state).run_source("GeckoRef.KillActor player", None, None);
     assert!(state.dead.contains(&FormId(GECKO_REF)));
+    // Its `OnDeath` ran (VCG02's geckos count their deaths there).
+    assert_eq!(state.globals[&FormId(GLOBAL)], before + 100.0);
+    // Killing the dead again does nothing more.
+    Runner::new(&order, &scripts, &mut state).run_source("GeckoRef.KillActor player", None, None);
+    assert_eq!(state.globals[&FormId(GLOBAL)], before + 100.0);
     let (by, damage) = state.last_blow[&FormId(GECKO_REF)];
     assert_eq!(by, PLAYER_REF);
     // Without a weapon, `fDeathForce…`: 20 to 60 Havok units a second as

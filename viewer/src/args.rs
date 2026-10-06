@@ -53,6 +53,14 @@ OPTIONS:
                             language, as its console does (for example
                             \"SunnyREF.StartCombat player\"); can be given
                             more than once
+    --run-at SECONDS \"COMMAND\"
+                            for testing: run a script line that many
+                            seconds after loading (in the game, not in a
+                            menu); can be given more than once
+    --say TEXT              for testing: when the dialogue menu offers
+                            topics, choose the first whose text contains
+                            TEXT (ignoring case); each --say is used once,
+                            in order
     --no-hud                leave out the game's HUD (health, compass,
                             crosshair, messages); screenshots then show
                             the scene alone
@@ -152,6 +160,10 @@ pub struct Args {
     pub weapon: Option<String>,
     /// Script lines to run once loaded, as console commands.
     pub run: Vec<String>,
+    /// `--run-at`: script lines to run this many seconds after loading.
+    pub run_at: Vec<(f32, String)>,
+    /// `--say`: topics to choose in the dialogue menu, in order.
+    pub say: Vec<String>,
     /// The player's weather region to start with.
     pub weather_region: Option<String>,
     /// Draw the game's HUD.
@@ -222,6 +234,8 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut new_game = false;
     let mut weapon = None;
     let mut run = Vec::new();
+    let mut run_at = Vec::new();
+    let mut say = Vec::new();
     let mut weather_region = None;
     let mut hud = true;
     let mut vats = None;
@@ -276,6 +290,16 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             "--new-game" => new_game = true,
             "--weapon" => weapon = Some(value("--weapon")?),
             "--run" => run.push(value("--run")?),
+            "--run-at" => {
+                let v = value("--run-at")?;
+                let at = v
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|s| s.is_finite() && *s >= 0.0)
+                    .ok_or_else(|| format!("--run-at expects seconds and a line, got '{v}'"))?;
+                run_at.push((at, value("--run-at")?));
+            }
+            "--say" => say.push(value("--say")?),
             "--weather-region" => weather_region = Some(value("--weather-region")?),
             "--no-hud" => hud = false,
             "--freeze-ai" => freeze_ai = true,
@@ -345,6 +369,8 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             stage,
             weapon,
             run,
+            run_at,
+            say,
             weather_region,
             hud,
             vats,
@@ -394,6 +420,37 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(frozen.freeze_ai);
+    }
+
+    #[test]
+    fn parses_later_lines_and_topics_to_choose() {
+        let args = parse(&strings(&[
+            "Data",
+            "Cell",
+            "--run-at",
+            "40",
+            "SunnyREF.evp",
+            "--say",
+            "I'm in",
+            "--run-at",
+            "2.5",
+            "SetStage VCG02 30",
+            "--say",
+            "Sure",
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            args.run_at,
+            [
+                (40.0, "SunnyREF.evp".to_string()),
+                (2.5, "SetStage VCG02 30".to_string())
+            ]
+        );
+        assert_eq!(args.say, ["I'm in", "Sure"]);
+        assert!(parse(&strings(&["Data", "Cell", "--run-at", "soon", "x"]))
+            .unwrap_err()
+            .contains("--run-at"));
     }
 
     #[test]
