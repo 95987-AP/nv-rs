@@ -609,15 +609,17 @@ const BRING_IN_REACH: f32 = 2.5 * world::land::CELL_SIZE;
 
 /// People the game has taken into this place after it loaded (through a
 /// door, or by a script's `MoveTo`) come on screen: once a second, anyone
-/// the state has here (`world::ai::moved_into`) who isn't drawn yet is
-/// spawned, lit as the place is; outdoors, those within the loaded
-/// squares.
+/// the state has here (`world::ai::moved_into`), or whom a script enabled
+/// after their square loaded (`world::ai::enabled_since_load`), who isn't
+/// drawn yet is spawned, lit as the place is; outdoors, those within the
+/// loaded squares.
 fn bring_in_people(
     time: Res<Time>,
     game: Res<GameFiles>,
     state: Res<dialogue::DialogueState>,
     player: Res<walk::Player>,
     walkers: Query<&ai::Walker>,
+    exterior: Option<Res<exterior::Exterior>>,
     mut spawner: Spawner,
     mut last: Local<f32>,
 ) {
@@ -642,10 +644,19 @@ fn bring_in_people(
                     (p[0] - me[0]).hypot(p[1] - me[1]) <= BRING_IN_REACH
                 })
     };
-    let new: Vec<esm::FormId> = world::ai::moved_into(order, state, space)
+    // Also those the loaded squares left out as disabled whom a script
+    // has enabled since (an enable parent's `Enable`).
+    let enabled = exterior
+        .as_deref()
+        .map(|e| world::ai::enabled_since_load(order, state, space, &e.disabled_people()))
+        .unwrap_or_default();
+    let mut new: Vec<esm::FormId> = world::ai::moved_into(order, state, space)
         .into_iter()
+        .chain(enabled)
         .filter(|r| !shown.contains(r) && near(*r))
         .collect();
+    new.sort();
+    new.dedup();
     if new.is_empty() {
         return;
     }

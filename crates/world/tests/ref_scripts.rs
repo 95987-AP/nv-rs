@@ -158,6 +158,34 @@ fn disabled_objects_run_and_enabling_loads_them() {
 }
 
 #[test]
+fn people_left_out_as_disabled_come_in_once_enabled() {
+    // Ghost Town Gunfight: the Powder Gangers follow
+    // `GoodspringsPowderGangMarker`; a square loaded before the marker is
+    // enabled must still bring them in afterwards (`Enable`, 005c43d0).
+    let f = fixture("refscripts-enabled-people");
+    let mut state = GameState::new(&f.order);
+    let left_out = world::ai::disabled_people_in_square(&f.order, &f.grid, (0, 1), &state.disabled);
+    assert_eq!(left_out, [FormId(FOLLOWER_REF), FormId(LONE_REF)]);
+    let world = FormId(WORLD);
+    assert!(world::ai::enabled_since_load(&f.order, &state, world, &left_out).is_empty());
+    // The enable parent: its follower comes in.
+    state.disabled.insert(FormId(DISABLED_REF), false);
+    assert_eq!(
+        world::ai::enabled_since_load(&f.order, &state, world, &left_out),
+        [FormId(FOLLOWER_REF)]
+    );
+    // Enabled directly; the dead stay out.
+    state.disabled.insert(FormId(LONE_REF), false);
+    state.dead.insert(FormId(FOLLOWER_REF));
+    assert_eq!(
+        world::ai::enabled_since_load(&f.order, &state, world, &left_out),
+        [FormId(LONE_REF)]
+    );
+    // Only for the place they stand in.
+    assert!(world::ai::enabled_since_load(&f.order, &state, FormId(ROOM), &left_out).is_empty());
+}
+
+#[test]
 fn trigger_events_enter_then_trigger_then_leave() {
     let f = fixture("refscripts-trigger");
     let mut state = GameState::new(&f.order);

@@ -55,10 +55,18 @@ enum Square {
         doors: Vec<DoorData>,
         swing_doors: Vec<cellview::SwingDoor>,
         talkers: Vec<crate::dialogue::Talker>,
+        /// People it left out as disabled when it loaded
+        /// (`world::ai::disabled_people_in_square`), who come in once a
+        /// script enables them (`bring_in_people`).
+        disabled_people: Vec<esm::FormId>,
     },
 }
 
-type Finished = ((i32, i32), Result<Option<ViewerScene>, String>);
+type Finished = (
+    (i32, i32),
+    Result<Option<ViewerScene>, String>,
+    Vec<esm::FormId>,
+);
 
 /// Distant water (`water.rs`) is drawn from the level-4 chunks out to this
 /// many cells from the player: the game's `uGridDistantCount` (20 in
@@ -128,6 +136,20 @@ impl Exterior {
             .iter()
             .filter(|(_, s)| matches!(s, Square::Loaded { .. }))
             .map(|(at, _)| *at)
+            .collect()
+    }
+
+    /// The people the loaded squares left out as disabled when they loaded.
+    pub fn disabled_people(&self) -> Vec<esm::FormId> {
+        self.squares
+            .values()
+            .filter_map(|s| match s {
+                Square::Loaded {
+                    disabled_people, ..
+                } => Some(disabled_people.iter().copied()),
+                _ => None,
+            })
+            .flatten()
             .collect()
     }
 
@@ -237,6 +259,7 @@ pub fn stream_squares(
     mut cameras: Query<(&mut Transform, &mut FlyCamera, &mut ImageSpaceGrade)>,
     mut state: ResMut<crate::dialogue::DialogueState>,
     mut swing_doors: ResMut<crate::doors::SwingDoors>,
+    shown: Query<&crate::ai::Walker>,
 ) {
     let Some(mut exterior) = exterior else {
         return;
@@ -257,7 +280,7 @@ pub fn stream_squares(
         .lock()
         .map(|r| r.try_iter().collect())
         .unwrap_or_default();
-    for (square, result) in finished {
+    for (square, result, disabled_people) in finished {
         let far = (square.0 - here.0).abs().max((square.1 - here.1).abs()) > KEEP_RADIUS;
         let state = match result {
             Ok(Some(scene)) if !far => {
@@ -339,6 +362,7 @@ pub fn stream_squares(
                     collision: Box::new(scene.collision),
                     doors: scene.doors,
                     swing_doors: scene.swing_doors,
+                    disabled_people,
                 }
             }
             Ok(_) => Square::Empty,
@@ -404,11 +428,16 @@ pub fn stream_squares(
         let game = Arc::clone(&game.0);
         let grid = Arc::clone(&exterior.grid);
         let sender = exterior.sender.clone();
-        // What scripts have enabled and disabled, as it is now.
-        let disabled = state.0.disabled.clone();
+        // What scripts have enabled and disabled, as it is now; people
+        // already on screen (brought in after their square loaded,
+        // `bring_in_people`) are not drawn a second time.
+        let mut disabled = state.0.disabled.clone();
+        disabled.extend(shown.iter().map(|w| (w.reference, true)));
         std::thread::spawn(move || {
             let result = load_square(&game, &grid, square, &disabled);
-            let _ = sender.send((square, result));
+            let people =
+                world::ai::disabled_people_in_square(&game.order, &grid, square, &disabled);
+            let _ = sender.send((square, result, people));
         });
     }
 
