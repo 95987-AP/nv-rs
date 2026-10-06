@@ -755,6 +755,8 @@ mod tests {
                 name: name.into(),
                 node: node.into(),
                 target: node.into(),
+                ik_start: None,
+                tracking_max_angle: 0.0,
                 damage_mult: 1.0,
                 flags: 0,
                 part_type: kind,
