@@ -1016,6 +1016,41 @@ pub struct NavMesh {
     /// triangle (indices into `triangles`). Someone walking onto one
     /// opens the door if it's shut (`world::doors`, `009e20c0`).
     pub door_portals: HashMap<usize, FormId>,
+    /// Which triangles lie over each square of a grid, for finding the one
+    /// a point stands on without looking at all of them; made the first
+    /// time it's asked for.
+    pub index: TriangleIndex,
+}
+
+/// What's worked out once from a mesh, the first time it's asked for (a
+/// cache of the mesh: never compared): the triangles by the squares of a
+/// grid ([`GRID_SQUARE`] units across) their outline overlaps, seen from
+/// above (grown by [`GRID_MARGIN`], as [`height_in`] takes points a hair
+/// outside a triangle), each square's in the mesh's order; and each
+/// triangle's island, the triangles joined to it through their neighbours
+/// (no path leaves one).
+#[derive(Debug, Clone, Default)]
+pub struct TriangleIndex(
+    std::sync::OnceLock<HashMap<(i32, i32), Vec<usize>>>,
+    std::sync::OnceLock<Vec<usize>>,
+);
+
+impl PartialEq for TriangleIndex {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+/// The index's squares, in game units.
+const GRID_SQUARE: f32 = 256.0;
+/// How far past a triangle's outline it's indexed.
+const GRID_MARGIN: f32 = 1.0;
+
+fn grid_square(x: f32, y: f32) -> (i32, i32) {
+    (
+        (x / GRID_SQUARE).floor() as i32,
+        (y / GRID_SQUARE).floor() as i32,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1162,6 +1197,65 @@ impl NavMesh {
         self.vertices[self.triangles[t].vertices[i % 3]]
     }
 
+    /// The triangles over each grid square ([`TriangleIndex`]).
+    fn index(&self) -> &HashMap<(i32, i32), Vec<usize>> {
+        self.index.0.get_or_init(|| {
+            let mut squares: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+            for t in 0..self.triangles.len() {
+                let [a, b, c] = [0, 1, 2].map(|i| self.corner(t, i));
+                let lo = grid_square(
+                    a[0].min(b[0]).min(c[0]) - GRID_MARGIN,
+                    a[1].min(b[1]).min(c[1]) - GRID_MARGIN,
+                );
+                let hi = grid_square(
+                    a[0].max(b[0]).max(c[0]) + GRID_MARGIN,
+                    a[1].max(b[1]).max(c[1]) + GRID_MARGIN,
+                );
+                for x in lo.0..=hi.0 {
+                    for y in lo.1..=hi.1 {
+                        squares.entry((x, y)).or_default().push(t);
+                    }
+                }
+            }
+            squares
+        })
+    }
+
+    /// Each triangle's island ([`TriangleIndex`]): the lowest triangle
+    /// joined to it.
+    fn islands(&self) -> &[usize] {
+        self.index.1.get_or_init(|| {
+            let mut parent: Vec<usize> = (0..self.triangles.len()).collect();
+            fn root(parent: &mut [usize], mut t: usize) -> usize {
+                while parent[t] != t {
+                    parent[t] = parent[parent[t]];
+                    t = parent[t];
+                }
+                t
+            }
+            for t in 0..self.triangles.len() {
+                for n in self.triangles[t].neighbors.into_iter().flatten() {
+                    if n >= parent.len() {
+                        continue;
+                    }
+                    let (a, b) = (root(&mut parent, t), root(&mut parent, n));
+                    if a != b {
+                        parent[a.max(b)] = a.min(b);
+                    }
+                }
+            }
+            (0..self.triangles.len())
+                .map(|t| root(&mut parent, t))
+                .collect()
+        })
+    }
+
+    /// Whether a path could join two triangles (the same island).
+    fn joined(&self, a: usize, b: usize) -> bool {
+        let islands = self.islands();
+        islands.get(a) == islands.get(b)
+    }
+
     fn centroid(&self, t: usize) -> [f32; 3] {
         let [a, b, c] = [0, 1, 2].map(|i| self.corner(t, i));
         [0, 1, 2].map(|k| (a[k] + b[k] + c[k]) / 3.0)
@@ -1187,7 +1281,9 @@ impl NavMesh {
     /// holds it, nearest in height; else the one whose middle is nearest.
     pub fn triangle_at(&self, p: [f32; 3]) -> Option<usize> {
         let mut best: Option<(f32, usize)> = None;
-        for t in 0..self.triangles.len() {
+        // Only those over the point's grid square can hold it.
+        let under = self.index().get(&grid_square(p[0], p[1]));
+        for &t in under.into_iter().flatten() {
             let [a, b, c] = [0, 1, 2].map(|i| self.corner(t, i));
             if let Some(z) = height_in(a, b, c, p) {
                 let dz = (z - p[2]).abs();
@@ -1225,6 +1321,11 @@ impl NavMesh {
     ) -> Option<(Vec<[f32; 3]>, Vec<(FormId, [f32; 3])>)> {
         let start = self.triangle_near(from)?;
         let goal = self.triangle_near(to)?;
+        // Different islands: no path (the search would look at every
+        // triangle of the first before giving up).
+        if !self.joined(start, goal) {
+            return None;
+        }
         let doors_on = |triangles: &[usize]| -> Vec<(FormId, [f32; 3])> {
             triangles
                 .iter()
@@ -1257,6 +1358,9 @@ impl NavMesh {
     ) -> Option<Vec<[f32; 3]>> {
         let start = self.triangle_near(from)?;
         let goal = self.triangle_near(to)?;
+        if !self.joined(start, goal) {
+            return None;
+        }
         let corridor = self.corridor(start, goal, avoid)?;
         Some(self.funnel(from, to, &corridor))
     }
@@ -1539,6 +1643,7 @@ mod tests {
             ],
             // A door across square C's first triangle.
             door_portals: HashMap::from([(4, FormId(0x904))]),
+            index: TriangleIndex::default(),
         }
     }
 
@@ -1587,6 +1692,65 @@ mod tests {
     /// Four squares of 100, two by two, each as two triangles: from the
     /// bottom left to the top right by the bottom right (triangles 3, 6) or
     /// by the top left (1, 4).
+    /// A triangle on its own (an island) is out of reach; the corridor's
+    /// own ends still join.
+    #[test]
+    fn islands_have_no_paths_between_them() {
+        let mut mesh = corridor_mesh();
+        let first = mesh.vertices.len();
+        mesh.vertices
+            .extend([[1000.0, 0.0, 0.0], [1100.0, 0.0, 0.0], [1000.0, 100.0, 0.0]]);
+        mesh.triangles.push(NavTriangle {
+            vertices: [first, first + 1, first + 2],
+            neighbors: [None; 3],
+        });
+        assert!(mesh.path([20.0, 50.0, 0.0], [1030.0, 30.0, 0.0]).is_none());
+        assert!(mesh.path([20.0, 50.0, 0.0], [150.0, 250.0, 0.0]).is_some());
+        let islands = mesh.islands();
+        assert_eq!(islands[0], islands[1]);
+        assert_ne!(islands[0], islands[mesh.triangles.len() - 1]);
+    }
+
+    /// The grid finds the triangle that looking at every one finds: on,
+    /// between, above and off the mesh.
+    #[test]
+    fn the_grid_finds_what_looking_at_every_triangle_finds() {
+        for mesh in [corridor_mesh(), four_squares()] {
+            let every = |p: [f32; 3]| {
+                let mut best: Option<(f32, usize)> = None;
+                for t in 0..mesh.triangles.len() {
+                    let [a, b, c] = [0, 1, 2].map(|i| mesh.corner(t, i));
+                    if let Some(z) = height_in(a, b, c, p) {
+                        let dz = (z - p[2]).abs();
+                        if best.map_or(true, |(d, _)| dz < d) {
+                            best = Some((dz, t));
+                        }
+                    }
+                }
+                if let Some((dz, t)) = best {
+                    if dz < 200.0 {
+                        return Some(t);
+                    }
+                }
+                (0..mesh.triangles.len()).min_by(|&x, &y| {
+                    distance2(mesh.centroid(x), p).total_cmp(&distance2(mesh.centroid(y), p))
+                })
+            };
+            for x in (-120..=520).step_by(7) {
+                for y in (-120..=520).step_by(9) {
+                    for z in [0.0, 150.0, 400.0] {
+                        let p = [x as f32, y as f32, z];
+                        assert_eq!(mesh.triangle_at(p), every(p), "{p:?}");
+                    }
+                }
+            }
+            // On the corners and edges themselves.
+            for v in &mesh.vertices {
+                assert_eq!(mesh.triangle_at(*v), every(*v));
+            }
+        }
+    }
+
     fn four_squares() -> NavMesh {
         let mut vertices = Vec::new();
         for y in 0..3 {
@@ -1611,6 +1775,7 @@ mod tests {
                 t([4, 8, 7], [Some(6), None, Some(4)]),
             ],
             door_portals: HashMap::new(),
+            index: TriangleIndex::default(),
         }
     }
 

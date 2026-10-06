@@ -61,7 +61,9 @@ pub struct GameLighting {
     /// The surface's own glow; `w` is 1 when the glow map masks it.
     pub emissive: Vec4,
     /// `x`: the luminance shown at full brightness at the starting
-    /// exposure; `y`: how many of `lights` are used.
+    /// exposure; `y`: how many of `lights` are used; `z`: 1 when the
+    /// ambient, the sun and the fog are the hour's light outdoors, shared
+    /// by every surface (`crate::shared_light`), not these fields.
     pub scale: Vec4,
     /// The fog's color as stored (0..1), and its power in `w`.
     pub fog_color: Vec4,
@@ -188,6 +190,10 @@ pub struct GameLit {
     #[texture(107)]
     #[sampler(108)]
     pub environment_mask: Option<Handle<Image>>,
+    /// The hour's light outdoors (`crate::shared_light::BUFFER`), read
+    /// when `lighting.scale.z` is 1.
+    #[storage(109, read_only)]
+    pub shared: Handle<bevy::render::storage::ShaderStorageBuffer>,
 }
 
 impl MaterialExtension for GameLit {

@@ -39,6 +39,18 @@ pub struct Seats {
     markers: HashMap<FormId, Arc<Vec<nif::FurnitureMarker>>>,
     marker_settings: HashMap<u8, MarkerSettings>,
     pub sandbox: sandbox::Settings,
+    /// Each cell's references a sandbox could use ([`Seats::candidates`]).
+    candidates: HashMap<FormId, Arc<Vec<Usable>>>,
+}
+
+/// A reference placed in a cell that a sandbox could use, as its records
+/// have it (none of which changes): its kind, and whether a child may use
+/// it.
+#[derive(Debug, Clone, Copy)]
+struct Usable {
+    reference: FormId,
+    kind: Kind,
+    child_can_use: bool,
 }
 
 impl Seats {
@@ -50,7 +62,35 @@ impl Seats {
             markers: HashMap::new(),
             marker_settings: HashMap::new(),
             sandbox: sandbox::Settings::read(order),
+            candidates: HashMap::new(),
         }
+    }
+
+    /// A cell's references a sandbox could use (a kind, not marked
+    /// ignored), read from their records once: the scan otherwise reads
+    /// thousands of records each time someone in a sandbox looks around.
+    fn candidates(&mut self, order: &LoadOrder, cell: FormId) -> Arc<Vec<Usable>> {
+        self.candidates
+            .entry(cell)
+            .or_insert_with(|| {
+                Arc::new(
+                    order
+                        .references_in_cell(cell)
+                        .into_iter()
+                        .filter(|rr| !rr.entry.header.is_deleted())
+                        .map(|rr| rr.form_id)
+                        .filter(|&r| !sandbox::ignored(order, r))
+                        .filter_map(|r| {
+                            Some(Usable {
+                                reference: r,
+                                kind: sandbox::kind_of(order, r)?,
+                                child_can_use: sandbox::child_can_use(order, r),
+                            })
+                        })
+                        .collect(),
+                )
+            })
+            .clone()
     }
 
     /// An animation (a `.kf` under `meshes\`), read once.
@@ -811,27 +851,32 @@ fn nearby_list(ctx: &mut Ctx, walker: &Walker, life: &Life) -> (Vec<Nearby>, boo
     let Some((space, cell, _, _)) = ctx.state.place(order, me) else {
         return (Vec::new(), false);
     };
-    let mut refs: Vec<FormId> = order
-        .references_in_cell(cell)
-        .into_iter()
-        .filter(|rr| !rr.entry.header.is_deleted())
-        .map(|rr| rr.form_id)
-        .collect();
-    refs.extend(world::ai::moved_into(order, ctx.state, space));
     let child = world::idles::is_child(order, me);
+    // The cell's own (what their records say read once), then those
+    // brought there.
+    let mut refs: Vec<(FormId, Kind)> = ctx
+        .seats
+        .candidates(order, cell)
+        .iter()
+        .filter(|c| !child || c.child_can_use)
+        .map(|c| (c.reference, c.kind))
+        .collect();
+    for r in world::ai::moved_into(order, ctx.state, space) {
+        if sandbox::ignored(order, r) || (child && !sandbox::child_can_use(order, r)) {
+            continue;
+        }
+        if let Some(kind) = sandbox::kind_of(order, r) {
+            refs.push((r, kind));
+        }
+    }
     let mut out = Vec::new();
-    for r in refs {
+    for (r, kind) in refs {
         if r == me
             || ctx.state.dead.contains(&r)
             || !world::enabled_now(order, r, &ctx.state.disabled)
-            || sandbox::ignored(order, r)
-            || (child && !sandbox::child_can_use(order, r))
         {
             continue;
         }
-        let Some(kind) = sandbox::kind_of(order, r) else {
-            continue;
-        };
         let Some((there, _, position, _)) = ctx.state.place(order, r) else {
             continue;
         };

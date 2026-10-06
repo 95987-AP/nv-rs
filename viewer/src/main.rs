@@ -35,6 +35,7 @@ mod pipboy;
 mod player_idle;
 mod report;
 mod scripts;
+mod shared_light;
 mod sitting;
 mod sounds;
 mod terrain;
@@ -62,7 +63,7 @@ use bevy::render::render_resource::{
 };
 use bevy::render::renderer::RenderDevice;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
-use bevy::window::WindowResolution;
+use bevy::window::{CursorGrabMode, PrimaryWindow, WindowResolution};
 use cellview::{space, Blend, Game, GpuFormat, TextureData, ViewerScene};
 use exterior::{ExteriorStart, PendingExterior};
 use grade::{GradePlugin, ImageSpaceGrade};
@@ -246,6 +247,7 @@ fn main() {
         })
         .insert_resource(game_menus::FixedKeys(args.menu_keys.clone()))
         .add_plugins((GradePlugin, GameLightingPlugin, TerrainPlugin, LodPlugin))
+        .add_plugins(shared_light::SharedLightPlugin)
         // After the default plugins: they load shaders.
         .add_plugins((hud::HudPlugin, pipboy::PipboyPlugin))
         .add_plugins(game_menus::GameMenusPlugin)
@@ -293,6 +295,7 @@ fn main() {
                     vats::run_vats,
                     vats::scale_target_time,
                     lockpick::pick_locks,
+                    capture_mouse,
                     look_around,
                 )
                     .chain(),
@@ -1478,6 +1481,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -1590,6 +1594,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -1669,6 +1674,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -1734,6 +1740,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -1819,12 +1826,14 @@ fn srgb_decode(c: f32) -> f32 {
     }
 }
 
-/// `--fps`: frames counted, and the time since the last report.
+/// `--fps`: frames counted, the time since the last report and the
+/// longest frame in it (a hitch).
 #[derive(Resource, Default)]
 struct FrameCounter {
     on: bool,
     frames: u32,
     seconds: f32,
+    longest: f32,
 }
 
 fn report_fps(time: Res<Time>, mut counter: ResMut<FrameCounter>) {
@@ -1833,14 +1842,17 @@ fn report_fps(time: Res<Time>, mut counter: ResMut<FrameCounter>) {
     }
     counter.frames += 1;
     counter.seconds += time.delta_secs();
+    counter.longest = counter.longest.max(time.delta_secs());
     if counter.seconds >= 2.0 {
         println!(
-            "{:.0} frames per second ({:.1} ms a frame)",
+            "{:.0} frames per second ({:.1} ms a frame, longest {:.1} ms)",
             counter.frames as f32 / counter.seconds,
-            1000.0 * counter.seconds / counter.frames as f32
+            1000.0 * counter.seconds / counter.frames as f32,
+            1000.0 * counter.longest
         );
         counter.frames = 0;
         counter.seconds = 0.0;
+        counter.longest = 0.0;
     }
 }
 
@@ -1991,6 +2003,7 @@ fn lit_material(
             _ => 0.0,
         };
         GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 emissive: Vec4::new(ur, ug, ub, 0.0),
                 surface: Vec4::new(0.0, 0.0, 1.0, fog_mode),
@@ -2024,6 +2037,7 @@ fn lit_material(
             .and_then(|(e, _)| e.mask)
             .and_then(|i| textures[i].clone());
         GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 emissive: Vec4::new(er, eg, eb, flag(glow.is_some())),
                 specular,
@@ -2148,12 +2162,12 @@ fn spawn_scene(
 
 fn help_text(ev100: f32, speed: f32, walking: bool) -> String {
     let moving = if walking {
-        "Walking: hold the right mouse button to look, left to attack (R reloads); WASD, \
+        "Walking: the mouse looks, left button attacks (R reloads); WASD, \
          Shift to walk slowly, Ctrl to sneak, Space to jump, E to use things"
             .to_string()
     } else {
         format!(
-            "Flying: hold a mouse button to look; WASD, Space/Ctrl up/down, Shift faster, \
+            "Flying: the mouse looks; WASD, Space/Ctrl up/down, Shift faster, \
              wheel: speed ({speed:.1} m/s), E to use things"
         )
     };
@@ -2181,13 +2195,52 @@ fn update_help(
     }
 }
 
-/// Holding a mouse button turns the view, walking or flying.
+/// While playing (no menu, Pip-Boy, conversation or lockpicking up:
+/// `walk::Player::ready`; not in V.A.T.S.) with the window in front, the
+/// mouse is the view's, as in the game: the pointer hidden and kept in
+/// the window (confined and put back in the middle each frame, since
+/// Windows can't lock it), its movement turning the view with no button
+/// held. Otherwise the pointer is free for the menus.
+fn capture_mouse(
+    player: Res<walk::Player>,
+    vats: Res<vats::Vats>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+) {
+    let Ok(mut window) = windows.single_mut() else {
+        return;
+    };
+    let want = player.ready && !vats.is_on() && window.focused;
+    let grabbed = window.cursor_options.grab_mode != CursorGrabMode::None;
+    if want != grabbed {
+        window.cursor_options.grab_mode = if want {
+            if cfg!(target_os = "windows") {
+                CursorGrabMode::Confined
+            } else {
+                CursorGrabMode::Locked
+            }
+        } else {
+            CursorGrabMode::None
+        };
+        window.cursor_options.visible = !want;
+    }
+    if want {
+        let middle = Vec2::new(window.width(), window.height()) / 2.0;
+        if window.cursor_position() != Some(middle) {
+            window.set_cursor_position(Some(middle));
+        }
+    }
+}
+
+/// The mouse turns the view while it's captured (`capture_mouse`); else
+/// holding a button does (the right one walking, either flying).
+#[allow(clippy::too_many_arguments)]
 fn look_around(
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     state: Res<dialogue::DialogueState>,
     player: Res<walk::Player>,
     start_stage: Res<scripts::StartStage>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     mut cameras: Query<(&mut Transform, &mut FlyCamera)>,
 ) {
     let Ok((mut transform, mut camera)) = cameras.single_mut() else {
@@ -2201,8 +2254,12 @@ fn look_around(
     // lock (005cc4f0 -> 005cc7a0), or while the place is still loading.
     let locked = player.walking
         && (!player.ready || start_stage.0.is_some() || state.0.player_looking_blocked());
-    let held =
-        mouse.pressed(MouseButton::Right) || (!player.walking && mouse.pressed(MouseButton::Left));
+    let captured = windows
+        .single()
+        .is_ok_and(|w| w.cursor_options.grab_mode != CursorGrabMode::None);
+    let held = captured
+        || mouse.pressed(MouseButton::Right)
+        || (!player.walking && mouse.pressed(MouseButton::Left));
     if !locked && held {
         camera.yaw -= motion.delta.x * LOOK_SPEED;
         camera.pitch = (camera.pitch - motion.delta.y * LOOK_SPEED).clamp(-1.54, 1.54);

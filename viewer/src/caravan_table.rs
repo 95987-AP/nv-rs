@@ -428,6 +428,7 @@ fn spawn_pieces(
                 Transform::IDENTITY,
                 Visibility::Hidden,
                 RenderLayers::layer(TABLE_LAYER),
+                crate::shared_light::MenuLit,
                 TablePiece {
                     part,
                     money,

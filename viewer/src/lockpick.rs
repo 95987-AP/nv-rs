@@ -1041,6 +1041,7 @@ fn show_lockpicking(
                             MeshMaterial3d(material),
                             Transform::IDENTITY,
                             RenderLayers::layer(LOCK_LAYER),
+                            crate::shared_light::MenuLit,
                             LockPiece {
                                 reference: draw.reference,
                                 mesh: draw.mesh,
