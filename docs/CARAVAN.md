@@ -232,7 +232,8 @@ reads the table's models; the viewer runs the menu
 the effects on the table, the cards written back, the stake paid) and draws
 the table (`viewer/src/caravan_table.rs`). Seen live against Ringo with his
 deck: the ante with its money, the deck screen, the deal and the start of a
-game. Checks: `world::caravan::tests`,
+game, the quit box (Yes: lost for the stake, 4 caps paid to Ringo), the
+results back at the betting camera ("Losses to Date: 4", "0/1"). Checks: `world::caravan::tests`,
 `world::caravan::ai::tests` (39 whole games each end),
 `world::caravan::menu::tests` (40 whole games through the menu, every
 state reached), `world::caravan::money::tests`,

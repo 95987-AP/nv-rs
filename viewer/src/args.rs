@@ -95,7 +95,7 @@ OPTIONS:
                             --menu-pointer)
     --menu-keys S:K[,S:K...]
                             for testing: type key K (a character, or
-                            left, right, up, down) into the top menu at
+                            left, right, up, down, enter) into the top menu at
                             S seconds after starting
 
 CONTROLS:

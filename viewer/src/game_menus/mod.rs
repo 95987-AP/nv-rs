@@ -811,6 +811,7 @@ fn run_open_menus(
                 "right" => Some(ui::menu::key::RIGHT),
                 "up" => Some(ui::menu::key::UP),
                 "down" => Some(ui::menu::key::DOWN),
+                "enter" => Some(ui::menu::key::ENTER),
                 _ => k.chars().next().map(|c| c as u32),
             };
             if let Some(code) = code {
