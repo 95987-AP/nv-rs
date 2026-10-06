@@ -460,6 +460,35 @@ fn place_at_me_makes_references() {
     assert_eq!(back.more.placed.next, state.more.placed.next);
 }
 
+/// The Pip-Boy's Drop (`00780c50`, `009614b0`): the items leave the
+/// inventory and lie `fPlayerDropDistance` (plus their size) in front of
+/// the player as one reference keeping the count, kept in a save.
+#[test]
+fn the_player_drops_items_in_front() {
+    let (_data, order) = order("more-drop");
+    let mut state = new_game(&order);
+    state.stock(&order, PLAYER_REF);
+    state.items.insert((PLAYER_REF, FormId(CUP)), 5);
+    let r = more::placed::drop_item(&order, &mut state, FormId(CUP), 3).unwrap();
+    assert_eq!(state.item_count(&order, PLAYER_REF, FormId(CUP)), 2);
+    let made = state.more.placed.refs[&r];
+    assert_eq!((made.base, made.count), (FormId(CUP), 3));
+    let heading = state.place(&order, PLAYER_REF).unwrap().3;
+    let (dx, dy) = (made.position[0], made.position[1] - 100.0);
+    assert!((dx * heading.cos() - dy * heading.sin()).abs() < 1e-3);
+    assert!((dx.hypot(dy) - more::placed::DROP_DISTANCE).abs() < 50.0);
+    assert!(state
+        .events
+        .contains(&Event::More(Shown::Placed { reference: r })));
+    // All the rest: none left; nothing more to drop.
+    more::placed::drop_item(&order, &mut state, FormId(CUP), 10).unwrap();
+    assert_eq!(state.item_count(&order, PLAYER_REF, FormId(CUP)), 0);
+    assert!(more::placed::drop_item(&order, &mut state, FormId(CUP), 1).is_none());
+    let saved = world::save::save(&state, None);
+    let (back, _) = world::save::load(&saved).unwrap();
+    assert_eq!(back.more.placed.refs, state.more.placed.refs);
+}
+
 #[test]
 fn objects_break_in_stages() {
     let (_data, order) = order("more-dest");

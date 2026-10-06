@@ -41,6 +41,9 @@ pub struct Made {
     /// Radians, as a placed reference's `DATA` (the caller's turn,
     /// `005c4b30` hands the caller's rotation, ref+0x24, to the new one).
     pub rotation: [f32; 3],
+    /// How many of the base it stands for: an item the player dropped
+    /// keeps its count (the game's `ExtraCount`); 1 otherwise.
+    pub count: i32,
 }
 
 /// The references made so far.
@@ -126,6 +129,7 @@ fn make(
             cell: at.1,
             position: p,
             rotation: r,
+            count: 1,
         },
     );
     runner
@@ -250,6 +254,86 @@ pub fn place_leveled_actor(runner: &mut Runner, caller: FormId, actor: FormId) -
     Some(make(runner, actor, (space, cell), position, rotation))
 }
 
+/// `fPlayerDropDistance` (`011d0628`): how far in front of the player a
+/// dropped item goes, beyond its own size.
+pub const DROP_DISTANCE: f32 = 100.0;
+
+/// An item's size for dropping: half its bounds' (`OBND`) diagonal, a
+/// stand-in for the bound radius `009614b0` takes (`0050ebf0`, not
+/// traced); 0 without bounds.
+fn drop_radius(order: &LoadOrder, item: FormId) -> f32 {
+    let Some(record) = order.get(item).and_then(|r| r.record().ok()) else {
+        return 0.0;
+    };
+    let Some(s) = record
+        .get(FourCC::new(b"OBND"))
+        .filter(|s| s.data.len() >= 12)
+    else {
+        return 0.0;
+    };
+    let v = |i: usize| f32::from(i16::from_le_bytes([s.data[i * 2], s.data[i * 2 + 1]]));
+    let d = [v(3) - v(0), v(4) - v(1), v(5) - v(2)];
+    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() / 2.0
+}
+
+/// The player drops `count` of an item they carry (`00780c50` →
+/// `PlayerCharacter` slot 0x3cc): they're taken out of the inventory
+/// (taken off when none is left on) and lie in the world as one
+/// reference keeping the count, turned as the player. Where: the
+/// player's place plus their facing × (the item's size +
+/// `fPlayerDropDistance`), the branch of `009614b0` that finds room at
+/// once; the game also casts the item's shape there and tries ten
+/// headings round the player, turning each drop on from the last, and
+/// lets physics drop it: none of that here (the world has no collision).
+/// Returns the new reference, or none when nothing was carried.
+pub fn drop_item(
+    order: &LoadOrder,
+    state: &mut GameState,
+    item: FormId,
+    count: i32,
+) -> Option<FormId> {
+    let (space, cell, position, heading) = state.place(order, PLAYER_REF)?;
+    let moved = {
+        state.stock(order, PLAYER_REF);
+        let have = state.item_count(order, PLAYER_REF, item);
+        let n = count.min(have).max(0);
+        if n == 0 {
+            return None;
+        }
+        if have == n {
+            state.items.remove(&(PLAYER_REF, item));
+            if state.is_equipped(PLAYER_REF, item) {
+                state.unequip(PLAYER_REF, item);
+            }
+        } else {
+            state.items.insert((PLAYER_REF, item), have - n);
+        }
+        n
+    };
+    let distance = drop_radius(order, item) + DROP_DISTANCE;
+    let spot = [
+        position[0] + distance * heading.sin(),
+        position[1] + distance * heading.cos(),
+        position[2],
+    ];
+    let id = state.more.placed.new_id();
+    state.more.placed.refs.insert(
+        id,
+        Made {
+            base: item,
+            space,
+            cell,
+            position: spot,
+            rotation: [0.0, 0.0, heading],
+            count: moved,
+        },
+    );
+    state
+        .events
+        .push(Event::More(super::Shown::Placed { reference: id }));
+    Some(id)
+}
+
 /// Saved lines.
 pub(crate) fn save_lines(state: &GameState, line: &mut dyn FnMut(String)) {
     let p = &state.more.placed;
@@ -257,8 +341,14 @@ pub(crate) fn save_lines(state: &GameState, line: &mut dyn FnMut(String)) {
         line(format!("madenext {}", p.next));
     }
     for (id, m) in &p.refs {
+        // The count only when it isn't 1 (older saves have none).
+        let count = if m.count == 1 {
+            String::new()
+        } else {
+            format!(" {}", m.count)
+        };
         line(format!(
-            "made {:08X} {:08X} {:08X} {:08X} {} {} {} {} {} {}",
+            "made {:08X} {:08X} {:08X} {:08X} {} {} {} {} {} {}{count}",
             id.0,
             m.base.0,
             m.space.0,
@@ -299,6 +389,10 @@ pub(crate) fn load_line(state: &mut GameState, parts: &[&str]) -> Option<Result<
                     cell: form(4)?,
                     position: [num(5)?, num(6)?, num(7)?],
                     rotation: [num(8)?, num(9)?, num(10)?],
+                    count: match parts.get(11) {
+                        Some(s) => s.parse().ok()?,
+                        None => 1,
+                    },
                 };
                 state.more.placed.refs.insert(form(1)?, m);
                 Some(())

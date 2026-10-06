@@ -176,6 +176,20 @@ arm's field-of-view scale is fixed. Traced and unit-tested, not compared
 with the original game; gaps in [PIPBOY.md](PIPBOY.md). **Next action:**
 live comparison of the mouse paths in the original game.
 
+Pip-Boy live batch, 2026-10-06 (`claude/m2-pipboy-live`): driving the
+release viewer with injected Windows input showed no Pip-Boy click ever
+completed (the buttons were cleared every frame, so no release was seen);
+fixed by reading the button events. Added, traced: the fast-travel
+question, the player's own map marker (right button, set/move/remove
+questions, saved), world-map zoom (wheel, Page Up/Down), the world map's
+picture border for markers, ITEMS Drop (right button, quest-item refusal,
+"how many?"), the keyring, ITEMS' button states, STATS healing mode (a
+Stimpak aimed at a limb, `0082b970`), boxes over the Pip-Boy taking the
+input. Each verified live in the viewer; none compared with the original
+game. Gaps (Repair/Mod menus, hot keys, local map, radio, the light):
+[PIPBOY.md](PIPBOY.md). **Next action:** compare these paths in the
+original game, then the Repair menu.
+
 Dialogue batch, 2026-10-06 (`claude/m1-dialogue`): Doc's farewell at the
 front door could not be left because line follow-ups (`TCFU`) were not
 read. Follow-ups, Goodbye states, random runs and Intelligence classes are

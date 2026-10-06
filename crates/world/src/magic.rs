@@ -46,6 +46,7 @@ pub mod archetype {
     pub const VALUE_MODIFIER: u32 = 0;
     pub const SCRIPT: u32 = 1;
     pub const VALUE_AND_PARTS: u32 = 34;
+    pub const LIMB_CONDITION: u32 = 35;
 }
 
 /// Actor values that count up as they're damaged: radiation (54), and
@@ -77,6 +78,11 @@ pub struct ActiveEffect {
     /// script's variables.
     pub started: bool,
     pub locals: Locals,
+    /// The body part condition (actor value 25 ..) a "value and parts" or
+    /// "limb condition" effect is aimed at (the effect's `+0x4c`), set as
+    /// it's added while the Pip-Boy's STATS healing mode aims at a limb
+    /// (`00823210` → `00589f50`, [`GameState::healing_part`]); -1 none.
+    pub part: i32,
 }
 
 impl ActiveEffect {
@@ -208,12 +214,14 @@ pub fn change(
     false
 }
 
-/// An effect changes its value by `amount`; a "value and parts" one
-/// (archetype 34, the Stimpak's "Restore Health & Conditions") also every
-/// body part condition (actor values 25–31) by `amount` ×
-/// `fMagicVACNoPartTargetedMult` (0.1, the exe's default; `0082b970`,
-/// when it isn't aimed at one part from the Pip-Boy, which isn't done).
-/// Whether it killed them.
+/// An effect changes its value by `amount`. A "value and parts" one
+/// (archetype 34, the Stimpak's "Restore Health & Conditions"): aimed at
+/// no part, its value by `amount` and every body part condition (actor
+/// values 25–31) by `amount` × `fMagicVACNoPartTargetedMult`; aimed at
+/// one (the Pip-Boy's healing mode), that part by `amount` and its value
+/// by `amount` × `fMagicVACPartTargetedMult` (both 0.1, the exe's
+/// defaults). Translated from 0082b970 (decompiled, FalloutNV.exe
+/// 1.4.0.525). Whether it killed them.
 fn change_with_parts(
     order: &LoadOrder,
     state: &mut GameState,
@@ -221,21 +229,21 @@ fn change_with_parts(
     amount: f64,
     by: FormId,
 ) -> bool {
-    let died = change(
-        order,
-        state,
-        effect.target,
-        effect.actor_value as u16,
-        amount,
-        by,
-    );
-    if effect.archetype == archetype::VALUE_AND_PARTS {
-        let share = f64::from(
-            crate::scripting::game_setting(order, "fMagicVACNoPartTargetedMult").unwrap_or(0.1),
-        );
-        for part in crate::body_parts::av::FIRST_CONDITION..=crate::body_parts::av::LAST_CONDITION {
-            change(order, state, effect.target, part, amount * share, by);
-        }
+    let setting =
+        |name: &str| f64::from(crate::scripting::game_setting(order, name).unwrap_or(0.1));
+    let own = effect.actor_value as u16;
+    if effect.archetype != archetype::VALUE_AND_PARTS {
+        return change(order, state, effect.target, own, amount, by);
+    }
+    if effect.part >= 0 {
+        let share = setting("fMagicVACPartTargetedMult");
+        change(order, state, effect.target, effect.part as u16, amount, by);
+        return change(order, state, effect.target, own, amount * share, by);
+    }
+    let died = change(order, state, effect.target, own, amount, by);
+    let share = setting("fMagicVACNoPartTargetedMult");
+    for part in crate::body_parts::av::FIRST_CONDITION..=crate::body_parts::av::LAST_CONDITION {
+        change(order, state, effect.target, part, amount * share, by);
     }
     died
 }
@@ -307,6 +315,14 @@ pub fn apply(
             remaining: if held { f32::INFINITY } else { duration },
             started: false,
             locals: Locals::default(),
+            // Aimed at the limb the Pip-Boy's healing mode targets
+            // (`00823210`: archetypes 0x22 and 0x23).
+            part: match e.archetype {
+                archetype::VALUE_AND_PARTS | archetype::LIMB_CONDITION => {
+                    state.healing_part.map_or(-1, i32::from)
+                }
+                _ => -1,
+            },
         };
         if active.detrimental && active.resist >= 0 {
             let resisted = Facts {

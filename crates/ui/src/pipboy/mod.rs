@@ -106,6 +106,8 @@ pub struct ItemLine {
     /// 0x08), 2 heavy (0x80).
     pub weight_class: Option<u8>,
     pub effects: Option<String>,
+    /// Repair can be pressed for it (`00781860`).
+    pub repairable: bool,
 }
 
 /// A quest in the DATA menu.
@@ -148,6 +150,11 @@ pub struct WorldMapLine {
     pub size: [f32; 2],
     pub markers: Vec<MarkerLine>,
     pub player: Option<([f32; 2], f32)>,
+    /// The north-west and south-east corners (game units) the picture
+    /// spans (`MNAM`'s cells), for turning a point back into a place.
+    pub corners: [[f32; 2]; 2],
+    /// The player's own marker on the picture, when in this worldspace.
+    pub custom: Option<[f32; 2]>,
 }
 
 /// What the Pip-Boy shows, from the game's state.
@@ -188,6 +195,8 @@ pub struct PipboyInput {
     pub karma_title: String,
     pub reputations: Vec<ReputationLine>,
     pub items: Vec<ItemLine>,
+    /// The keys carried (`KEYM`), for the keyring.
+    pub keys: Vec<ItemLine>,
     pub caps: i32,
     pub weight: (f32, f32),
     pub damage_resistance: f32,
@@ -234,6 +243,10 @@ pub enum Key {
     /// The X and Y buttons (Shift + Enter, Alt + Enter).
     ButtonX,
     ButtonY,
+    /// Page Up and Page Down: the pad's bumpers (codes 0x0F / 0x10,
+    /// `007154b0` DIK 0xC9 / 0xD1): zoom DATA's maps.
+    PageUp,
+    PageDown,
     /// A letter: the button the menu's `_PCButton_<letter>` names
     /// (`stats_stimpak_button` for S), clicked when it shows and can be
     /// clicked (`0070c4a0`).
@@ -248,8 +261,17 @@ pub enum Action {
     /// Equip or take off an item, or use it (aid, books).
     Equip(u32),
     Use(u32),
-    /// Fast travel to a map marker (its reference).
+    /// Drop an item (`00780140` case 7): the game checks it can, then asks
+    /// how many above `iInventoryAskQuantityAt`.
+    Drop(u32),
+    /// Fast travel to a map marker (its reference) asked for: the game
+    /// checks the player can travel, then asks "Do you want to travel to
+    /// ...?" (`00796fd0` case 0x1a).
     Travel(u32),
+    /// The player's own marker asked for at this point of the world map's
+    /// picture (0 to 1; `00796fd0` case 0x0c): the game asks to set it, or
+    /// to move, remove or leave the one there.
+    PlaceMarker([f32; 2]),
     /// Make a quest the active one.
     ActiveQuest(u32),
 }
@@ -362,8 +384,19 @@ impl MenuCode for Code<'_> {
     }
 
     fn unmouseover(&mut self, ui: &mut Ui, id: i32, tile: TileId) {
-        if self.section == Section::Items {
-            self.items.unmouseover(ui, id, tile);
+        match self.section {
+            Section::Items => self.items.unmouseover(ui, id, tile),
+            Section::Stats => self.stats.unmouseover(ui, tile),
+            Section::Data => {}
+        }
+    }
+
+    /// The wheel (`+0x28`): DATA zooms its maps (`0079c530`); STATS' and
+    /// ITEMS' slots are the base menu's (`8d0600`, nothing).
+    fn wheel(&mut self, ui: &mut Ui, _id: i32, _tile: TileId, delta: i32) {
+        if self.section == Section::Data {
+            let out = self.data.wheel(ui, delta);
+            self.actions.extend(out);
         }
     }
 }
@@ -528,6 +561,27 @@ impl Pipboy {
         now: f64,
         input: &PipboyInput,
     ) -> Vec<Action> {
+        self.pointer_with_right(ui, at, button, Button::default(), false, now, input)
+    }
+
+    /// [`Pipboy::pointer`] with the right button too, and whether the
+    /// Pip-Boy control (Tab) is held. Then the shown menu's every-frame
+    /// code reads the right button going down (`00a23a50(1, 1)`) unless
+    /// the Pip-Boy control is down (`00a24660(0xe, 1)`): on ITEMS it drops
+    /// the chosen item (`00781ba0`: click 7, when an item is chosen), on
+    /// DATA's world map with the pointer over the map it asks for the
+    /// player's marker there (`0079a130`: click 0x0c).
+    #[allow(clippy::too_many_arguments)]
+    pub fn pointer_with_right(
+        &mut self,
+        ui: &mut Ui,
+        at: Option<[f32; 2]>,
+        button: Button,
+        right: Button,
+        pipboy_control_down: bool,
+        now: f64,
+        input: &PipboyInput,
+    ) -> Vec<Action> {
         if button.pressed && self.section == Section::Data {
             self.data.pressed(ui);
         }
@@ -548,6 +602,13 @@ impl Pipboy {
         });
         if self.section == Section::Data {
             out.extend(self.data.pointer_moved(ui, at, input));
+        }
+        if right.pressed && !pipboy_control_down {
+            match self.section {
+                Section::Items => out.extend(self.items.click(ui, items::DROP_ID, None, input)),
+                Section::Data => out.extend(self.data.right_pressed(ui, at)),
+                Section::Stats => {}
+            }
         }
         out.extend(self.interface_sounds());
         ui.refresh();
@@ -654,6 +715,8 @@ pub(crate) mod tests {
       <template name="TabButtonTemplate"><hotrect name="TabButton"><width>100</width><height>30</height>
         <x><copy src="me()" trait="_x"/></x><mouseoversound>UIMenuFocus</mouseoversound></hotrect></template>
       <image name="IM_ItemIcon"><id>11</id><visible>&false;</visible></image>
+      <image name="IM_RepairButton"><id>8</id><x>900</x><width>10</width><height>10</height></image>
+      <image name="IM_ModButton"><id>19</id><x>900</x><y>20</y><width>10</width><height>10</height></image>
     </menu>"#;
 
     /// `map_menu.xml` cut down: the world map in its clip window, the
@@ -707,6 +770,7 @@ pub(crate) mod tests {
             ammo: None,
             weight_class: None,
             effects: None,
+            repairable: false,
         };
         let marker = |form: u32, name: &str, at: [f32; 2]| MarkerLine {
             form,
@@ -729,6 +793,8 @@ pub(crate) mod tests {
                     marker(0x902, "Primm", [0.75, 0.25]),
                 ],
                 player: Some(([0.5, 0.5], 0.0)),
+                corners: [[0.0, 1.0], [1.0, 0.0]],
+                custom: None,
             }),
             ..stats::tests::input()
         }
@@ -831,6 +897,118 @@ pub(crate) mod tests {
         assert_eq!(p.data.marker, None);
         p.pointer(&mut ui, Some([427.0, 700.0]), UP, 0.0, &input);
         assert!(!p.cursor_hidden());
+    }
+
+    /// `00782a90` / `00780140` cases 0x1e, 10 and the tabs: with keys
+    /// carried the Misc tab ends with the keyring's row; clicking it lists
+    /// the keys; Cancel or another tab lists the tab's items again.
+    #[test]
+    fn the_keyring_opens_and_closes() {
+        let (mut ui, mut p) = load();
+        let mut input = input();
+        let key = |form: u32, name: &str| ItemLine {
+            form,
+            name: name.into(),
+            usable: false,
+            ..input.items[0].clone()
+        };
+        input.keys = vec![key(0xC2, "Doc's Key"), key(0xC1, "Bunker Key")];
+        p.fill(&mut ui, &input);
+        p.show(&mut ui, Section::Items);
+        // Weapons: no keyring row.
+        assert_eq!(p.items.shown, [0xA1, 0xA2]);
+        p.items.show_tab(&mut ui, 3, &input);
+        assert_eq!(p.items.shown, [0]);
+        let row = p.items.list.rows[0];
+        assert_eq!(ui.number(row, t::ID), items::KEYRING_ID as f32);
+        p.click(&mut ui, items::KEYRING_ID, &input);
+        assert!(p.items.keyring);
+        assert_eq!(p.items.shown, [0xC1, 0xC2]);
+        let open = ui.names.lookup("_KeyringOpen").unwrap();
+        assert_eq!(ui.number(p.items.menu, open), 1.0);
+        // A key can't be dropped from the keyring.
+        assert_eq!(
+            p.click(&mut ui, items::DROP_ID, &input),
+            [sound("UIVATSInsufficientAP")]
+        );
+        p.click(&mut ui, items::CANCEL_ID, &input);
+        assert!(!p.items.keyring);
+        assert_eq!(p.items.shown, [0]);
+        p.click(&mut ui, items::KEYRING_ID, &input);
+        p.items.show_tab(&mut ui, 0, &input);
+        assert!(!p.items.keyring);
+        assert_eq!(ui.number(p.items.menu, open), 0.0);
+    }
+
+    /// `00781680`: with an item chosen Mod can be pressed and Repair only
+    /// when the item can be repaired; with none chosen neither.
+    #[test]
+    fn items_buttons_follow_the_chosen_item() {
+        let (mut ui, mut p) = load();
+        let mut input = input();
+        input.items[1].repairable = true;
+        p.fill(&mut ui, &input);
+        p.show(&mut ui, Section::Items);
+        ui.refresh();
+        let target = |ui: &mut Ui, p: &Pipboy, id: i32| {
+            ui.number(by_id(ui, p.items.menu, id).unwrap(), t::TARGET)
+        };
+        // The knife (first row, chosen on filling): Mod yes, Repair no.
+        assert_eq!(
+            (target(&mut ui, &p, 19), target(&mut ui, &p, 8)),
+            (1.0, 0.0)
+        );
+        // The pistol under the pointer: both.
+        p.pointer(&mut ui, Some([10.0, 145.0]), UP, 0.0, &input);
+        assert_eq!(
+            (target(&mut ui, &p, 19), target(&mut ui, &p, 8)),
+            (1.0, 1.0)
+        );
+        // Off the rows: nothing chosen, neither.
+        p.pointer(&mut ui, None, UP, 0.0, &input);
+        assert_eq!(
+            (target(&mut ui, &p, 19), target(&mut ui, &p, 8)),
+            (0.0, 0.0)
+        );
+    }
+
+    /// The right button going down (`00781ba0`, `0079a130`): on ITEMS it
+    /// drops the chosen item (click 7) unless the Pip-Boy control is held
+    /// or nothing is chosen; on the world map, over the map, it asks for
+    /// the player's marker at the pointer's point of the picture.
+    #[test]
+    fn the_right_button_drops_and_marks_the_map() {
+        let (mut ui, mut p) = load();
+        let input = input();
+        p.fill(&mut ui, &input);
+        p.show(&mut ui, Section::Items);
+        ui.refresh();
+        let right = PRESS;
+        // Over the second row: the pistol is chosen; Tab held: nothing.
+        p.pointer(&mut ui, Some([10.0, 145.0]), UP, 0.0, &input);
+        let held = p.pointer_with_right(&mut ui, Some([10.0, 145.0]), UP, right, true, 0.0, &input);
+        assert!(!held.contains(&Action::Drop(0xA2)));
+        let out = p.pointer_with_right(&mut ui, Some([10.0, 145.0]), UP, right, false, 0.0, &input);
+        assert!(out.contains(&Action::Drop(0xA2)));
+        // Off the rows nothing is chosen: nothing to drop.
+        p.pointer(&mut ui, None, UP, 0.0, &input);
+        let out = p.pointer_with_right(&mut ui, None, UP, right, false, 0.0, &input);
+        assert!(!out.iter().any(|a| matches!(a, Action::Drop(_))));
+        // DATA's world map: the pointer's point on the picture is (the
+        // pointer less the map's place) ÷ the map's width, both ways.
+        p.press_section(&mut ui, 3);
+        ui.refresh();
+        p.pointer(&mut ui, Some([220.0, 420.0]), UP, 0.0, &input);
+        let world = by_id(&ui, p.data.menu, 4).unwrap();
+        let (mx, my) = ui.screen_position(world);
+        let w = ui.number(world, t::WIDTH);
+        let out =
+            p.pointer_with_right(&mut ui, Some([220.0, 420.0]), UP, right, false, 0.0, &input);
+        assert!(out.contains(&Action::PlaceMarker([(220.0 - mx) / w, (420.0 - my) / w])));
+        // Below the map (the cursor shows there): nothing.
+        let out =
+            p.pointer_with_right(&mut ui, Some([220.0, 700.0]), UP, right, false, 0.0, &input);
+        assert!(!out.iter().any(|a| matches!(a, Action::PlaceMarker(_))));
     }
 
     /// `007db380` → `007e0060`: the Status page's RAD button (0x1d) makes

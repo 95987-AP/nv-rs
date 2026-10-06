@@ -14,6 +14,7 @@
 //! picture (`sCursorFilename`, 32 × 32, drawn above every menu, `0070b240`)
 //! is drawn where it is.
 
+pub mod asks;
 pub mod barter;
 pub mod chargen;
 pub mod container;
@@ -75,6 +76,9 @@ pub struct Screen {
     fader: Option<TileId>,
     /// The Rest control (T) held down (the sleep/wait menu cancels on it).
     rest_down: bool,
+    /// The Pip-Boy's callback for the "how many?" open, if it asked
+    /// (`asks`).
+    quantity_owner: Option<u32>,
     sizes: HashMap<String, Option<(u32, u32)>>,
     atlases: HashMap<String, Option<ui::Atlas>>,
 }
@@ -150,6 +154,7 @@ impl Plugin for GameMenusPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GameMenus>()
             .init_resource::<MenuDraw>()
+            .init_resource::<asks::PipboyAsks>()
             .init_resource::<StartMenu>()
             .init_resource::<FixedPointer>()
             .add_systems(
@@ -316,6 +321,7 @@ impl Screen {
             fade: None,
             fader,
             rest_down: false,
+            quantity_owner: None,
             sizes: HashMap::new(),
             atlases: HashMap::new(),
         }
@@ -443,6 +449,7 @@ fn open_menus(
     mut sounds: ResMut<crate::sounds::SoundRequests>,
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time<bevy::time::Real>>,
+    mut asks: ResMut<asks::PipboyAsks>,
 ) {
     let Some(size) = window_size(&windows) else {
         return;
@@ -493,6 +500,8 @@ fn open_menus(
         }
         player.ready = false;
     }
+    // The Pip-Boy's questions (over it, so the player isn't ready anyway).
+    asks::open(screen, &game.0, &mut asks);
     queue.game_open = !screen.open.is_empty();
     if wanted && !to_perks {
         menus.levelup_to_perks = false;
@@ -544,7 +553,7 @@ fn key_code(key: &Key) -> Option<u32> {
 /// The open menus get the pointer and the keys, then hand what the player
 /// did back to the game.
 #[allow(clippy::too_many_arguments)]
-fn run_open_menus(
+pub(crate) fn run_open_menus(
     game: Res<GameFiles>,
     mut menus: ResMut<GameMenus>,
     mut queue: ResMut<crate::menus::Menus>,
@@ -554,6 +563,7 @@ fn run_open_menus(
     conversation: Res<crate::dialogue::Conversation>,
     mut sounds: ResMut<crate::sounds::SoundRequests>,
     scripts: Res<crate::scripts::Scripts>,
+    mut asks: ResMut<asks::PipboyAsks>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         input.typed.clear();
@@ -726,6 +736,7 @@ fn run_open_menus(
         .0
         .extend(chargen::after(screen, &game.0, &mut state.0));
     textedit::after(screen, &mut state.0);
+    asks::after(screen, &mut asks);
     let Screen {
         ui,
         interface,
@@ -747,7 +758,8 @@ fn run_open_menus(
         }
     }
     queue.game_open = !open.is_empty();
-    if open.is_empty() && conversation.0.is_none() {
+    // (A box over the Pip-Boy closing leaves the Pip-Boy up.)
+    if open.is_empty() && conversation.0.is_none() && !queue.pipboy {
         player.ready = true;
     }
 }
@@ -832,7 +844,15 @@ fn draw_menus(
     if draw.0 != items {
         draw.0 = items;
     }
-    let classes: Vec<i32> = screen.open.iter_mut().map(|m| m.code().class()).collect();
+    // The Pip-Boy's menu first while it's up: the menus over it opened
+    // from it, and the HUD keeps the pieces the Pip-Boy's pages leave on
+    // (`ui::hud::parts_for_menu`: the messages).
+    let classes: Vec<i32> = pipboy
+        .as_ref()
+        .and_then(|p| p.menu_class())
+        .into_iter()
+        .chain(screen.open.iter_mut().map(|m| m.code().class()))
+        .collect();
     if draw.1 != classes {
         draw.1 = classes;
     }

@@ -137,10 +137,11 @@ pub fn default_object(order: &LoadOrder, index: usize) -> Option<FormId> {
 
 /// The world map for a worldspace: its `ICON` picture, `MNAM` (usable
 /// width and height u32, then the north-west and south-east cells' x, y
-/// as i16), and where its markers and the player land on it (`0079cdb0`,
-/// `0079c380`: north-west corner (x × 4096, y × 4096 + 4096), south-east
-/// ((x + 1) × 4096, y × 4096); a place's share across and down between
-/// them).
+/// as i16), and where its markers, the player and the player's own marker
+/// land on it (`0079cdb0`, `0079c380`: north-west corner (x × 4096, y ×
+/// 4096 + 4096), south-east ((x + 1) × 4096, y × 4096); a place's share
+/// across and down between them, inside the picture's border,
+/// `world::map::world_to_map`).
 pub fn world_map(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> Option<WorldMapLine> {
     let world = at.world?;
     let record = order.get(world)?.record().ok()?;
@@ -152,12 +153,12 @@ pub fn world_map(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> Opti
     let size = [u32_at(0) as f32, u32_at(4) as f32];
     let nw = [i16_at(8) * 4096.0, i16_at(10) * 4096.0 + 4096.0];
     let se = [i16_at(12) * 4096.0 + 4096.0, i16_at(14) * 4096.0];
-    let place = |p: [f32; 3]| {
-        [
-            (p[0] - nw[0]) / (se[0] - nw[0]),
-            (p[1] - nw[1]) / (se[1] - nw[1]),
-        ]
-    };
+    let place = |p: [f32; 3]| world::map::world_to_map(nw, se, [p[0], p[1]]);
+    // The player's own marker when it's in this worldspace (`0079f360`).
+    let custom = state
+        .custom_marker
+        .filter(|m| m.space == world)
+        .map(|m| place(m.position));
     let markers = at
         .markers
         .iter()
@@ -175,7 +176,63 @@ pub fn world_map(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> Opti
         size,
         markers,
         player: at.player.map(|(p, h)| (place(p), h)),
+        corners: [nw, se],
+        custom,
     })
+}
+
+/// Whether ITEMS' Repair button can be pressed for an item. Translated
+/// from 00781860 (decompiled, FalloutNV.exe 1.4.0.525),
+/// `InventoryMenu::IsItemRepairable` (Xbox PDB): a weapon or apparel below
+/// full condition, of which the player carries two or more, or with
+/// another item that can mend it (its repair list `REPL`, `004d4bd0`)
+/// carried and not equipped. (The game also counts another of the same
+/// item in worse condition among single ones; the world keeps one
+/// condition per carried weapon, so that case is the "two or more".)
+fn repairable(
+    order: &LoadOrder,
+    state: &GameState,
+    item: FormId,
+    count: i32,
+    condition: Option<f32>,
+) -> bool {
+    let Some(kind) = order.get(item).map(|r| r.entry.header.kind) else {
+        return false;
+    };
+    if kind != WEAP && kind != ARMO {
+        return false;
+    }
+    if condition.unwrap_or(1.0) >= 1.0 {
+        return false;
+    }
+    if count >= 2 {
+        return true;
+    }
+    let Some(list) = order
+        .get(item)
+        .and_then(|r| r.record().ok().map(|rec| (r.plugin, rec)))
+        .and_then(|(plugin, rec)| {
+            rec.get(FourCC::new(b"REPL"))
+                .filter(|s| s.data.len() >= 4)
+                .map(|s| {
+                    plugin.to_global(FormId(u32::from_le_bytes([
+                        s.data[0], s.data[1], s.data[2], s.data[3],
+                    ])))
+                })
+        })
+    else {
+        return false;
+    };
+    let menders = world::perks::form_list(order, list);
+    state
+        .inventory(order, PLAYER_REF)
+        .iter()
+        .any(|&(other, n)| {
+            other != item
+                && n > 0
+                && menders.contains(&other)
+                && !state.is_equipped(PLAYER_REF, other)
+        })
 }
 
 /// Everything the Pip-Boy shows, from the game's state.
@@ -274,6 +331,7 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
     // What's carried.
     let caps_form = world::barter::caps(order);
     let mut items = Vec::new();
+    let mut keys = Vec::new();
     let mut caps = 0;
     // The aid buttons' items: default objects 0, 21, 3, 2 (in the order of
     // `PipboyInput::aid`: Stimpak, Doctor's Bag, RadAway, Rad-X).
@@ -289,6 +347,38 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
         }
         let Some(rr) = order.get(item) else { continue };
         let kind = rr.entry.header.kind;
+        // Keys go on the keyring (`00782a90`: the Misc tab's keyring row,
+        // `00782810` its list).
+        if kind.as_bytes() == b"KEYM" {
+            let info = world::items::item_info(order, item);
+            keys.push(ItemLine {
+                form: item.0,
+                name: info
+                    .as_ref()
+                    .map(|i| i.name.clone())
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| item.to_string()),
+                count,
+                tab: ItemTab::Misc,
+                equipped: false,
+                usable: false,
+                value: info.as_ref().map_or(0, |i| i.value),
+                weight: info.as_ref().map_or(0.0, |i| i.weight),
+                icon: record_text(order, item, ICON),
+                damage: None,
+                dps: None,
+                projectiles: 1,
+                damage_resistance: None,
+                damage_threshold: None,
+                condition: None,
+                strength: None,
+                ammo: None,
+                weight_class: None,
+                effects: None,
+                repairable: false,
+            });
+            continue;
+        }
         let Some(tab) = item_tab(order, state, item) else {
             continue;
         };
@@ -321,6 +411,7 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
             ammo: None,
             weight_class: None,
             effects: None,
+            repairable: false,
         };
         if kind == WEAP {
             if let Some(w) = world::combat::Weapon::load(order, item) {
@@ -401,6 +492,7 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
         // effects with their magnitudes and durations, joined) isn't
         // written yet, so their effects card stays hidden, as the game's
         // does for an item without one.
+        line.repairable = repairable(order, state, item, count, line.condition);
         items.push(line);
     }
 
@@ -502,6 +594,7 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
         karma_title: world::reputation::karmic_title(order, state).unwrap_or_default(),
         reputations,
         items,
+        keys,
         caps,
         // Carried against Carry Weight (actor value 13).
         weight: (state.inventory_weight(order, PLAYER_REF), perm(13)),
@@ -632,13 +725,21 @@ mod tests {
             ],
             player: Some(([-8192.0, 12288.0, 0.0], 45.0)),
         };
+        let mut state = state;
+        world::map::set_custom_marker(&mut state, FormId(0x810), [8192.0, -4096.0, 0.0]);
         let map = world_map(&order, &state, &at).unwrap();
         assert_eq!(map.picture, "interface\\worldmap\\test.dds");
         assert_eq!(map.size, [1000.0, 800.0]);
-        // North-west corner (-8192, 12288), south-east (8192, -4096).
+        // North-west corner (-8192, 12288), south-east (8192, -4096): the
+        // shares × 0.796875 + 0.1015625 inside the picture's border.
+        assert_eq!(map.corners, [[-8192.0, 12288.0], [8192.0, -4096.0]]);
         assert_eq!(map.markers.len(), 1);
-        assert_eq!(map.markers[0].at, [0.5, 0.75]);
+        assert_eq!(map.markers[0].at, [0.5, 0.69921875]);
         assert!(!map.markers[0].travel);
-        assert_eq!(map.player, Some(([0.0, 0.0], 45.0)));
+        assert_eq!(map.player, Some(([0.1015625, 0.1015625], 45.0)));
+        assert_eq!(map.custom, Some([0.8984375, 0.8984375]));
+        // Another worldspace's marker isn't shown.
+        world::map::set_custom_marker(&mut state, FormId(0x811), [0.0; 3]);
+        assert_eq!(world_map(&order, &state, &at).unwrap().custom, None);
     }
 }

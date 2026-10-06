@@ -39,17 +39,32 @@ pub struct ItemsMenu {
     pub tabs: Vec<TileId>,
     card: Option<TileId>,
     icon: Option<TileId>,
-    /// The forms of the rows now, in order.
+    /// The forms of the rows now, in order (0 for the keyring's row).
     pub shown: Vec<u32>,
-    filled: Option<(usize, Vec<ItemLine>)>,
+    filled: Option<(usize, bool, Vec<ItemLine>, bool)>,
     /// The last row the pointer was over (`011d9f34`, its
     /// `listindex`): the knob clicks when it changes.
     hovered: Option<usize>,
+    /// The keyring is open (the menu's `_KeyringOpen`, `011d9eb8`): the
+    /// list shows the keys (`00782810`).
+    pub keyring: bool,
 }
+
+/// The keyring's row's `id` (`00782a90`: a row without an item, `sKeyring`,
+/// last on the Misc tab when keys are carried).
+pub const KEYRING_ID: i32 = 0x1e;
+/// The Cancel button's `id` (`IM_CancelButton`, E: shown while the
+/// keyring is open; closes it, `00780140` case 10).
+pub const CANCEL_ID: i32 = 10;
+/// The keyring's picture (`00780ff0` on its row).
+pub const KEYRING_PICTURE: &str = "Interface\\Icons\\PipboyImages\\Items\\item_keyring.dds";
 
 /// The rows' `id` (0x1d), which the click and mouse-over handlers look for
 /// (`00780140`, `00780ff0`).
 pub const ROW_ID: i32 = 0x1d;
+/// The Drop button's `id` (`IM_DropButton`, shown with a pad only; the
+/// right mouse button clicks it, `00781ba0`).
+pub const DROP_ID: i32 = 7;
 /// The first tab button's `id` (0x18 Weapons .. 0x1c Ammo, `0077fc10`).
 pub const FIRST_TAB_ID: i32 = 0x18;
 
@@ -186,6 +201,7 @@ impl ItemsMenu {
             shown: Vec::new(),
             filled: None,
             hovered: None,
+            keyring: false,
         };
         if let Some(tl) = m.tabline {
             tabline::set_current(ui, tl, 0);
@@ -217,26 +233,40 @@ impl ItemsMenu {
             format!("{}/{}", input.weight.0 as i32, input.weight.1 as i32),
         );
         let items: Vec<ItemLine> = self.tab_items(input);
-        if self.filled.as_ref() != Some(&(self.tab, items.clone())) {
-            self.fill_rows(ui, &items);
-            self.filled = Some((self.tab, items));
+        let keyring_row = self.keyring_row(input);
+        let now = (self.tab, self.keyring, items.clone(), keyring_row);
+        if self.filled.as_ref() != Some(&now) {
+            self.fill_rows(ui, &items, keyring_row);
+            self.filled = Some(now);
         }
     }
 
-    /// The items under the tab shown, by name (`007824e0`, the list's
-    /// order: names compared; the same name by condition, not kept here).
+    /// The items in the list (`007824e0`, the list's order: names
+    /// compared; the same name by condition, not kept here): the tab's,
+    /// or with the keyring open the keys (`00782810`).
     fn tab_items(&self, input: &PipboyInput) -> Vec<ItemLine> {
-        let mut items: Vec<ItemLine> = input
-            .items
-            .iter()
-            .filter(|i| i.tab as usize == self.tab)
-            .cloned()
-            .collect();
+        let mut items: Vec<ItemLine> = if self.keyring {
+            input.keys.clone()
+        } else {
+            input
+                .items
+                .iter()
+                .filter(|i| i.tab as usize == self.tab)
+                .cloned()
+                .collect()
+        };
         items.sort_by(|a, b| a.name.cmp(&b.name));
         items
     }
 
-    fn fill_rows(&mut self, ui: &mut Ui, items: &[ItemLine]) {
+    /// Whether the keyring's row shows: on the Misc tab (`00782620` lets
+    /// the row without an item through there only) with keys carried
+    /// (`004c6ba0(0x2e)`), the keyring closed; sorted last (`007824e0`).
+    fn keyring_row(&self, input: &PipboyInput) -> bool {
+        !self.keyring && self.tab == ItemTab::Misc as usize && !input.keys.is_empty()
+    }
+
+    fn fill_rows(&mut self, ui: &mut Ui, items: &[ItemLine], keyring_row: bool) {
         let keep = self.list.selected;
         self.list.clear(ui);
         self.shown.clear();
@@ -251,19 +281,56 @@ impl ItemsMenu {
             }
             self.shown.push(item.form);
         }
-        let chosen = if items.is_empty() {
-            None
-        } else {
-            Some(keep.unwrap_or(0).min(items.len() - 1))
-        };
+        if keyring_row {
+            let name = text(ui, "sKeyring");
+            if let Some(row) = self.list.add(ui, Some(&name)) {
+                ui.set_number(row, t::ID, KEYRING_ID as f32);
+                if let Some(marker) = ui.find_below(row, "IM_Template_ItemMarker") {
+                    ui.set_number(marker, t::VISIBLE, 0.0);
+                }
+                self.shown.push(0);
+            }
+        }
+        let rows = self.shown.len();
+        let chosen = (rows > 0).then(|| keep.unwrap_or(0).min(rows - 1));
         self.list.select(ui, chosen);
-        self.show_card(ui, chosen.and_then(|i| items.get(i)));
+        self.show_row(ui, chosen, items);
+    }
+
+    /// The card for a row: an item's, or the keyring's picture alone.
+    fn show_row(&mut self, ui: &mut Ui, row: Option<usize>, items: &[ItemLine]) {
+        match row.and_then(|i| self.shown.get(i).copied()) {
+            Some(0) => self.show_keyring(ui),
+            _ => self.show_card(ui, row.and_then(|i| items.get(i))),
+        }
+    }
+
+    /// The keyring's row chosen (`00780ff0` case 0x1e): no item chosen
+    /// (`00781b10`), its picture shown.
+    fn show_keyring(&mut self, ui: &mut Ui) {
+        self.show_card(ui, None);
+        if let Some(icon) = self.icon {
+            ui.set_string(icon, t::FILENAME, KEYRING_PICTURE);
+            ui.set_number(icon, t::VISIBLE, 1.0);
+        }
+    }
+
+    /// Opens or closes the keyring (`00780140` cases 0x1e and 10): the
+    /// menu's `_KeyringOpen`, the list's filter, the list made again.
+    pub fn set_keyring(&mut self, ui: &mut Ui, open: bool, input: &PipboyInput) {
+        self.keyring = open;
+        let id = trait_id(ui, "_KeyringOpen");
+        ui.set_number(self.menu, id, if open { 1.0 } else { 0.0 });
+        self.list.selected = None;
+        self.filled = None;
+        self.fill(ui, input);
     }
 
     /// The chosen item's card and picture (`00780ff0` on a row,
     /// `00707e30` the card): `_EquippableItem`, the picture
     /// (`Interface\Icons\` + the item's own), the cards its mask shows.
     fn show_card(&mut self, ui: &mut Ui, item: Option<&ItemLine>) {
+        self.update_buttons(ui, item);
         let equippable = trait_id(ui, "_EquippableItem");
         ui.set_number(
             self.menu,
@@ -375,8 +442,40 @@ impl ItemsMenu {
         }
     }
 
+    /// The buttons' `target`s (their lines brighten with it). Translated
+    /// from 00781680 (decompiled, FalloutNV.exe 1.4.0.525),
+    /// `InventoryMenu::UpdateButtons` (Xbox PDB): with no item chosen,
+    /// Equip (6), Drop (7), Repair (8), Hot key (9) and Mod (19) can't be
+    /// pressed; with one, Equip as the item can be equipped or used, Drop
+    /// and Mod always, Hot key unless it's ammunition (form type 0x29),
+    /// Repair when it can be repaired (`00781860`). (The Equip button's
+    /// text, set there too, shows with a pad only: not here.)
+    fn update_buttons(&mut self, ui: &mut Ui, item: Option<&ItemLine>) {
+        let targets: [(i32, bool); 5] = match item {
+            None => [(6, false), (7, false), (8, false), (9, false), (19, false)],
+            Some(i) => [
+                (6, i.usable),
+                (7, true),
+                (9, i.tab != ItemTab::Ammo),
+                (19, true),
+                (8, i.repairable),
+            ],
+        };
+        for (id, on) in targets {
+            if let Some(tile) = by_id(ui, self.menu, id) {
+                ui.set_number(tile, t::TARGET, if on { 1.0 } else { 0.0 });
+            }
+        }
+    }
+
     /// Shows a tab (0 Weapons .. 4 Ammo).
     pub fn show_tab(&mut self, ui: &mut Ui, tab: usize, input: &PipboyInput) {
+        // Another tab closes the keyring (`00780140` cases 0x18 .. 0x1c).
+        if self.keyring {
+            self.keyring = false;
+            let id = trait_id(ui, "_KeyringOpen");
+            ui.set_number(self.menu, id, 0.0);
+        }
         self.tab = tab.min(4);
         if let Some(tl) = self.tabline {
             tabline::set_current(ui, tl, self.tab);
@@ -408,10 +507,18 @@ impl ItemsMenu {
                 self.list.step(ui, if key == Key::Down { 1 } else { -1 });
                 if self.list.selected != before {
                     let items = self.tab_items(input);
-                    let chosen = self.list.selected.and_then(|i| items.get(i)).cloned();
-                    self.show_card(ui, chosen.as_ref());
+                    self.show_row(ui, self.list.selected, &items);
                     out.push(Action::Sound("UIPipBoyScroll".into()));
                 }
+            }
+            // The A button presses the chosen row: the keyring's opens it.
+            Key::Activate
+                if self
+                    .list
+                    .selected
+                    .is_some_and(|i| self.shown.get(i) == Some(&0)) =>
+            {
+                self.set_keyring(ui, true, input);
             }
             Key::Activate => {
                 let items = self.tab_items(input);
@@ -441,8 +548,10 @@ impl ItemsMenu {
 
     /// A tile clicked (`00780140`, slot 0x0c): a tab button (0x18 .. 0x1c)
     /// turns to its tab when it isn't the one shown; a row (0x1d) equips,
-    /// takes off or uses its item. (Drop 7, Repair 8, Cancel 10, Mod 0x13
-    /// and the keyring 0x1e are not here yet.)
+    /// takes off or uses its item; Drop (7, the right button on PC) drops
+    /// the chosen item (the game's checks and "how many?" are the
+    /// caller's). (Repair 8, Cancel 10, Mod 0x13 and the keyring 0x1e are
+    /// not here yet.)
     pub fn click(
         &mut self,
         ui: &mut Ui,
@@ -459,6 +568,19 @@ impl ItemsMenu {
                     out.push(Action::Sound("UIPipBoyTab".into()));
                 }
             }
+            // Not from the keyring: the refusal sound.
+            DROP_ID => {
+                let items = self.tab_items(input);
+                if let Some(item) = self.list.selected.and_then(|i| items.get(i)) {
+                    out.push(if self.keyring {
+                        Action::Sound("UIVATSInsufficientAP".into())
+                    } else {
+                        Action::Drop(item.form)
+                    });
+                }
+            }
+            KEYRING_ID if !self.keyring => self.set_keyring(ui, true, input),
+            CANCEL_ID if self.keyring => self.set_keyring(ui, false, input),
             ROW_ID => {
                 let items = self.tab_items(input);
                 let index = tile.and_then(|t| self.list.index_of(t));
@@ -486,6 +608,15 @@ impl ItemsMenu {
         input: &PipboyInput,
     ) -> Vec<Action> {
         let mut out = Vec::new();
+        if id == KEYRING_ID {
+            // The keyring's row (`00780ff0` case 0x1e): chosen, its
+            // picture; no knob.
+            if let Some(index) = self.list.index_of(tile) {
+                self.list.choose(ui, Some(index));
+                self.show_keyring(ui);
+            }
+            return out;
+        }
         if id != ROW_ID {
             return out;
         }
@@ -506,7 +637,7 @@ impl ItemsMenu {
     /// lets the list drop its choice, `00717ef0`): leaving a row clears the
     /// card and `_EquippableItem`.
     pub fn unmouseover(&mut self, ui: &mut Ui, id: i32, tile: TileId) {
-        if id != ROW_ID {
+        if id != ROW_ID && id != KEYRING_ID {
             return;
         }
         if let Some(index) = self.list.index_of(tile) {
@@ -543,6 +674,7 @@ mod tests {
             ammo: None,
             weight_class: None,
             effects: None,
+            repairable: false,
         }
     }
 

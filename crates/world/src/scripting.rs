@@ -387,6 +387,14 @@ pub struct GameState {
     pub killing_blow_limb: HashMap<FormId, i32>,
     /// The quest the Pip-Boy shows as active (`ForceActiveQuest`).
     pub active_quest: Option<FormId>,
+    /// The player's own map marker, set on the Pip-Boy's map
+    /// (`world::map::CustomMarker`; the player's `+0x6f4`).
+    pub custom_marker: Option<crate::map::CustomMarker>,
+    /// The body part condition (actor value 25 .. 30) the Pip-Boy's STATS
+    /// healing mode aims at while it's on (`StatsMenu` `+0x2a0` and its
+    /// body part controller, `007e06b0`): effects added then are aimed at
+    /// it ([`crate::magic::ActiveEffect::part`]). Not saved.
+    pub healing_part: Option<u16>,
     /// Locks changed since they were placed (`world::locks`): `None`
     /// unlocked, `Some(level)` locked.
     pub locks: HashMap<FormId, Option<u8>>,

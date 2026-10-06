@@ -341,6 +341,10 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     if let Some(q) = state.active_quest {
         line(format!("activequest {}", id(q)));
     }
+    if let Some(m) = state.custom_marker {
+        let [x, y, z] = m.position;
+        line(format!("custommarker {} {x} {y} {z}", id(m.space)));
+    }
     let locks: BTreeMap<_, _> = state.locks.iter().collect();
     for (r, level) in locks {
         let level = level.map_or("-".to_string(), |l| l.to_string());
@@ -352,21 +356,27 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     }
     // An effect, then its script's variables.
     for e in &state.active_effects {
-        line(format!(
-            "effect {} {} {} {} {} {} {} {} {} {} {} {}",
-            id(e.target),
-            id(e.source),
-            id(e.effect),
-            e.actor_value,
-            e.magnitude,
-            e.remaining,
-            u8::from(e.detrimental),
-            u8::from(e.recover),
-            e.archetype,
-            e.resist,
-            e.script.map_or("-".to_string(), id),
-            u8::from(e.started),
-        ));
+        line(
+            format!(
+                "effect {} {} {} {} {} {} {} {} {} {} {} {}",
+                id(e.target),
+                id(e.source),
+                id(e.effect),
+                e.actor_value,
+                e.magnitude,
+                e.remaining,
+                u8::from(e.detrimental),
+                u8::from(e.recover),
+                e.archetype,
+                e.resist,
+                e.script.map_or("-".to_string(), id),
+                u8::from(e.started),
+            ) + &if e.part >= 0 {
+                format!(" {}", e.part)
+            } else {
+                String::new()
+            },
+        );
         for (name, kind, value) in e.locals.iter() {
             line(format!("effectvar {name} {} {value}", var_kind(kind)));
         }
@@ -636,6 +646,12 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                 state.dropped.insert((form(1)?, form(2)?));
             }
             "activequest" => state.active_quest = Some(form(1)?),
+            "custommarker" => {
+                state.custom_marker = Some(crate::map::CustomMarker {
+                    space: form(1)?,
+                    position: [num(2)? as f32, num(3)? as f32, num(4)? as f32],
+                });
+            }
             "lock" => {
                 let level = if parts.get(2) == Some(&"-") {
                     None
@@ -668,6 +684,11 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                     },
                     started: flag(12)?,
                     locals: Locals::default(),
+                    // Older saves have no part.
+                    part: match parts.get(13) {
+                        Some(_) => num(13)? as i32,
+                        None => -1,
+                    },
                 });
             }
             "effectvar" => {
