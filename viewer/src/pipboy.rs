@@ -196,7 +196,8 @@ struct Built {
 /// The arm on screen.
 struct Arm {
     worn: Vec<FormId>,
-    weapon: Option<FormId>,
+    /// The weapon held and its model (a mod fitted changes it).
+    weapon: Option<(FormId, String)>,
     female: bool,
     lighting: u64,
     holder: Entity,
@@ -565,6 +566,21 @@ fn pipboy_keys(
         if !pipboy.open {
             return;
         }
+    }
+    // `--pipboy-keys`' "close": put away as the Pip-Boy control does.
+    if pipboy.input.is_some() && start_keys.0.first().is_some_and(|k| k == "close") {
+        start_keys.0.remove(0);
+        println!("--pipboy-keys: close");
+        close(
+            &mut commands,
+            pipboy,
+            &mut menus,
+            &mut player,
+            &conversation,
+            now,
+        );
+        sound(order, &mut requests, "UIPipBoyAccessDown");
+        return;
     }
     let mut pressed = menu_keys(&keys);
     // `--pipboy-keys`: one a frame once its menus are filled.
@@ -1099,17 +1115,14 @@ fn update_pipboy(
                 .is_some_and(|r| r.entry.header.kind.as_bytes() == b"ARMO")
         })
         .collect();
-    // The weapon in hand, as the ordinary first-person view holds it.
+    // The weapon in hand, as the ordinary first-person view holds it (with
+    // its mods, `world::weapon_mods::player_model`).
     let weapon = world::combat::weapon_in_hand(order, &state.0, PLAYER_REF).and_then(|w| {
-        let model = order
-            .get(w.form_id)?
-            .record()
-            .ok()?
-            .get(esm::FourCC::new(b"MODL"))?
-            .zstring();
+        let flags = world::weapon_mods::flags(&state.0, PLAYER_REF, w.form_id);
+        let model = world::weapon_mods::player_model(order, w.form_id, flags)?;
         Some((w.form_id, model, w.animation))
     });
-    let weapon_id = weapon.as_ref().map(|(id, _, _)| *id);
+    let weapon_id = weapon.as_ref().map(|(id, model, _)| (*id, model.clone()));
     let rebuild = pipboy.arm.as_ref().is_none_or(|a| {
         a.worn != worn
             || a.female != female
@@ -1323,7 +1336,7 @@ fn build_arm(
     });
     Some(Arm {
         worn: worn.to_vec(),
-        weapon: weapon.map(|(id, _, _)| id),
+        weapon: weapon.map(|(id, model, _)| (id, model)),
         female,
         lighting: lighting_changes,
         holder,

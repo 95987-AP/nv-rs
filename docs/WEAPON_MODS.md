@@ -28,6 +28,16 @@ weapon. Until 2026-10-06 nv-rs kept no mods at all.
   each slot's effect (`eModActionOne`–`Three`, 140, 144, 148), value (152,
   156, 160) and second value (184, 188, 192). `MWD1`–`MWD7` and `WNM1`–
   `WNM7` are the world and first-person models with the mods on.
+- The models (`004ab400`, a body's weapon; Xbox `TESObjectWEAP::Load`,
+  `GetModTESModel`, `Get1stPersonModObject`): `MWD{n}` and `WNM{n}`
+  are kept where the fitted flags `n` find them (1 the first mod, 2 the
+  second, 3 both, 4 the third, … 7 all three). Anyone holds `MWD{flags}`,
+  or `MODL` without mods or when it's empty (`00522df0`). The player, in
+  first and third person, holds the `STAT` `WNM{flags}` (`004ab500`),
+  else `WNAM`'s (`008d8b00`), else that same world model. Form 0x1735D4
+  never gets mod models. In FalloutNV.esm 15 weapons' `WNAM` model isn't
+  their `MODL` (Lily's carbine is the plain carbine, the fire axe
+  `1stFireAxe.NIF`) and 24 `WNM` slots differ from their `MWD`.
 - The effects (`WEAPON_MOD_EFFECT`): 1 damage, 2 clip, 3 spread, 4 weight,
   5 and 6 ammo regeneration (per shot, per second), 7 equip speed, 8 fire
   speed, 9 projectile speed, 10 most condition, 11 silence, 12 split beam,
@@ -57,7 +67,10 @@ weapon. Until 2026-10-06 nv-rs kept no mods at all.
 as `weaponmods` lines), `has_effect`, `bonus`, `value_of`, `modded` (what
 `combat::weapon_in_hand` returns: clip, spread, attack speed, projectiles,
 most condition), `weight_off` (in `GameState::inventory_weight`),
-`worth_added` (in `barter::item_value`), `attach`, `fitting`; damage in
+`worth_added` (in `barter::item_value`), `attach`, `fitting`, `model`
+and `player_model` (the viewer's first-person weapon and the Pip-Boy
+arm's: the 9mm with Extended Mags holds `9mmExtClip.NIF`, the fire axe
+`1stFireAxe.NIF`); damage in
 `combat::weapon_damage_at`; the V.A.T.S. to-hit in `vats::part_chance`.
 
 The mod screen (`ItemModMenu`, class 1061, `menus\item_mod_menu.xml`):
@@ -81,7 +94,8 @@ Checks: `crates/world/tests/weapon_mods.rs`, `world::weapon_mods::tests`,
 - The mod screen's hold-to-confirm meter (a controller's), its sort's
   exact trait (`00783810`), and the weapon taken off while it's modded.
 - Split beam's damage scale, projectile speed, silence, sights, the ammo
-  regeneration and equip speed effects; the modded models.
+  regeneration and equip speed effects. Other people's modded weapons
+  (they're built from their base record, without mods).
 - Mods are kept per holder and weapon (as its condition is), where the
   game splits a modded weapon off its stack.
 - Repair menus' most condition doesn't count a condition mod yet.

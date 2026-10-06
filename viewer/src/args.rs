@@ -66,7 +66,8 @@ OPTIONS:
                             quests); screenshots then show it
     --pipboy-keys K[,K...]  for testing: once the Pip-Boy is up, press these
                             keys in it, one a frame: up, down, left, right,
-                            enter, or a letter (r: ITEMS' Repair)
+                            enter, a letter (r: ITEMS' Repair, x: Mod), or
+                            close (put it away)
     --vats [N]              for testing: open V.A.T.S. three seconds after
                             loading (as V does); with N, queue N attacks on
                             the part it opens on and play them
@@ -306,7 +307,8 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             "--pipboy-keys" => {
                 let v = value("--pipboy-keys")?;
                 for k in v.split(',').map(|k| k.trim().to_ascii_lowercase()) {
-                    let known = ["up", "down", "left", "right", "enter"].contains(&k.as_str())
+                    let known = ["up", "down", "left", "right", "enter", "close"]
+                        .contains(&k.as_str())
                         || (k.len() == 1 && k.as_bytes()[0].is_ascii_lowercase());
                     if !known {
                         return Err(format!("--pipboy-keys: don't know the key '{k}'"));

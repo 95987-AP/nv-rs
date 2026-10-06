@@ -212,6 +212,8 @@ pub struct ShowInPictures(pub bool);
 #[derive(Clone, PartialEq)]
 struct Built {
     weapon: Option<FormId>,
+    /// Its fitted mods (the model changes with them).
+    mods: u8,
     worn: Vec<FormId>,
     female: bool,
     lighting: u64,
@@ -319,6 +321,9 @@ pub fn update_view_model(
     let female = state.player_female.unwrap_or(false);
     let wanted = Built {
         weapon: weapon.as_ref().map(|w| w.form_id),
+        mods: weapon.as_ref().map_or(0, |w| {
+            world::weapon_mods::flags(state, PLAYER_REF, w.form_id)
+        }),
         worn: worn.clone(),
         female,
         lighting: lighting_changes,
@@ -331,13 +336,11 @@ pub fn update_view_model(
         }
         view.built = Some(wanted);
         view.root = None;
+        // The player's model with its mods on
+        // (`world::weapon_mods::player_model`).
         let held = weapon.as_ref().and_then(|w| {
-            let model = order
-                .get(w.form_id)?
-                .record()
-                .ok()?
-                .get(esm::FourCC::new(b"MODL"))?
-                .zstring();
+            let flags = world::weapon_mods::flags(state, PLAYER_REF, w.form_id);
+            let model = world::weapon_mods::player_model(order, w.form_id, flags)?;
             Some((model, w.animation))
         });
         let Some(look) = world::actor::first_person_look(order, female, &worn, held) else {

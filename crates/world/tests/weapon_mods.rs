@@ -92,3 +92,28 @@ fn fitting_mods_changes_the_gun() {
     let (back, _) = world::save::load(&text).unwrap();
     assert_eq!(weapon_mods::flags(&back, PLAYER_REF, gun), 7);
 }
+
+/// The models (`00522df0`, `004ab400`, `004ab500`; Xbox PDB
+/// `GetModTESModel`, `Get1stPersonModObject`).
+#[test]
+fn modded_models() {
+    let (_data, order) = order("weapon-mods-models");
+    let gun = FormId(MOD_GUN);
+    let model = |flags| weapon_mods::model(&order, gun, flags);
+    let player = |flags| weapon_mods::player_model(&order, gun, flags);
+    // Held by anyone: `MWD{flags}`, the plain model when that's missing.
+    assert_eq!(model(0).as_deref(), Some(r"Weapons\ModGun.NIF"));
+    assert_eq!(model(1).as_deref(), Some(r"Weapons\ModGunExt.NIF"));
+    assert_eq!(model(2).as_deref(), Some(r"Weapons\ModGun.NIF"));
+    assert_eq!(model(3).as_deref(), Some(r"Weapons\ModGunExtBarrel.NIF"));
+    // The player: the first-person object for the flags, else `WNAM`'s.
+    assert_eq!(player(0).as_deref(), Some(r"Weapons\1stModGun.NIF"));
+    assert_eq!(player(1).as_deref(), Some(r"Weapons\1stModGunExt.NIF"));
+    assert_eq!(player(3).as_deref(), Some(r"Weapons\1stModGun.NIF"));
+    // A weapon without first-person objects: the same as anyone's.
+    let pistol = FormId(PISTOL);
+    assert_eq!(
+        weapon_mods::player_model(&order, pistol, 0),
+        weapon_mods::model(&order, pistol, 0)
+    );
+}

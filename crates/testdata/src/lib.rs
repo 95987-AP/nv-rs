@@ -1488,6 +1488,12 @@ pub mod quest_ids {
     pub const EXT_MAG: u32 = 0xB5B;
     pub const BARREL: u32 = 0xB5C;
     pub const LIGHT_FRAME: u32 = 0xB5D;
+    /// Its models: `MODL` `Weapons\ModGun.NIF`, `MWD1`
+    /// `Weapons\ModGunExt.NIF`, `MWD3` `Weapons\ModGunExtBarrel.NIF`;
+    /// first person `WNAM` `1stPersonModGun` (`Weapons\1stModGun.NIF`),
+    /// `WNM1` `1stPersonModGunExt` (`Weapons\1stModGunExt.NIF`).
+    pub const FIRST_PERSON_GUN: u32 = 0xB5E;
+    pub const FIRST_PERSON_GUN_EXT: u32 = 0xB5F;
     /// Caravan: `TestCardAce` (hearts ace), `TestCardQueen` (spades queen),
     /// both with `TestCardScript` (the game's `CardAddToPlayerScript`:
     /// `OnAdd`, held by the player, `AddCardToPlayer` and `RemoveMe`), and
@@ -2748,6 +2754,11 @@ End
     // values at 152).
     let mut mod_gun = edid("TestModGun");
     mod_gun.extend(sub(b"FULL", &zstr("Mod Gun")));
+    mod_gun.extend(sub(b"MODL", &zstr("Weapons\\ModGun.NIF")));
+    mod_gun.extend(sub(b"MWD1", &zstr("Weapons\\ModGunExt.NIF")));
+    mod_gun.extend(sub(b"MWD3", &zstr("Weapons\\ModGunExtBarrel.NIF")));
+    mod_gun.extend(sub(b"WNAM", &FIRST_PERSON_GUN.to_le_bytes()));
+    mod_gun.extend(sub(b"WNM1", &FIRST_PERSON_GUN_EXT.to_le_bytes()));
     for (sig, item) in [
         (b"WMI1", EXT_MAG),
         (b"WMI2", BARREL),
@@ -2770,6 +2781,22 @@ End
     mod_gun.extend(sub(b"DNAM", &mod_dnam));
     weapons.extend(record(b"WEAP", MOD_GUN, &mod_gun));
     plugin.extend(group(*b"WEAP", 0, &weapons));
+    let first_person = |id: u32, name: &str, model: &str| {
+        let mut d = edid(name);
+        d.extend(sub(b"MODL", &zstr(model)));
+        record(b"STAT", id, &d)
+    };
+    let mut first_person_models = first_person(
+        FIRST_PERSON_GUN,
+        "1stPersonModGun",
+        "Weapons\\1stModGun.NIF",
+    );
+    first_person_models.extend(first_person(
+        FIRST_PERSON_GUN_EXT,
+        "1stPersonModGunExt",
+        "Weapons\\1stModGunExt.NIF",
+    ));
+    plugin.extend(group(*b"STAT", 0, &first_person_models));
     let weapon_mod = |id: u32, name: &str| {
         let mut d = edid(name);
         d.extend(sub(b"FULL", &zstr(name)));

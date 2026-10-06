@@ -181,6 +181,68 @@ pub fn modded(order: &LoadOrder, state: &GameState, holder: FormId, mut weapon: 
     weapon
 }
 
+/// The one weapon the exe never gives its mod models (`00522df0`,
+/// `004ab400`; not in FalloutNV.esm).
+const NO_MOD_MODELS: FormId = FormId(0x1735D4);
+
+/// The weapon's model with these mods fitted, as someone holds it
+/// (`00522df0`, Xbox PDB `TESObjectWEAP::GetModTESModel`): `MWD1`–`MWD7` by
+/// the fitted flags' value (the load puts `MWD{n}` where the flags `n` find
+/// it: 1 the first mod, 2 the second, 3 both, 4 the third, … 7 all three;
+/// the 9mm's `MWD3` is `9mmExtClipScp.NIF`), the plain `MODL` without mods
+/// or when that one is empty.
+pub fn model(order: &LoadOrder, weapon: FormId, flags: u8) -> Option<String> {
+    let rr = order.get(weapon).filter(|r| r.entry.header.kind == WEAP)?;
+    let record = rr.record().ok()?;
+    let path = |sig: &[u8; 4]| {
+        record
+            .get(FourCC::new(sig))
+            .map(|s| s.zstring())
+            .filter(|p| !p.is_empty())
+    };
+    let modded = match flags & 7 {
+        _ if weapon == NO_MOD_MODELS => None,
+        0 => None,
+        n => path(&[b'M', b'W', b'D', b'0' + n]),
+    };
+    modded.or_else(|| path(b"MODL"))
+}
+
+/// The model the player holds, in first and third person (`004ab400`, for
+/// either of the player's bodies): the first-person object for the fitted
+/// mods (`WNM{flags}`, `004ab500`, Xbox PDB
+/// `TESObjectWEAP::Get1stPersonModObject`, filled in the same order as
+/// `MWD`), else the plain one (`WNAM`, `008d8b00`): a `STAT` whose `MODL`
+/// it is. Without either, [`model`]. (15 of the game's weapons differ:
+/// Lily's carbine is the plain carbine, the fire axe `1stFireAxe.NIF`.)
+pub fn player_model(order: &LoadOrder, weapon: FormId, flags: u8) -> Option<String> {
+    let rr = order.get(weapon).filter(|r| r.entry.header.kind == WEAP)?;
+    let record = rr.record().ok()?;
+    let object = |sig: &[u8; 4]| {
+        record
+            .get(FourCC::new(sig))
+            .filter(|s| s.data.len() >= 4)
+            .map(|s| {
+                rr.plugin
+                    .to_global(FormId(u32::from_le_bytes(s.data[0..4].try_into().unwrap())))
+            })
+            .filter(|id| id.0 != 0 && order.get(*id).is_some())
+    };
+    let modded = match flags & 7 {
+        _ if weapon == NO_MOD_MODELS => None,
+        0 => None,
+        n => object(&[b'W', b'N', b'M', b'0' + n]),
+    };
+    let Some(stat) = modded.or_else(|| object(b"WNAM")) else {
+        return model(order, weapon, flags);
+    };
+    let stat = order.get(stat)?.record().ok()?;
+    Some(
+        stat.get(FourCC::new(b"MODL"))
+            .map_or(String::new(), |s| s.zstring()),
+    )
+}
+
 /// The weight a holder's mods take off a weapon (`004be380`).
 pub fn weight_off(order: &LoadOrder, state: &GameState, holder: FormId, weapon: FormId) -> f32 {
     let f = flags(state, holder, weapon);
