@@ -84,6 +84,15 @@ pub struct Response {
     pub emotion_value: i32,
     pub number: u8,
     pub text: String,
+    /// `TRDT` byte 20: the emotion counts for the speaker's animations
+    /// (`DialogueResponse::bUseEmotion`, Xbox PDB; `008a5580` stores it at
+    /// actor +0x86, which `GetDialogueEmotion` checks, `005a4480`).
+    pub use_emotion: bool,
+    /// `SNAM` and `LNAM` after the `TRDT`: the idles the speaker and the
+    /// listener play with this response (`pSpeakerIdle`, `pListenIdle`,
+    /// Xbox PDB; read by `0061e780`, said by `008a20d0`).
+    pub speaker_idle: Option<FormId>,
+    pub listener_idle: Option<FormId>,
 }
 
 /// How a condition compares (the top three bits of its first byte).
@@ -578,11 +587,25 @@ impl Info {
                         emotion_value: le_u32(&sub.data, 4) as i32,
                         number: sub.data[12],
                         text: String::new(),
+                        use_emotion: sub.data.get(20).is_some_and(|b| *b != 0),
+                        speaker_idle: None,
+                        listener_idle: None,
                     });
                 }
                 k if k == NAM1 => {
                     if let Some(r) = pending.as_mut() {
                         r.text = sub.zstring();
+                    }
+                }
+                // A response's idles (`0061e780`: only after a `TRDT`).
+                k if (k == SNAM || k == LNAM) && sub.data.len() >= 4 => {
+                    if let Some(r) = pending.as_mut() {
+                        let idle = Some(global(rr, &sub.data)).filter(|id| id.0 != 0);
+                        if k == SNAM {
+                            r.speaker_idle = idle;
+                        } else {
+                            r.listener_idle = idle;
+                        }
                     }
                 }
                 k if k == CTDA => conditions.extend(read_condition(rr, &sub.data)),
@@ -674,6 +697,7 @@ const VTCK: FourCC = FourCC::new(b"VTCK");
 const RNAM_RACE: FourCC = FourCC::new(b"RNAM");
 const ACBS: FourCC = FourCC::new(b"ACBS");
 const SNAM: FourCC = FourCC::new(b"SNAM");
+const LNAM: FourCC = FourCC::new(b"LNAM");
 
 /// The player's reference and base record (fixed forms in every game).
 pub const PLAYER_REF: FormId = FormId(0x14);
