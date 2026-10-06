@@ -452,11 +452,27 @@ fn object_in_view(
 ) -> Option<(FormId, String)> {
     let (eye, dir) = view;
     let mut best: Option<(f32, &Interactive)> = None;
+    // Objects Havok moves (`clutter`) are picked where their bodies are:
+    // the pick sphere against their triangles, which move with them.
+    let body_pick = collision.spherecast(
+        eye,
+        dir,
+        world::activation::PICK_LENGTH,
+        world::activation::PICK_RADIUS,
+    );
     for r in refs {
         if r.trigger.is_some() || [*b"NPC_", *b"CREA", *b"DOOR"].contains(r.kind.as_bytes()) {
             continue;
         }
-        let Some(d) = target_hit_distance(r, object_bounds, eye, dir) else {
+        let hit = if collision.owns(r.reference.0) {
+            body_pick
+                .as_ref()
+                .filter(|h| collision.owner(h.triangle) == r.reference.0)
+                .map(|h| h.distance)
+        } else {
+            target_hit_distance(r, object_bounds, eye, dir)
+        };
+        let Some(d) = hit else {
             continue;
         };
         if d > world::activation::PICK_LENGTH || best.is_some_and(|(bd, _)| d >= bd) {
@@ -469,6 +485,14 @@ fn object_in_view(
         }
     }
     let (d, r) = best?;
+    // A reference a script has "destroyed" (`SetDestroyed 1`, form flag
+    // 0x800000, `00477ba0`) under the crosshair has no prompt (the HUD's
+    // crosshair update, `00775a00`, clears it for anything but actors) and
+    // doesn't activate (`005180b0` returns at once): the VCG02 bottles
+    // after their `OnLoad`.
+    if state.destroyed.contains(&r.reference) {
+        return None;
+    }
     // Walls in the way hide it.
     if hidden_by_surface(collision, eye, dir, d) {
         return None;

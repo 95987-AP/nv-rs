@@ -458,6 +458,14 @@ pub(crate) fn opening_door_in_view(
     (owner != 0).then_some(esm::FormId(owner))
 }
 
+/// Whether a reference is a door (its base a `DOOR`): other owners of the
+/// collider's triangles (clutter bodies, `clutter`) aren't doors to open.
+pub(crate) fn is_door(order: &esm::LoadOrder, reference: esm::FormId) -> bool {
+    world::scripting::base_of(order, reference)
+        .and_then(|b| order.get(b))
+        .is_some_and(|b| b.entry.header.kind.as_bytes() == b"DOOR")
+}
+
 /// Where a ray enters an axis-aligned box, if it does.
 fn ray_box(origin: [f32; 3], dir: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Option<f32> {
     let mut near = 0.0f32;
@@ -521,7 +529,8 @@ pub fn doors(
     let swing = door
         .is_none()
         .then(|| opening_door_in_view(&collision.0, eye, dir))
-        .flatten();
+        .flatten()
+        .filter(|&r| is_door(&game.0.order, r));
     let line = match (door, swing, &activatable.0) {
         // Nothing while the lockpicking menu or one of the game's menus is up
         // (the roll-over is the HUD's, which their masks hide: ui::hud::parts_for_menu).

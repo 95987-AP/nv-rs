@@ -11,15 +11,23 @@
 //!   PDB) does (`physics::impulses::projectile_impulse`, from
 //!   `hiteffects::HitReports::shot_on_world`); explosions push the bodies in
 //!   their sphere (`physics::impulses::explosion_push`, from
-//!   `explosives`); the player walking into one pushes it.
+//!   `explosives`); the player and people walking into one push it
+//!   ([`actor_walks`] for actor controllers to report themselves; until one
+//!   does, each moving `Walker` is taken at people's controller size).
+//! - The Grab control (Z) picks up the body under the crosshair and carries
+//!   it on Havok's mouse spring (`physics::grab`).
+//! - Contacts beginning play the game's impact sounds by Havok material
+//!   (`physics::contacts`, `ImpactMixer::PlayCollisionSound` (Xbox PDB))
+//!   and work out physics damage for destructible references (logged:
+//!   destruction isn't implemented).
 //! - Where a moved body is goes into the game state every frame it moves,
-//!   so a save, or the place loading again, keeps it.
+//!   so a save, or the place loading again, keeps it; one still moving
+//!   keeps its velocities (`GameState::havok_velocity`).
 //!
-//! Not done: people other than the player pushing clutter, grabbing with
-//! the Z key (`0095f930`/`00960520`, its `fZKey…` settings traced but not
-//! implemented), damage from flying objects (`fPhysicsDamage…`,
-//! `0062be90`), models with more than one moving body (left solid where
-//! placed), destructible objects' stages and debris.
+//! Not done: models with joined or several moving bodies (left solid where
+//! placed: constraints aren't simulated), destructible objects' stages and
+//! debris; impact sounds play without the game's attenuation and pitch
+//! (`sounds` plays every sound flat).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -27,14 +35,19 @@ use std::sync::Mutex;
 use bevy::prelude::*;
 use cellview::space;
 use esm::FormId;
+use physics::contacts::{self, ContactSettings};
+use physics::grab::{self, GrabSettings};
 use physics::impulses::{self, ImpulseSettings};
-use physics::rigid::{Mover, Pose, RigidWorld};
+use physics::rigid::{ContactEvent, Mover, Pose, RigidWorld, Spring};
 use preview::cell::DynamicBody;
 
-use crate::dialogue::DialogueState;
+use crate::controls::Controls;
+use crate::dialogue::{Conversation, DialogueState};
+use crate::menus::Menus;
 use crate::scripts::PlacedRef;
-use crate::walk::{CellCollision, Player};
-use crate::GameFiles;
+use crate::sounds::SoundRequests;
+use crate::walk::{game_point, CellCollision, Player};
+use crate::{FlyCamera, GameFiles};
 
 /// A push waiting for the simulation.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +73,24 @@ pub(crate) enum Push {
 /// as the throw queue in `explosives` is: no system parameters change).
 static ARRIVED: Mutex<Vec<DynamicBody>> = Mutex::new(Vec::new());
 static PUSHES: Mutex<Vec<Push>> = Mutex::new(Vec::new());
+/// Actor controllers reported this frame ([`actor_walks`]).
+static ACTORS: Mutex<Vec<(FormId, Mover)>> = Mutex::new(Vec::new());
+
+/// The interface for actor controllers (NPC navigation): an actor's
+/// character controller this frame — its feet, radius, height and
+/// velocity (game units) — so bodies it walks into are pushed as the
+/// player's are (`physics::rigid::Mover`; bodies at least
+/// `fMoveLimitMass` heavy aren't, `physics::rigid::MOVE_LIMIT_MASS`).
+/// Call it each frame for each actor that moves; a report replaces this
+/// module's own reading of that actor's `Walker` for the frame.
+// For the actor controllers (NPC navigation's branch) to call.
+#[allow(dead_code)]
+pub fn actor_walks(reference: FormId, mover: Mover) {
+    if let Ok(mut q) = ACTORS.lock() {
+        q.retain(|(r, _)| *r != reference);
+        q.push((reference, mover));
+    }
+}
 
 /// A spawned place's bodies, for the simulation.
 pub(crate) fn arrive(bodies: &[DynamicBody]) {
@@ -115,8 +146,36 @@ pub struct Clutter {
     /// unloaded with its place).
     drawn: HashSet<u32>,
     settings: Option<ImpulseSettings>,
+    contact_settings: Option<ContactSettings>,
+    grab_settings: Option<GrabSettings>,
     /// Scripts' enable state when the bodies' triangles were last switched.
     disabled_seen: world::Disabled,
+    /// What the player holds with the Grab control.
+    held: Option<Held>,
+    /// Bodies whose ground isn't in the collider yet.
+    waiting: Vec<DynamicBody>,
+    /// Bodies registered since draw last ran, for it to find their
+    /// pieces.
+    fresh: HashSet<u32>,
+    /// When each pair of materials last sounded (seconds), for
+    /// `iCollisionSoundTimeDelta`.
+    sounded: HashMap<i32, f32>,
+}
+
+/// The player's grab: the held reference and how far from the eye it's
+/// held.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Held {
+    reference: u32,
+    distance: f32,
+}
+
+/// A setting from the INI (`[Audio]`…) or the game's settings.
+fn setting(game: &cellview::Game, section: &str, name: &str) -> Option<f32> {
+    game.settings
+        .get(section, name)
+        .and_then(|v| v.trim().parse().ok())
+        .or_else(|| world::scripting::game_setting(&game.order, name))
 }
 
 /// A drawn piece of a simulated object: its transform where the object
@@ -133,7 +192,7 @@ impl Plugin for ClutterPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Clutter>().add_systems(
             Update,
-            (simulate, draw)
+            (grab_held, simulate, draw)
                 .chain()
                 .after(crate::combat::player_attack)
                 .after(crate::explosives::fly_thrown)
@@ -152,7 +211,9 @@ fn simulate(
     mut collision: ResMut<CellCollision>,
     player: Res<Player>,
     mut clutter: ResMut<Clutter>,
+    mut sounds: ResMut<SoundRequests>,
     drawn: Query<&Simulated>,
+    walkers: Query<&crate::ai::Walker>,
 ) {
     let order = &game.0.order;
     let state = &mut state.0;
@@ -160,16 +221,46 @@ fn simulate(
     let settings = *clutter.settings.get_or_insert_with(|| {
         ImpulseSettings::read(|name| world::scripting::game_setting(order, name))
     });
+    let contact_settings = *clutter
+        .contact_settings
+        .get_or_insert_with(|| ContactSettings::read(|name| setting(&game.0, "Audio", name)));
     // New bodies (or ones whose place loaded again): where the state has
     // them, else where they're placed.
     let arrived: Vec<DynamicBody> = ARRIVED
         .lock()
         .map(|mut q| std::mem::take(&mut *q))
         .unwrap_or_default();
-    for body in arrived {
+    // Ones waiting for their ground come first; a newer arrival of the
+    // same reference replaces its wait.
+    let mut queue: Vec<DynamicBody> = std::mem::take(&mut clutter.waiting);
+    queue.retain(|w| !arrived.iter().any(|a| a.reference == w.reference));
+    queue.extend(arrived);
+    for body in queue {
         let reference = body.reference.0;
+        // Not before the ground under it is in the collider: a square's
+        // objects can arrive before its land and statics are merged in,
+        // and a body settling then falls through the world (the game's
+        // bodies live in the Havok world with their cell's ground; this
+        // wait is the viewer's).
+        let at = state
+            .havok_moved
+            .get(&body.reference)
+            .map_or(body.pose.1, |p| p.1);
+        let hidden = collision.0.is_hidden(reference);
+        collision.0.set_hidden(reference, true);
+        let ground = collision
+            .0
+            .raycast([at[0], at[1], at[2] + 64.0], [0.0, 0.0, -1.0], 4096.0);
+        collision.0.set_hidden(reference, hidden);
+        if ground.is_none() {
+            clutter.waiting.push(body);
+            continue;
+        }
         if let Some(old) = clutter.world.find(reference) {
-            clutter.world.bodies.remove(old);
+            clutter.world.remove_at(old);
+        }
+        if clutter.held.is_some_and(|h| h.reference == reference) {
+            clutter.held = None;
         }
         clutter.drawn.remove(&reference);
         collision.0.set_hidden(reference, false);
@@ -179,9 +270,12 @@ fn simulate(
         }
         if body.settle {
             // Havok settles it as its place loads (placed a little sunk
-            // into what holds it, or left in the air by a save: its speed
-            // isn't kept).
+            // into what holds it).
             clutter.world.wake(i);
+        }
+        // Still moving when saved: on its way again (`00563380`).
+        if let Some(&(v, w)) = state.havok_velocity.get(&body.reference) {
+            clutter.world.set_velocity(i, v, w);
         }
         if collision.0.owns(reference) {
             let (r, t) = clutter.world.delta(i);
@@ -190,6 +284,7 @@ fn simulate(
         clutter
             .info
             .insert(reference, (body.name.clone(), body.materials.clone()));
+        clutter.fresh.insert(reference);
     }
     // Bodies whose drawing went (their place unloaded) leave.
     let shown: HashSet<u32> = drawn.iter().map(|s| s.reference).collect();
@@ -203,6 +298,9 @@ fn simulate(
         clutter.drawn.remove(&r);
         clutter.world.remove(r);
         clutter.info.remove(&r);
+        if clutter.held.is_some_and(|h| h.reference == r) {
+            clutter.held = None;
+        }
     }
     clutter.drawn.extend(shown);
     if clutter.world.bodies.is_empty() {
@@ -239,11 +337,12 @@ fn simulate(
                     })
                     .collect();
                 let material = materials.get(k).copied().unwrap_or(physics::NO_MATERIAL);
-                collision.0.add_solid_surface(
+                collision.0.add_layered(
                     &placed,
                     &t,
                     (shell, reference, material),
                     Some(surface),
+                    b.setup.layer,
                 );
             }
             let (r, t) = clutter.world.delta(i);
@@ -257,19 +356,39 @@ fn simulate(
         }
     }
     clutter.disabled_seen = state.disabled.clone();
-    // The player pushes what they walk into.
+    // The player and people push what they walk into.
     let c = &player.character;
     let shape = physics::CharacterShape::PLAYER;
-    clutter.world.set_movers(if player.walking && player.ready {
-        vec![Mover {
+    let mut movers = Vec::new();
+    if player.walking && player.ready {
+        movers.push(Mover {
             feet: c.feet,
             radius: shape.radius,
             height: shape.height,
             velocity: [c.horizontal[0], c.horizontal[1], c.vertical_speed],
-        }]
-    } else {
-        Vec::new()
-    });
+        });
+    }
+    let reported: Vec<(FormId, Mover)> = ACTORS
+        .lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default();
+    // Everyone else moving: people's one controller size (`findings`
+    // physics §2; creatures' sizes come from their bounds in the game and
+    // aren't taken here, labelled).
+    for w in &walkers {
+        let speed = w.velocity[0].hypot(w.velocity[1]);
+        if speed < 1e-3 || reported.iter().any(|(r, _)| *r == w.reference) {
+            continue;
+        }
+        movers.push(Mover {
+            feet: w.position,
+            radius: shape.radius,
+            height: shape.height,
+            velocity: w.velocity,
+        });
+    }
+    movers.extend(reported.into_iter().map(|(_, m)| m));
+    clutter.world.set_movers(movers);
     // Shots and blasts.
     let pushes: Vec<Push> = PUSHES
         .lock()
@@ -293,6 +412,14 @@ fn simulate(
         if b.moved {
             state.havok_moved.insert(FormId(reference), b.pose());
         }
+        // An active body's velocities go with it into a save (`00563220`).
+        if b.asleep {
+            state.havok_velocity.remove(&FormId(reference));
+        } else if b.moved {
+            state
+                .havok_velocity
+                .insert(FormId(reference), (b.velocity(), b.spin()));
+        }
         if b.asleep {
             let name = clutter.info.get(&reference).map_or("", |(n, _)| n.as_str());
             let at = b.pose().1;
@@ -306,6 +433,252 @@ fn simulate(
             );
         }
     }
+    // Contacts begun: impact sounds and physics damage.
+    let now = time.elapsed_secs();
+    for event in clutter.world.take_contacts() {
+        contact(
+            clutter,
+            &collision.0,
+            order,
+            &contact_settings,
+            now,
+            &mut sounds,
+            event,
+        );
+    }
+}
+
+/// One side of a contact: its Havok material (`-1`: none), its mass for
+/// the sounds (`contacts::STATIC_SIDE_MASS` without a moving body) and for
+/// the damage (`contacts::FIXED_MASS` for a fixed one), and its reference.
+fn side(clutter: &Clutter, body: usize) -> (i32, f32, u32) {
+    let b = &clutter.world.bodies[body];
+    let reference = b.setup.reference;
+    let material = clutter
+        .info
+        .get(&reference)
+        .and_then(|(_, m)| m.first().copied())
+        .filter(|&m| m != physics::NO_MATERIAL)
+        .map_or(-1, |m| m as i32);
+    (material, b.setup.mass, reference)
+}
+
+/// A contact beginning (`FOCollisionListener::contactPointAddedCallback`
+/// (Xbox PDB), `00623cb0`): the impact sounds of both sides by material
+/// (`physics::contacts::collision_sound`), one per pair of materials per
+/// `iCollisionSoundTimeDelta`; then physics damage for a destructible
+/// reference struck hard enough (`006238b0`: a reference with
+/// destructible data, not yet destroyed).
+#[allow(clippy::too_many_arguments)]
+fn contact(
+    clutter: &mut Clutter,
+    collider: &physics::Collider,
+    order: &esm::LoadOrder,
+    s: &ContactSettings,
+    now: f32,
+    sounds: &mut SoundRequests,
+    e: ContactEvent,
+) {
+    let (mat_a, mass_a, ref_a) = side(clutter, e.body);
+    let (mat_b, sound_mass_b, damage_mass_b, ref_b) = match (e.other_body, e.triangle) {
+        (Some(j), _) => {
+            let (m, mass, r) = side(clutter, j);
+            (m, mass, mass, r)
+        }
+        (None, Some(t)) => (
+            collider.material(t).map_or(-1, |m| m as i32),
+            contacts::STATIC_SIDE_MASS,
+            contacts::FIXED_MASS,
+            collider.owner(t),
+        ),
+        _ => return,
+    };
+    let name = |r: u32| {
+        clutter
+            .info
+            .get(&r)
+            .map_or_else(|| FormId(r).to_string(), |(n, _)| n.clone())
+    };
+    if contacts::audible(e.speed, s) {
+        if let Some(sound) =
+            contacts::collision_sound((mat_a, mass_a), (mat_b, sound_mass_b), e.speed, s)
+        {
+            let gap = s.time_delta_ms as f32 / 1000.0;
+            let quiet = clutter
+                .sounded
+                .get(&sound.key)
+                .is_some_and(|&t| now - t < gap);
+            if !quiet {
+                clutter.sounded.insert(sound.key, now);
+                let mut played = Vec::new();
+                for id in sound.sounds.into_iter().flatten() {
+                    if let Some(form) = order.form_by_editor_id(id) {
+                        sounds.0.push(form);
+                        played.push(id);
+                    }
+                }
+                println!(
+                    "  {} meets {} at {:.0} units a second: {} (attenuation {:.1} dB, frequency × {:.2})",
+                    name(ref_a),
+                    name(ref_b),
+                    e.speed,
+                    played.join(" + "),
+                    f32::from(sound.attenuation) / 100.0,
+                    sound.frequency
+                );
+            }
+        }
+    }
+    // Physics damage: Havok's speed, each side by the other's mass.
+    let havok_speed = e.speed / physics::HAVOK_UNIT;
+    if !contacts::damaging(havok_speed, s) {
+        return;
+    }
+    for (victim, other_mass) in [(ref_a, damage_mass_b), (ref_b, mass_a)] {
+        if victim == 0 || !destructible(order, FormId(victim)) {
+            continue;
+        }
+        let damage = contacts::physics_damage(other_mass, havok_speed, s);
+        if damage > 0.0 {
+            println!(
+                "  physics damage {damage:.1} to {} (destruction isn't implemented)",
+                name(victim)
+            );
+        }
+    }
+}
+
+/// Whether a reference's base carries destructible data (`DEST`): the
+/// references the game's physics damage goes to (the form flag
+/// 0x1000000 that `006238b0` tests, read with the destructible data in
+/// `00579220`; inferred to mean "has destructible data").
+fn destructible(order: &esm::LoadOrder, reference: FormId) -> bool {
+    world::scripting::base_of(order, reference)
+        .and_then(|b| order.get(b))
+        .and_then(|rr| rr.record().ok())
+        .is_some_and(|r| r.get(esm::FourCC::new(b"DEST")).is_some())
+}
+
+/// The Grab control: takes hold of the body under the crosshair, carries
+/// it, lets it go (`physics::grab`; `PlayerCharacter::HandlePhysicsGrab`,
+/// `::UpdateMouseSpring` (Xbox PDB), `0095f6c0`, `00960520`).
+#[allow(clippy::too_many_arguments)]
+fn grab_held(
+    game: Res<GameFiles>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    controls: Res<Controls>,
+    player: Res<Player>,
+    (conversation, menus): (Res<Conversation>, Res<Menus>),
+    mut collision: ResMut<CellCollision>,
+    mut clutter: ResMut<Clutter>,
+    cameras: Query<&Transform, With<FlyCamera>>,
+) {
+    let clutter = &mut *clutter;
+    let busy = !player.walking || !player.ready || conversation.0.is_some() || menus.is_open();
+    let Ok(camera) = cameras.single() else {
+        return;
+    };
+    let eye = game_point(camera.translation);
+    let f = camera.forward().as_vec3();
+    let view = [f.x, -f.z, f.y];
+    let s = *clutter.grab_settings.get_or_insert_with(|| {
+        GrabSettings::read(|name| world::scripting::game_setting(&game.0.order, name))
+    });
+    let pressed = !busy && controls.grab.just_pressed(&keys, &mouse);
+    if let Some(held) = clutter.held {
+        let Some(i) = clutter.world.find(held.reference) else {
+            clutter.held = None;
+            clutter.world.spring = None;
+            return;
+        };
+        if pressed || collision.0.is_hidden(held.reference) {
+            println!("Let go of {}.", FormId(held.reference));
+            clutter.held = None;
+            clutter.world.spring = None;
+            return;
+        }
+        if busy {
+            return;
+        }
+        // The target: along the view, short of anything else in the way.
+        collision.0.set_hidden(held.reference, true);
+        let blocked = collision
+            .0
+            .raycast(eye, view, held.distance)
+            .map(|(d, _)| d);
+        collision.0.set_hidden(held.reference, false);
+        let target = grab::target(eye, view, held.distance, blocked);
+        let Some(spring) = clutter.world.spring.as_mut() else {
+            clutter.held = None;
+            return;
+        };
+        spring.target = target;
+        let local = spring.local;
+        let point = clutter.world.point(i, local);
+        let gap = dist(point, target);
+        let heaviest = clutter.world.heaviest_contact(i);
+        let mass = clutter.world.bodies[i].setup.mass;
+        if grab::lets_go(gap, heaviest, mass, &s) {
+            println!(
+                "Lost hold of {} ({gap:.0} units from where it's held).",
+                FormId(held.reference)
+            );
+            clutter.held = None;
+            clutter.world.spring = None;
+        }
+        return;
+    }
+    if !pressed {
+        return;
+    }
+    // What the crosshair's pick meets (`fActivatePickSphereRadius` along
+    // the activation reach), and its body.
+    let Some(hit) = collision.0.spherecast(
+        eye,
+        view,
+        world::activation::PICK_LENGTH,
+        world::activation::PICK_RADIUS,
+    ) else {
+        return;
+    };
+    let owner = collision.0.owner(hit.triangle);
+    let Some(i) = clutter.world.find(owner) else {
+        return;
+    };
+    let b = &clutter.world.bodies[i];
+    if !grab::may_grab(b.setup.mass, impulses::moves(b.setup.motion), &s) {
+        println!(
+            "{} is too heavy to grab ({} > {}).",
+            FormId(owner),
+            b.setup.mass,
+            s.max_weight
+        );
+        return;
+    }
+    let (damping, elasticity, object_damping, max_force) = grab::spring_values(b.setup.layer, &s);
+    let distance =
+        grab::hold_distance(dist(hit.point, eye), physics::CharacterShape::PLAYER.radius);
+    let local = clutter.world.local_point(i, hit.point);
+    clutter.world.spring = Some(Spring {
+        body: i,
+        local,
+        target: hit.point,
+        damping,
+        elasticity,
+        max_relative_force: max_force,
+        object_damping,
+    });
+    clutter.world.wake(i);
+    clutter.held = Some(Held {
+        reference: owner,
+        distance,
+    });
+    println!(
+        "Grabbed {} ({}) {distance:.0} units away.",
+        FormId(owner),
+        clutter.info.get(&owner).map_or("", |(n, _)| n.as_str())
+    );
 }
 
 /// The projectile a weapon's shot is: its ammunition's (`AMMO` `DAT2` form
@@ -460,6 +833,10 @@ fn apply(
     }
 }
 
+fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
 /// A game-space rigid move as one in Bevy's space (meters, y up).
 fn bevy_delta((r, t): Pose) -> Mat4 {
     let mut m = [0.0f32; 16];
@@ -478,16 +855,22 @@ fn bevy_delta((r, t): Pose) -> Mat4 {
 }
 
 /// A drawn piece just spawned: its entity, reference and transform.
-type NewPiece = (Entity, &'static PlacedRef, &'static Transform);
+type NewPiece = (Entity, Ref<'static, PlacedRef>, &'static Transform);
 
 /// Draws simulated objects where their bodies are.
 fn draw(
     mut commands: Commands,
-    clutter: Res<Clutter>,
-    new: Query<NewPiece, (Added<PlacedRef>, Without<Simulated>)>,
+    mut clutter: ResMut<Clutter>,
+    new: Query<NewPiece, Without<Simulated>>,
     mut pieces: Query<(&Simulated, &mut Transform)>,
 ) {
-    for (entity, placed, transform) in &new {
+    // Pieces of bodies registered this frame (some after waiting for
+    // their ground, their drawing spawned frames before).
+    let fresh = std::mem::take(&mut clutter.fresh);
+    for (entity, placed, transform) in new
+        .iter()
+        .filter(|(_, p, _)| p.is_added() || fresh.contains(&p.0))
+    {
         if clutter.world.find(placed.0).is_some() {
             commands.entity(entity).insert(Simulated {
                 reference: placed.0,

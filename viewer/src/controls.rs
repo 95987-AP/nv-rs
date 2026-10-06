@@ -55,6 +55,8 @@ pub struct Controls {
     pub always_run: Binding,
     /// Control 11, "Auto Move".
     pub auto_move: Binding,
+    /// Control 27, "Grab": pick up and carry clutter (`clutter`).
+    pub grab: Binding,
     /// `bAlwaysRunByDefault` (the player's +0x651 at the start).
     pub always_run_default: bool,
 }
@@ -66,6 +68,7 @@ impl Default for Controls {
             sneak: Binding::from_value(0x001D_FF08),
             always_run: Binding::from_value(0x003A_FFFF),
             auto_move: Binding::from_value(0x0010_FFFF),
+            grab: Binding::from_value(0x002C_FF09),
             always_run_default: true,
         }
     }
@@ -87,6 +90,7 @@ impl Controls {
             sneak: binding("Crouch/Sneak", base.sneak),
             always_run: binding("Always Run", base.always_run),
             auto_move: binding("Auto Move", base.auto_move),
+            grab: binding("Grab", base.grab),
             always_run_default: settings
                 .get("Controls", "bAlwaysRunByDefault")
                 .map_or(base.always_run_default, |v| v.trim() != "0"),
@@ -116,5 +120,7 @@ mod tests {
         assert_eq!(c.sneak.key, Some(KeyCode::KeyC));
         assert!(!c.always_run_default);
         assert_eq!(c.aim, Controls::default().aim);
+        // This install's Grab: Z.
+        assert_eq!(Controls::default().grab.key, Some(KeyCode::KeyZ));
     }
 }

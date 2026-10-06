@@ -1215,7 +1215,7 @@ fn met_first(
         (false, Some(shooter)),
         now,
     );
-    let wall = collision.0.raycast(origin, dir, reach);
+    let wall = crate::combat::cast(collision, (origin, dir), reach, false);
     let player = (shooter != PLAYER_REF && !state.dead.contains(&PLAYER_REF))
         .then_some(state.player_position)
         .flatten()

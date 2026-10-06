@@ -260,12 +260,23 @@ pub(crate) fn first_met_past(
             }
         }
     }
+    let struck = cast(collision, (eye, dir), reach, melee);
     for r in cell_scripts
         .refs
         .iter()
         .filter(|r| meetable(order, state, r))
     {
-        if let Some(d) = r.ray_hit(eye, dir) {
+        // An object Havok moves (`clutter`) is met where its body is now:
+        // by its triangles in the collider, which move with it (its placed
+        // bounds stay where it stood).
+        let met = if collision.0.owns(r.reference.0) {
+            struck
+                .filter(|&(_, t)| collision.0.owner(t) == r.reference.0)
+                .map(|(d, _)| d)
+        } else {
+            r.ray_hit(eye, dir)
+        };
+        if let Some(d) = met {
             // A person's shot leaving from inside an object's bounds (Easy
             // Pete on his porch) isn't stopped by them: the bounds stand in
             // for the object's collision here, and the shooter stands in
@@ -276,7 +287,7 @@ pub(crate) fn first_met_past(
             }
         }
     }
-    let wall = collision.0.raycast(eye, dir, reach).map(|(d, _)| d);
+    let wall = struck.map(|(d, _)| d);
     match best.filter(|(d, _, _)| wall.is_none_or(|w| w >= d - 5.0)) {
         Some((distance, reference, part)) => Met::Thing {
             distance,
@@ -284,6 +295,29 @@ pub(crate) fn first_met_past(
             part,
         },
         None => Met::Nothing(wall.is_some()),
+    }
+}
+
+/// Where a shot or blow along `(eye, dir)` meets the collider within
+/// `reach`. Shots are cast on Havok's projectile layer (6): the game's
+/// collision filter (`physics::layers`, `00c84930` for casts) lets them
+/// through bodies on layers it doesn't touch, such as a `TRANSPARENT`
+/// chain-link fence a walker can't pass. That the shot's own cast uses
+/// layer 6 is taken from the layer's name (the projectile's cast filter
+/// word isn't traced). Blows meet every surface (the melee pick's layer
+/// isn't traced).
+pub(crate) fn cast(
+    collision: &CellCollision,
+    (eye, dir): ([f32; 3], [f32; 3]),
+    reach: f32,
+    melee: bool,
+) -> Option<(f32, u32)> {
+    if melee {
+        collision.0.raycast(eye, dir, reach)
+    } else {
+        collision
+            .0
+            .raycast_layer(eye, dir, reach, physics::layers::layer::PROJECTILE)
     }
 }
 
@@ -751,7 +785,7 @@ pub fn player_attack(
             now,
         );
         // A shot striking the world: its impact (`hiteffects`).
-        let struck = collision.0.raycast(eye, dir, reach);
+        let struck = cast(&collision, (eye, dir), reach, melee);
         let gun = weapon.as_ref().filter(|w| !w.is_melee()).map(|w| w.form_id);
         let Met::Thing {
             distance: d,
@@ -763,9 +797,25 @@ pub fn player_attack(
             if let (Some(s), Some(g)) = (struck, gun) {
                 hits.shot_on_world(&collision.0, (eye, dir), s, PLAYER_REF, g);
             }
+            let layer = struck.map(|(_, t)| collision.0.layer(t));
+            // A surface the shot's layer passes (a chain-link fence).
+            let passed = collision
+                .0
+                .raycast(eye, dir, reach)
+                .filter(|&(d, _)| struck.is_none_or(|(s, _)| d < s - 1.0))
+                .map_or(String::new(), |(d, t)| {
+                    format!(
+                        " (through a layer {} surface at {d:.0} units)",
+                        collision.0.layer(t)
+                    )
+                });
             println!(
-                "The attack hit nothing{}.",
-                if wall { " but a wall" } else { "" }
+                "The attack hit nothing{}{passed}.",
+                match layer.filter(|_| wall) {
+                    Some(physics::ANY_LAYER) => " but a wall".to_string(),
+                    Some(l) => format!(" but a wall (layer {l})"),
+                    None => String::new(),
+                }
             );
             continue;
         };
