@@ -36,14 +36,14 @@ pub const MESSAGE_FADE: f32 = 0.35;
 /// a script's message box without buttons passes the message's own time).
 pub const MESSAGE_SECONDS: f32 = 2.0;
 
-/// The HUD's parts whose code isn't followed here yet: the sneak meter,
-/// enemy health, quest reminders, hotkeys, the region name, radiation, explosives, hardcore needs, the breath meter, crippled
-/// limbs, the damage threshold icons and the ammunition type. They're
-/// hidden; in normal play the game draws them all at alpha 0 (every one
-/// had alpha 0 in the recorded frame), so nothing on screen differs until
-/// sneaking, aiming at someone, a quest update and so on.
-pub const NOT_FOLLOWED: [&str; 15] = [
-    "SneakMeter",
+/// The HUD's parts whose code isn't followed here yet: enemy health,
+/// quest reminders, hotkeys, the region name, radiation, explosives,
+/// hardcore needs, the breath meter, crippled limbs, the damage threshold
+/// icons and the ammunition type. They're hidden; in normal play the game
+/// draws them all at alpha 0 (every one had alpha 0 in the recorded
+/// frame), so nothing on screen differs until aiming at someone, a quest
+/// update and so on.
+pub const NOT_FOLLOWED: [&str; 14] = [
     "EnemyHealth",
     "QuestReminder",
     "Hokeys",
@@ -185,6 +185,19 @@ pub struct HudTiles {
     pub info_pc_shortcut: TileId,
     pub info_xbox_button: TileId,
     pub info_target: TileId,
+    /// The Info panel's other lines (`HUDMainMenu` +0xac … +0xc4,
+    /// `0076bfe0`): the lock line, "Empty", the weight and its label, the
+    /// value and its label, the separator.
+    pub info_lock: TileId,
+    pub info_empty: TileId,
+    pub info_weight: TileId,
+    pub info_weight_label: TileId,
+    pub info_value: TileId,
+    pub info_value_label: TileId,
+    pub info_separator: TileId,
+    /// The sneak meter (+0x130) and its text (`sneak_nif`, +0x88).
+    pub sneak_meter: TileId,
+    pub sneak_text: TileId,
     pub messages: TileId,
     pub message_icon: TileId,
     pub message_text: TileId,
@@ -193,65 +206,229 @@ pub struct HudTiles {
     pub subtitle_text: TileId,
 }
 
-/// The basic target prompt assembled by the native Info updater (`00775a00`).
-/// The caller resolves the action through the game's `sTargetType*` setting
-/// and supplies the target's FULL name. `shortcut` is the bound key name;
-/// the HUD appends the native closing parenthesis (for example `E)`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What the native Info updater (`00775a00`) puts in the panel, as the
+/// game state layer works it out (`world::activation::info`). `shortcut`
+/// is the bound key's name; the HUD appends the native closing
+/// parenthesis (for example `E)`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InfoPrompt {
-    pub action: String,
+    /// The action ("Take", "Sit" …); `None`: no action line (a gecko's
+    /// name alone).
+    pub action: Option<String>,
     pub target: String,
     pub shortcut: Option<String>,
     /// Native system colour: ordinary HUD (1) or crime warning (2).
     pub crime: bool,
+    /// The lock line ("[Locked - Easy]") and the "Empty" line.
+    pub lock: Option<String>,
+    pub empty: Option<String>,
+    /// An item's weight, its label, its value and its label.
+    pub weight_value: Option<[String; 4]>,
 }
 
 impl Hud {
-    /// Fills the native Info hotrect and target line (`00775a00`).
-    /// `None` clears all text so stale rollover data cannot remain visible.
+    /// Fills the native Info panel (`00775a00`): the action and key
+    /// (shown with an action: bit 2), the name and the lock line (bit 4;
+    /// the lock line transparent unless locked), "Empty" (with the name,
+    /// while the lock line is transparent), weight, value, their labels and
+    /// the separator (bits 8 … 0x80, for items), all in the crime colour
+    /// when taking it is a crime. `None` hides it all. The lines' height
+    /// adjustment for names that wrap (the end of `00775a00`) isn't done.
     pub fn update_info(&self, ui: &mut Ui, prompt: Option<&InfoPrompt>, opacity: f32) {
-        let action = prompt.map_or("", |p| p.action.as_str());
+        let tiles = &self.tiles;
+        let action = prompt.and_then(|p| p.action.as_deref()).unwrap_or("");
         let target = prompt.map_or("", |p| p.target.as_str());
         let shortcut = prompt
             .and_then(|p| p.shortcut.as_deref())
             .map(|key| format!("{key})"))
             .unwrap_or_default();
         let pc_button_text = ui.names.lookup_or_add("_PCButtonText").unwrap_or(0);
-        ui.set_string(self.tiles.info_hotrect, t::STRING, action);
-        ui.set_string(self.tiles.info_hotrect, pc_button_text, &shortcut);
-        ui.set_string(self.tiles.info_target, t::STRING, target);
+        ui.set_string(tiles.info_hotrect, t::STRING, action);
+        ui.set_string(tiles.info_hotrect, pc_button_text, &shortcut);
+        ui.set_string(tiles.info_target, t::STRING, target);
         let color = if prompt.is_some_and(|p| p.crime) {
             2.0
         } else {
             1.0
         };
-        ui.set_number(self.tiles.info_hotrect, t::SYSTEMCOLOR, color);
-        ui.set_number(self.tiles.info_target, t::SYSTEMCOLOR, color);
-        let alpha = opacity.clamp(0.0, 1.0) * 255.0;
-        ui.set_number(self.tiles.info_hotrect, t::ALPHA, alpha);
-        ui.set_number(self.tiles.info_target, t::ALPHA, alpha);
+        let full = opacity.clamp(0.0, 1.0) * 255.0;
+        let lines = [
+            tiles.info_hotrect,
+            tiles.info_target,
+            tiles.info_lock,
+            tiles.info_empty,
+            tiles.info_weight,
+            tiles.info_weight_label,
+            tiles.info_value,
+            tiles.info_value_label,
+            tiles.info_separator,
+        ];
+        for tile in lines {
+            ui.set_number(tile, t::SYSTEMCOLOR, color);
+        }
+        ui.set_number(tiles.info_hotrect, t::ALPHA, full);
+        ui.set_number(tiles.info_target, t::ALPHA, full);
+        let shows = |b: bool| if b { 1.0 } else { 0.0 };
+        let has_action = prompt.is_some_and(|p| p.action.is_some());
+        let has_name = prompt.is_some();
+        ui.set_number(tiles.info_hotrect, t::VISIBLE, shows(has_action));
+        ui.set_number(tiles.info_target, t::VISIBLE, shows(has_name));
+        // The lock line: shown with the name, transparent unless locked.
+        let lock = prompt.and_then(|p| p.lock.as_deref());
+        if let Some(text) = lock {
+            ui.set_string(tiles.info_lock, t::STRING, text);
+        }
         ui.set_number(
-            self.tiles.info_hotrect,
-            t::VISIBLE,
-            if prompt.is_some() { 1.0 } else { 0.0 },
+            tiles.info_lock,
+            t::ALPHA,
+            if lock.is_some() { full } else { 0.0 },
+        );
+        ui.set_number(tiles.info_lock, t::VISIBLE, shows(has_name));
+        let empty = prompt.and_then(|p| p.empty.as_deref());
+        if let Some(text) = empty {
+            ui.set_string(tiles.info_empty, t::STRING, text);
+        }
+        ui.set_number(
+            tiles.info_empty,
+            t::ALPHA,
+            if empty.is_some() { full } else { 0.0 },
         );
         ui.set_number(
-            self.tiles.info_target,
+            tiles.info_empty,
             t::VISIBLE,
-            if prompt.is_some() { 1.0 } else { 0.0 },
+            shows(has_name && lock.is_none()),
         );
+        let weight_value = prompt.and_then(|p| p.weight_value.as_ref());
+        if let Some([weight, weight_label, value, value_label]) = weight_value {
+            ui.set_string(tiles.info_weight, t::STRING, weight);
+            ui.set_string(tiles.info_weight_label, t::STRING, weight_label);
+            ui.set_string(tiles.info_value, t::STRING, value);
+            ui.set_string(tiles.info_value_label, t::STRING, value_label);
+        }
+        // Their alpha: `fHudOpacity` × 255 (`011d979c`, set at the setup).
+        ui.set_number(tiles.info_weight, t::ALPHA, full);
+        ui.set_number(tiles.info_value, t::ALPHA, full);
+        for tile in [
+            tiles.info_weight,
+            tiles.info_weight_label,
+            tiles.info_value,
+            tiles.info_value_label,
+            tiles.info_separator,
+        ] {
+            ui.set_number(tile, t::VISIBLE, shows(weight_value.is_some()));
+        }
         ui.set_number(
-            self.tiles.info_pc_shortcut,
+            tiles.info_pc_shortcut,
             t::VISIBLE,
-            if prompt.and_then(|p| p.shortcut.as_ref()).is_some() {
-                1.0
-            } else {
-                0.0
-            },
+            shows(has_action && prompt.and_then(|p| p.shortcut.as_ref()).is_some()),
         );
         // Xbox input naming isn't resolved yet, so don't leave its template
         // glyph visible as a blank placeholder.
-        ui.set_number(self.tiles.info_xbox_button, t::VISIBLE, 0.0);
+        ui.set_number(tiles.info_xbox_button, t::VISIBLE, 0.0);
+    }
+
+    /// The sneak meter for this frame (`00770430`): while the player
+    /// sneaks, its text and colour (`007732d0`, [`SneakMeterState`]),
+    /// faded in over 0.5 s (from where its alpha is), or, for [DANGER],
+    /// flashed three times first (`00a07c60` mode 2) on entering it; not
+    /// sneaking, faded out over 0.5 s.
+    pub fn update_sneak(
+        &mut self,
+        ui: &mut Ui,
+        meter: Option<SneakMeterState>,
+        opacity: f32,
+        now: f32,
+    ) {
+        let text = self.tiles.sneak_text;
+        // Shown in normal play (`00771700` mode 2's mask has 0x80; other
+        // masks hide it after this).
+        ui.set_number(self.tiles.sneak_meter, t::VISIBLE, 1.0);
+        let now = f64::from(now);
+        let full = opacity.clamp(0.0, 1.0) * 255.0;
+        let alpha = ui.number(text, t::ALPHA);
+        let Some(meter) = meter else {
+            // Translated from 00770430 (decompiled, FalloutNV.exe 1.4.0.525)
+            if alpha > 0.0 && self.anims.done(text, t::ALPHA, now) {
+                self.anims
+                    .start(text, t::ALPHA, alpha, 0.0, SNEAK_FADE, now);
+            }
+            self.sneak_flashing = false;
+            return;
+        };
+        // Translated from 007732d0 (decompiled, FalloutNV.exe 1.4.0.525)
+        let (setting, exe) = meter.text();
+        let words = ui.setting_text(setting).unwrap_or_else(|| exe.to_string());
+        ui.set_string(text, t::STRING, &words);
+        ui.set_number(text, t::SYSTEMCOLOR, if meter.red() { 2.0 } else { 1.0 });
+        let flashing = meter == SneakMeterState::Danger;
+        if flashing && !self.sneak_flashing {
+            self.anims.flash(text, t::ALPHA, 0.0, full, SNEAK_FADE, now);
+        } else if (!flashing && self.anims.mode(text, t::ALPHA) == 2)
+            || (self.anims.done(text, t::ALPHA, now) && alpha != full)
+        {
+            self.anims
+                .start(text, t::ALPHA, alpha, full, SNEAK_FADE, now);
+        }
+        self.sneak_flashing = flashing;
+    }
+}
+
+/// How long the sneak meter fades and each of its flashes lasts (the float
+/// 0.5 at `01016248`).
+pub const SNEAK_FADE: f32 = 0.5;
+
+/// What the sneak meter says (`007732d0`): in combat [DANGER] (red,
+/// flashing), [CAUTION] (red) while every one fighting the player is
+/// searching, or the player's hostile detection flag is set; out of it
+/// [HIDDEN] while no one detects the player (the highest detection level,
+/// `00973710`, below 1), else [DETECTED].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SneakMeterState {
+    Hidden,
+    Detected,
+    Caution,
+    Danger,
+}
+
+impl SneakMeterState {
+    /// From the player's combat flags (`PlayerCharacter` +0xdf0
+    /// `bPlayerInCombat`, +0xdf1 `bAllCombatTargetsSearching`, +0x5f8
+    /// `bHostileDetection` (Xbox PDB)) and the highest detection level.
+    // Translated from 007732d0 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn of(
+        in_combat: bool,
+        all_searching: bool,
+        hostile_detection: bool,
+        level: i32,
+    ) -> SneakMeterState {
+        if in_combat || all_searching {
+            if all_searching {
+                SneakMeterState::Caution
+            } else {
+                SneakMeterState::Danger
+            }
+        } else if hostile_detection {
+            SneakMeterState::Caution
+        } else if level < 1 {
+            SneakMeterState::Hidden
+        } else {
+            SneakMeterState::Detected
+        }
+    }
+
+    /// The setting for its words and the exe's default.
+    pub fn text(self) -> (&'static str, &'static str) {
+        match self {
+            SneakMeterState::Hidden => ("sSneakHidden", "[HIDDEN]"),
+            SneakMeterState::Detected => ("sSneakDetected", "[DETECTED]"),
+            SneakMeterState::Caution => ("sSneakCaution", "[CAUTION]"),
+            SneakMeterState::Danger => ("sSneakDanger", "[DANGER]"),
+        }
+    }
+
+    /// The crime / alarm colour (system colour 2).
+    pub fn red(self) -> bool {
+        matches!(self, SneakMeterState::Caution | SneakMeterState::Danger)
     }
 }
 
@@ -349,6 +526,9 @@ pub struct Hud {
     anims: Animations,
     /// The XP meter, when the menu has one.
     pub xp: Option<XpMeter>,
+    /// The sneak meter's flash started for this [DANGER] (its text tile's
+    /// trait 0x1004, `007732d0`).
+    sneak_flashing: bool,
 }
 
 /// What [`Hud::create`] needs: the menu's text and a file reader for its
@@ -537,10 +717,66 @@ impl Hud {
         // 0106ec90 is the string "_x", consumed by text_box.xml's layout.
         let info_center_x = names(ui, "_x");
         ui.set_number(info_hotrect, info_center_x, iw / 2.0);
+        bright(ui, info_hotrect, 0);
         let info_target = make(ui, info, "template_justify_center_text")?;
+        bright(ui, info_target, 0);
         ui.set_number(info_target, t::X, iw / 2.0);
         ui.set_number(info_target, t::Y, 0.0);
         ui.set_number(info_target, t::WRAPWIDTH, iw);
+        // The lock line and "Empty" (+0xac, +0xb0): centred, as wide as the
+        // panel, 65 down, transparent and hidden, `sLocked` and `sEmpty` in
+        // them until `update_info` fills them.
+        let line = |ui: &mut Ui, setting: &str, exe: &str| -> Result<TileId, String> {
+            let tile = make(ui, info, "template_justify_center_text")?;
+            bright(ui, tile, 0);
+            ui.set_number(tile, t::X, iw / 2.0);
+            ui.set_number(tile, t::WRAPWIDTH, iw);
+            ui.set_number(tile, t::Y, 65.0);
+            ui.set_number(tile, t::ALPHA, 0.0);
+            let s = ui.setting_text(setting).unwrap_or_else(|| exe.into());
+            ui.set_string(tile, t::STRING, &s);
+            ui.set_number(tile, t::VISIBLE, 0.0);
+            Ok(tile)
+        };
+        let info_lock = line(ui, "sLocked", "Locked")?;
+        let info_empty = line(ui, "sEmpty", "Empty")?;
+        // Weight and value, 60 down: the weight right-justified to 25 left
+        // of the middle with "WG" at 10; the value right-justified to 30
+        // from the right with "VAL" 5 right of the middle; then the
+        // separator.
+        let text_at = |ui: &mut Ui, template: &str, x: f32| -> Result<TileId, String> {
+            let tile = make(ui, info, template)?;
+            bright(ui, tile, 0);
+            ui.set_number(tile, t::X, x);
+            ui.set_number(tile, t::Y, 60.0);
+            Ok(tile)
+        };
+        let info_weight = text_at(ui, "template_justify_right_text", iw / 2.0 - 25.0)?;
+        let info_weight_label = text_at(ui, "template_justify_left_text", 10.0)?;
+        let info_value = text_at(ui, "template_justify_right_text", iw - 30.0)?;
+        let info_value_label = text_at(ui, "template_justify_left_text", iw / 2.0 + 5.0)?;
+        let info_separator = make(ui, info, "template_info_seperator")?;
+        bright(ui, info_separator, 2);
+        for tile in [
+            info_weight,
+            info_weight_label,
+            info_value,
+            info_value_label,
+            info_separator,
+        ] {
+            ui.set_number(tile, t::VISIBLE, 0.0);
+        }
+
+        // The sneak meter, top middle: its text (`sneak_nif`) transparent
+        // until sneaking (`0076bfe0`).
+        let sneak_meter = find(ui, "SneakMeter")?;
+        ui.set_number(sneak_meter, t::X, (w / 2) as f32);
+        ui.set_number(sneak_meter, t::Y, (sy * 2) as f32);
+        ui.set_number(sneak_meter, t::LOCUS, 1.0);
+        let sneak_text = ui
+            .find(sneak_meter, "sneak_nif")
+            .ok_or_else(|| "the HUD's SneakMeter has no sneak_nif".to_string())?;
+        ui.set_number(sneak_text, t::ALPHA, 0.0);
 
         // The subtitles sit above Info (`0076bfe0`).
         let subtitles = find(ui, "Subtitles")?;
@@ -625,6 +861,15 @@ impl Hud {
                 info_pc_shortcut,
                 info_xbox_button,
                 info_target,
+                info_lock,
+                info_empty,
+                info_weight,
+                info_weight_label,
+                info_value,
+                info_value_label,
+                info_separator,
+                sneak_meter,
+                sneak_text,
                 messages,
                 message_icon,
                 message_text,
@@ -648,6 +893,7 @@ impl Hud {
             message_started: None,
             anims: Animations::default(),
             xp,
+            sneak_flashing: false,
         })
     }
 
@@ -1166,6 +1412,7 @@ mod tests {
       <template name="template_compass_icon_quest"><image name="compass_icon"><depth>5</depth><locus>&true;</locus><width>40</width><height>50</height><x><copy src="me()" trait="_Heading"/></x><_Heading>0</_Heading><y>5</y></image></template>
       <template name="template_compass_icon_player"><image name="compass_icon"><x><copy src="me()" trait="_Heading"/></x><_Heading>0</_Heading><y>5</y></image></template>
       <template name="template_compass_icon_marker"><image name="compass_icon"><x><copy src="me()" trait="_Heading"/></x><_Heading>0</_Heading><y>5</y></image></template>
+      <template name="template_info_seperator"><image name="info_seperator"><width>300</width><height>8</height><y>55</y></image></template>
       <template name="compass_npc_icon"><image name="compass_npc_icon"><x><copy src="me()" trait="_Heading"/></x><_Heading>0</_Heading><depth>-10</depth><width>32</width><height>32</height><y>-10</y></image></template>
     "#;
 
@@ -1267,8 +1514,9 @@ mod tests {
                 ..HudInput::default()
             },
         );
+        // The sneak meter's text is there but transparent until sneaking.
         let sneak = ui.find(hud.menu, "sneak_nif").unwrap();
-        assert!(!ui.shown(sneak));
+        assert_eq!(ui.number(sneak, t::ALPHA), 0.0);
         assert!(ui.shown(hud.tiles.hp_label));
     }
 
@@ -1300,8 +1548,12 @@ mod tests {
         assert!(ui.shown(hud.tiles.hp_label));
         assert!(ui.shown(hud.tiles.reticle));
         assert_eq!(cnd_arrows.map(|a| ui.number(a, t::VISIBLE)), arrows_before);
-        let sneak = ui.find(hud.menu, "SneakMeter");
-        assert!(sneak.map_or(true, |s| !ui.shown(s)));
+        // The sneak meter is masked like the rest (bit 0x80) and back.
+        hud.update_sneak(&mut ui, Some(SneakMeterState::Hidden), 1.0, 0.0);
+        hud.apply_mask(&mut ui, mask::VATS_MENU, &mut saved);
+        assert!(!ui.shown(hud.tiles.sneak_meter));
+        hud.lift_mask(&mut ui, &mut saved);
+        assert!(ui.shown(hud.tiles.sneak_meter));
     }
 
     #[test]
@@ -1411,10 +1663,10 @@ mod tests {
     fn info_prompt_uses_native_action_target_and_shortcut_traits() {
         let (mut ui, hud) = hud();
         let prompt = InfoPrompt {
-            action: "Talk".into(),
+            action: Some("Talk".into()),
             target: "Doc Mitchell".into(),
             shortcut: Some("E".into()),
-            crime: false,
+            ..InfoPrompt::default()
         };
         hud.update_info(&mut ui, Some(&prompt), 0.5);
         ui.refresh();
@@ -1460,6 +1712,135 @@ mod tests {
         assert_eq!(ui.number(hud.tiles.info_hotrect, t::VISIBLE), 0.0);
         assert_eq!(ui.number(hud.tiles.info_target, t::VISIBLE), 0.0);
         assert_eq!(ui.number(hud.tiles.info_pc_shortcut, t::VISIBLE), 0.0);
+    }
+
+    /// The Info panel's other lines (`0076bfe0`, `00775a00`): placed in
+    /// the panel, the lock line and "Empty" at 65, weight and value at 60;
+    /// shown by what's under the crosshair.
+    #[test]
+    fn info_lines_for_locks_empty_containers_and_items() {
+        let (mut ui, hud) = hud();
+        let tl = hud.tiles.clone();
+        assert_eq!(ui.number(tl.info_lock, t::Y), 65.0);
+        assert_eq!(ui.number(tl.info_empty, t::X), 160.0);
+        assert_eq!(ui.number(tl.info_weight, t::X), 135.0);
+        assert_eq!(ui.number(tl.info_weight_label, t::X), 10.0);
+        assert_eq!(ui.number(tl.info_value, t::X), 290.0);
+        assert_eq!(ui.number(tl.info_value_label, t::X), 165.0);
+        assert_eq!(ui.number(tl.info_value, t::Y), 60.0);
+        // An item: its weight and value, no lock.
+        let item = InfoPrompt {
+            action: Some("Take".into()),
+            target: "Tin Can".into(),
+            shortcut: Some("E".into()),
+            weight_value: Some(["0.5".into(), "WG".into(), "2".into(), "VAL".into()]),
+            ..InfoPrompt::default()
+        };
+        hud.update_info(&mut ui, Some(&item), 1.0);
+        assert_eq!(ui.string(tl.info_weight, t::STRING).as_deref(), Some("0.5"));
+        assert_eq!(
+            ui.string(tl.info_value_label, t::STRING).as_deref(),
+            Some("VAL")
+        );
+        for tile in [tl.info_weight, tl.info_value, tl.info_separator] {
+            assert_eq!(ui.number(tile, t::VISIBLE), 1.0);
+        }
+        assert_eq!(ui.number(tl.info_lock, t::ALPHA), 0.0);
+        // A locked container: the lock line shows, "Empty" doesn't.
+        let locker = InfoPrompt {
+            action: Some("Open".into()),
+            target: "Locker".into(),
+            lock: Some("[Locked - Easy]".into()),
+            ..InfoPrompt::default()
+        };
+        hud.update_info(&mut ui, Some(&locker), 1.0);
+        assert_eq!(ui.number(tl.info_weight, t::VISIBLE), 0.0);
+        assert_eq!(
+            ui.string(tl.info_lock, t::STRING).as_deref(),
+            Some("[Locked - Easy]")
+        );
+        assert_eq!(ui.number(tl.info_lock, t::ALPHA), 255.0);
+        assert_eq!(ui.number(tl.info_empty, t::VISIBLE), 0.0);
+        // An empty one.
+        let chest = InfoPrompt {
+            action: Some("Open".into()),
+            target: "Chest".into(),
+            empty: Some("Empty".into()),
+            ..InfoPrompt::default()
+        };
+        hud.update_info(&mut ui, Some(&chest), 1.0);
+        assert_eq!(ui.number(tl.info_lock, t::ALPHA), 0.0);
+        assert_eq!(ui.number(tl.info_empty, t::VISIBLE), 1.0);
+        assert_eq!(ui.number(tl.info_empty, t::ALPHA), 255.0);
+        // A gecko: the name, no action line.
+        let gecko = InfoPrompt {
+            target: "Gecko".into(),
+            ..InfoPrompt::default()
+        };
+        hud.update_info(&mut ui, Some(&gecko), 1.0);
+        assert_eq!(ui.number(tl.info_hotrect, t::VISIBLE), 0.0);
+        assert_eq!(ui.number(tl.info_target, t::VISIBLE), 1.0);
+    }
+
+    /// The sneak meter (`007732d0`, `00770430`): its words by the
+    /// player's state, faded in while sneaking, [DANGER] flashed first,
+    /// faded out after.
+    #[test]
+    fn the_sneak_meter_says_hidden_detected_caution_or_danger() {
+        assert_eq!(
+            SneakMeterState::of(false, false, false, 0),
+            SneakMeterState::Hidden
+        );
+        assert_eq!(
+            SneakMeterState::of(false, false, false, 1),
+            SneakMeterState::Detected
+        );
+        assert_eq!(
+            SneakMeterState::of(false, false, true, 50),
+            SneakMeterState::Caution
+        );
+        assert_eq!(
+            SneakMeterState::of(true, false, false, 0),
+            SneakMeterState::Danger
+        );
+        assert_eq!(
+            SneakMeterState::of(true, true, false, 0),
+            SneakMeterState::Caution
+        );
+        let (mut ui, mut hud) = hud();
+        let text = hud.tiles.sneak_text;
+        let x = ui.number(hud.tiles.sneak_meter, t::X);
+        // Half the screen across (1706 menu units wide at 1920 pixels), 2 × the safe zone down.
+        assert_eq!((x, ui.number(hud.tiles.sneak_meter, t::Y)), (853.0, 30.0));
+        // As `Hud::update` runs them: the animations first, then the meter.
+        let step = |hud: &mut Hud, ui: &mut Ui, s: Option<SneakMeterState>, now: f32| {
+            hud.anims.step(ui, f64::from(now));
+            hud.update_sneak(ui, s, 1.0, now);
+        };
+        step(&mut hud, &mut ui, Some(SneakMeterState::Hidden), 0.0);
+        assert_eq!(ui.string(text, t::STRING).as_deref(), Some("[HIDDEN]"));
+        assert_eq!(ui.number(text, t::SYSTEMCOLOR), 1.0);
+        step(&mut hud, &mut ui, Some(SneakMeterState::Hidden), 0.25);
+        assert_eq!(ui.number(text, t::ALPHA), 127.5);
+        step(&mut hud, &mut ui, Some(SneakMeterState::Hidden), 0.5);
+        assert_eq!(ui.number(text, t::ALPHA), 255.0);
+        // Danger: red, flashing from transparent.
+        step(&mut hud, &mut ui, Some(SneakMeterState::Danger), 1.0);
+        assert_eq!(ui.number(text, t::SYSTEMCOLOR), 2.0);
+        assert_eq!(ui.string(text, t::STRING).as_deref(), Some("[DANGER]"));
+        step(&mut hud, &mut ui, Some(SneakMeterState::Danger), 1.125);
+        assert_eq!(ui.number(text, t::ALPHA), 127.5);
+        step(&mut hud, &mut ui, Some(SneakMeterState::Danger), 1.25);
+        assert_eq!(ui.number(text, t::ALPHA), 255.0);
+        // Out of danger mid-flash: back up from where it is.
+        step(&mut hud, &mut ui, Some(SneakMeterState::Detected), 1.375);
+        assert_eq!(ui.number(text, t::SYSTEMCOLOR), 1.0);
+        step(&mut hud, &mut ui, Some(SneakMeterState::Detected), 2.0);
+        assert_eq!(ui.number(text, t::ALPHA), 255.0);
+        // Standing up: faded out over half a second.
+        step(&mut hud, &mut ui, None, 3.0);
+        step(&mut hud, &mut ui, None, 3.5);
+        assert_eq!(ui.number(text, t::ALPHA), 0.0);
     }
 
     /// Quest icons (`00779070`): one per target, clamped to the compass's
