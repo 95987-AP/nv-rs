@@ -208,6 +208,13 @@ pub fn walker_at_door(
         return false;
     }
     match world::doors::open_state(order, state, door) {
+        // Locked: the walker's activation fails (`009e20c0` → `00573170`;
+        // whether they carry its key isn't asked): no opening, and the
+        // closed door stops them (their walk gets stuck and fails).
+        OpenState::Closed if world::locks::lock_now(order, state, door).is_some() => {
+            doors_ahead.remove(0);
+            false
+        }
         OpenState::Closed => {
             activate(order, state, sounds, door, Some(walker));
             true

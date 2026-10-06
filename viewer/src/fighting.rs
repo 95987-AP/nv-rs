@@ -683,16 +683,18 @@ pub(crate) fn target_killed(
     }
 }
 
-/// Sets a path to `to` (over the navmesh, else `straight` allowing a
-/// straight line); whether there is one.
-fn go(mesh: &NavMesh, walker: &mut Walker, to: [f32; 3], straight: bool) -> bool {
-    let path = match mesh.path(walker.position, to) {
-        Some(p) => p,
-        None if straight => vec![walker.position, to],
-        None => {
-            walker.clear_path();
-            return false;
-        }
+/// Sets a path to `to`, asked as any of the walker's path requests
+/// (`ai::path_for`: their radius, the ends joined to the navmesh by ray
+/// casts); whether there is one. None: the move fails, as the combat
+/// procedures' do ("Pathing failed while approaching target", `009d3b80`
+/// → `009caac0`); the game's combat requests don't allow a direct path
+/// when pathing fails (request +0xa1 is set only by `008df1c0`'s callers,
+/// none of them combat's). (`_straight`: what the old straight-line
+/// fallback was for, kept for the callers.)
+fn go(mesh: &NavMesh, walker: &mut Walker, to: [f32; 3], _straight: bool) -> bool {
+    let Some(path) = crate::ai::path_for(mesh, walker, to) else {
+        walker.clear_path();
+        return false;
     };
     // In a fight the walk starts at once (no turn in place first).
     walker.set_path(path, 0.0, false, &world::movement::MoveSettings::defaults());

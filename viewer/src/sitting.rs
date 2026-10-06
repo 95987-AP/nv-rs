@@ -434,7 +434,7 @@ pub fn begin_use(ctx: &mut Ctx, walker: &mut Walker, furniture_ref: FormId) -> b
     if sitter.in_reach(walker.position) {
         walker.clear_path();
     } else {
-        match ctx.mesh.path(walker.position, marker.position) {
+        match crate::ai::path_for(ctx.mesh, walker, marker.position) {
             Some(path) => walker.set_path(path, 0.0, true, ctx.moves),
             None => return false,
         }
@@ -957,7 +957,7 @@ pub fn furniture_frame(
         if !sitter.in_reach(walker.position) {
             // No path (cleared when a script moved them): a new one.
             if walker.path.is_empty() {
-                if let Some(path) = ctx.mesh.path(walker.position, sitter.marker.position) {
+                if let Some(path) = crate::ai::path_for(ctx.mesh, walker, sitter.marker.position) {
                     walker.set_path(path, 0.0, true, ctx.moves);
                     ctx.state.sitters.insert(me, sitter);
                     return false;
@@ -1774,7 +1774,7 @@ fn wander_to(ctx: &mut Ctx, walker: &mut Walker, center: [f32; 3], radius: f32) 
         if d < near || d > far {
             continue;
         }
-        if let Some(path) = mesh.path(walker.position, goal) {
+        if let Some(path) = crate::ai::path_for(mesh, walker, goal) {
             let d = crate::ai::distance(walker.position, goal);
             walker.set_path(path, 50.0, true, ctx.moves);
             return Some(d);
@@ -1843,7 +1843,7 @@ pub fn wander_package_frame(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life)
         world::ai::WanderStep::Back => {
             life.activity = None;
             let (to, r) = place.unwrap_or((middle, radius));
-            if let Some(path) = ctx.mesh.path(walker.position, to) {
+            if let Some(path) = crate::ai::path_for(ctx.mesh, walker, to) {
                 println!("{me} wanders back to their package's place");
                 walker.set_path(path, r, true, ctx.moves);
             }
@@ -1937,7 +1937,7 @@ fn start_activity(
                     if (0..2).all(|k| (at[k] - walker.position[k]).abs() < 10.0) {
                         true
                     } else {
-                        match ctx.mesh.path(walker.position, at) {
+                        match crate::ai::path_for(ctx.mesh, walker, at) {
                             Some(path) => {
                                 walker.set_path(path, 10.0, true, ctx.moves);
                                 true
@@ -2000,7 +2000,7 @@ pub fn sandbox_frame(
     let seated = sit.is_some_and(|s| s != SitState::Normal);
     let walking = walker.on_path();
     if !seated && !walking && sb.strayed(walker.position) {
-        if let Some(path) = ctx.mesh.path(walker.position, sb.center) {
+        if let Some(path) = crate::ai::path_for(ctx.mesh, walker, sb.center) {
             println!("{me} goes back to their sandbox area");
             walker.set_path(path, 0.0, true, ctx.moves);
         }
@@ -2193,7 +2193,7 @@ fn eat_frame(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, sb: &mut Sandb
                     }
                     println!("{:.1} s: {me} takes {food} to eat.", ctx.now);
                 } else {
-                    match ctx.mesh.path(walker.position, at) {
+                    match crate::ai::path_for(ctx.mesh, walker, at) {
                         Some(path) => {
                             walker.set_path(path, reach, true, ctx.moves);
                             life.activity = Some(Activity::Eat(e));

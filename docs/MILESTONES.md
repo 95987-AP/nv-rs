@@ -348,6 +348,22 @@ his eating marker), door triangle registration, off-navmesh ends.
 Evidence: [PATHING.md](PATHING.md). **Next action:** record Doc's walk
 and Easy Pete's approach in the original.
 
+M2 blocker batch (`claude/m2-npc-nav-2`, 2026-10-06): NPC navigation
+gaps. Closed doors marked on the navmesh as the obstacle manager does
+(`006997e0`), locations resolved by the game's height window (`00696a50`)
+and ends off the navmesh joined by its ray-cast way (`006caa40`,
+`006cac90`, `006e6e40`), travel/follow/long-way searches on a path-manager
+worker (`006eb9d0`), combat/sitting walks with the actor's radius and no
+straight-line fallback, people pushing clutter through the physics
+batch's movers. Live: the gunfight replay completes ("Defeat the Powder
+Gangers", XP +50, ~100 s; 7 dead), Doc walks to the door and talks, Easy
+Pete reaches his place in the saloon, Sunny walks the long way. Not
+compared with the original. Gaps: door-detection box, `PATHPICK` layers,
+the move into the high process (a viewer bridge puts people back from
+offstage onto the navmesh), push mass limit on the physics side. Evidence:
+[PATHING.md](PATHING.md). **Next action:** record where an actor coming
+into the high process stands (Sunny after `MoveTo SunnySpawnMarker`).
+
 M2 batch (`claude/m2-physics`, 2026-10-06): clutter physics. Rigid body
 values read from the models; free bodies simulated at the game's Havok
 step clock (`00c66760`) against the cell's collision, each other and the

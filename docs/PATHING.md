@@ -1,9 +1,103 @@
 # NPC paths and movement
 
-Two batches: how a path is found and walked on the attached navmesh, and
-how people move through the cell's collision (`claude/m2-npc-nav`,
-below), then the long way over the navmesh info map
-(`claude/m2-long-paths`, further down).
+Three batches: how a path is found and walked on the attached navmesh,
+and how people move through the cell's collision (`claude/m2-npc-nav`),
+then its gaps (`claude/m2-npc-nav-2`, first below), and the long way over
+the navmesh info map (`claude/m2-long-paths`, further down).
+
+## Doors, ends off the navmesh, the path manager, clutter
+
+Branch `claude/m2-npc-nav-2` (on `claude/overnight-integration` at
+`ee4e42d`, with the clutter physics merge `cd52166`), 2026-10-06. Read from
+FalloutNV.exe 1.4.0.525 in Ghidra; raw exports private in
+`%USERPROFILE%\nv-re\work\npcnav2-2026-10-06`. Status words as below.
+
+| What | Address | Status |
+| --- | --- | --- |
+| Closed doors on the navmesh (`bCutDoors:Pathfinding` 1, `00f88de0`): a door's body box, thinned along its thinnest side to 2 % (0.49 of it off each face, `0106b168`), marks every triangle it overlaps (box overlap with the triangle's top raised 128; middle in the sheet, sheet's middle in the triangle, or an edge across a side; not flag 0x20) with flag 0x1000 and a portal entry for the door, unless already its portal (`NavMesh::AddClosedDoor` (Xbox PDB) `006997e0`, `006987d0`); opening takes them off (`00699a30`). Tasks 0x30/0x40 of the obstacle manager (`006c8170`) from `OnDoorClose`/`OnDoorOpen` (`006c0f10`/`006c0dc0`; the door animation's `Close`/`Open` events and `SetOpenState`, `0047ac70`/`0047aec0`) and as doors load (`006c5190`); sliding doors never (`00518080`) | `006997e0`, `006987d0`, `00699a30`, `006c8170`, `006c0dc0`, `006c0f10`, `0047ac70`, `0047aec0` | implemented, tested (`world::ai::doors`; viewer `sync_nav` marks every closed, non-sliding swing door each frame) |
+| A door triangle's door is the data's portal first, then the run-time one (`00699af0`); the search's door test reads it (×100 locked) | `006a6fa0`, `00699af0` | implemented, tested |
+| Walkers open a closed door their path passes (`009e20c0`: activation; waiting while it swings; `009e22d0` walks the path in half-node steps for triangles of the door flagged 0x1000); which door is found by a door-detection box ahead of the actor (`008e51b0`, layer 34, every `fINIDetectDoorsForPathingTime`) | `009e20c0`, `009e22d0`, `009e26d0`, `008e51b0`, `008e4e50` | implemented as before (`doors::walker_at_door` on the path's portal and closed-door triangles, within 128: the detection box isn't built); a locked door isn't opened (activation fails; keys carried aren't asked) |
+| Where a location is on the navmesh (`ResolveToClosestNavmeshAndTriangle` (Xbox PDB) `006dd6f0` → `FindTriangleForLocation` `00696a50`, `006b9cf0`): a triangle holding it from above, not flag 0x20, at most 64 above it and 180 below it (no lower limit within 50 of the land), nearest in height, one within 40 at once; none: no triangle (`006ddc00` keeps only the navmesh) | `006dd6f0`, `00696a50`, `006b9cf0`, `006ddc00` | implemented, tested (`NavMesh::find_triangle`) |
+| An end off the navmesh (`bUseRayCasts` 1): open edges within `fFindClosestEdgesRadius` (512) give spots a tenth of the way in toward their triangle's middle, those 64 below to 180 above first, then nearest, 10 kept (`006d4120`, `006d4020`); each is tried by the ray-cast way (`006e6320` → `006e6e40`/`006e6f90`: steps of max(radius, 32), a pick 32 above the ground to the next step, a pick down by `fJumpFallHeightMin` + 32 for the ground, the last step's ground within 64 of the spot); the first that works joins the path. A goal within the request's target radius of a spot in the window takes it without picks (`006cac90`) | `006caa40`, `006cac90`, `006cb050`, `006d4120`, `006d4020`, `006e6320`, `006e6e40`, `006e6f90`, `006e61a0` | implemented, tested (`world::ai::offmesh`; the picks are the cell collision's rays, `PATHPICK`'s layer row not traced) |
+| The path manager (`PathManager::BuildPath` (Xbox PDB) `006eb9d0`, `bBackgroundPathing` 1): actor requests (`009db090`, mover state 1 while waiting) are tasks searched off the main thread (`006e9fc0`), solutions handed back on a later frame (`006eae40`); ray casts go to the main thread (`006ebbf0`) | `006eb9d0`, `009db090`, `006e9fc0`, `006eae40`, `006ebbf0` | implemented for package travel, following, the long way and the retry after being stuck (viewer `PathQueue`, one worker; the walker stands while waiting); guard, flee, dialogue, conversation, sitting, sandbox, combat and avoidance requests are still searched at once |
+| Combat moves ask with the actor's request (radius, ray-cast ends) and fail without a path ("Pathing failed while approaching target", `009d3b80` → `009caac0`); the direct-path fallback (+0xa1) is set only by `008df1c0`'s callers, none combat's | `009d3b80`, `006ca850`, `006caa20`, `008df1c0` | implemented (`fighting::go`; the straight-line fallback removed) |
+| Sitting, sandbox and wander walks ask with the actor's radius | `006e29f0` | implemented (`sitting.rs` → `ai::path_for`) |
+| The character proxy's object push (`00c6f280`, proxy listener slot 5 at `010c4990`): no push at mass 0 or ≥ `fMoveLimitMass` (95, `00f384b0`); × 0 projectiles (layer 6), props (10) × 3 (× 0.1 above 47.5), traps (14) × 0.1, else × 2; velocity change held to 1000. The contact callback (`00c711d0`) keeps clutter/weapon/projectile contacts solid (lighter than 95: their plane's velocity zeroed) | `00c6f280`, `00c711d0`, `00f384b0` | people now push clutter as the player does (`ai::move_body` → `clutter::walkers` → `physics::rigid` movers, the physics batch's push); the mass limit and layer factors are left to the physics side (its movers push every body) |
+
+Also: a travel or follow goal that no triangle holds and no open edge
+reaches is left to the long way (`long_walk`, the info search), not asked
+as a detailed path.
+
+### Not done or unresolved (labelled in code)
+
+- The door-detection box ahead of a walker (`008e51b0`) isn't built:
+  doors on the path are opened within 128 of their portal or closed-door
+  triangle (`doors::walker_at_door`, as before). Load doors aren't marked
+  (only swing doors); the obstacle box is the door model's collision box
+  in the door's placed axes, not the Havok body's own. Keys carried for a
+  locked door aren't asked (a locked door stops them).
+- `PATHPICK`'s layer row (which layers the path ray casts meet) isn't
+  traced: the cell's walking collision is used, as a copy taken when the
+  loaded collision changes (moving clutter where it was then).
+- People back from a walk out of sight who stand off the navmesh (the
+  route's rough positions can be underground) are put on its nearest
+  point: a viewer bridge, the game's move into the high process
+  (`UpdatePathMoveToHigh`, `FindPathStartingLocation` (Xbox PDB)) isn't
+  followed. Sunny after the gunfight setup's `MoveTo` (into the gas
+  station) came out of her offstage walk 149 under the land without it.
+- Still searched on the main thread: guard, flee, dialogue, conversation,
+  sitting, sandbox, combat and avoidance requests; the game's immediate
+  case (`0094df60`) isn't identified. A failed request is asked again
+  every frame (the travel procedure's own rhythm, `008e5e90`, isn't
+  traced), reported once.
+- The push's mass limit and layer factors (`00c6f280`) are the physics
+  side's to apply to walkers; its movers push every body, heavy ones too.
+- The player blocking a doorway: walkers wait or go round by the
+  avoidance rules (`009e5ae0`, earlier batch);
+  `DetailedActorPathHandler::UpdateWhilePlayerWaits` and
+  `ComputePathPassesThroughPlayersArea` (Xbox PDB) aren't traced.
+- Combat moves to optimal/cover locations (`PathingRequestOptimalLocation`,
+  `PathingRequestCover` (Xbox PDB)) aren't traced; the existing band moves
+  are kept, now with real requests.
+
+### Verified live (release viewer, installed data; nothing compared with the original)
+
+Outputs private in `%USERPROFILE%\nv-re\work\npcnav2-2026-10-06`.
+
+- **Gunfight** (`VMS16`, the replay command of
+  [GOODSPRINGS_ROUTE.md](GOODSPRINGS_ROUTE.md) with `--wait 330`, run
+  `gun5`): "Defeat the Powder Gangers" completed, XP +50, at about 100 s.
+  Killed: Settler 01 (by GSPG02), Joe Cobb (Cheyenne), GSPG05 (GSPG06),
+  GSPG03, GSPG02, GSPG01 (Cheyenne), GSPG06 (Trudy). One stuck walker
+  (GSPG ganger 00104C6D, asked again and went on). Before the long-way fix
+  (runs `gun2`/`gun3`) Sunny stood under the land and Cheyenne could not
+  reach her: 5 deaths, no stage 100.
+- **Doc Mitchell** (`GSDocMitchellHouse --stage VCG01 110 --wait 50`,
+  `doc2`): the house door (`NVCraftsmanHomeDoor` 001062AC) is marked
+  closed on 2 triangles; Doc walks to the door and starts talking at
+  36.5 s, as before.
+- **Easy Pete** (`WastelandNV --at -67699,3480,8400,0 --walk --wait 60`,
+  `pete1`): walks 312 units on `EasyPeteEat12x2` and goes through the
+  saloon door to his place inside; no stuck (before: stuck 25 short,
+  asking again every 1.5 s).
+- **Sunny, Back in the Saddle** (VCG02 opening lines, `--say "I'm in"`,
+  the player `MoveTo`'d after her, `sunny3`): she walks out of the saloon
+  (548 units), then the long way: 8583 units over the attached part, and
+  on as the attached squares change, stopping at their edge each time.
+
+Regressions: `world` `ai::offmesh::tests` (height window, open-edge spots,
+ray-cast ways round a wall, a goal within the target radius),
+`ai::doors::tests` (a closed door's triangles, ×100 locked, named on a
+path, freed on opening); viewer `ai::tests::
+a_path_asked_of_the_path_manager_comes_back_later_and_is_walked`,
+`walking_people_are_handed_to_the_clutter_as_pushers`,
+`a_far_place_is_walked_toward_as_far_as_the_attached_cells_go` (now
+through the path manager).
+
+**Next action:** record in the original game Sunny's position after
+`SunnyREF.MoveTo SunnySpawnMarker` and the gunfight's travel (where an
+actor coming into the high process stands), and trace
+`DetailedActorPathHandler::FindPathStartingLocation` (Xbox PDB) on PC.
 
 ## Navmesh search, path smoother and character controller
 
@@ -45,14 +139,11 @@ through things. Causes found:
 
 ### Not done or unresolved (labelled in code)
 
-- The door triangles' run-time registration (`006997e0`), so locked doors
-  aren't avoided by cost; walking to a load door uses the navmesh point
-  nearest the door within the door reference's travel radius (`00678670`
-  rule; that the door is taken as a travel location is an inference).
-- An end off the navmesh: the game builds a ray-cast way onto it first
-  (`PathBuilder::BuildPathToNavMeshSearchStart` (Xbox PDB)); here such an
-  end is moved to its triangle and needs only the line itself, no side
-  lines.
+- (Done in `claude/m2-npc-nav-2`, above: the door triangles'
+  registration and ends off the navmesh.) Walking to a load door uses the
+  navmesh point nearest the door within the door reference's travel
+  radius (`00678670` rule; that the door is taken as a travel location is
+  an inference).
 - 006af500's start/goal edge obstacles, the turn-angle request (+0xa2),
   the search radius (+0x78), avoid nodes of kind 2, a start inside a
   circle (chord), `006a0660` at short arcs, `0057b460` doors, the last
@@ -60,19 +151,14 @@ through things. Causes found:
 - The stuck test's "someone in the way is asked to make room" branch.
 - Obstacles marked on triangles never expire (the navmesh is rebuilt
   when the attached cells change).
-- Light clutter: in the game the controller pushes bodies lighter than
-  `fMoveLimitMass` (95); here every model's collision is solid
-  (havok rigid bodies are another batch's), so e.g. Easy Pete never gets
-  to his eating marker at the saloon (stuck 25 short, asking again every
-  1.5 s) and some gangers stand stuck in the gunfight.
+- (Light clutter: people now push the physics batch's moving bodies,
+  above; Easy Pete reaches his place.)
 - Collision still loading under someone: no controller until there is
   ground within 256 below (a viewer bridge, not game behaviour); fall
   damage for people isn't applied.
-- Callers in `sitting.rs`/`fighting.rs` (other batches') still ask with
-  the default radius; `fighting.rs` falls back to a straight line when no
-  path is found.
-- Search cost on the main thread: Sunny's 7 km route takes ~0.1 s in a
-  release build.
+- (Done above: `sitting.rs`/`fighting.rs` ask with the actor's radius,
+  no straight-line fallback; travel, follow, long-way and retry searches
+  run on the path manager's worker.)
 
 ### Verified live (viewer, installed data; nothing compared with the original)
 

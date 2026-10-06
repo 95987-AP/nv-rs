@@ -218,6 +218,13 @@ pub struct Walker {
     /// The radius their path requests carry (`world::ai::request_radius`;
     /// the request's default 35 until their kit is read).
     pub(crate) request_radius: f32,
+    /// A path asked of the path manager and not back yet ([`ask_path`]):
+    /// they stand waiting for it (the mover's state 1, `009db090`).
+    pub(crate) pending: Option<Pending>,
+    /// The last failed search reported (why, and where from and to,
+    /// roughly), so a search failing the same way again isn't reported
+    /// again.
+    last_failure: Option<(String, [[i32; 3]; 2])>,
 }
 
 /// The long way last planned: the attached squares and the goal.
@@ -240,6 +247,7 @@ impl Walker {
         self.travelled = false;
         self.door = None;
         self.long = None;
+        self.pending = None;
         self.evaluate = true;
     }
 
@@ -321,6 +329,8 @@ impl Walker {
             against_someone: false,
             stuck_at: None,
             request_radius: mv::REQUEST_RADIUS,
+            pending: None,
+            last_failure: None,
         }
     }
 
@@ -361,6 +371,7 @@ impl Walker {
         self.progress = 0.0;
         self.radius = radius;
         self.partial = false;
+        self.pending = None;
         self.avoidance = Avoidance::default();
         // A new path handler: a new stuck test (`009dbdc0`).
         self.stuck = mv::Stuck::default();
@@ -452,11 +463,109 @@ pub struct CellNav {
     /// The interior, or the worldspace and attached squares, it was loaded
     /// for.
     key: Option<NavKey>,
-    mesh: NavMesh,
+    mesh: std::sync::Arc<NavMesh>,
     /// Outdoors, the worldspace and the grid's centre.
     center: Option<(FormId, (i32, i32))>,
     /// The navmesh info map, for the long way (`world::ai::navinfo`).
     infos: world::ai::navinfo::NavInfos,
+    /// The collision the navmesh's ray casts were last given (its triangle
+    /// count): a new snapshot when it changes ([`ColliderPick`]).
+    pick_key: Option<usize>,
+}
+
+/// The cell's collision as the path builder's ray casts see it
+/// (`world::ai::PathPick`; the game's `PATHPICK` picks, `006e6f90`): a copy
+/// taken when the loaded collision changes (the game's picks read the live
+/// Havok world; moving clutter here is where it was when the copy was
+/// taken).
+struct ColliderPick(physics::Collider);
+
+impl world::ai::PathPick for ColliderPick {
+    fn pick(&self, from: [f32; 3], to: [f32; 3]) -> Option<f32> {
+        let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if l < 1e-4 {
+            return None;
+        }
+        self.0
+            .raycast(from, d.map(|v| v / l), l)
+            .map(|(hit, _)| hit / l)
+    }
+}
+
+/// Keeps the navmesh's knowledge of the world up to date: its ray-cast
+/// collision, `fJumpFallHeightMin`, the closed doors marked on it
+/// (`world::ai::doors`: every swing door that isn't sliding and stands
+/// closed; `bCutDoors` 1) and what walkers may do with each door (locked:
+/// a hundred times the cost, `006a6fa0`; whether a walker carries the key
+/// isn't asked).
+fn sync_nav(
+    nav: &mut CellNav,
+    order: &esm::LoadOrder,
+    state: &world::scripting::GameState,
+    collision: &physics::Collider,
+    doors: &crate::doors::SwingDoors,
+) {
+    // (The navmesh is shared with the path manager's searches: it's only
+    // copied when something here changes.)
+    let key = collision.triangle_count();
+    if nav.pick_key != Some(key) || nav.mesh.pick.0.is_none() {
+        nav.pick_key = Some(key);
+        let mesh = std::sync::Arc::make_mut(&mut nav.mesh);
+        mesh.pick = world::ai::Picker(Some(std::sync::Arc::new(ColliderPick(collision.clone()))));
+        mesh.fall_height =
+            world::scripting::game_setting(order, "fJumpFallHeightMin").unwrap_or(256.0);
+    }
+    let mut closed: Vec<FormId> = Vec::new();
+    let mut rules = Vec::new();
+    for door in doors.doors.values() {
+        let sliding = world::doors::flags(order, door.base) & 0x10 != 0;
+        let shut = world::doors::open_state(order, state, door.reference)
+            == world::doors::OpenState::Closed;
+        if shut && !sliding && !door.boxes.is_empty() {
+            closed.push(door.reference);
+        }
+        let locked = world::locks::lock_now(order, state, door.reference).is_some();
+        let rule = if locked {
+            world::ai::navsearch::DoorWay::Locked
+        } else {
+            world::ai::navsearch::DoorWay::Open
+        };
+        if nav.mesh.door_rules.get(&door.reference) != Some(&rule) {
+            rules.push((door.reference, rule));
+        }
+    }
+    closed.sort();
+    let marked = nav.mesh.closed_doors();
+    let opened: Vec<FormId> = marked
+        .iter()
+        .filter(|d| closed.binary_search(d).is_err())
+        .copied()
+        .collect();
+    let shut: Vec<FormId> = closed
+        .iter()
+        .filter(|d| !marked.contains(d))
+        .copied()
+        .collect();
+    if rules.is_empty() && opened.is_empty() && shut.is_empty() {
+        return;
+    }
+    let mesh = std::sync::Arc::make_mut(&mut nav.mesh);
+    mesh.door_rules.extend(rules);
+    for d in opened {
+        mesh.remove_closed_door(d);
+    }
+    for d in shut {
+        if let Some(door) = doors.doors.get(&d.0) {
+            let before = mesh.door_triangles.len();
+            mesh.add_closed_door(d, &door.boxes);
+            println!(
+                "Door {d} ({}) is closed: {} navmesh triangles marked under it.",
+                door.name,
+                mesh.door_triangles.len() - before
+            );
+        }
+    }
 }
 
 /// An interior, or a worldspace and its attached squares (sorted).
@@ -480,6 +589,8 @@ pub struct Around<'w> {
     starts: ResMut<'w, Starts>,
     talk: ResMut<'w, crate::scripts::ScriptedTalk>,
     shots: ResMut<'w, crate::fighting::NpcShots>,
+    swing_doors: Res<'w, crate::doors::SwingDoors>,
+    paths: ResMut<'w, PathQueue>,
 }
 
 /// The game settings fights ask for, looked up once
@@ -540,7 +651,10 @@ pub fn move_actors(
         mut starts,
         mut talk,
         mut shots,
+        swing_doors,
+        mut paths,
     } = around;
+    let mut came = paths.take_done();
     let order = &game.0.order;
     let state = &mut state.0;
     let settings = &settings.0;
@@ -583,7 +697,7 @@ pub fn move_actors(
         _ => return,
     };
     if nav.key.as_ref() != Some(&key) {
-        nav.mesh = match (&key.1, &exterior) {
+        nav.mesh = std::sync::Arc::new(match (&key.1, &exterior) {
             (None, _) => NavMesh::load(order, key.0),
             (Some(squares), Some(e)) => {
                 let cells: Vec<FormId> = squares
@@ -603,10 +717,12 @@ pub fn move_actors(
                 mesh
             }
             _ => NavMesh::default(),
-        };
+        });
         nav.key = Some(key.clone());
+        nav.pick_key = None;
     }
     let nav = &mut *nav;
+    sync_nav(nav, order, state, &collision.0, &swing_doors);
     let attached: HashSet<(i32, i32)> = key.1.iter().flatten().copied().collect();
     let now = time.elapsed_secs();
     let dt = time.delta_secs();
@@ -618,6 +734,7 @@ pub fn move_actors(
     last.player = state.player_position;
     let (others, obstacles) = seen(order, state, &attack, now, &actors, player_velocity);
     let bodies = bodies(state, &actors);
+    let mut movers = Vec::new();
     let interior = state.player_world.is_none();
     let mut starts = std::mem::take(&mut starts.0);
     for (mut walker, mut life, mut rig, mut transform, mut visibility) in &mut actors {
@@ -722,7 +839,30 @@ pub fn move_actors(
         if walker.fresh {
             walker.fresh = false;
             walker.evaluate = true;
-            if let Some(&(p, h)) = state.positions.get(&me) {
+            if let Some(&(mut p, h)) = state.positions.get(&me) {
+                // Back from a walk out of sight (not a script's `MoveTo`):
+                // that walk goes straight between the route's rough
+                // positions (`009ea8a0`), which can lie under the ground
+                // or in a hole of the navmesh; nothing holding them there,
+                // they're taken onto the navmesh's nearest point (not
+                // traced: the game's move into the high process,
+                // `PathBuilder::UpdatePathMoveToHigh` and
+                // `DetailedActorPathHandler::FindPathStartingLocation`
+                // (Xbox PDB), isn't followed).
+                if !moved.contains(&me) && nav.mesh.find_triangle(p).is_none() {
+                    if let Some(q) = nav
+                        .mesh
+                        .closest_point(p)
+                        .filter(|q| distance(*q, p) < 512.0)
+                    {
+                        println!(
+                            "{now:.1} s: {me} stands off the navmesh after walking out of sight: put on it at ({:.0}, {:.0}, {:.0}).",
+                            q[0], q[1], q[2]
+                        );
+                        p = q;
+                        state.positions.insert(me, (p, h));
+                    }
+                }
                 walker.position = p;
                 walker.heading = h;
                 *transform = Transform::from_matrix(Mat4::from_cols_array(&space::matrix(
@@ -737,7 +877,19 @@ pub fn move_actors(
         }
         // Stuck last frame: an obstacle where they stand, and the way asked
         // for again.
-        unstick(walker, &mut nav.mesh, &moves.settings, now);
+        // Paths that came back from the path manager.
+        if let Some(list) = came.remove(&me) {
+            for (id, found, failure) in list {
+                if walker.pending.as_ref().is_some_and(|p| p.id == id) {
+                    path_came(walker, found, failure, &moves.settings);
+                }
+            }
+        }
+        unstick(walker, &mut nav.mesh, &mut paths, &moves.settings, now);
+        let mut ask = Asking {
+            queue: &mut paths,
+            mesh: nav.mesh.clone(),
+        };
         let before = walker.position;
         walker.turning = None;
         // Talking to the player in the dialogue menu: the world's update
@@ -922,8 +1074,9 @@ pub fn move_actors(
         // (`008da670`). A forced EVP must therefore be honored while a
         // settled actor is still in furniture; otherwise this early-return
         // path prevents the package change from requesting the stand-up.
-        let package_checked_before_furniture =
-            rethink_queued_package_before_furniture(&mut ctx, walker, &mut life, game_hour);
+        let package_checked_before_furniture = rethink_queued_package_before_furniture(
+            &mut ctx, walker, &mut life, game_hour, &mut ask,
+        );
         let in_furniture = crate::sitting::furniture_frame(&mut ctx, walker, &mut life, &mut rig);
         if in_furniture {
             rig.walking = false;
@@ -991,7 +1144,7 @@ pub fn move_actors(
             if frame.attacked {
                 rig.attack_at = Some(now);
             }
-            move_body(walker, &mut collision.0, &bodies, dt);
+            move_body(walker, &mut collision.0, &bodies, &mut movers, dt);
             place(walker, &mut transform, state, &mut talkers);
             walker.velocity = velocity(before, walker.position, dt);
             continue;
@@ -1009,7 +1162,7 @@ pub fn move_actors(
             if walker.fleeing.is_none() {
                 walker.forget_package(now);
             }
-            move_body(walker, &mut collision.0, &bodies, dt);
+            move_body(walker, &mut collision.0, &bodies, &mut movers, dt);
             place(walker, &mut transform, state, &mut talkers);
             walker.velocity = velocity(before, walker.position, dt);
             continue;
@@ -1051,7 +1204,7 @@ pub fn move_actors(
                     .clock
                     .due(dt, game_hour, forced, walker.package.is_some());
             if due && !life.getting_up {
-                rethink(&mut ctx, walker, &mut life, forced);
+                rethink(&mut ctx, walker, &mut life, forced, &mut ask);
             }
             // A dialogue package: walk up and talk (`008e8600`).
             if walker.package_kind == Some(world::ai::kinds::DIALOGUE) && !walker.dialogue_done {
@@ -1070,7 +1223,7 @@ pub fn move_actors(
             // Following someone, or walking to a reference that moves: a new
             // path when it moved `fAIMoveDistanceToRecalcFollowPath` since the
             // last, or they stand farther than the radius from it.
-            follow_target(&mut ctx, walker, moves);
+            follow_target(&mut ctx, walker, moves, &mut ask);
             // A place beyond the attached cells' navmesh: the long way.
             if let Some(squares) = &key.1 {
                 long_walk(
@@ -1080,6 +1233,7 @@ pub fn move_actors(
                     (key.0, squares),
                     &attached,
                     moves.recalc_follow,
+                    &mut ask,
                 );
             }
             // A wander package at its place: the wander procedure.
@@ -1159,7 +1313,9 @@ pub fn move_actors(
                 at,
                 &mut walker.doors_ahead,
             );
-        let on_path = if blocked || waiting {
+        // Waiting for a path from the path manager: standing.
+        let asking = walker.pending.is_some();
+        let on_path = if blocked || waiting || asking {
             walker.on_path()
         } else {
             step(walker, speed, dt)
@@ -1203,7 +1359,7 @@ pub fn move_actors(
         // Walking: the walk plays at the rate that makes its root travel
         // their speed (`actors`); waiting for others or a door, turning in
         // place first or after: not walking.
-        let walking = on_path && walker.walking_now() && !blocked && !waiting;
+        let walking = on_path && walker.walking_now() && !blocked && !waiting && !asking;
         rig.walking = walking;
         rig.running = walking && walker.run;
         rig.speed = if walking { speed } else { 0.0 };
@@ -1217,10 +1373,11 @@ pub fn move_actors(
         // Idles (`sitting`): once a second of free time, the idle tree.
         crate::sitting::idles_frame(&mut ctx, walker, &mut life, &mut rig);
         // Turned in place or walked: the controller moves them.
-        move_body(walker, &mut collision.0, &bodies, dt);
+        move_body(walker, &mut collision.0, &bodies, &mut movers, dt);
         place(walker, &mut transform, state, &mut talkers);
         walker.velocity = velocity(before, walker.position, dt);
     }
+    crate::clutter::walkers(movers);
     for (speaker, ..) in starts {
         println!("A script has {speaker} start a conversation, but they aren't loaded here.");
     }
@@ -1347,7 +1504,7 @@ fn place(
 /// once they're up). A travel to furniture uses it; a sandbox package gets
 /// its area (`sitting`). The same package goes on as it was, unless
 /// `restart` (forced: a dialogue package then starts again).
-fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool) {
+fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool, ask: &mut Asking) {
     let game = ctx.game;
     let order = &game.order;
     let me = walker.reference;
@@ -1515,25 +1672,28 @@ fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool) {
         go_through(order, state, walker);
         return;
     }
-    if let Some((path, doors)) = path_with_doors_for(ctx.mesh, walker, to) {
-        let length: f32 = path.windows(2).map(|w| distance(w[0], w[1])).sum();
-        println!(
-            "{me} walks {length:.0} units ({})",
-            package
-                .as_ref()
-                .and_then(|p| p.editor_id.clone())
-                .unwrap_or_default()
-        );
-        walker.path_target = target_ref.and_then(|t| state.place(order, t)).map(|p| p.2);
-        walker.set_path(path, radius, true, ctx.moves);
-        walker.arrival = arrival;
-        walker.doors_ahead = doors;
-    } else {
-        println!(
-            "{me} finds no way from ({:.0}, {:.0}, {:.0}) to ({:.0}, {:.0}, {:.0}) on the navmesh.",
-            walker.position[0], walker.position[1], walker.position[2], to[0], to[1], to[2]
-        );
+    // A place beyond the attached navmesh: the long way ([`long_walk`]).
+    if beyond_attached(ctx.mesh, to) {
+        return;
     }
+    // The travel's path request, to the path manager ([`ask_path`]).
+    let path_target = target_ref.and_then(|t| state.place(order, t)).map(|p| p.2);
+    walker.path_target = path_target;
+    let note = package
+        .as_ref()
+        .and_then(|p| p.editor_id.clone())
+        .unwrap_or_default();
+    let then = Pending {
+        id: 0,
+        radius,
+        turn_first: true,
+        arrival,
+        path_target,
+        partial: false,
+        note,
+    };
+    let shared = ask.mesh.clone();
+    ask_path(ask.queue, &shared, walker, to, then);
 }
 
 /// Consume both queued force sources without short-circuiting. `EvaluatePackage`
@@ -1556,6 +1716,7 @@ fn rethink_queued_package_before_furniture(
     walker: &mut Walker,
     life: &mut Life,
     game_hour: f32,
+    ask: &mut Asking,
 ) -> bool {
     let me = walker.reference;
     let settled = ctx
@@ -1573,7 +1734,7 @@ fn rethink_queued_package_before_furniture(
         .clock
         .due(ctx.dt, game_hour, true, walker.package.is_some());
     if due {
-        rethink(ctx, walker, life, true);
+        rethink(ctx, walker, life, true, ask);
     }
     due
 }
@@ -1583,7 +1744,7 @@ fn rethink_queued_package_before_furniture(
 /// `fAIMoveDistanceToRecalcFollowPath` (300) since the path was made, or
 /// when they stand idle farther than the radius from it (`009e0a00` and
 /// the follow procedure, as `findings\ai_rules.md` §3 reads them).
-fn follow_target(ctx: &mut Ctx, walker: &mut Walker, moves: &Moves) {
+fn follow_target(ctx: &mut Ctx, walker: &mut Walker, moves: &Moves, ask: &mut Asking) {
     let order = &ctx.game.order;
     let me = walker.reference;
     // Dialogue, sandbox and wander packages keep to their place their own
@@ -1601,6 +1762,10 @@ fn follow_target(ctx: &mut Ctx, walker: &mut Walker, moves: &Moves) {
     let Some(t) = walker.target_ref else {
         return;
     };
+    // Waiting for a path already.
+    if walker.pending.is_some() {
+        return;
+    }
     let Some((there, _, at, _)) = ctx.state.place(order, t) else {
         return;
     };
@@ -1628,14 +1793,22 @@ fn follow_target(ctx: &mut Ctx, walker: &mut Walker, moves: &Moves) {
     if mv::arrived(walker.position, to, radius) {
         return;
     }
-    if let Some(path) = path_for(ctx.mesh, walker, to) {
-        walker.path_target = Some(at);
-        let turn_first = !walker.on_path();
-        walker.set_path(path, radius, turn_first, ctx.moves);
-        walker.arrival = world::ai::arrival_heading(order, ctx.state, me, &package);
-    } else {
-        walker.path_target = Some(at);
+    walker.path_target = Some(at);
+    // Beyond the attached navmesh: the long way ([`long_walk`]).
+    if beyond_attached(ctx.mesh, to) {
+        return;
     }
+    let then = Pending {
+        id: 0,
+        radius,
+        turn_first: !walker.on_path(),
+        arrival: world::ai::arrival_heading(order, ctx.state, me, &package),
+        path_target: Some(at),
+        partial: false,
+        note: "after whom or what they go to".into(),
+    };
+    let shared = ask.mesh.clone();
+    ask_path(ask.queue, &shared, walker, to, then);
 }
 
 /// Someone idle whose package's place (or the load door toward it) isn't
@@ -1653,11 +1826,13 @@ fn long_walk(
     (space, squares): (FormId, &[(i32, i32)]),
     attached: &HashSet<(i32, i32)>,
     recalc_follow: f32,
+    ask: &mut Asking,
 ) {
     use world::ai::kinds;
     let order = &ctx.game.order;
     let me = walker.reference;
     if walker.on_path()
+        || walker.pending.is_some()
         || matches!(
             walker.package_kind,
             Some(kinds::DIALOGUE | kinds::SANDBOX | kinds::WANDER | kinds::GUARD | kinds::FLEE)
@@ -1708,16 +1883,9 @@ fn long_walk(
     };
     let whole = last + 1 == nodes.len();
     let end = if whole {
-        // A goal off the navmesh: the nearest navmesh point (resolved as
-        // the start is, below).
-        if ctx.mesh.navmesh_at(to).is_some() {
-            to
-        } else {
-            match ctx.mesh.closest_point(to) {
-                Some(p) => p,
-                None => return,
-            }
-        }
+        // A goal off the navmesh is joined to it by the request's ray-cast
+        // way (`world::ai::offmesh`).
+        to
     } else {
         // The node resolved onto its own navmesh.
         let node = nodes[last];
@@ -1728,46 +1896,31 @@ fn long_walk(
     };
     // Standing off the navmesh (out of sight they walk straight from node
     // to node, `009ea8a0`, and a navmesh's rough position can lie in a
-    // hole of it): the path starts from the nearest navmesh point, as the
-    // request's start is resolved onto the closest triangle
-    // (`PathingLocation::ResolveToClosestNavmeshAndTriangle` (Xbox PDB),
-    // not traced in detail), walked to first.
-    let planned_path = path_with_doors_for(ctx.mesh, walker, end).or_else(|| {
-        let start = ctx.mesh.closest_point(walker.position)?;
-        let (mut path, doors) = path_from_for(ctx.mesh, walker, start, end)?;
-        path.insert(0, walker.position);
-        Some((path, doors))
-    });
-    let Some((path, doors)) = planned_path else {
-        let p = walker.position;
-        println!(
-            "{me}: no navmesh path along the long way's attached part ({:.0},{:.0},{:.0} on {:?} to {:.0},{:.0},{:.0} on {:?})",
-            p[0],
-            p[1],
-            p[2],
-            ctx.mesh.navmesh_at(p),
-            end[0],
-            end[1],
-            end[2],
-            ctx.mesh.navmesh_at(end)
-        );
-        return;
-    };
-    let length: f32 = path.windows(2).map(|w| distance(w[0], w[1])).sum();
-    println!(
-        "{me} walks {length:.0} units of the long way ({} nodes, {} attached{})",
-        nodes.len(),
-        last + 1,
-        if whole { ", to the end" } else { "" }
-    );
-    walker.set_path(path, radius, true, ctx.moves);
-    walker.doors_ahead = doors;
-    walker.partial = !whole;
-    if whole && walker.door.is_none() {
-        walker.arrival = package
+    // hole of it): the request's ray-cast way onto the navmesh
+    // (`world::ai::offmesh`) takes them there.
+    let arrival = if whole && walker.door.is_none() {
+        package
             .as_ref()
-            .and_then(|p| world::ai::arrival_heading(order, ctx.state, me, p));
-    }
+            .and_then(|p| world::ai::arrival_heading(order, ctx.state, me, p))
+    } else {
+        None
+    };
+    let then = Pending {
+        id: 0,
+        radius,
+        turn_first: true,
+        arrival,
+        path_target: None,
+        partial: !whole,
+        note: format!(
+            "of the long way: {} nodes, {} attached{}",
+            nodes.len(),
+            last + 1,
+            if whole { ", to the end" } else { "" }
+        ),
+    };
+    let shared = ask.mesh.clone();
+    ask_path(ask.queue, &shared, walker, end, then);
 }
 
 /// The package's procedures reached `DONE`: its end action, once per start
@@ -2966,6 +3119,217 @@ fn request_of(walker: &Walker) -> world::ai::navsearch::PathRequest<'static> {
     }
 }
 
+/// The path manager (`PathManager::BuildPath` (Xbox PDB), `006eb9d0`):
+/// with `bBackgroundPathing` 1 (`00f8ac20`) an actor's path request
+/// (`ActorMover`'s, `009db090`, which sets the mover waiting for its path,
+/// +0x6c = 1) becomes a task (`PathingTaskData` (Xbox PDB), processed by
+/// `006e9fc0` on the task threads) and its solution reaches the actor as a
+/// message on a later frame (`PathManagerImpl::Update` `006eae40`). Here
+/// one worker thread searches the requests in order, each on the navmesh
+/// as it was when asked (a shared copy); the walker stands meanwhile.
+/// (The game builds at once when `0094df60` says so, a process-list count
+/// at +0x654 above 0, not identified.)
+#[derive(Resource)]
+pub struct PathQueue {
+    jobs: std::sync::mpsc::Sender<PathJob>,
+    done: std::sync::Mutex<std::sync::mpsc::Receiver<PathDone>>,
+    next: u64,
+}
+
+struct PathJob {
+    id: u64,
+    who: FormId,
+    mesh: std::sync::Arc<NavMesh>,
+    from: [f32; 3],
+    to: [f32; 3],
+    radius: f32,
+    target_radius: f32,
+}
+
+/// A searched path: its points and doors, if one was found.
+type PathFound = Option<(Vec<[f32; 3]>, Vec<(FormId, [f32; 3])>)>;
+
+/// Why a search found nothing, and the goal it was for.
+type Failure = (String, [f32; 3]);
+
+struct PathDone {
+    id: u64,
+    who: FormId,
+    found: PathFound,
+    /// Why none was found: no way onto the navmesh, none off it to the
+    /// goal, or no route between.
+    why: String,
+    to: [f32; 3],
+}
+
+impl Default for PathQueue {
+    fn default() -> Self {
+        let (jobs, inbox) = std::sync::mpsc::channel::<PathJob>();
+        let (outbox, done) = std::sync::mpsc::channel::<PathDone>();
+        std::thread::Builder::new()
+            .name("pathing".into())
+            .spawn(move || {
+                while let Ok(job) = inbox.recv() {
+                    let request = world::ai::navsearch::PathRequest {
+                        radius: job.radius,
+                        target_radius: job.target_radius,
+                        ..Default::default()
+                    };
+                    let found = job.mesh.plan(job.from, job.to, &request);
+                    let why = if found.is_some() {
+                        String::new()
+                    } else if job.mesh.start_end(job.from, job.radius).is_none() {
+                        format!(
+                            "no way onto the navmesh: {}",
+                            job.mesh.explain_off(job.from)
+                        )
+                    } else if job
+                        .mesh
+                        .goal_end(job.to, job.radius, job.target_radius)
+                        .is_none()
+                    {
+                        format!(
+                            "no way from the navmesh to the goal: {}",
+                            job.mesh.explain_off(job.to)
+                        )
+                    } else {
+                        "no route over the navmesh".to_string()
+                    };
+                    if outbox
+                        .send(PathDone {
+                            id: job.id,
+                            who: job.who,
+                            found,
+                            why,
+                            to: job.to,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .ok();
+        PathQueue {
+            jobs,
+            done: std::sync::Mutex::new(done),
+            next: 1,
+        }
+    }
+}
+
+impl PathQueue {
+    /// The solutions that came back since the last frame, by walker.
+    fn take_done(&self) -> HashMap<FormId, Vec<(u64, PathFound, Failure)>> {
+        let mut out: HashMap<FormId, Vec<(u64, PathFound, Failure)>> = HashMap::new();
+        if let Ok(rx) = self.done.lock() {
+            while let Ok(d) = rx.try_recv() {
+                out.entry(d.who)
+                    .or_default()
+                    .push((d.id, d.found, (d.why, d.to)));
+            }
+        }
+        out
+    }
+}
+
+/// Whether a place lies beyond the attached navmesh: no triangle holds it
+/// and no open edge is near enough for a ray-cast way to it
+/// (`world::ai::offmesh`). Such a goal is the navmesh info search's
+/// (`long_walk`, `006c94c0`), not a detailed path's.
+fn beyond_attached(mesh: &NavMesh, to: [f32; 3]) -> bool {
+    mesh.find_triangle(to).is_none()
+        && mesh
+            .edge_spots(to, world::ai::offmesh::FIND_CLOSEST_EDGES_RADIUS)
+            .is_empty()
+}
+
+/// What asking the path manager needs this frame: the queue and the
+/// navmesh as it now is (shared with the searches).
+pub(crate) struct Asking<'a> {
+    queue: &'a mut PathQueue,
+    mesh: std::sync::Arc<NavMesh>,
+}
+
+/// A path asked for and not back yet, and what to do with it when it comes
+/// (the walk it's for).
+#[derive(Debug, Clone)]
+pub(crate) struct Pending {
+    id: u64,
+    radius: f32,
+    turn_first: bool,
+    arrival: Option<f32>,
+    path_target: Option<[f32; 3]>,
+    partial: bool,
+    /// What the walk is, for the log.
+    note: String,
+}
+
+/// Asks the path manager for someone's path to `to` ([`PathQueue`]); they
+/// wait for it ([`Walker::pending`]) and walk it as `then` says when it
+/// comes ([`path_came`]).
+fn ask_path(
+    queue: &mut PathQueue,
+    mesh: &std::sync::Arc<NavMesh>,
+    walker: &mut Walker,
+    to: [f32; 3],
+    mut then: Pending,
+) {
+    let id = queue.next;
+    queue.next += 1;
+    then.id = id;
+    let sent = queue.jobs.send(PathJob {
+        id,
+        who: walker.reference,
+        mesh: mesh.clone(),
+        from: walker.position,
+        to,
+        radius: walker.request_radius,
+        target_radius: then.radius,
+    });
+    if sent.is_ok() {
+        walker.pending = Some(then);
+    }
+}
+
+/// A walk's path came back ([`ask_path`]): walked as asked, or reported
+/// missing.
+fn path_came(walker: &mut Walker, found: PathFound, failure: Failure, settings: &MoveSettings) {
+    let Some(p) = walker.pending.take() else {
+        return;
+    };
+    let me = walker.reference;
+    match found {
+        Some((path, doors)) => {
+            let length: f32 = path.windows(2).map(|w| distance(w[0], w[1])).sum();
+            println!("{me} walks {length:.0} units ({})", p.note);
+            walker.set_path(path, p.radius, p.turn_first, settings);
+            walker.arrival = p.arrival;
+            walker.partial = p.partial;
+            walker.doors_ahead = doors;
+            if p.path_target.is_some() {
+                walker.path_target = p.path_target;
+            }
+        }
+        None => {
+            // Said once while it stays the same.
+            let at = walker.position;
+            let (why, to) = failure;
+            let key = (
+                why.clone(),
+                [at, to].map(|p| p.map(|v| (v / 64.0).round() as i32)),
+            );
+            if walker.last_failure.as_ref() != Some(&key) {
+                walker.last_failure = Some(key);
+                println!(
+                    "{me} finds no way from ({:.0}, {:.0}, {:.0}) to ({:.0}, {:.0}, {:.0}): {why} ({}).",
+                    at[0], at[1], at[2], to[0], to[1], to[2], p.note
+                );
+            }
+        }
+    }
+}
+
 /// A path for someone from where they stand ([`request_of`]).
 pub(crate) fn path_for(mesh: &NavMesh, walker: &Walker, to: [f32; 3]) -> Option<Vec<[f32; 3]>> {
     path_with_doors_for(mesh, walker, to).map(|(p, _)| p)
@@ -3086,9 +3450,23 @@ pub(crate) fn move_body(
     walker: &mut Walker,
     collider: &mut physics::Collider,
     others: &[(FormId, physics::Person)],
+    movers: &mut Vec<physics::rigid::Mover>,
     dt: f32,
 ) {
     let wanted = walker.wanted.take();
+    // Walking into moving clutter pushes it (the character proxy's push
+    // on the bodies it touches, at the velocity the controller is given;
+    // `clutter` and `physics::rigid` carry it out). The controller itself
+    // is held by them meanwhile, as by anything solid (`00c711d0`).
+    if let (Some(m), true) = (wanted, walker.body.is_some() && dt > 0.0) {
+        let shape = body_shape(walker);
+        movers.push(physics::rigid::Mover {
+            feet: walker.position,
+            radius: shape.radius,
+            height: shape.height,
+            velocity: [m[0] / dt, m[1] / dt, 0.0],
+        });
+    }
     let p = walker.position;
     if let Some(body) = &walker.body {
         let moved = (body.feet[0] - p[0]).hypot(body.feet[1] - p[1]) > 0.5
@@ -3170,12 +3548,18 @@ pub(crate) fn move_body(
 /// standing in the way and has them make room instead of marking the
 /// triangle (`009e4cf0`'s loop over the high actors; what it asks of them,
 /// `00804cb0`/`00819a50`, wasn't traced): not done.
-fn unstick(walker: &mut Walker, mesh: &mut NavMesh, settings: &MoveSettings, now: f32) {
+fn unstick(
+    walker: &mut Walker,
+    mesh: &mut std::sync::Arc<NavMesh>,
+    queue: &mut PathQueue,
+    _settings: &MoveSettings,
+    now: f32,
+) {
     let Some(at) = walker.stuck_at.take() else {
         return;
     };
     if let Some(t) = mesh.triangle_at(at) {
-        mesh.mark_obstacle(t, at, walker.request_radius, 1.0);
+        std::sync::Arc::make_mut(mesh).mark_obstacle(t, at, walker.request_radius, 1.0);
     }
     println!(
         "{now:.1} s: {} is stuck at ({:.0}, {:.0}, {:.0}): an obstacle there, the way asked for again.",
@@ -3184,13 +3568,17 @@ fn unstick(walker: &mut Walker, mesh: &mut NavMesh, settings: &MoveSettings, now
     let Some(goal) = walker.target else {
         return;
     };
-    if let Some((path, doors)) = path_with_doors_for(mesh, walker, goal) {
-        let (radius, arrival, partial) = (walker.radius, walker.arrival, walker.partial);
-        walker.set_path(path, radius, false, settings);
-        walker.arrival = arrival;
-        walker.partial = partial;
-        walker.doors_ahead = doors;
-    }
+    let then = Pending {
+        id: 0,
+        radius: walker.radius,
+        turn_first: false,
+        arrival: walker.arrival,
+        path_target: None,
+        partial: walker.partial,
+        note: "again, after being stuck".into(),
+    };
+    let shared = mesh.clone();
+    ask_path(queue, &shared, walker, goal, then);
 }
 
 pub(crate) fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -3279,7 +3667,7 @@ mod tests {
         let mut frames = 0;
         while frames < 600 && w.stuck_at.is_none() {
             step(&mut w, 85.0, dt);
-            move_body(&mut w, &mut collider, &[], dt);
+            move_body(&mut w, &mut collider, &[], &mut Vec::new(), dt);
             frames += 1;
         }
         assert!(w.body.is_some(), "collision under them: a controller");
@@ -3320,10 +3708,95 @@ mod tests {
         let mut closest = f32::MAX;
         for _ in 0..300 {
             step(&mut w, 85.0, dt);
-            move_body(&mut w, &mut collider, &[other], dt);
+            move_body(&mut w, &mut collider, &[other], &mut Vec::new(), dt);
             closest = closest.min((w.position[0] - 5.0).hypot(w.position[1] + 150.0));
         }
         assert!(closest >= 2.0 * 20.25 - 0.5, "{closest}");
+    }
+
+    /// A square of navmesh, (0,0)–(200,200), two triangles.
+    fn square_mesh() -> NavMesh {
+        use world::ai::NavTriangle;
+        NavMesh {
+            vertices: vec![
+                [0.0, 0.0, 0.0],
+                [200.0, 0.0, 0.0],
+                [200.0, 200.0, 0.0],
+                [0.0, 200.0, 0.0],
+            ],
+            triangles: vec![
+                NavTriangle {
+                    vertices: [0, 1, 2],
+                    neighbors: [None, None, Some(1)],
+                    linked: 0b100,
+                    ..Default::default()
+                },
+                NavTriangle {
+                    vertices: [0, 2, 3],
+                    neighbors: [Some(0), None, None],
+                    linked: 0b001,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_path_asked_of_the_path_manager_comes_back_later_and_is_walked() {
+        let mesh = std::sync::Arc::new(square_mesh());
+        let mut queue = PathQueue::default();
+        let mut w = Walker::at(FormId(7), [20.0, 20.0, 0.0], 0.0, 1.0, false);
+        let then = Pending {
+            id: 0,
+            radius: 10.0,
+            turn_first: false,
+            arrival: Some(1.0),
+            path_target: None,
+            partial: false,
+            note: "test".into(),
+        };
+        ask_path(&mut queue, &mesh, &mut w, [180.0, 170.0, 0.0], then);
+        // Waiting: no path yet.
+        assert!(w.pending.is_some() && !w.on_path());
+        let mut came = HashMap::new();
+        for _ in 0..400 {
+            came = queue.take_done();
+            if !came.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let (id, found, failure) = came.remove(&FormId(7)).unwrap().pop().unwrap();
+        assert_eq!(Some(id), w.pending.as_ref().map(|p| p.id));
+        path_came(&mut w, found, failure, &MoveSettings::defaults());
+        assert!(w.pending.is_none() && w.on_path());
+        assert_eq!(w.path.last(), Some(&[180.0, 170.0, 0.0]));
+        assert_eq!((w.radius, w.arrival), (10.0, Some(1.0)));
+    }
+
+    #[test]
+    fn walking_people_are_handed_to_the_clutter_as_pushers() {
+        let mut collider = floor_and_wall();
+        let mut w = Walker::at(FormId(1), [0.0, -300.0, 0.0], 0.0, 1.0, false);
+        w.set_path(
+            vec![[0.0, -300.0, 0.0], [0.0, 0.0, 0.0]],
+            0.0,
+            false,
+            &MoveSettings::defaults(),
+        );
+        let dt = 1.0 / 60.0;
+        let mut movers = Vec::new();
+        // The first frame makes the controller; then they walk and push.
+        for _ in 0..3 {
+            movers.clear();
+            step(&mut w, 85.0, dt);
+            move_body(&mut w, &mut collider, &[], &mut movers, dt);
+        }
+        assert_eq!(movers.len(), 1);
+        // At the walk's speed, along the path (+y).
+        let v = movers[0].velocity;
+        assert!((v[1] - 85.0).abs() < 1.0 && v[0].abs() < 1.0, "{v:?}");
     }
 
     #[test]
@@ -3453,6 +3926,10 @@ mod tests {
             &mut walker,
             &mut life,
             12.0,
+            &mut Asking {
+                queue: &mut PathQueue::default(),
+                mesh: Default::default(),
+            },
         ));
         let sitter = ctx.state.sitters.get(&actor).unwrap();
         assert!(sitter.stand_requested);
@@ -3469,6 +3946,10 @@ mod tests {
             &mut walker,
             &mut life,
             12.0,
+            &mut Asking {
+                queue: &mut PathQueue::default(),
+                mesh: Default::default(),
+            },
         ));
         assert!((walker.clock.timer - 19.9).abs() < 1e-5);
     }
@@ -3534,6 +4015,10 @@ mod tests {
             &mut walker,
             &mut life,
             12.0,
+            &mut Asking {
+                queue: &mut PathQueue::default(),
+                mesh: Default::default(),
+            },
         ));
         assert!(ctx.state.evaluate.contains(&actor));
         assert!(!ctx.state.sitters.get(&actor).unwrap().stand_requested);
@@ -3720,7 +4205,16 @@ mod tests {
             fighting: false,
             talking: false,
         };
-        rethink(&mut ctx, &mut walker, &mut life, true);
+        rethink(
+            &mut ctx,
+            &mut walker,
+            &mut life,
+            true,
+            &mut Asking {
+                queue: &mut PathQueue::default(),
+                mesh: Default::default(),
+            },
+        );
         assert_eq!(
             package_events(ctx.state),
             [
@@ -3729,7 +4223,16 @@ mod tests {
             ]
         );
         // Looked at again: the same package goes on, nothing more.
-        rethink(&mut ctx, &mut walker, &mut life, true);
+        rethink(
+            &mut ctx,
+            &mut walker,
+            &mut life,
+            true,
+            &mut Asking {
+                queue: &mut PathQueue::default(),
+                mesh: Default::default(),
+            },
+        );
         assert_eq!(package_events(ctx.state).len(), 2);
         // A package `AddScriptPackage` already began isn't begun again.
         ctx.state.events.clear();
@@ -3737,7 +4240,16 @@ mod tests {
         ctx.state
             .package_begun
             .insert(me, (FormId(GUARD_POST), false));
-        rethink(&mut ctx, &mut walker, &mut life, true);
+        rethink(
+            &mut ctx,
+            &mut walker,
+            &mut life,
+            true,
+            &mut Asking {
+                queue: &mut PathQueue::default(),
+                mesh: Default::default(),
+            },
+        );
         assert_eq!(walker.package, Some(FormId(GUARD_POST)));
         assert!(package_events(ctx.state).is_empty());
     }
@@ -3768,7 +4280,21 @@ mod tests {
         // Squares 0 and 1 attached: to square 1's navmesh (its rough
         // position, the route's last attached node), short of the marker.
         let near: Vec<(i32, i32)> = vec![(0, 0), (1, 0)];
-        let mesh = NavMesh::load_cells(order, &cells(2));
+        let mesh = std::sync::Arc::new(NavMesh::load_cells(order, &cells(2)));
+        let mut queue = PathQueue::default();
+        // The path manager's answer, walked.
+        let answer = |queue: &PathQueue, walker: &mut Walker| {
+            for _ in 0..400 {
+                let mut came = queue.take_done();
+                if let Some(list) = came.remove(&walker.reference) {
+                    for (_, found, failure) in list {
+                        path_came(walker, found, failure, &MoveSettings::defaults());
+                    }
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
         let mut ctx = Ctx {
             game: &game,
             state: &mut state,
@@ -3788,7 +4314,12 @@ mod tests {
             (world, &near),
             &attached,
             300.0,
+            &mut Asking {
+                queue: &mut queue,
+                mesh: mesh.clone(),
+            },
         );
+        answer(&queue, &mut walker);
         assert!(walker.on_path() && walker.partial);
         let end = *walker.path.last().unwrap();
         assert!(distance(end, [6144.0, 2048.0, 0.0]) < 1.0, "{end:?}");
@@ -3802,12 +4333,16 @@ mod tests {
             (world, &near),
             &attached,
             300.0,
+            &mut Asking {
+                queue: &mut queue,
+                mesh: mesh.clone(),
+            },
         );
-        assert!(!walker.on_path());
+        assert!(!walker.on_path() && walker.pending.is_none());
         // Every square attached: on to the marker, the travel's end.
         let all: Vec<(i32, i32)> = (0..SQUARES).map(|x| (x, 0)).collect();
-        let mesh = NavMesh::load_cells(order, &cells(SQUARES));
-        ctx.mesh = &mesh;
+        let all_mesh = std::sync::Arc::new(NavMesh::load_cells(order, &cells(SQUARES)));
+        ctx.mesh = &*all_mesh;
         let attached: HashSet<(i32, i32)> = all.iter().copied().collect();
         long_walk(
             &mut ctx,
@@ -3816,7 +4351,12 @@ mod tests {
             (world, &all),
             &attached,
             300.0,
+            &mut Asking {
+                queue: &mut queue,
+                mesh: all_mesh.clone(),
+            },
         );
+        answer(&queue, &mut walker);
         assert!(walker.on_path() && !walker.partial);
         let end = *walker.path.last().unwrap();
         assert!(distance(end, [19000.0, 3000.0, 0.0]) < 1.0, "{end:?}");

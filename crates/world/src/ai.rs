@@ -37,10 +37,12 @@ use crate::scripting::{Facts, GameState};
 
 pub mod actions;
 pub mod data;
+pub mod doors;
 pub mod flee;
 pub mod guard;
 pub mod navinfo;
 pub mod navsearch;
+pub mod offmesh;
 pub mod procedures;
 mod smoother;
 
@@ -1252,6 +1254,51 @@ pub struct NavMesh {
     /// navmesh is of, by square: the straight-line test asks how high the
     /// ends stand above the land ([`Self::land_height`]).
     pub land: HashMap<(i32, i32), Vec<f32>>,
+    /// Triangles under a closed door, flagged [`navsearch::DOOR`] at run
+    /// time (`006997e0`, [`doors`]), by triangle: the door.
+    pub door_triangles: HashMap<usize, FormId>,
+    /// What walkers may do with each door now (`006a6fa0`'s door test):
+    /// set by whoever knows the doors' locks; a door not listed is walked
+    /// through.
+    pub door_rules: HashMap<FormId, navsearch::DoorWay>,
+    /// The world's collision for the ray-cast ways onto and off the
+    /// navmesh ([`offmesh`]); none: no such way.
+    pub pick: Picker,
+    /// `fJumpFallHeightMin` (exe default 256): how far the ray-cast way may
+    /// drop at a step ([`offmesh`]).
+    pub fall_height: f32,
+}
+
+/// Casts a ray through the world's collision: how far along from `from`
+/// toward `to` (0..1) it meets something, if it does. The game's path ray
+/// casts (`006e6f90`) are `bhkPickData` picks on layer 38 (`PATHPICK`,
+/// `006e6c00`).
+pub trait PathPick: Send + Sync {
+    fn pick(&self, from: [f32; 3], to: [f32; 3]) -> Option<f32>;
+}
+
+/// A navmesh's [`PathPick`], if it has one.
+#[derive(Clone, Default)]
+pub struct Picker(pub Option<std::sync::Arc<dyn PathPick>>);
+
+impl std::fmt::Debug for Picker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Picker(Some)"
+        } else {
+            "Picker(None)"
+        })
+    }
+}
+
+impl PartialEq for Picker {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (None, None) => true,
+            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -1271,6 +1318,12 @@ pub struct NavTriangle {
     /// entry's first u32): the search doesn't cross them (`006a6fa0` tests
     /// the link record `0068f230` returns).
     pub closed: u8,
+    /// Edges the data links to something (another triangle of this
+    /// navmesh, or of another one, loaded or not): an edge with neither a
+    /// link nor a loaded neighbour is an open edge, the navmesh's border
+    /// (`0068f2c0` is −1), which the ray-cast way onto the navmesh aims
+    /// at ([`offmesh`]).
+    pub linked: u8,
 }
 
 impl NavMesh {
@@ -1450,11 +1503,13 @@ impl NavMesh {
                 let vertices = v.map(|v| (p.first_vertex + usize::from(v)).min(vertex_count - 1));
                 let mut neighbors = [None; 3];
                 let mut closed = 0u8;
+                let mut linked = 0u8;
                 for e in 0..3 {
                     let link = n[e];
                     if link == 0xFFFF {
                         continue;
                     }
+                    linked |= 1 << e;
                     neighbors[e] = if flags & (1 << e) != 0 {
                         // To another navmesh, if it's loaded.
                         p.external
@@ -1476,6 +1531,7 @@ impl NavMesh {
                     neighbors,
                     flags,
                     closed,
+                    linked,
                 });
             }
             for &(door, t) in &p.doors {
@@ -1570,36 +1626,45 @@ impl NavMesh {
         to: [f32; 3],
         request: &navsearch::PathRequest,
     ) -> Option<(Vec<[f32; 3]>, Vec<(FormId, [f32; 3])>)> {
-        let start = self.triangle_near(from)?;
-        let goal = self.triangle_near(to)?;
+        // Both ends resolved onto the navmesh (`006dd6f0`), an end off it
+        // joined by its ray-cast way ([`offmesh`], `006caa40`/`006cac90`).
+        let start_end = self.start_end(from, request.radius)?;
+        let goal_end = self.goal_end(to, request.radius, request.target_radius)?;
+        let (start, goal) = (start_end.triangle, goal_end.triangle);
+        let (a, b) = (start_end.point, goal_end.point);
+        // The path: the way onto the navmesh, the navmesh part from `a` to
+        // `b`, the way off it.
+        let whole = |middle: Vec<[f32; 3]>| {
+            let mut out = Vec::with_capacity(middle.len() + 2);
+            if !start_end.way.is_empty() {
+                out.push(from);
+            }
+            out.extend(middle);
+            if !goal_end.way.is_empty() {
+                out.push(to);
+            }
+            out
+        };
         let doors_on = |triangles: &[usize]| -> Vec<(FormId, [f32; 3])> {
             triangles
                 .iter()
-                .filter_map(|&t| self.door_portals.get(&t).map(|&d| (d, self.centroid(t))))
+                .filter_map(|&t| {
+                    self.door_portals
+                        .get(&t)
+                        .or_else(|| self.door_triangles.get(&t))
+                        .map(|&d| (d, self.centroid(t)))
+                })
                 .collect()
         };
         // The straight line: the doors are those of the triangles it
         // crosses.
         if request.avoid.is_empty() {
-            if let Some(crossed) = self.line_crossing(from, to, start, goal) {
-                if self.wide_line_clear(from, to, request.radius) {
-                    return Some((vec![from, to], doors_on(&crossed)));
+            if let Some(crossed) = self.line_crossing(a, b, start, goal) {
+                if self.wide_line_clear(a, b, request.radius) {
+                    return Some((whole(vec![a, b]), doors_on(&crossed)));
                 }
             }
         }
-        // The smoother walks lines from points on the navmesh; the game's
-        // path locations keep their resolved triangle, here an end off the
-        // navmesh (within `OFF_MESH`) is first taken to the nearest point of
-        // its triangle and walked to from there.
-        let on = |p: [f32; 3], t: usize| {
-            if self.triangle_under(p).is_some() {
-                p
-            } else {
-                let [a, b, c] = [0, 1, 2].map(|i| self.corner(t, i));
-                closest_in_triangle(a, b, c, p)
-            }
-        };
-        let (a, b) = (on(from, start), on(to, goal));
         // Search and smooth, up to the request's tries (+0xa8: 3 from
         // `006e2420`, kept within 1..10 by `006cc5e0`): a smoothing that
         // failed names edges to keep off, and the search goes again.
@@ -1628,7 +1693,7 @@ impl NavMesh {
                 break;
             }
         }
-        let (found, mut points, corridor) = last?;
+        let (found, points, corridor) = last?;
         // No smoothed way after the tries: the request fails (`006cc5e0`
         // returns 1 or 2; its acceptance of a last try ending near the goal,
         // and a partial path for requests that allow one, +0xa3, aren't
@@ -1636,13 +1701,7 @@ impl NavMesh {
         if !found {
             return None;
         }
-        if a != from {
-            points.insert(0, from);
-        }
-        if found && b != to {
-            points.push(to);
-        }
-        Some((points, doors_on(&corridor)))
+        Some((whole(points), doors_on(&corridor)))
     }
 
     /// The rest of the straight-line test (`006cd1f0`, after the line
@@ -1930,6 +1989,7 @@ mod tests {
             owners: vec![(FormId(0x901), 0), (FormId(0x902), 4)],
             obstacles: Vec::new(),
             land: HashMap::new(),
+            ..Default::default()
         }
     }
 
@@ -2012,6 +2072,7 @@ mod tests {
             owners: Vec::new(),
             obstacles: Vec::new(),
             land: HashMap::new(),
+            ..Default::default()
         }
     }
 
