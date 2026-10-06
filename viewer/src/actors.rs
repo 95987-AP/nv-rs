@@ -95,6 +95,12 @@ pub struct ActorRig {
     pub disarmed: bool,
     /// The attack the weapon section was last told to play.
     started_attack: Option<f32>,
+    /// The mover's direction flags when they aren't just "walking forward"
+    /// (the player's keys, `player_body`): back, left, right.
+    pub direction: Option<MoveFlags>,
+    /// The movement groups' files besides the walk and run (`Backward`,
+    /// `Left`, … `FastRight`, from the walk's folder), by group.
+    pub moves: Vec<(u8, Arc<nif::Sequence>)>,
 }
 
 /// A dead actor's ragdoll (`preview::ragdoll`): the bodies in motion, the
@@ -128,6 +134,8 @@ impl ActorRig {
             ragdoll: None,
             disarmed: false,
             started_attack: None,
+            direction: None,
+            moves: Vec::new(),
             skeleton,
         };
         if let Some(idle) = rig.skeleton.idle.clone() {
@@ -188,12 +196,28 @@ impl ActorRig {
         let unscaled = self.speed / self.scale;
         let turn = self.turning.filter(|_| !self.walking && !self.ready());
         let flags = MoveFlags {
-            forward: self.walking,
-            running: self.running,
             turn_left: matches!(turn, Some((TurnSide::Left, _))),
             turn_right: matches!(turn, Some((TurnSide::Right, _))),
-            ..Default::default()
+            ..self.direction.unwrap_or(MoveFlags {
+                forward: self.walking,
+                running: self.running,
+                ..Default::default()
+            })
         };
+        // A group with its own file (back, left, right): played at the
+        // rate the Forward (or FastForward) group's root speed gives
+        // (`00895110`).
+        let own = animation::movement_group(flags, unscaled)
+            .and_then(|g| self.moves.iter().find(|(id, _)| *id == g).cloned());
+        if let Some((g, seq)) = own {
+            let forward = if flags.running { &sk.run } else { &sk.walk };
+            let forward = forward.as_ref().or(sk.walk.as_ref()).unwrap_or(&seq);
+            self.player.movement_rate =
+                animation::movement_rate(unscaled, GroupData::read(forward).speed());
+            self.player.play(g, &seq, -1, bones);
+            self.weapon_and_overlay(dt);
+            return;
+        }
         let chosen = match animation::movement_group(flags, unscaled) {
             Some(g) if g == group::TURN_LEFT => sk.turn_left.as_ref().map(|s| (g, s)),
             Some(g) if g == group::TURN_RIGHT => sk.turn_right.as_ref().map(|s| (g, s)),
@@ -202,12 +226,14 @@ impl ActorRig {
                 (None, Some(walk)) => Some((group::FORWARD, walk)),
                 (None, None) => None,
             },
-            Some(g) => match (&sk.walk, &sk.run) {
+            Some(g) if g == group::FORWARD => match (&sk.walk, &sk.run) {
                 (Some(walk), _) => Some((g, walk)),
                 (None, Some(run)) => Some((g, run)),
                 (None, None) => None,
             },
-            None => None,
+            // Back, left or right with no file of its own: the idle, as
+            // the group lookup's last fallback (`00495740`).
+            Some(_) | None => None,
         };
         match chosen {
             Some((g, seq)) => {
@@ -219,6 +245,14 @@ impl ActorRig {
             }
             None => self.player.stop_section(section::MOVEMENT),
         }
+        self.weapon_and_overlay(dt);
+    }
+
+    /// The rest of a frame's picking after the movement section: the
+    /// weapon section, the special idle, and the sequences' update.
+    fn weapon_and_overlay(&mut self, dt: f32) {
+        let sk = self.skeleton.clone();
+        let bones = &sk.bones;
         // The weapon section: the aim while fighting, each attack played
         // once over it (the aim comes back, blended from the pose, once
         // the attack has eased out).
@@ -834,6 +868,45 @@ mod tests {
         rig.speed = 77.0;
         rig.drive(0.1);
         assert_eq!(rig.player.playing(section::MOVEMENT), Some(group::FORWARD));
+        assert!((rig.player.movement_rate - 77.0 / 85.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn backing_up_plays_its_own_group_at_the_forward_groups_rate() {
+        let back = Sequence {
+            name: "Backward".into(),
+            start: 0.0,
+            stop: 1.0,
+            looping: true,
+            accum_root: Some("Bip01".into()),
+            materials: Vec::new(),
+            text_keys: vec![(0.0, "start".into()), (1.0, "end".into())],
+            tracks: vec![Track {
+                node: "Arm".into(),
+                priority: 30,
+                motion: Motion::Keys {
+                    translation: vec![(0.0, [0.0, 0.0, 40.0])],
+                    rotation: Vec::new(),
+                    scale: Vec::new(),
+                    default: (None, None, None),
+                    euler: None,
+                },
+            }],
+        };
+        let mut rig = ActorRig::new(skeleton(10.0, 20.0), 1.0, 0.0);
+        rig.walking = true;
+        rig.speed = 77.0;
+        rig.direction = Some(MoveFlags {
+            backward: true,
+            ..Default::default()
+        });
+        // No file for the group: no movement animation, the idle shows.
+        rig.drive(0.1);
+        assert_eq!(rig.player.playing(section::MOVEMENT), None);
+        // With one: it plays, at 77 over the Forward group's 85.
+        rig.moves.push((group::BACKWARD, Arc::new(back)));
+        rig.drive(0.1);
+        assert_eq!(rig.player.playing(section::MOVEMENT), Some(group::BACKWARD));
         assert!((rig.player.movement_rate - 77.0 / 85.0).abs() < 1e-6);
     }
 

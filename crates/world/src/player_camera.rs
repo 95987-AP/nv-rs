@@ -155,9 +155,18 @@ impl CameraSettings {
                 g("fOverShoulderOffsetPointZ", d.offset_point[2]),
             ],
             offset_point_zooming: [
-                g("fOverShoulderOffsetPointZoomingX", d.offset_point_zooming[0]),
-                g("fOverShoulderOffsetPointZoomingY", d.offset_point_zooming[1]),
-                g("fOverShoulderOffsetPointZoomingZ", d.offset_point_zooming[2]),
+                g(
+                    "fOverShoulderOffsetPointZoomingX",
+                    d.offset_point_zooming[0],
+                ),
+                g(
+                    "fOverShoulderOffsetPointZoomingY",
+                    d.offset_point_zooming[1],
+                ),
+                g(
+                    "fOverShoulderOffsetPointZoomingZ",
+                    d.offset_point_zooming[2],
+                ),
             ],
             fov: g("fOverShoulderFOV", d.fov),
             wheel_min: g("fVanityModeWheelMin", d.wheel_min),
@@ -425,7 +434,7 @@ impl PlayerCamera {
     /// Each player update (`UpdateTemp3rdPerson`, `00941d83`): the
     /// temporary third person ends once no animation action plays, the
     /// player isn't knocked down and the view key isn't held; first person
-    /// comes back if it was taken from it.
+    /// comes back if it was taken from it (then true).
     // Translated from 009503d0 (decompiled, FalloutNV.exe 1.4.0.525)
     pub fn update_temp_third(
         &mut self,
@@ -433,13 +442,14 @@ impl PlayerCamera {
         knocked: bool,
         s: &CameraSettings,
         f: &Frame,
-    ) {
-        if self
+    ) -> bool {
+        let back = self
             .temp_third
-            .update(action_playing, knocked, self.view_key || self.vanity)
-        {
+            .update(action_playing, knocked, self.view_key || self.vanity);
+        if back {
             self.set_first_person(true, s, f);
         }
+        back
     }
 
     /// Begins a temporary first person (`ForceTemp1stPerson`, called with
@@ -659,9 +669,10 @@ impl PlayerCamera {
             }
             let dt = f64::from(f.dt);
             self.vanity_heading = (f64::from(self.vanity_heading)
-                - f64::from(s.auto_x_speed) * DEG_TO_RAD * dt) as f32;
-            self.vanity_phase = (f64::from(self.vanity_phase)
-                + f64::from(s.auto_y_speed) * DEG_TO_RAD * dt) as f32;
+                - f64::from(s.auto_x_speed) * DEG_TO_RAD * dt)
+                as f32;
+            self.vanity_phase =
+                (f64::from(self.vanity_phase) + f64::from(s.auto_y_speed) * DEG_TO_RAD * dt) as f32;
             let wave = f64::from(self.vanity_phase.sin());
             self.vanity_pitch = (f64::from(s.auto_y_degrees) * wave * DEG_TO_RAD) as f32;
             if self.vanity_phase > TAU {
@@ -708,27 +719,29 @@ impl PlayerCamera {
         }
         // The pivot: the body's root, raised.
         let mut pivot = f.feet;
-        let rotation;
-        let fov;
-        if self.vanity {
+        let (rotation, fov) = if self.vanity {
             if self.vanity_heading < 0.0 {
                 self.vanity_heading += TAU;
             } else if self.vanity_heading > TAU {
                 self.vanity_heading -= TAU;
             }
-            rotation = rotation_zx(f.heading + self.vanity_heading, self.vanity_pitch);
             pivot[2] = (f64::from(f.scale) * 100.0 + f64::from(pivot[2])) as f32;
-            fov = None;
+            (
+                rotation_zx(f.heading + self.vanity_heading, self.vanity_pitch),
+                None,
+            )
         } else {
-            rotation = rotation_zx(f.heading + self.yaw_offset, f.pitch + self.pitch_offset);
             // `fEyeHeight` × 1 (`011a3b64`) × the scale, and the
             // difference in height of the first-person camera node and
             // `011e07d4` (two first-person nodes, not identified; taken as
             // 0 here).
             let raise = f64::from(f.eye_height) * f64::from(f.scale);
             pivot[2] = (raise + f64::from(pivot[2])) as f32;
-            fov = Some(s.fov);
-        }
+            (
+                rotation_zx(f.heading + self.yaw_offset, f.pitch + self.pitch_offset),
+                Some(s.fov),
+            )
+        };
         // The shoulder offset, fading with the zoom when a blend distance
         // is set.
         let mut blend = 1.0f32;
@@ -803,7 +816,8 @@ impl PlayerCamera {
             if snapping {
                 switching = 0;
             } else {
-                let share = f64::from(self.zoom - s.wheel_min) / f64::from(s.wheel_max - s.wheel_min);
+                let share =
+                    f64::from(self.zoom - s.wheel_min) / f64::from(s.wheel_max - s.wheel_min);
                 mult = (f64::from(s.zoom_max_mult) * share + f64::from(s.zoom_min_mult)) as f32;
             }
         }

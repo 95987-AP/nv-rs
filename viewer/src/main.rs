@@ -32,6 +32,8 @@ mod menus;
 mod music;
 mod particles;
 mod pipboy;
+mod player_body;
+mod player_camera;
 mod player_idle;
 mod report;
 mod scripts;
@@ -179,6 +181,8 @@ fn main() {
         .insert_resource(actors::AnimSettings::read(&game.settings))
         .insert_resource(ai::Moves::new(&game))
         .insert_resource(ai::CellBuffer::new(&game))
+        .insert_resource(player_camera::PlayerView::new(&game.order, &game.settings))
+        .init_resource::<player_body::PlayerBody>()
         .insert_resource(GameFiles(game))
         .init_resource::<scripts::Scripts>()
         .init_resource::<player_idle::PlayerIdle>()
@@ -258,6 +262,25 @@ fn main() {
         // The first-person camera runs the image space passes with the
         // main camera's grade, once everything has set it.
         .add_systems(PostUpdate, viewmodel::copy_grade.after(grade::adapt_eyes))
+        // The camera is the eye during the frame; the third-person view
+        // moves it once everything has used it, and the eye comes back
+        // first thing next frame (`player_camera`).
+        .add_systems(PreUpdate, player_camera::restore_eye)
+        .add_systems(
+            PostUpdate,
+            player_camera::place_view.before(bevy::transform::TransformSystem::TransformPropagate),
+        )
+        .add_systems(
+            Update,
+            (
+                player_camera::view_input
+                    .after(lockpick::pick_locks)
+                    .before(look_around),
+                player_body::update_player_body
+                    .after(sitting::player_furniture)
+                    .before(actors::animate_actors),
+            ),
+        )
         .add_systems(
             Startup,
             (
@@ -1362,12 +1385,25 @@ pub struct Spawned {
 
 impl Spawner<'_, '_> {
     /// One actor on its own (the first-person view) under `parent`, lit by
-    /// `lighting`: its root, its joints and its pieces' entities.
+    /// `lighting`, drawn by the first-person camera alone: its root, its
+    /// joints and its pieces' entities.
     fn spawn_lone_actor(
         &mut self,
         scene: &ViewerScene,
         lighting: GameLighting,
         parent: Entity,
+    ) -> Option<(Entity, Vec<Entity>, Vec<Entity>)> {
+        self.spawn_lone_actor_on(scene, lighting, parent, viewmodel::FIRST_PERSON_LAYER)
+    }
+
+    /// [`Self::spawn_lone_actor`] drawn on render layer `layer` (0: the
+    /// main camera's, for the player's third-person body).
+    fn spawn_lone_actor_on(
+        &mut self,
+        scene: &ViewerScene,
+        lighting: GameLighting,
+        parent: Entity,
+        layer: usize,
     ) -> Option<(Entity, Vec<Entity>, Vec<Entity>)> {
         let actor = scene.actors.first()?;
         let compressed = self
@@ -1414,8 +1450,7 @@ impl Spawner<'_, '_> {
                         Transform::IDENTITY,
                         actors::skinned(bind, skin_joints),
                         bevy::render::view::NoFrustumCulling,
-                        // Drawn by the first-person camera alone.
-                        bevy::render::view::RenderLayers::layer(viewmodel::FIRST_PERSON_LAYER),
+                        bevy::render::view::RenderLayers::layer(layer),
                         ChildOf(root),
                     ))
                     .id(),
@@ -2155,7 +2190,8 @@ fn help_text(ev100: f32, speed: f32, walking: bool) -> String {
     };
     format!(
         "{moving}\n\
-         F: walk/fly   V: V.A.T.S.   Tab: Pip-Boy   T: wait   F5/F9: save/load   \
+         F: first/third person (hold: look around; wheel: zoom)   `: walk/fly\n\
+         V: V.A.T.S.   Tab: Pip-Boy   T: wait   F5/F9: save/load   \
          [ ]: exposure (EV {ev100:.1})   G: image space   Home: start   Esc: quit"
     )
 }
@@ -2184,13 +2220,17 @@ fn look_around(
     state: Res<dialogue::DialogueState>,
     player: Res<walk::Player>,
     start_stage: Res<scripts::StartStage>,
+    view: Option<Res<player_camera::PlayerView>>,
     mut cameras: Query<(&mut Transform, &mut FlyCamera)>,
 ) {
     let Ok((mut transform, mut camera)) = cameras.single_mut() else {
         return;
     };
+    // Holding the view key (F), the mouse turns the camera around the
+    // player instead (`player_camera`).
+    let taken = player.walking && view.is_some_and(|v| v.mouse_taken);
     // Scripts can block looking through controls or a player AI package;
-    // the free-flying camera (F) isn't the player and always looks.
+    // the free-flying camera (`) isn't the player and always looks.
     // Walking, the left button attacks (`combat`), so the right one looks.
     // The initial stage is dispatched later in this Update chain. Do not
     // accept an input frame before it installs the player's native package
@@ -2199,7 +2239,7 @@ fn look_around(
         && (!player.ready || start_stage.0.is_some() || state.0.player_looking_blocked());
     let held =
         mouse.pressed(MouseButton::Right) || (!player.walking && mouse.pressed(MouseButton::Left));
-    if !locked && held {
+    if !locked && held && !taken {
         camera.yaw -= motion.delta.x * LOOK_SPEED;
         camera.pitch = (camera.pitch - motion.delta.y * LOOK_SPEED).clamp(-1.54, 1.54);
     }
