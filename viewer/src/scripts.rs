@@ -168,6 +168,40 @@ pub struct Activatable(pub Option<(FormId, String)>);
 #[derive(Resource, Default)]
 pub struct ActivateRequest(pub Option<FormId>);
 
+/// `--use`: an object to press E on once the player is in the place, for
+/// testing (an editor ID or form ID).
+#[derive(Resource, Default)]
+pub struct StartUse(pub Option<String>);
+
+/// Presses E on the `--use` object, as if the crosshair were on it.
+pub fn start_use(
+    game: Res<GameFiles>,
+    mut start: ResMut<StartUse>,
+    player: Res<crate::walk::Player>,
+    mut request: ResMut<ActivateRequest>,
+) {
+    if !player.ready || start.0.is_none() {
+        return;
+    }
+    let Some(asked) = start.0.take() else {
+        return;
+    };
+    let order = &game.0.order;
+    let form = order.form_by_editor_id(&asked).or_else(|| {
+        u32::from_str_radix(asked.trim_start_matches("0x"), 16)
+            .ok()
+            .map(FormId)
+            .filter(|f| order.get(*f).is_some())
+    });
+    match form {
+        Some(f) => {
+            println!("--use: using {asked}.");
+            request.0 = Some(f);
+        }
+        None => println!("--use: no object called '{asked}'."),
+    }
+}
+
 /// Why something locked doesn't open now.
 pub enum Locked {
     /// The lockpicking menu opens on it (`lockpick`).
