@@ -16,6 +16,7 @@
 
 pub mod barter;
 pub mod chargen;
+pub mod computers;
 pub mod container;
 pub mod dialog;
 pub mod hacking;
@@ -96,6 +97,7 @@ pub enum OpenMenu {
     SleepWait(Box<ui::menus::sleepwait::SleepWaitMenu>),
     Vigor(Box<vigor::VigorScreen>),
     Hacking(Box<hacking::HackingScreen>),
+    Computers(Box<computers::ComputersScreen>),
 }
 
 impl OpenMenu {
@@ -113,6 +115,7 @@ impl OpenMenu {
             OpenMenu::SleepWait(m) => &mut **m,
             OpenMenu::Vigor(m) => &mut m.menu,
             OpenMenu::Hacking(m) => &mut m.menu,
+            OpenMenu::Computers(m) => &mut m.menu,
         }
     }
 
@@ -130,6 +133,7 @@ impl OpenMenu {
             OpenMenu::SleepWait(m) => m.menu,
             OpenMenu::Vigor(m) => m.menu.menu,
             OpenMenu::Hacking(m) => m.menu.menu,
+            OpenMenu::Computers(m) => m.menu.menu,
         }
     }
 
@@ -147,6 +151,7 @@ impl OpenMenu {
             OpenMenu::SleepWait(m) => m.closed,
             OpenMenu::Vigor(m) => m.menu.closed,
             OpenMenu::Hacking(m) => m.menu.closed,
+            OpenMenu::Computers(m) => m.menu.closed,
         }
     }
 }
@@ -261,6 +266,10 @@ fn start_menu(
     let request = match (name, form) {
         ("container", Some(r)) => crate::menus::Menu::Container(r, reference_name(order, r)),
         ("barter", Some(r)) => crate::menus::Menu::Barter(r),
+        // A placed terminal's own screen, as getting in would open it.
+        ("terminal", Some(r)) => {
+            crate::menus::Menu::Terminal(world::scripting::base_of(order, r).unwrap_or(r), r)
+        }
         // A placed terminal's hacking menu, as using it would open it.
         ("hacking", Some(r)) => {
             crate::menus::Menu::Hacking(world::scripting::base_of(order, r).unwrap_or(r), r)
@@ -454,6 +463,7 @@ pub fn takes(m: &crate::menus::Menu) -> bool {
         || sleepwait::takes(m)
         || vigor::takes(m)
         || hacking::takes(m)
+        || computers::takes(m)
 }
 
 /// The world's requests become menus.
@@ -485,6 +495,8 @@ fn open_menus(
             message::open(screen, &game.0, request);
         } else if hacking::takes(&request) {
             hacking::open(screen, &game.0, &state.0, request, &hacking_sounds);
+        } else if computers::takes(&request) {
+            computers::open(screen, &game.0, &state.0, request);
         } else if vigor::takes(&request) {
             sounds
                 .0
@@ -583,6 +595,7 @@ fn run_open_menus(
     mut sounds: ResMut<crate::sounds::SoundRequests>,
     scripts: Res<crate::scripts::Scripts>,
     mut hacking_sounds: ResMut<hacking::HackingSounds>,
+    mut hud_messages: ResMut<crate::hud::HudMessages>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         input.typed.clear();
@@ -691,14 +704,22 @@ fn run_open_menus(
                     continue;
                 }
             }
-            // Tab or Escape leave the hacking menu (its code 10).
-            if matches!(top, OpenMenu::Hacking(_))
+            // Tab or Escape leave the hacking and terminal menus (their
+            // code 10).
+            if matches!(top, OpenMenu::Hacking(_) | OpenMenu::Computers(_))
                 && matches!(e.logical_key, Key::Escape | Key::Tab)
             {
                 use ui::menu::MenuCode;
-                if let OpenMenu::Hacking(h) = top {
-                    h.menu
-                        .special_key(ui, ui::menus::hacking::LEAVE, now * 1000.0);
+                match top {
+                    OpenMenu::Hacking(h) => {
+                        h.menu
+                            .special_key(ui, ui::menus::hacking::LEAVE, now * 1000.0);
+                    }
+                    OpenMenu::Computers(c) => {
+                        c.menu
+                            .special_key(ui, ui::menus::computers::LEAVE, now * 1000.0);
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -745,8 +766,10 @@ fn run_open_menus(
             }
         }
     }
-    // The hacking menu's frame (`00767c90`), after the pointer.
+    // The hacking and terminal menus' frames (`00767c90`, `00758470`),
+    // after the pointer.
     hacking::update(screen, now * 1000.0);
+    computers::update(screen, now * 1000.0);
     // The sleep/wait menu's frame: its clicks carried out, the hours pass
     // (`007c0580`).
     let rest_held = screen.rest_down;
@@ -785,6 +808,17 @@ fn run_open_menus(
         now * 1000.0,
     ) {
         queue.push(m);
+    }
+    for n in computers::after(
+        screen,
+        order,
+        &scripts.0,
+        &mut state.0,
+        &mut hacking_sounds,
+        now * 1000.0,
+    ) {
+        println!("{n}");
+        hud_messages.queue.push(n);
     }
     let Screen {
         ui,

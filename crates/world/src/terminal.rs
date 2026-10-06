@@ -61,6 +61,9 @@ pub struct Terminal {
     pub header: String,
     pub difficulty: u8,
     pub flags: u8,
+    /// Its server type (`DNAM` byte 2, `+0xA6`): which
+    /// `sTerminalServerText` the screen shows.
+    pub server: u8,
     /// The note whose holder gets in without hacking (`PNAM`, the
     /// terminal's `+0xA0`).
     pub password_note: Option<FormId>,
@@ -133,6 +136,7 @@ impl Terminal {
                 .unwrap_or_default(),
             difficulty: dnam.first().copied().unwrap_or(0),
             flags: dnam.get(1).copied().unwrap_or(0),
+            server: dnam.get(2).copied().unwrap_or(0),
             password_note: record.get(FourCC::new(b"PNAM")).and_then(form),
             items,
         })
@@ -367,6 +371,86 @@ pub fn placed(order: &LoadOrder, reference: FormId) -> Option<Terminal> {
 
 /// The Science skill's actor value.
 pub const SCIENCE: u16 = 40;
+
+/// An item's flags (`ANAM`, the item's `+0x74` in FalloutNV.exe): picking
+/// it gives the player its note (`00758350`, 18 items in the official
+/// data).
+pub const ADD_NOTE: u8 = 0x01;
+/// Picking it fills the list again, its conditions asked anew
+/// (`00758390`; 137 items).
+pub const FORCE_REDRAW: u8 = 0x02;
+
+/// A note as a terminal shows it (`NOTE`: `DATA` its kind, `FULL`, and for
+/// text `TNAM`, for an image `XNAM` the picture, for a sound `SNAM`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Note {
+    pub kind: u8,
+    pub title: String,
+    pub text: Option<String>,
+    pub image: Option<String>,
+    pub sound: Option<FormId>,
+}
+
+/// Note kinds (`DATA`).
+pub mod note_kind {
+    pub const SOUND: u8 = 0;
+    pub const TEXT: u8 = 1;
+    pub const IMAGE: u8 = 2;
+    pub const VOICE: u8 = 3;
+}
+
+/// A note record.
+pub fn note(order: &LoadOrder, id: FormId) -> Option<Note> {
+    let rr = order.get(id).filter(|r| r.entry.header.kind == NOTE)?;
+    let record = rr.record().ok()?;
+    let kind = record
+        .get(esm::sig::DATA)
+        .and_then(|s| s.data.first().copied())
+        .unwrap_or(note_kind::TEXT);
+    let text = |sig: &[u8; 4]| {
+        record
+            .get(FourCC::new(sig))
+            .map(|s| esm::text::decode_cp1252(s.data.strip_suffix(&[0]).unwrap_or(&s.data)))
+    };
+    let form = |sig: &[u8; 4]| {
+        record
+            .get(FourCC::new(sig))
+            .filter(|s| s.data.len() >= 4)
+            .map(|s| rr.plugin.to_global(FormId(le_u32(&s.data, 0))))
+            .filter(|f| f.0 != 0)
+    };
+    Some(Note {
+        kind,
+        title: record.full_name().unwrap_or_default(),
+        text: (kind == note_kind::TEXT).then(|| text(b"TNAM")).flatten(),
+        image: (kind == note_kind::IMAGE).then(|| text(b"XNAM")).flatten(),
+        sound: (kind == note_kind::SOUND).then(|| form(b"SNAM")).flatten(),
+    })
+}
+
+/// The items a terminal's screen lists now, with their places in the
+/// record (`007586e0`: those whose conditions pass on the placed
+/// terminal, `00680c30`).
+pub fn shown_items(
+    order: &LoadOrder,
+    state: &GameState,
+    terminal: FormId,
+    reference: FormId,
+) -> Vec<(usize, TerminalItem)> {
+    let Some(t) = Terminal::load(order, terminal) else {
+        return Vec::new();
+    };
+    let facts = crate::scripting::Facts {
+        order,
+        state,
+        speaker: None,
+    };
+    t.items
+        .into_iter()
+        .enumerate()
+        .filter(|(_, i)| facts.conditions_pass(&i.conditions, reference, PLAYER_REF))
+        .collect()
+}
 
 /// A note's title and text (`NOTE` `FULL`, `TNAM`); text notes only.
 pub fn note_text(order: &LoadOrder, id: FormId) -> Option<(String, String)> {

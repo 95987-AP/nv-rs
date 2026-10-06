@@ -498,3 +498,39 @@ pub fn hacking_menu() -> String {
      </menu>"
         .to_string()
 }
+
+/// A terminal menu with the tiles, ids and template the terminal code uses
+/// (`computers_menu.xml`'s structure: the logon's four lines, the headers,
+/// the welcome and separator, the list, the prompt and result, the cursor,
+/// the display zone and its text).
+pub fn computers_menu() -> String {
+    format!(
+        "<menu name=\"ComputersMenu\"><class>&ComputersMenu;</class><locus>&true;</locus>
+           <rect name=\"depth\"><locus>&true;</locus><width>960</width><height>720</height>
+             <image name=\"background\"><id>13</id><target>&true;</target><width>960</width><height>720</height><filename>a.dds</filename></image>
+             <text name=\"logon1\"><id>9</id><x>100</x><y>60</y><font>5</font></text>
+             <text name=\"logon2\"><id>10</id><x>100</x><y>108</y><font>5</font></text>
+             <text name=\"logon3\"><id>11</id><x>100</x><y>156</y><font>5</font></text>
+             <text name=\"logon4\"><id>12</id><x>100</x><y>204</y><font>5</font></text>
+             <text name=\"header1\"><id>3</id><y>60</y><font>5</font></text>
+             <text name=\"header2\"><id>4</id><y>84</y><font>5</font></text>
+             <text name=\"server\"><id>0</id><y>108</y><font>5</font></text>
+             <text name=\"welcome\"><id>7</id><visible>&false;</visible><wrapwidth>600</wrapwidth><x>100</x><y>152</y><font>5</font></text>
+             <image name=\"separator\"><id>15</id><visible>&false;</visible><x>100</x><y>200</y><filename>a.dds</filename></image>
+             {list}
+             <text name=\"prompt\"><id>8</id><visible>&false;</visible><font>5</font><x>100</x><y>666</y></text>
+             <text name=\"result\"><id>5</id><visible>&false;</visible><font>5</font><x>134</x><y>666</y></text>
+             <hotrect name=\"cursor\"><id>6</id><visible>&false;</visible><width>17</width><height>17</height><_blink_interval>400</_blink_interval></hotrect>
+             <hotrect name=\"zone\"><id>2</id><locus>&true;</locus><target>&true;</target><visible>&false;</visible><x>100</x><y>220</y><width>700</width><height>400</height>
+               <text name=\"zone_text\"><id>14</id><font>5</font><y>10</y><visible>&false;</visible><wrapwidth>600</wrapwidth><wraplines>16</wraplines></text></hotrect>
+           </rect>
+           <template name=\"computers_file_template\">
+             <hotrect name=\"computers_file_template_item\">{item}<user0></user0>
+               <text name=\"computers_file_template_text\"><string><copy src=\"parent()\" trait=\"user0\"/></string><font>5</font><y>15</y></text>
+             </hotrect>
+           </template>
+         </menu>",
+        list = list_box("computers_file_directory", 1, 700.0, "300"),
+        item = LIST_ITEM,
+    )
+}

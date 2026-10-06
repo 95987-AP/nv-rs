@@ -161,6 +161,26 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
     ("sExit", "Exit"),
     ("sExplosive", "EXPLOSIVE"),
     ("sForfeitGameText", "Forfeit Game"),
+    // The terminal menu (`00757b70` and the functions after it).
+    ("sComputersAddedNote", "Note Added: %s"),
+    ("sComputersBack", "Back"),
+    (
+        "sComputersHeader1",
+        "ROBCO INDUSTRIES UNIFIED OPERATING SYSTEM",
+    ),
+    ("sComputersHeader2", "COPYRIGHT 2075-2077 ROBCO INDUSTRIES"),
+    ("sComputersLogon", "LOGON ADMIN"),
+    ("sComputersWelcome", "Welcome to the service on SERVER1"),
+    ("sTerminalServerText1", "-Server 1-"),
+    ("sTerminalServerText10", "-Server 10-."),
+    ("sTerminalServerText2", "-Server 2-"),
+    ("sTerminalServerText3", "-Server 3-"),
+    ("sTerminalServerText4", "-Server 4-"),
+    ("sTerminalServerText5", "-Server 5-"),
+    ("sTerminalServerText6", "-Server 6-"),
+    ("sTerminalServerText7", "-Server 7-"),
+    ("sTerminalServerText8", "-Server 8-"),
+    ("sTerminalServerText9", "-Server 9-"),
     // The hacking menu (`00765b80` and the functions after it).
     (
         "sHackIneligible",

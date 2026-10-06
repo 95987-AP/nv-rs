@@ -230,8 +230,8 @@ Hacking calls `world::terminal::hacked` (experience, the statistic) or
 
 ## Not done
 
-- The terminal's own screen is still the viewer's text panel (the game's
-  `ComputersMenu` isn't here).
+- Rendered terminals (the game's default draws this menu on the
+  terminal's screen in the world; see [TERMINALS.md](TERMINALS.md)).
 - The controller's cursor (special codes 1–4 and 9, `00767610`).
 - Crime when hacking an owned terminal with witnesses (`008c0ec0`).
 - Encounter-zone levels for leveled terminals.

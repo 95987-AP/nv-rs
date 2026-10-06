@@ -6,6 +6,7 @@
 
 pub mod barter;
 pub mod chargen;
+pub mod computers;
 pub mod container;
 pub mod dialog;
 pub mod hacking;
@@ -15,6 +16,7 @@ pub mod quantity;
 pub mod sleepwait;
 pub mod textedit;
 pub mod traits;
+mod typed;
 pub mod vigor;
 
 #[cfg(test)]

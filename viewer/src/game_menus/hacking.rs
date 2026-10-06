@@ -54,6 +54,25 @@ pub struct HackingSounds {
     kept: HashMap<FormId, Entity>,
 }
 
+impl HackingSounds {
+    /// A sound record after a delay (ms from `now`).
+    pub fn play_at(&mut self, form: FormId, at_ms: f64) {
+        self.orders.push(Order::At(at_ms, form));
+    }
+    /// A sound kept going while something types.
+    pub fn keep(&mut self, form: FormId) {
+        self.orders.push(Order::Keep(form));
+    }
+    /// The menus' looping hum.
+    pub fn hum(&mut self, form: FormId) {
+        self.orders.push(Order::Hum(form));
+    }
+    /// Every sound of the menus stopped.
+    pub fn stop_all(&mut self) {
+        self.orders.push(Order::StopAll);
+    }
+}
+
 enum Order {
     At(f64, FormId),
     Keep(FormId),
