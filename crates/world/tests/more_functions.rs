@@ -1518,3 +1518,31 @@ fn say_to_done_runs_the_blocks_for_the_topic_said() {
     Runner::new(&order, &scripts, &mut state).say_to_done(FormId(PERSON_REF), FormId(RADIO_TOPIC));
     assert_eq!(state.globals[&FormId(VALUE)], 100.0);
 }
+
+#[test]
+fn a_teammate_told_to_wait_stays_and_one_with_nothing_to_do_follows() {
+    use world::ai::{kinds, teammate_follows, Package};
+    let package = |kind: u8| Package {
+        form_id: FormId(0x0100_0001),
+        editor_id: None,
+        kind,
+        flags: 0,
+        location: None,
+        schedule: Default::default(),
+        conditions: Vec::new(),
+        target: None,
+        topic: None,
+        actions: Default::default(),
+        data: Default::default(),
+    };
+    // Nothing, or a package that only fills time: they come along.
+    assert!(teammate_follows(None));
+    for kind in [kinds::SANDBOX, kinds::WANDER, kinds::PATROL, kinds::FIND] {
+        assert!(teammate_follows(Some(&package(kind))), "kind {kind}");
+    }
+    // The wait order is a guard package: they stay. So do a travel, a
+    // follow and the rest, which are the game's own.
+    for kind in [kinds::GUARD, kinds::TRAVEL, kinds::FOLLOW, kinds::DIALOGUE] {
+        assert!(!teammate_follows(Some(&package(kind))), "kind {kind}");
+    }
+}

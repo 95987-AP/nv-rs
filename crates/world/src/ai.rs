@@ -701,13 +701,10 @@ pub fn current_package(order: &LoadOrder, state: &GameState, actor: FormId) -> O
     if !crate::guesses::enabled() {
         return chosen;
     }
-    let idle = !chosen.as_ref().is_some_and(|p| {
-        !matches!(
-            p.kind,
-            kinds::SANDBOX | kinds::WANDER | kinds::GUARD | kinds::PATROL | kinds::FIND
-        )
-    });
-    if idle && state.teammates.contains(&actor) && !state.dead.contains(&actor) {
+    if teammate_follows(chosen.as_ref())
+        && state.teammates.contains(&actor)
+        && !state.dead.contains(&actor)
+    {
         return Some(Package {
             form_id: FormId(0),
             editor_id: Some("TeammateFollowsPlayer".into()),
@@ -723,6 +720,22 @@ pub fn current_package(order: &LoadOrder, state: &GameState, actor: FormId) -> O
         });
     }
     chosen
+}
+
+/// Whether a teammate with this package (if any) follows the player: with
+/// none, or one that only fills time (sandbox, wander, patrol, find). A
+/// guard package is the "wait here" order: the companions' own wait packages
+/// (Boone's `FollowersBooneFollowPlayerWAIT`, Dog's in Dead Money) are
+/// guard packages whose conditions hold while the player has told them to
+/// wait, so the teammate stays where they are. [G] that the rest of the
+/// game's follower behaviour follows from the data like this.
+pub fn teammate_follows(chosen: Option<&Package>) -> bool {
+    !chosen.is_some_and(|p| {
+        !matches!(
+            p.kind,
+            kinds::SANDBOX | kinds::WANDER | kinds::PATROL | kinds::FIND
+        )
+    })
 }
 
 /// How near a teammate keeps to the player ([G] a guess, with
