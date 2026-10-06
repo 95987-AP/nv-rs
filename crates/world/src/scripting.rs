@@ -253,6 +253,9 @@ pub struct GameState {
     pub player_world: Option<FormId>,
     /// Where the player's feet are, when known.
     pub player_position: Option<[f32; 3]>,
+    /// Which way the player faces (radians clockwise from north), kept by
+    /// whatever moves them; what [`Self::place`] gives for them.
+    pub player_heading: f32,
     /// The player's level (1 in a new game) and perks, with their ranks
     /// past the first (`world::perks`).
     pub player_level: u16,
@@ -634,9 +637,10 @@ impl GameState {
         }
     }
 
-    /// Items moved between holders: their scripts go with them and each
-    /// sees `OnAdd` for its new holder; those without one yet (a holder's
-    /// own contents) get one.
+    /// Items moved between holders: their scripts go with them, each
+    /// seeing `OnDrop` for the one it left (the giver's `RemoveItem` flags
+    /// it, `005750a0` → `005ac750(…, 4)`) and `OnAdd` for its new holder;
+    /// those without one yet (a holder's own contents) get one.
     fn moved(&mut self, order: &LoadOrder, from: FormId, to: FormId, item: FormId, count: i32) {
         if count <= 0 || item_script(order, item).is_none() {
             return;
@@ -648,11 +652,72 @@ impl GameState {
             }
             if s.holder == from && s.item == item {
                 s.holder = to;
+                s.events.push((event::DROP, from));
                 s.events.push((event::ADD, to));
                 left -= 1;
             }
         }
-        self.added(order, to, item, left);
+        for _ in 0..left {
+            self.item_scripts.push(ItemScript {
+                holder: to,
+                item,
+                locals: None,
+                events: vec![(event::DROP, from), (event::ADD, to)],
+            });
+        }
+    }
+
+    /// Dropped things' scripts go with them into the world (`004c6dd0`
+    /// keeps the extra data on the new reference): `count` of the item's
+    /// scripts move from `from` to the made reference `to`, each seeing
+    /// `OnDrop` for `from` (`005ac750(…, 4)`); those without one yet get one.
+    pub fn scripts_follow(
+        &mut self,
+        order: &LoadOrder,
+        from: FormId,
+        to: FormId,
+        item: FormId,
+        count: i32,
+    ) {
+        if count <= 0 || item_script(order, item).is_none() {
+            return;
+        }
+        let mut left = count;
+        for s in self.item_scripts.iter_mut() {
+            if left == 0 {
+                break;
+            }
+            if s.holder == from && s.item == item {
+                s.holder = to;
+                s.events.push((event::DROP, from));
+                left -= 1;
+            }
+        }
+        for _ in 0..left {
+            self.item_scripts.push(ItemScript {
+                holder: to,
+                item,
+                locals: None,
+                events: vec![(event::DROP, from)],
+            });
+        }
+    }
+
+    /// Someone drops things into the world with their scripts
+    /// ([`crate::more_functions::placed::drop_into_world`],
+    /// [`Self::scripts_follow`]): the new reference.
+    pub fn drop_item(
+        &mut self,
+        order: &LoadOrder,
+        holder: FormId,
+        item: FormId,
+        count: i32,
+    ) -> Option<FormId> {
+        let made =
+            crate::more_functions::placed::drop_into_world(order, self, holder, item, count)?;
+        let n = crate::more_functions::placed::held_in_world(order, self, made, item);
+        self.scripts_follow(order, holder, made, item, n);
+        Some(made)
     }
 
     /// An event for one of a holder's scripted items (`005ac750`): equipped
@@ -797,11 +862,28 @@ impl GameState {
     }
 
     /// The player picks up an item lying in the world: it goes into their
-    /// inventory and the placed one is gone.
+    /// inventory (with its script, when one dropped it there) and the
+    /// placed one is gone.
     pub fn pick_up(&mut self, order: &LoadOrder, reference: FormId, item: FormId, count: i32) {
         self.stock(order, PLAYER_REF);
         *self.items.entry((PLAYER_REF, item)).or_insert(0) += count;
-        self.added(order, PLAYER_REF, item, count);
+        let carried = self
+            .item_scripts
+            .iter()
+            .filter(|s| s.holder == reference && s.item == item)
+            .count() as i32;
+        let mut left = count;
+        for s in self.item_scripts.iter_mut() {
+            if left == 0 {
+                break;
+            }
+            if s.holder == reference && s.item == item {
+                s.holder = PLAYER_REF;
+                s.events.push((event::ADD, PLAYER_REF));
+                left -= 1;
+            }
+        }
+        self.added(order, PLAYER_REF, item, count - carried.min(count));
         self.disabled.insert(reference, true);
         self.events.push(Event::Enable(reference, false));
     }
@@ -1188,7 +1270,7 @@ impl GameState {
         if r == PLAYER_REF {
             let space = self.player_world.or(self.player_cell)?;
             let cell = self.player_cell.unwrap_or(space);
-            return Some((space, cell, self.player_position?, 0.0));
+            return Some((space, cell, self.player_position?, self.player_heading));
         }
         // Made while playing (`PlaceAtMe`): where it was made.
         let w = match self.more.placed.refs.get(&r) {
@@ -1399,6 +1481,61 @@ pub fn interactive_references(order: &LoadOrder, cell: FormId) -> Vec<Interactiv
             rotation: [f(3), f(4), f(5)],
             scale,
             trigger,
+            bounds,
+            name: base_record.full_name(),
+            kind,
+        });
+    }
+    out
+}
+
+/// Items lying in the player's cell that were made while playing (dropped:
+/// `more_functions::placed::drop_into_world`), as [`Interactive`]s to pick
+/// up: those still there, each standing for its count.
+pub fn made_items_here(order: &LoadOrder, state: &GameState) -> Vec<Interactive> {
+    let Some(cell) = state.player_cell else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (&reference, m) in &state.more.placed.refs {
+        if m.cell != cell || !crate::enabled_now(order, reference, &state.disabled) {
+            continue;
+        }
+        let Some(brr) = order.get(m.base) else {
+            continue;
+        };
+        let kind = brr.entry.header.kind;
+        if !is_item(kind) {
+            continue;
+        }
+        let Ok(base_record) = brr.record() else {
+            continue;
+        };
+        let bounds = base_record
+            .get(OBND)
+            .filter(|s| s.data.len() >= 12)
+            .map(|s| {
+                let v =
+                    |i: usize| f32::from(i16::from_le_bytes([s.data[i * 2], s.data[i * 2 + 1]]));
+                ([v(0), v(1), v(2)], [v(3), v(4), v(5)])
+            });
+        let (position, heading) = state
+            .positions
+            .get(&reference)
+            .copied()
+            .unwrap_or((m.position, m.rotation[2]));
+        out.push(Interactive {
+            reference,
+            base: m.base,
+            script: base_record
+                .get(SCRI)
+                .filter(|s| s.data.len() >= 4)
+                .map(|s| brr.plugin.to_global(FormId(le_u32(&s.data, 0)))),
+            count: m.count.max(1),
+            position,
+            rotation: [m.rotation[0], m.rotation[1], heading],
+            scale: 1.0,
+            trigger: None,
             bounds,
             name: base_record.full_name(),
             kind,
@@ -2337,6 +2474,8 @@ pub struct Runner<'a> {
     /// and whether `RemoveMe` took it.
     item: Option<(FormId, FormId)>,
     removed: bool,
+    /// The reference `DropMe` made for it.
+    dropped: Option<FormId>,
     depth: u8,
 }
 
@@ -2351,6 +2490,7 @@ impl<'a> Runner<'a> {
             seconds_passed: 0.0,
             item: None,
             removed: false,
+            dropped: None,
             depth: 0,
         }
     }
@@ -2376,7 +2516,11 @@ impl<'a> Runner<'a> {
             .map(|s| {
                 let n = kept.entry((s.holder, s.item)).or_insert(0);
                 *n += 1;
-                *n <= state.item_count(order, s.holder, s.item)
+                // A holder's things, or a dropped one lying in the world.
+                let held = state.item_count(order, s.holder, s.item).max(
+                    crate::more_functions::placed::held_in_world(order, state, s.holder, s.item),
+                );
+                *n <= held
             })
             .collect();
         let mut keep = keep.into_iter();
@@ -2420,11 +2564,12 @@ impl<'a> Runner<'a> {
                 .unwrap_or_else(|| Locals::new(&script));
             self.state.item_scripts[i].events.clear();
             if !blocks.is_empty() {
-                let saved = (self.this, self.owner, self.item, self.removed);
+                let saved = (self.this, self.owner, self.item, self.removed, self.dropped);
                 self.this = Some(holder);
                 self.owner = None;
                 self.item = Some((holder, item));
                 self.removed = false;
+                self.dropped = None;
                 let action = self.state.action_ref.replace(holder);
                 for block in blocks {
                     if interp::run(&block.body, &mut locals, self) != Flow::Done {
@@ -2433,7 +2578,18 @@ impl<'a> Runner<'a> {
                 }
                 self.state.action_ref = action;
                 let removed = self.removed;
-                (self.this, self.owner, self.item, self.removed) = saved;
+                let dropped = self.dropped;
+                (self.this, self.owner, self.item, self.removed, self.dropped) = saved;
+                if let Some(made) = dropped {
+                    // `DropMe`: this one lies in the world now, with its
+                    // `OnDrop` waiting.
+                    let s = &mut self.state.item_scripts[i];
+                    s.locals = Some(locals);
+                    s.holder = made;
+                    s.events.push((event::DROP, holder));
+                    i += 1;
+                    continue;
+                }
                 if removed {
                     self.state.item_scripts.remove(i);
                     continue;
@@ -3480,6 +3636,25 @@ impl<'a> Runner<'a> {
             "ForceTerminalBack" => events.push(Event::TerminalBack),
             // `005b53d0`: one of the scripted item running goes from its
             // holder (outside an item's own run it does nothing).
+            // `005b5860`: the holder drops this one into the world
+            // (`RemoveItem` with its drop flag); its script goes with it.
+            "DropMe" => {
+                if let Some((holder, item)) = self.item.filter(|_| !self.removed) {
+                    if let Some(made) = crate::more_functions::placed::drop_into_world(
+                        self.order, self.state, holder, item, 1,
+                    ) {
+                        self.dropped = Some(made);
+                        self.removed = true;
+                    }
+                }
+            }
+            // `005b58d0`: `ref.Drop item count`, into the world.
+            "Drop" => {
+                let holder = target?;
+                let item = arg(0).form();
+                let count = args.get(1).map_or(1, |a| a.number() as i32);
+                self.state.drop_item(self.order, holder, item, count);
+            }
             "RemoveMe" => {
                 if let Some((holder, item)) = self.item.filter(|_| !self.removed) {
                     if let Some(n) = self.state.items.get_mut(&(holder, item)) {
@@ -3821,6 +3996,8 @@ pub const HANDLED: &[&str] = &[
     "ShowBarterMenu",
     "ShowRepairMenu",
     "OpenTeammateContainer",
+    "DropMe",
+    "Drop",
     "SetPlayerTagSkill",
     "GetPlayerControlsDisabled",
     "GetPlayerName",

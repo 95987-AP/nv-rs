@@ -58,6 +58,6 @@ empty whiskey bottle), no Take All; clicking the 9mm pistol gave it to her
   outfit and best gear worked out again); a thing given stays unworn.
 - The line on the menu's own subtitle (`CM_Subtitle`); the line is said as
   a `SayTo` would say it.
-- `DropMe` (companions' faction-outfit scripts drop what they're given:
-  `OnAdd CraigBooneREF` … `DropMe`), which needs things dropped into the
-  world.
+- (Done since: `DropMe` — the companions' faction-outfit scripts drop what
+  they're given, `OnAdd CraigBooneREF` … `DropMe`; see
+  `docs/ITEM_SCRIPTS.md`.)

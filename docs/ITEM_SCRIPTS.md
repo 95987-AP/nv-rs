@@ -63,10 +63,37 @@ bundle whose `OnAdd` only marks it and whose `GameMode` gives 5 cases and
 removes it (as `PrimerShotshellAddScript`); a hat whose `OnEquip` /
 `OnUnequip` set a global (as the faction outfits' warnings).
 
+## Dropping (`Drop`, `DropMe`, `OnDrop`)
+
+- `RemoveItem` (`005750a0`, the actor's slot 0x17C) flags `OnDrop` (event
+  4) on the item's script for the holder whatever becomes of it
+  (`005ac750(…, 4)`): put in a container, the script goes with it and runs
+  `OnDrop Player` there; destroyed (a plain `RemoveItem`), it never runs (as
+  the snow globe's script notes). The Platinum Chip's `OnDrop Player`
+  removes its note; given back, its `OnAdd Player` adds it again.
+- With its drop flag (`Drop item count`, `005b58d0`; `DropMe`, `005b5860`,
+  one of the item its script runs for) the things become a new reference
+  (`004c37d0` → `004c6dd0`) at the holder's position plus (0, 50, 30)
+  turned by their rotation (50 in front, 30 up), turned as they are, with
+  an extra count for more than one; the script goes with it.
+- Here: `more_functions::placed::drop_into_world` (a made reference with a
+  `count`, saved), `GameState::scripts_follow` / `drop_item`, `moved`
+  adding `OnDrop` for the giver; `DropMe` moves the running item's script
+  to the new reference with `OnDrop` waiting; scripts on dropped things run
+  for their events; `GameState::pick_up` brings a dropped one's script
+  back (with `OnAdd`); `scripting::made_items_here` lets the viewer pick
+  dropped things up. The player's heading is kept
+  (`GameState::player_heading`) so things land in front of them.
+- Checks: `crates/world/tests/dropping.rs`.
+
 ## Not done
 
-- `DropMe` and `OnDrop` (dropping needs items placed in the world, which
-  `Drop` lacks too), and the inventory run stopping after `RemoveMe`.
+- The Pip-Boy's Drop button (ITEMS id 7, the X button: its refusals
+  `sDropQuestItemWarning`, `sDropEquippedItemWarning`, `sNoJumpWarning`,
+  `sCantRemoveWornItem`, `sNotEnoughRoomWarning`, and "how many?" inside
+  the Pip-Boy); the free spot the game's physics finds for the player's
+  drop (`009614b0`) and the fall; the inventory run stopping after
+  `RemoveMe` or `DropMe`.
 - Items held by others run only for their events; the game runs them with
   their holder's script run (`00565870`) when it's processed.
 - A crippled arm dropping its weapon doesn't send `OnUnequip`.

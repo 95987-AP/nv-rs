@@ -251,6 +251,16 @@ fn refresh_cell_scripts(
     cell_scripts: &mut CellScripts,
 ) {
     if state.player_cell == cell_scripts.cell {
+        // Things dropped here since (made references of items).
+        for made in world::scripting::made_items_here(order, state) {
+            if !cell_scripts
+                .refs
+                .iter()
+                .any(|r| r.reference == made.reference)
+            {
+                cell_scripts.refs.push(made);
+            }
+        }
         return;
     }
     cell_scripts.cell = state.player_cell;
@@ -259,6 +269,9 @@ fn refresh_cell_scripts(
         .player_cell
         .map(|c| world::scripting::interactive_references(order, c))
         .unwrap_or_default();
+    cell_scripts
+        .refs
+        .extend(world::scripting::made_items_here(order, state));
     let mut runner = Runner::new(order, cache, state);
     for r in cell_scripts.refs.iter().filter(|r| r.script.is_some()) {
         runner.run_blocks(r.reference, Some(r.reference), "onload", |_| true);
@@ -962,6 +975,7 @@ pub fn run_scripts(
     // Quest positions, triggers and saves must follow the collision capsule.
     let feet = player.position_for_view(eye);
     state.player_position = Some(feet);
+    state.player_heading = heading;
     match &exterior {
         Some(e) => {
             state.player_world = Some(e.grid.world.form_id);

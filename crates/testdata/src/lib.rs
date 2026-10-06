@@ -1462,6 +1462,14 @@ pub mod quest_ids {
     /// `TestHelmet` on the head (DT 4, health 50).
     pub const ARMOR: u32 = 0xAFB;
     pub const HELMET: u32 = 0xAFC;
+    /// Things for dropping: `TestKeepsake`, whose `OnDrop Player` sets
+    /// `TestGlobal` to 42 (as the Platinum Chip's removes its note), and
+    /// `TestRefusedGift`, whose `OnAdd DocRef` drops it (as the companions'
+    /// faction outfits' `DropMe`).
+    pub const KEEPSAKE: u32 = 0xAFD;
+    pub const KEEPSAKE_SCRIPT: u32 = 0xAFE;
+    pub const REFUSED_GIFT: u32 = 0xAFF;
+    pub const REFUSED_GIFT_SCRIPT: u32 = 0xB20;
     /// Settings the perks' rules read (seven forms from here):
     /// `fPackRatThreshold` 2, `fPackRatModifier` 0.5, `fAgilityReloadBase`
     /// 5, `fAgilityReloadModifier` 0.1, `fDamageToWeaponValue` 0.2,
@@ -1565,6 +1573,24 @@ pub fn quests(tag: &str) -> TempData {
         "TestCaseBundleScript",
         "scn TestCaseBundleScript\nBegin OnAdd Player\n\tPlayer.AddItem TestCase 25\n\tRemoveMe\nEnd\n",
     );
+    scripts.extend(script(
+        KEEPSAKE_SCRIPT,
+        "TestKeepsakeScript",
+        "scn TestKeepsakeScript
+Begin OnDrop Player
+	set TestGlobal to 42
+End
+",
+    ));
+    scripts.extend(script(
+        REFUSED_GIFT_SCRIPT,
+        "TestRefusedGiftScript",
+        "scn TestRefusedGiftScript
+Begin OnAdd DocRef
+	DropMe
+End
+",
+    ));
     scripts.extend(script(
         LATE_BUNDLE_SCRIPT,
         "TestLateBundleScript",
@@ -2750,6 +2776,21 @@ pub fn quests(tag: &str) -> TempData {
     late.extend(sub(b"SCRI", &LATE_BUNDLE_SCRIPT.to_le_bytes()));
     late.extend(sub(b"DATA", &case_data));
     misc.extend(record(b"MISC", LATE_BUNDLE, &late));
+    for (id, name, full, s) in [
+        (KEEPSAKE, "TestKeepsake", "Keepsake", KEEPSAKE_SCRIPT),
+        (
+            REFUSED_GIFT,
+            "TestRefusedGift",
+            "Refused Gift",
+            REFUSED_GIFT_SCRIPT,
+        ),
+    ] {
+        let mut d = edid(name);
+        d.extend(sub(b"FULL", &zstr(full)));
+        d.extend(sub(b"SCRI", &s.to_le_bytes()));
+        d.extend(sub(b"DATA", &case_data));
+        misc.extend(record(b"MISC", id, &d));
+    }
     plugin.extend(group(*b"MISC", 0, &misc));
     plugin.extend(group(*b"LVLI", 0, &record(b"LVLI", LEVELED, &leveled)));
     let mut packages = record(b"PACK", TRAVEL, &travel);
