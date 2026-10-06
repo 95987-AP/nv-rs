@@ -48,6 +48,8 @@ pub struct PlayerView {
     pov_was_off: bool,
     /// The next placement snaps (after arriving somewhere).
     snap: bool,
+    /// The temporary third person the player's death began.
+    death_view: bool,
 }
 
 /// The INI's camera settings (`[General]`, `[HAVOK]`), with the exe's
@@ -92,6 +94,7 @@ impl PlayerView {
             fov: None,
             pov_was_off: false,
             snap: true,
+            death_view: false,
         }
     }
 
@@ -189,7 +192,10 @@ pub fn view_input(
     let f = frame(&player, fly, eye, time.delta_secs(), dead);
     view.frame = f;
     let PlayerView {
-        camera, settings, ..
+        camera,
+        settings,
+        death_view,
+        ..
     } = &mut *view;
     let s = &*settings;
     // The Pip-Boy coming up takes first person for as long as it's up.
@@ -198,6 +204,21 @@ pub fn view_input(
     }
     let menu_mode = menus.is_open() || vats.is_on();
     camera.update_temp_first(menu_mode, s, &f);
+    // Knocked down or paralysed, the player's control handler forces a
+    // temporary third person (`0093e860` at `0093fb6d`…`0093fbd3`:
+    // `GetKnockState` or `IsParalyzed`, then `ForceTemp3rdPerson(1)` unless
+    // already in third person): the death camera. A dead player's body is
+    // a ragdoll; its knock state then is taken as set (not traced).
+    if dead && !camera.third_person && !camera.temp_third.active {
+        camera.force_temp_third(true, s, &f);
+        *death_view = true;
+    } else if !dead && *death_view {
+        // Alive again (a save loaded): the temporary view ends
+        // (`UpdateTemp3rdPerson` with nothing playing).
+        if camera.update_temp_third(false, false, s, &f) || !camera.temp_third.active {
+            *death_view = false;
+        }
+    }
     // Talking: first person.
     if conversation.0.as_ref().is_some_and(|t| !t.is_line_only()) {
         camera.focus_on_actor(s, &f);

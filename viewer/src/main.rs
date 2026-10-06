@@ -39,6 +39,7 @@ mod player_body;
 mod player_camera;
 mod player_idle;
 mod report;
+mod scope;
 mod scripts;
 mod sitting;
 mod sounds;
@@ -226,6 +227,10 @@ fn main() {
         .init_resource::<doors::SwingDoors>()
         .init_resource::<doors::DoorPoses>()
         .init_resource::<combat::PlayerAttack>()
+        .init_resource::<scripts::LoadRequest>()
+        .init_resource::<scope::ScopeOverlay>()
+        .init_resource::<viewmodel::Scoped>()
+        .init_resource::<viewmodel::GunWobble>()
         .insert_resource(vats::Vats::new(args.vats))
         .init_resource::<viewmodel::PlaceLighting>()
         .init_resource::<viewmodel::ViewModel>()
@@ -327,6 +332,7 @@ fn main() {
                     vats::run_vats,
                     vats::scale_target_time,
                     lockpick::pick_locks,
+                    scope::scope_sway,
                     look_around,
                 )
                     .chain(),
@@ -340,6 +346,7 @@ fn main() {
                     player_idle::animate,
                     combat::player_attack,
                     combat::show_dropped_weapons,
+                    scope::update_scope,
                     viewmodel::update_view_model,
                     // A V.A.T.S. camera shot takes the view last.
                     vats::apply_shot_camera,

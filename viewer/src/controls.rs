@@ -55,6 +55,10 @@ pub struct Controls {
     pub always_run: Binding,
     /// Control 11, "Auto Move".
     pub auto_move: Binding,
+    /// Control 18, "Ammo Swap" (the 2 key here; `world::ammo_swap`).
+    pub ammo_swap: Binding,
+    /// Control 4, "Use": attacking.
+    pub attack: Binding,
     /// `bAlwaysRunByDefault` (the player's +0x651 at the start).
     pub always_run_default: bool,
 }
@@ -66,6 +70,8 @@ impl Default for Controls {
             sneak: Binding::from_value(0x001D_FF08),
             always_run: Binding::from_value(0x003A_FFFF),
             auto_move: Binding::from_value(0x0010_FFFF),
+            ammo_swap: Binding::from_value(0x0003_FF01),
+            attack: Binding::from_value(0x00FF_0011),
             always_run_default: true,
         }
     }
@@ -87,6 +93,8 @@ impl Controls {
             sneak: binding("Crouch/Sneak", base.sneak),
             always_run: binding("Always Run", base.always_run),
             auto_move: binding("Auto Move", base.auto_move),
+            ammo_swap: binding("Ammo Swap", base.ammo_swap),
+            attack: binding("Use", base.attack),
             always_run_default: settings
                 .get("Controls", "bAlwaysRunByDefault")
                 .map_or(base.always_run_default, |v| v.trim() != "0"),
@@ -116,5 +124,8 @@ mod tests {
         assert_eq!(c.sneak.key, Some(KeyCode::KeyC));
         assert!(!c.always_run_default);
         assert_eq!(c.aim, Controls::default().aim);
+        // Ammo Swap: the 2 key (DirectInput 3); Use: the left button.
+        assert_eq!(c.ammo_swap.key, Some(KeyCode::Digit2));
+        assert_eq!(c.attack.mouse, Some(MouseButton::Left));
     }
 }

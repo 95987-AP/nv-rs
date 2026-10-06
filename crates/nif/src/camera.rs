@@ -540,6 +540,50 @@ impl Nif {
     }
 }
 
+/// A model's top node with its keyed rotation (the weapon wobbles,
+/// `meshes\characters\weaponwobbles\*.nif`: a node named for the bone it
+/// turns, keyed by X, Y, Z angles).
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyedNode {
+    pub name: String,
+    pub rotation: Option<(ControllerTiming, Rotation)>,
+}
+
+impl Nif {
+    /// The first root node and its keyed rotation, when it's a node.
+    pub fn keyed_root(&self) -> Result<Option<KeyedNode>> {
+        let Some(root) = self.roots().first().and_then(|&r| self.reference(r)) else {
+            return Ok(None);
+        };
+        let crate::blocks::Block::Node(node) = self.block(root)? else {
+            return Ok(None);
+        };
+        let (_, rotation) = self.keyed_transform(node.av.net.controller)?;
+        Ok(Some(KeyedNode {
+            name: node.av.net.name.clone(),
+            rotation,
+        }))
+    }
+}
+
+impl KeyedNode {
+    /// The keyed X, Y, Z angles at clock `t` (the controller's own time
+    /// worked out as [`ControllerTiming::scaled_time`] does); `None` without
+    /// Euler keys.
+    pub fn angles_at(&self, t: f32) -> Option<Vec3> {
+        let (timing, Rotation::Euler(axes)) = self.rotation.as_ref()? else {
+            return None;
+        };
+        let time = timing.scaled_time(t, timing.phase);
+        Some([0, 1, 2].map(|i| axes[i].as_ref().and_then(|k| k.sample(time)).unwrap_or(0.0)))
+    }
+
+    /// The controller's start time (`NiTimeController` +0x14).
+    pub fn start(&self) -> f32 {
+        self.rotation.as_ref().map_or(0.0, |(t, _)| t.start)
+    }
+}
+
 impl CameraModel {
     /// The top node's translation at camera clock `t`, the controllers'
     /// phases moved by `phase_shift` (a shot that starts at time zero

@@ -23,11 +23,11 @@
 //!   PDB)) and the HUD hides the crosshair while it's set in first person
 //!   (`00771700`: mask bit 0x40 cleared).
 //!
-//! Not here: scoped weapons (`MOD3` scope models: forced first person,
-//! the scope overlay `0077f3c0` and its zoom branch in `0095de30`, the
-//! scope's sway `ScopeWobble.nif`), weapon mods' zoom (mod effect 0xe),
-//! the gun's sway animation (`00962de0`, `WeaponWobbles\*.nif`), the
-//! iron-sights depth of field (`009650a0`), blocking.
+//! Scopes ([`scoped`], [`scope_model`]): the viewer's `scope` draws the
+//! overlay and sways the view; the gun's sway is `world::gun_wobble`;
+//! blocking is `world::melee`. Not here: weapon mods' zoom (mod effect
+//! 0xe, taken off the sight field of view in `0095de30`: this viewer keeps
+//! no weapon mods), the iron-sights depth of field (`009650a0`).
 
 use esm::{FormId, FourCC, LoadOrder};
 
@@ -80,6 +80,28 @@ pub fn sight_fov(order: &LoadOrder, weapon: FormId) -> Option<f32> {
         .get(FourCC::new(b"DNAM"))
         .filter(|s| s.data.len() >= 32)?;
     Some(le_f32(&dnam.data, 28).abs())
+}
+
+/// A weapon's scope model (`MOD3`, the weapon's `+0x1e8` model;
+/// `interface\HUD\scope01.nif` on the hunting rifle).
+pub fn scope_model(order: &LoadOrder, weapon: FormId) -> Option<String> {
+    let record = order.get(weapon)?.record().ok()?;
+    let model = record.get(FourCC::new(b"MOD3"))?.zstring();
+    (!model.trim().is_empty()).then_some(model)
+}
+
+/// `DNAM` flags2 (u32 at 56) 0x2000, "scope from mod": the scope is only
+/// there with a mod giving the zoom effect (0xe) installed.
+pub const SCOPE_FROM_MOD: u32 = 0x2000;
+
+/// Whether looking down the sights of `weapon` is looking through its
+/// scope (`008bb650`, `00962de0`): it has a scope model and, when the
+/// scope comes from a mod, a mod with the zoom effect (0xe) is installed
+/// (`004bd8d0(0xe)`). `zoom_mod`: the installed mods' zoom effect value,
+/// `None` without one (this viewer keeps no weapon mods yet, so always
+/// `None`).
+pub fn scoped(order: &LoadOrder, weapon: FormId, flags2: u32, zoom_mod: Option<f32>) -> bool {
+    scope_model(order, weapon).is_some() && (flags2 & SCOPE_FROM_MOD == 0 || zoom_mod.is_some())
 }
 
 /// One frame of `0095de30` outside V.A.T.S., unscoped: the targets are the

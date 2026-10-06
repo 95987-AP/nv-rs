@@ -19,8 +19,10 @@
 //! effects), the body part it lands on (`world::body_parts`: limb damage,
 //! the part's multiplier — headshots ×2 for shots), then a sneak attack's
 //! ×2 / ×5 ([`sneak_multiplier`]) when a part was found. Weapons are in
-//! full condition unless scripts change it (no wear yet). Not here yet:
-//! power attacks, blocking, difficulty (Normal, ×1).
+//! full condition unless scripts change it (no wear yet). Blocking adds
+//! to the threshold ([`hit_through_armour`], `world::melee`); power
+//! attacks multiply the weapon's damage ([`weapon_damage`]). Not here yet:
+//! difficulty (Normal, ×1).
 
 use esm::{FormId, FourCC, LoadOrder};
 
@@ -209,15 +211,22 @@ impl Weapon {
         matches!(self.animation, 2 | 5 | 6 | 8 | 9)
     }
 
-    /// The ammunition a holder would load: the first kind it takes that
-    /// they carry, else the first kind (which kind the game picks when
-    /// several are carried isn't traced).
+    /// The ammunition a holder would load: the kind the Ammo Swap control
+    /// loaded (`GameState::ammo_loaded`, the process's current ammo,
+    /// `00525980`) while it's in the list and carried; else the first kind
+    /// it takes that they carry, else the first kind (which kind the game
+    /// picks when several are carried and none was chosen isn't traced).
     pub fn ammo_in_use(
         &self,
         order: &LoadOrder,
         state: &GameState,
         holder: FormId,
     ) -> Option<FormId> {
+        if let Some(&chosen) = state.ammo_loaded.get(&holder) {
+            if self.ammo.contains(&chosen) && state.item_count(order, holder, chosen) > 0 {
+                return Some(chosen);
+            }
+        }
         self.ammo
             .iter()
             .copied()
@@ -586,6 +595,11 @@ pub fn hit_through_armour(
         worn_damage_threshold(order, state, target).max(0.0),
     );
     if let Some((who, weapon)) = attacker {
+        // A block adds the blocker's skill to the threshold, before the
+        // perks (`world::melee::block_bonus`).
+        if let Some(block) = crate::melee::block_bonus(order, state, who, weapon, target) {
+            threshold += block;
+        }
         let held = perks::weapon_tab(weapon);
         threshold -= perks::apply_for(
             order,

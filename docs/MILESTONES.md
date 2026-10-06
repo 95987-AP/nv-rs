@@ -360,6 +360,21 @@ labelled; not compared with the original. Evidence and gaps:
 [PHYSICS.md](PHYSICS.md). **Next action:** record a bottle shot off the
 fence in the original game and compare.
 
+M2 batch `claude/m2-player-actions-2` (2026-10-06): scopes (the weapon's
+`MOD3` overlay framed as `0076bfe0`/`0077ee50`/`00709d50` set it up, HUD
+mode 0x17, hidden arms, `ScopeWobble.nif` sway on the view), the gun's
+first-person sway (`00962de0`, `WeaponWobbles`), blocking (`BlockIdle`,
+the threshold bonus of `009b5a30` in the hit cone of `009a6ae0`, the
+block hit and counter timer), power attacks (`00948310`: hold delay,
+directions, sneak attacks, perk customs, × `fDamagePowerAttackBonus`),
+the Ammo Swap control with the HUD's `AmmoTypeLabel`, and death
+(`fPlayerDeathReloadTime`, then the most recent save). Seen live in the
+viewer (scope, block, forward power attack, swap to hollow points,
+death → reload, [DANGER], third-person sneak pose); not compared with the
+original. `WG`/`VAL` re-checked: invisible by data and code. Evidence
+and gaps: [PLAYER_ACTIONS.md](PLAYER_ACTIONS.md). **Next action:**
+compare the scope, block/power attack and death timing in the original.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

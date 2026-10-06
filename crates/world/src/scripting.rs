@@ -437,6 +437,21 @@ pub struct GameState {
     /// weapon start holstered; the Ready Item key and attacking draw it).
     /// Not saved.
     pub weapon_out: HashSet<FormId>,
+    /// The ammunition someone chose with the Ammo Swap control (the
+    /// process's current ammo, `SetCurrentAmmo` (Xbox PDB), `009462c0`;
+    /// `world::ammo_swap`): holder → ammo.
+    pub ammo_loaded: HashMap<FormId, FormId>,
+    /// Who is blocking now (anim action 7, `00894d60`), with their heading
+    /// (radians clockwise from north) for the hit cone (`world::melee`).
+    /// Kept by the viewer for the player. Not saved.
+    pub blocking: HashMap<FormId, f32>,
+    /// Hits blocked since the viewer last looked (`009b5a30` flags the hit
+    /// blocked, `00407e00(1, 1)`): the blocker, for the block-hit
+    /// animation and the counter-attack timer. Not saved.
+    pub blocked_hits: Vec<FormId>,
+    /// Whose attack under way is a power attack (`00948310`; the hit's
+    /// damage × `fDamagePowerAttackBonus`, `009b5170`). Not saved.
+    pub power_attacking: HashSet<FormId>,
     /// People's weapon choice, clips and reloads in a fight, and whose
     /// `OnStartCombat` has run (`world::npc_combat`). Not saved.
     pub npc_combat: crate::npc_combat::State,
@@ -2722,6 +2737,11 @@ impl<'a> Runner<'a> {
             target,
             ammo,
         ) * crate::vats::player_damage_mult(order, self.state, target);
+        // A blocked hit is flagged (`009b5a30`, `00407e00(1, 1)`), for the
+        // blocker's block-hit animation and counter-attack timer.
+        if crate::melee::block_bonus(order, self.state, attacker, weapon_id, target).is_some() {
+            self.state.blocked_hits.push(target);
+        }
         // The part it landed on: limb damage from the damage after armour,
         // and the hit's multiplier (`009b6620`).
         let at = crate::body_parts::part_hit(order, self.state, target, weapon, part, after_armour);

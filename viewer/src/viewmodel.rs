@@ -250,7 +250,77 @@ pub struct ViewModel {
     /// camera sits at it, `00874c10`), and the skeleton's `Weapon` bone.
     sighting_node: Option<nif::Transform>,
     weapon_bone: Option<usize>,
+    /// Blocking (`BlockIdle`, looping) and a blocked hit (`BlockHit`):
+    /// `<kind>blockidle.kf`, `<kind>blockhit.kf`, else the plain
+    /// `mtblock…` files (fists have no `h2hblock…`; the fall back to the
+    /// group without the weapon kind is assumed, as the third-person body's
+    /// is).
+    block_idle: Option<nif::Sequence>,
+    block_hit: Option<nif::Sequence>,
+    /// Power attacks and the counter by group (`<kind><group>.kf`, the
+    /// sneaking variant first while sneaking), read when first played.
+    group_attacks: std::collections::HashMap<(u8, bool), Option<nif::Sequence>>,
+    /// The gun's sway (`world::gun_wobble`): the kind's wobble model, the
+    /// skeleton's bone of its name and every bone under it (the bone
+    /// first).
+    wobble: Option<(nif::camera::KeyedNode, Vec<usize>)>,
 }
+
+/// The gun sway's amount kept between frames (`011a3b2c`) and what the
+/// scope's sway needs: the wobble (`008b0dd0(0)`) for the scope.
+#[derive(Resource)]
+pub struct GunWobble {
+    pub amount: f32,
+    pub settings: Option<world::gun_wobble::Settings>,
+    pub vats: Option<std::sync::Arc<world::vats::Settings>>,
+}
+
+impl Default for GunWobble {
+    fn default() -> Self {
+        GunWobble {
+            amount: 1.0,
+            settings: None,
+            vats: None,
+        }
+    }
+}
+
+impl GunWobble {
+    /// The player's gun wobble now (`008b0dd0` → `00646910`,
+    /// `world::vats::wobble`), from how they stand: sneaking, walking or
+    /// running by the movement keys, aiming down the sights. (Which of
+    /// `008b0dd0`'s modes passes which stance isn't fully traced: the
+    /// player's own stance is used for both.)
+    pub fn wobble(
+        &mut self,
+        order: &esm::LoadOrder,
+        state: &world::scripting::GameState,
+        weapon: &world::combat::Weapon,
+        player: &Player,
+        aiming: bool,
+    ) -> f32 {
+        let vs = self
+            .vats
+            .get_or_insert_with(|| std::sync::Arc::new(world::vats::Settings::load(order)))
+            .clone();
+        let m = player.moving;
+        let moving = m.forward || m.backward || m.left || m.right;
+        let stance = world::vats::Stance {
+            sneaking: player.sneaking,
+            swimming: false,
+            walking: moving && !state.player_running,
+            running: moving && state.player_running,
+            aiming,
+        };
+        world::vats::wobble(order, state, &vs, PLAYER_REF, Some(weapon), stance)
+    }
+}
+
+/// Whether the sights are up through a scope now (`008bb650`: the weapon's
+/// scope model, not switching view), for the scope's overlay and sway
+/// (`scope`) and the hidden first-person model.
+#[derive(Resource, Default)]
+pub struct Scoped(pub Option<esm::FormId>);
 
 /// The weapon's sighting node kept while looking down the sights in first
 /// person (`PlayerCharacter` +0xe34, `m_pWeaponSightingNode` (Xbox PDB),
@@ -381,6 +451,16 @@ type ViewGates<'w> = (
     Res<'w, crate::vats::Vats>,
 );
 
+/// The sights' field of view and node, the animation settings, the scope
+/// and the gun's sway.
+type ViewState<'w> = (
+    ResMut<'w, IronSightsFov>,
+    ResMut<'w, SightingNode>,
+    Option<Res<'w, crate::actors::AnimSettings>>,
+    Res<'w, Scoped>,
+    ResMut<'w, GunWobble>,
+);
+
 /// Keeps the first-person view built for what the player holds and wears,
 /// posed and placed at the eye.
 #[allow(clippy::too_many_arguments)]
@@ -400,11 +480,7 @@ pub fn update_view_model(
     mut first_person_projection: Query<&mut Projection, With<FirstPersonCamera>>,
     mut transforms: Query<&mut Transform, (Without<FlyCamera>, Without<FirstPersonCamera>)>,
     mut visibility: Query<&mut Visibility>,
-    (mut iron, mut sighting, anim): (
-        ResMut<IronSightsFov>,
-        ResMut<SightingNode>,
-        Option<Res<crate::actors::AnimSettings>>,
-    ),
+    (mut iron, mut sighting, anim, scoped, mut gun): ViewState,
 ) {
     let order = &game.0.order;
     let state = &state.0;
@@ -520,9 +596,61 @@ pub fn update_view_model(
         let is = world::iron_sights::first_person_is;
         view.aim_is = sequence(&game.0, &is(&world::actor::first_person_pose(animation)));
         view.attack_is = sequence(&game.0, &is(&attack_file));
+        // Blocking (melee weapons and fists).
+        let kind = world::actor::first_person_kind(animation);
+        let block = |name: &str| {
+            sequence(&game.0, &format!("Characters\\_1stPerson\\{kind}{name}.kf"))
+                .or_else(|| sequence(&game.0, &format!("Characters\\_1stPerson\\mt{name}.kf")))
+        };
+        view.block_idle = block("blockidle");
+        view.block_hit = block("blockhit");
+        view.group_attacks.clear();
+        // The gun's sway model and the bone it turns.
+        let skeleton = view.skeleton.clone();
+        view.wobble = weapon.as_ref().filter(|w| !w.is_melee()).and_then(|w| {
+            let skeleton = skeleton.as_ref()?;
+            let path = world::gun_wobble::model_path(world::gun_wobble::wobble_kind(w.animation))?;
+            let bytes = game.0.assets.read(&path).ok()??;
+            let node = nif::Nif::parse(bytes).ok()?.keyed_root().ok()??;
+            let bone = skeleton
+                .bones
+                .iter()
+                .position(|b| b.name.eq_ignore_ascii_case(&node.name))?;
+            let mut under = vec![bone];
+            for i in 0..skeleton.bones.len() {
+                let mut b = skeleton.bones[i].parent;
+                while let Some(j) = b {
+                    if j == bone {
+                        under.push(i);
+                        break;
+                    }
+                    b = skeleton.bones[j].parent;
+                }
+            }
+            Some((node, under))
+        });
     }
+    let view = &mut *view;
     // The sights' field of view, eased every frame (`0095de30`).
     let dt = time.delta_secs();
+    // The gun sway's amount (`00962de0`, `world::gun_wobble::chase`): with
+    // a gun out the wobble, × `fNonAttackGunWobbleMult` when not attacking;
+    // 1 otherwise.
+    let gs = *gun
+        .settings
+        .get_or_insert_with(|| world::gun_wobble::Settings::read(order));
+    let attacking = attack
+        .fired_at
+        .is_some_and(|t| time.elapsed_secs() < t + attack.attack_length);
+    let gun_out = weapon.as_ref().filter(|w| attack.out && !w.is_melee());
+    let mut target = match gun_out {
+        Some(w) => gun.wobble(order, state, w, &player, attack.iron_sights),
+        None => 1.0,
+    };
+    if !attacking {
+        target *= gs.non_attack_mult;
+    }
+    gun.amount = world::gun_wobble::chase(gun.amount, target, attacking, dt, gs.chase_drift);
     let settings = *iron.settings.get_or_insert_with(|| fov_settings(&game.0));
     let sight = weapon
         .as_ref()
@@ -588,7 +716,10 @@ pub fn update_view_model(
         && !third_person.camera.actually_third
         // Holstered, nothing shows (`009466d0`): only drawn, or while
         // drawing or putting away.
-        && (attack.out || readying.is_some());
+        && (attack.out || readying.is_some())
+        // Through a scope the first-person model is hidden (`008bb650`:
+        // `SetAppCulled(1)` on the first-person root).
+        && scoped.0.is_none();
     if let Ok(mut v) = visibility.get_mut(holder) {
         let want = if shown {
             Visibility::Visible
@@ -633,8 +764,47 @@ pub fn update_view_model(
         now,
     );
     let fired = faster(attack.fired_at, attack.attack_rate);
-    let firing = playing(view.attack.as_ref(), fired, now);
-    layers.extend(readying.or(reloading).or(firing));
+    // A power attack or the counter plays its own group's file
+    // (`world::melee`); the sneaking variant first while sneaking (the
+    // move-type prefix, `005f38d0`).
+    let group = attack.attack_group;
+    let special = world::animation::kind_of(group) == 6;
+    let sneaking = state.player_sneaking;
+    if special && !view.group_attacks.contains_key(&(group, sneaking)) {
+        let kind = world::actor::first_person_kind(weapon.as_ref().map(|w| w.animation));
+        let stem = world::melee::group_file_stem(group).unwrap_or_default();
+        let file = |prefix: &str| format!("Characters\\_1stPerson\\{prefix}{kind}{stem}.kf");
+        let s = sneaking
+            .then(|| sequence(&game.0, &file("sneak")))
+            .flatten()
+            .or_else(|| sequence(&game.0, &file("")));
+        view.group_attacks.insert((group, sneaking), s);
+    }
+    let attack_sequence = if special {
+        view.group_attacks
+            .get(&(group, sneaking))
+            .and_then(|s| s.as_ref())
+            .or(view.attack.as_ref())
+    } else {
+        view.attack.as_ref()
+    };
+    // How long it plays (a power attack waits for it: `combat`).
+    let rate = speed
+        * if attack.attack_rate > 0.0 {
+            attack.attack_rate
+        } else {
+            1.0
+        };
+    attack.attack_length = attack_sequence.map_or(0.0, |s| (s.stop - s.start) / rate.max(1e-3));
+    let firing = playing(attack_sequence, fired, now);
+    // Blocking: the block idle looping, a blocked hit's `BlockHit` over it.
+    let block_hit = playing(view.block_hit.as_ref(), attack.block_hit_at, now);
+    let blocking = view
+        .block_idle
+        .as_ref()
+        .filter(|_| attack.blocking)
+        .map(|s| (s, looping(s)));
+    layers.extend(readying.or(reloading).or(firing).or(block_hit).or(blocking));
     let mut pose = nif::posed_layers(&skeleton.bones, &layers);
     // Down the sights: the `IS` hold pose and attack (the reload and the
     // drawing have none), mixed in as far as the blend has gone.
@@ -647,6 +817,27 @@ pub fn update_view_model(
             let posed = nif::posed_layers(&skeleton.bones, &sights);
             for (bone, is) in pose.iter_mut().zip(&posed) {
                 *bone = mix(bone, is, view.is_blend);
+            }
+        }
+    }
+    // The gun's sway (`world::gun_wobble`): the wobble model's turn since
+    // its start × the amount, after the bone's own rotation (the
+    // `AdditionalRotation` controller), carrying everything under it. The
+    // model is sampled at the viewer's clock (the game's first-person
+    // animation time, AnimData +0xd0, isn't kept here).
+    if let Some((node, bones)) = view.wobble.as_ref() {
+        if let (Some(a), Some(base)) = (node.angles_at(now), node.angles_at(node.start())) {
+            let r = world::gun_wobble::sway_rotation(a, base, gun.amount);
+            let b = bones[0];
+            let m = pose[b];
+            let turn = nif::Transform {
+                rotation: r,
+                translation: [0.0; 3],
+                scale: 1.0,
+            };
+            let delta = m.then_child(&turn).then_child(&m.inverse());
+            for &i in bones {
+                pose[i] = delta.then_child(&pose[i]);
             }
         }
     }
