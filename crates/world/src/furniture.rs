@@ -322,6 +322,13 @@ pub struct Sitter {
     /// Where the actor stands and faces (radians clockwise from north).
     pub position: [f32; 3],
     pub heading: f32,
+    /// Set by the step that turned the actor by the marker's heading
+    /// delta or half a turn: the procedure sets the animation's
+    /// `cSkipNextBlend` there (`004974a0`; `world::animation::Player::
+    /// skip_next_blend`), so the entry, exit or seated loop is swapped in
+    /// the frame the heading changes, not blended across it. The caller
+    /// takes it (and clears it) after each [`Sitter::update`].
+    pub skip_next_blend: bool,
 }
 
 /// The idle tree's answer for someone using furniture, asked with
@@ -348,6 +355,7 @@ impl Sitter {
             stand_requested: false,
             position,
             heading,
+            skip_next_blend: false,
         }
     }
 
@@ -381,6 +389,7 @@ impl Sitter {
             stand_requested: false,
             position,
             heading,
+            skip_next_blend: false,
         }
     }
 
@@ -469,7 +478,13 @@ impl Sitter {
                 if !keeps_user(number) {
                     return self.release();
                 }
+                // Translated from 009213e0 (decompiled, FalloutNV.exe
+                // 1.4.0.525), case 3/8 with the entry done and a marker
+                // below 21: heading += the marker's delta (`00931d30`),
+                // `cSkipNextBlend` (`004974a0`), then the entry is freed
+                // (`00498910(1,0)` → `004994f0`, blend 0 with the flag).
                 self.heading = (self.heading + self.settings.heading_delta).rem_euclid(TAU);
+                self.skip_next_blend = true;
                 self.state = if self.state.sleep() {
                     SitState::Sleeping
                 } else {
@@ -490,13 +505,19 @@ impl Sitter {
                 let Some((idle, model)) = pick(want.get_sitting(), want.get_sleeping(), number)
                 else {
                     // No exit: up where they are, turned back by the delta
-                    // and half a turn.
+                    // and half a turn; `cSkipNextBlend` and the base loop
+                    // cleared at once (`00921e80` case 4/9, `004974a0`,
+                    // `00496080(0,0)`).
                     self.heading =
                         (self.heading - self.settings.heading_delta + PI).rem_euclid(TAU);
+                    self.skip_next_blend = true;
                     return self.release();
                 };
-                // Back to the marker's heading for the exit.
+                // Back to the marker's heading for the exit, which starts
+                // without a blend: `00921e80` case 5/10 once the queued exit
+                // has loaded (heading −= delta, `004974a0`, `00498230`).
                 self.heading = (self.heading - self.settings.heading_delta).rem_euclid(TAU);
+                self.skip_next_blend = true;
                 self.playing = Some(Playing {
                     length: anims.length(&model).unwrap_or(0.0),
                     idle,
@@ -512,8 +533,13 @@ impl Sitter {
                     return Step::Busy;
                 }
                 self.playing = None;
+                // `00921e80` case 5/10 with the exit done: below marker 21,
+                // `cSkipNextBlend` and heading += π, then the animations are
+                // picked again (`00895110`), so the standing idle replaces
+                // the exit's end pose in the same frame.
                 if keeps_user(number) {
                     self.heading = (self.heading + PI).rem_euclid(TAU);
+                    self.skip_next_blend = true;
                 }
                 self.release()
             }
@@ -897,10 +923,16 @@ mod tests {
             s.position
         );
         assert_eq!(s.state.get_sitting(), 2);
+        // No heading change yet, no blend skipped.
+        assert!(!s.skip_next_blend);
         let step = s.update(1.0, false, &mut pick, &mut anims);
         assert_eq!(step, Step::Settled);
         assert_eq!(s.state, SitState::Sitting);
         assert_eq!(s.question().0, 3);
+        // The heading turned by the delta: the entry gives way to the
+        // seated loop without a blend (the report's "jump" was the entry
+        // easing out over its 0.5 s across the half turn).
+        assert!(std::mem::take(&mut s.skip_next_blend));
         // Ends 55.4 in, a few units from the settings' seat (inferred
         // root movement), and turned half a turn: facing out.
         assert!((s.position[1] - 7.4).abs() < 0.1, "{:?}", s.position);
@@ -909,14 +941,19 @@ mod tests {
         s.stand_up();
         assert_eq!(s.update(0.1, true, &mut pick, &mut anims), Step::Busy);
         assert_eq!(s.state, SitState::Sitting);
+        assert!(!s.skip_next_blend);
         s.update(0.0, false, &mut pick, &mut anims);
         assert_eq!(s.state, SitState::WantToStand);
         assert_eq!(s.question().0, 4);
-        // Turned back to the marker's heading for the exit.
+        // Turned back to the marker's heading for the exit, which cuts in.
         assert!((s.heading - placed.heading).abs() < 1e-3);
+        assert!(std::mem::take(&mut s.skip_next_blend));
+        s.update(0.5, false, &mut pick, &mut anims);
+        assert!(!s.skip_next_blend);
         let step = s.update(2.0, false, &mut pick, &mut anims);
         assert_eq!(step, Step::Released);
         assert_eq!(s.state, SitState::Normal);
+        assert!(s.skip_next_blend);
         // Back at the marker, facing away from the chair.
         assert!((s.position[1] - 62.8).abs() < 0.1, "{:?}", s.position);
         assert!(s.heading.min(TAU - s.heading) < 0.01, "{}", s.heading);
