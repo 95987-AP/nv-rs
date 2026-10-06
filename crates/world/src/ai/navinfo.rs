@@ -427,12 +427,13 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
 }
 
 /// A node of a planned path (`VirtualPathingNode` (Xbox PDB)): where it
-/// is, and the grid square of its cell outdoors (a navmesh's own square,
-/// else the point's).
+/// is, the grid square of its cell outdoors (a navmesh's own square, else
+/// the point's) and the navmesh it's on.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VirtualNode {
     pub position: [f32; 3],
     pub square: Option<(i32, i32)>,
+    pub navmesh: FormId,
 }
 
 /// The navmesh info map, loaded on first use, and the navmeshes read to
@@ -496,24 +497,26 @@ impl NavInfos {
         let start = self.info_at(order, space, from)?;
         let goal = self.info_at(order, space, to)?;
         let outdoors = !Self::interior(order, space);
-        let end = |p: [f32; 3]| VirtualNode {
+        let map = self.map(order);
+        let end = |p: [f32; 3], info: usize| VirtualNode {
             position: p,
             square: outdoors.then(|| crate::square_of(p)),
+            navmesh: map.infos[info].navmesh,
         };
         if start == goal {
-            return Some(vec![end(from), end(to)]);
+            return Some(vec![end(from, start), end(to, goal)]);
         }
-        let map = self.map(order);
         let (found, route) = map.search(start, from, goal, to);
         if !found || route.len() < 2 {
             return None;
         }
-        let mut nodes = vec![end(from)];
+        let mut nodes = vec![end(from, start)];
         nodes.extend(route[1..route.len() - 1].iter().map(|&i| VirtualNode {
             position: map.infos[i].position,
             square: map.infos[i].square,
+            navmesh: map.infos[i].navmesh,
         }));
-        nodes.push(end(to));
+        nodes.push(end(to, goal));
         Some(nodes)
     }
 }

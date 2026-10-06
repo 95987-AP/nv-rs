@@ -1276,8 +1276,23 @@ impl NavMesh {
     /// ResolveToClosestNavmeshAndTriangle` (Xbox PDB)); how it weighs
     /// height against distance isn't traced.
     pub fn closest_point(&self, p: [f32; 3]) -> Option<[f32; 3]> {
+        self.closest_point_on(p, None)
+    }
+
+    /// [`Self::closest_point`] among one navmesh's triangles (a path node
+    /// for a navmesh info is resolved onto that navmesh), or all of them.
+    pub fn closest_point_on(&self, p: [f32; 3], navmesh: Option<FormId>) -> Option<[f32; 3]> {
+        let range = match navmesh {
+            None => 0..self.triangles.len(),
+            Some(n) => {
+                let i = self.owners.iter().position(|(form, _)| *form == n)?;
+                let first = self.owners[i].1;
+                let end = self.owners.get(i + 1).map_or(self.triangles.len(), |o| o.1);
+                first..end
+            }
+        };
         let mut best: Option<(f32, f32, [f32; 3])> = None;
-        for t in 0..self.triangles.len() {
+        for t in range {
             let [a, b, c] = [0, 1, 2].map(|i| self.corner(t, i));
             let q = closest_in_triangle(a, b, c, p);
             let flat = (q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2);
