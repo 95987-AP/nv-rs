@@ -113,6 +113,17 @@ constructors are now identified; runtime configuration and original comparison
 remain unverified. Do not repeat the established
 package-look lock or tester activation fixes.
 
+## M2 blocker batch: gunfight packages
+
+`claude/m2-packages` (2026-10-06): flee, guard, procedure lists, package
+type data (`PKW3`, `PKPT`, `PLD2`...) and begin/end/change action dispatch
+traced and implemented for Ghost Town Gunfight (`VMS16`). Generated
+regressions pass; not compared with the original. Finding: the gunfight's
+flee packages have no target or place, so the settlers just stop and
+stand; CF/AM guard packages send settlers back to their editor location
+after stage 70's `MoveTo`. Evidence and gaps: [PACKAGES.md](PACKAGES.md).
+**Next action:** compare both `bTrudyHelp` branches in the original game.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

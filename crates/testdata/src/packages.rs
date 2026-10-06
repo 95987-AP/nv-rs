@@ -51,6 +51,8 @@ pub mod ids {
     pub const GUARD: u32 = 0x2120;
     pub const THREAT: u32 = 0x2121;
     pub const CELL: u32 = 0x2130;
+    /// The cell's navmesh, a square 2000 across.
+    pub const NAVMESH: u32 = 0x2136;
     /// At (100, 100), heading 0, linked to `LINKED_REF`.
     pub const GUARD_REF: u32 = 0x2131;
     /// At (300, 0).
@@ -246,9 +248,29 @@ pub fn world(tag: &str) -> TempData {
         r[..4].copy_from_slice(b"ACHR");
         r
     };
+    // A navmesh square (-1000, -1000)–(1000, 1000), two triangles.
+    let mut navmesh = sub(b"NVER", &11u32.to_le_bytes());
+    navmesh.extend(sub(
+        b"NVVX",
+        &crate::f32s(&[
+            -1000.0, -1000.0, 0.0, 1000.0, -1000.0, 0.0, 1000.0, 1000.0, 0.0, -1000.0, 1000.0, 0.0,
+        ]),
+    ));
+    let tri = |v: [u16; 3], n: [u16; 3]| {
+        let mut d = Vec::new();
+        for x in v.into_iter().chain(n) {
+            d.extend(x.to_le_bytes());
+        }
+        d.extend([0; 4]);
+        d
+    };
+    let mut triangles = tri([0, 1, 2], [0xFFFF, 0xFFFF, 1]);
+    triangles.extend(tri([0, 2, 3], [0, 0xFFFF, 0xFFFF]));
+    navmesh.extend(sub(b"NVTR", &triangles));
     let mut guard_extra = edid("TestPackGuardRef");
     guard_extra.extend(sub(b"XLKR", &LINKED_REF.to_le_bytes()));
     let mut refs = actor(GUARD_REF, GUARD, [100.0, 100.0, 0.0], &guard_extra);
+    refs.extend(record(b"NAVM", NAVMESH, &navmesh));
     refs.extend(actor(THREAT_REF, THREAT, [300.0, 0.0, 0.0], &[]));
     refs.extend(placed(
         POST_REF,

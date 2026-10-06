@@ -1148,14 +1148,9 @@ pub fn run_scripts(
             }
             Event::PackageAction { who, package, kind } => {
                 if let Some(p) = world::ai::Package::load(order, package) {
-                    use world::scripting::PackageActionKind;
-                    let action = match kind {
-                        PackageActionKind::Begin => &p.actions.begin,
-                        PackageActionKind::Change => &p.actions.change,
-                    };
+                    let action = p.actions.get(kind);
                     // Camera-bearing player idles with no script or topic
-                    // can now use the actual KF. Other callback payloads
-                    // still require their own synchronous dispatcher.
+                    // can now use the actual KF.
                     if who == PLAYER_REF
                         && action.topic.is_none()
                         && action.bytecode().is_empty()
@@ -1166,15 +1161,25 @@ pub fn run_scripts(
                         }
                         continue;
                     }
-                    if action.idle.is_some()
+                    let busy = action.idle.is_some()
                         || action.topic.is_some()
-                        || !action.bytecode().is_empty()
-                    {
-                        println!(
-                            "{}: package {} {kind:?} action requested (playback pending).",
-                            name(who),
-                            name(package)
-                        );
+                        || action.source().is_some_and(|s| !s.trim().is_empty());
+                    // Its script, idle and topic (`world::ai::actions`).
+                    let idle = world::ai::actions::perform(
+                        &mut Runner::new(order, &scripts.0, state),
+                        who,
+                        &p,
+                        kind,
+                    );
+                    match idle {
+                        Some(idle) if who == PLAYER_REF => player_idle.requests.push(idle),
+                        Some(idle) => {
+                            player_idle.npc_requests.insert(who, idle);
+                        }
+                        None => {}
+                    }
+                    if busy {
+                        println!("{}: package {} {kind:?} action.", name(who), name(package));
                     }
                 }
                 None

@@ -744,8 +744,14 @@ pub fn destination(
         _ => return None,
     };
     if loc.kind == 3 {
-        // Their editor location: where they were placed.
+        // Their editor location: where they were placed (a `MoveTo`
+        // doesn't change it, `world::ai::guard`); only in the place they
+        // are now (else the way there is a door, [`target_place`]).
         let placed = crate::scripting::whereabouts(order, actor)?;
+        let (here, ..) = state.place(order, actor)?;
+        if placed.world.unwrap_or(placed.cell) != here {
+            return None;
+        }
         return Some((placed.position, radius_of(actor).max(radius)));
     }
     // Only somewhere in the same interior or worldspace as where they are
@@ -759,15 +765,21 @@ pub fn destination(
 }
 
 /// Where a package's target is: its interior cell or worldspace, and
-/// position (where scripts have moved it, else as placed).
+/// position (where scripts have moved it, else as placed); for "near the
+/// editor location", where `actor` was placed in the editor.
 pub fn target_place(
     order: &LoadOrder,
     state: &GameState,
+    actor: FormId,
     package: &Package,
 ) -> Option<(FormId, [f32; 3])> {
     let target = match (followed(package), package.location) {
         (Some((who, _)), _) => who,
         (None, Some(loc)) if loc.kind == 0 => loc.form,
+        (None, Some(loc)) if loc.kind == 3 => {
+            let placed = crate::scripting::whereabouts(order, actor)?;
+            return Some((placed.world.unwrap_or(placed.cell), placed.position));
+        }
         _ => return None,
     };
     let (space, _, position, _) = state.place(order, target)?;
@@ -985,7 +997,7 @@ pub fn move_offstage(
             state.positions.insert(who, (w.at, w.heading));
             return Offstage::Moved;
         }
-        let Some((target_space, _)) = target_place(order, state, &package) else {
+        let Some((target_space, _)) = target_place(order, state, who, &package) else {
             break;
         };
         if target_space == space {
