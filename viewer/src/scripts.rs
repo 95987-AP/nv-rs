@@ -269,7 +269,7 @@ pub fn door_opens(
 /// another place: they're where the player is (and walk to their follow
 /// distance there). Those still in the same world stay where they are.
 /// [G] Not traced (Dead Money contributor, 2026-10-06): the game moves its
-/// followers (ExtraFollower, `iNumberActorsAllowedToFollowPlayer`)
+/// followers (`ExtraFollower`, `iNumberActorsAllowedToFollowPlayer`)
 /// by rules not read yet. No base-game acceptance route has a teammate.
 fn bring_teammates(order: &esm::LoadOrder, state: &mut world::scripting::GameState) {
     let (Some(at), Some(cell)) = (state.player_position, state.player_cell) else {

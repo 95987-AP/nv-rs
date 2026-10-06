@@ -891,9 +891,12 @@ fn read(facts: &Facts, name: &str, on: Option<FormId>, args: &[Value]) -> Option
         "IsAnimPlaying" => {
             let r = on?;
             // A person's animation data aren't carried out: one who is down
-            // isn't animating, one on their feet is (their idle).
+            // isn't animating, one on their feet is (their idle). [G] Not
+            // traced, so only with `crate::guesses` on; else the script
+            // stops as before.
             if actor(r) {
                 return match arg(0) {
+                    _ if !crate::guesses::enabled() => None,
                     Value::Text(_) => None,
                     _ => Some(flag(!s.more.down.contains_key(&r) && !s.dead.contains(&r))),
                 };

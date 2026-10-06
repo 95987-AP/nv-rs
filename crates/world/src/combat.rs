@@ -930,9 +930,9 @@ pub fn hurt(
     }
     // Someone essential who is down takes no more harm (until a script
     // takes the flag off them: then they can be killed on the ground).
-    // [G] Not traced: whether Actor::Kill ( 089d900) is entered again
+    // [G] Not traced: whether `Actor::Kill` (`0089d900`) is entered again
     // for life state 6 (its first test, vtable +0x22c, isn't read). Either
-    // way they get up with full health ( 08a0960).
+    // way they get up with full health (`008a0960`).
     if state.more.down.contains_key(&who) && crate::more_functions::is_essential(order, state, who)
     {
         return false;

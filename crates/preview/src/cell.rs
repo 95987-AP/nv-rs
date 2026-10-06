@@ -534,6 +534,15 @@ fn touches(nodes: &[(String, Transform)], s: &nif::Sequence) -> bool {
         })
 }
 
+/// Whether a sequence `since` seconds after it started still counts as
+/// playing (`IsAnimPlaying`): a looping one always, any other until its end
+/// (checked against the original game: a one-shot group reads 1 while it
+/// plays and 0 once it has finished, for good; `Backward` on Dead Money's
+/// Elijah projector).
+pub fn sequence_playing(s: &nif::Sequence, since: f32) -> bool {
+    s.looping || since < s.stop - s.start
+}
+
 /// A sequence's own clock `seconds` after it started.
 fn sequence_time(s: &nif::Sequence, seconds: f32) -> f32 {
     let length = s.stop - s.start;
@@ -2426,6 +2435,31 @@ pub fn view_camera(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sequence(looping: bool) -> nif::Sequence {
+        nif::Sequence {
+            name: "Backward".into(),
+            start: 0.0,
+            stop: 2.0,
+            looping,
+            tracks: Vec::new(),
+            accum_root: None,
+            materials: Vec::new(),
+            text_keys: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_one_shot_sequence_stops_playing_at_its_end_and_a_loop_never_does() {
+        let once = sequence(false);
+        assert!(sequence_playing(&once, 0.0));
+        assert!(sequence_playing(&once, 1.9));
+        assert!(!sequence_playing(&once, 2.0));
+        assert!(!sequence_playing(&once, 300.0));
+        let looped = sequence(true);
+        assert!(sequence_playing(&looped, 0.0));
+        assert!(sequence_playing(&looped, 300.0));
+    }
 
     /// A mesh with a lit shader property with these flag sets and, when
     /// given, an alpha property.

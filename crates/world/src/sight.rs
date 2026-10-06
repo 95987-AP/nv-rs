@@ -118,13 +118,15 @@ fn enters(from: [f32; 3], to: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Option<f3
     (near <= far).then_some(near * length)
 }
 
-/// The actor test (`0088b880(caller, 0, target, 1, 0, 0)`): the target
-/// needs 3D and to be more than 2 units away (`005723b0`; the exact
-/// comparison is unconfirmed). An actor target: the caller's AI process
-/// answers from its detection data on the target (`HighProcess`
-/// `008f6930`: the entry's +0x1e; other processes say 0), the line of
-/// sight its last detection run found. Other targets (a view cone,
-/// `0088c570`, then rays from the caller's eyes) aren't carried out.
+/// The actor test, a script's `GetLineOfSight` on a caller that isn't the
+/// player (`0059c990` calls `0088b880` with its first argument 0 and the
+/// target): the target needs 3D (else 0); within 2 units of the caller
+/// (`005723b0` against 2.0) the answer is 1; otherwise the caller's AI
+/// process answers for any target (`HighProcess` `008f6930`: the entry's +0x1e
+/// in its detection list, the line of sight its last detection run found;
+/// other processes say 0). For a target that isn't an actor no detection
+/// entry exists: 0. The view cone and rays (`0088c570`) belong to a nonzero
+/// first argument, which no script command passes.
 fn actor_test(runner: &Runner, caller: FormId, target: FormId) -> Option<bool> {
     let order = runner.order;
     let state = &*runner.state;
@@ -138,11 +140,11 @@ fn actor_test(runner: &Runner, caller: FormId, target: FormId) -> Option<bool> {
     {
         let d: f32 = (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f32>().sqrt();
         if sa == sb && d <= 2.0 {
-            return Some(false);
+            return Some(true);
         }
     }
     if !crate::more_functions::is_actor(order, state, target) {
-        return None;
+        return Some(false);
     }
     Some(
         state

@@ -243,17 +243,26 @@ avoid starting a group that's already playing.
 eight sequence slots. Otherwise the model's controller manager: with a group, the
 sequence named after the group (`00438170` → `0047a520`) is checked; without one, any
 sequence. "Playing" is the sequence's state (+0x44, read by `008041a0`) not being 0
-(inactive). No 3D loaded: 0. **Inference**: the only code that sets a sequence inactive is
-its deactivation on request (`00a35030`) and the end of an ease-out; nothing does it when
-a clamped sequence reaches its end. So a played `Forward` keeps counting as playing until
-another sequence replaces it. Not compared in the game.
+(inactive). No 3D loaded: 0. **Compared in the original game**: `PlayGroup Backward 1` on
+`NVDLC01ElijahTalkingActivatorREF` (a short fade out and back in), then `IsAnimPlaying
+Backward` read 1 while it played and 0 once it had finished, and stayed 0. So a finished
+one-shot (clamped) group stops counting as playing. (Reading the sequence update,
+`00a34ba0`, showed no end-of-cycle deactivation at the sequence level, which had led to
+the opposite inference; the code that ends the group at the reference level, in the
+group-finished handling, isn't read, nor what ends a clamped group on models with no end
+event.) Dead Money's `NVDLC01EnableElijahTriggerSCRIPT` depends on it: it plays `Backward`
+once, then every frame plays `Right` only while neither `Backward` nor `Right` is playing.
 
 **in code**: the viewer reports each frame the sequences active on placed objects
 (`world::more_functions::report_sequences`, from `move_pieces`): a script's `PlayGroup`
 sequence, a door's `Open`/`Close`, or the model's running start-up sequences (ones holding
-a frame aren't counted: a guess). `IsAnimPlaying` answers from that report, comparing
-group names without case. People's animation data isn't carried out (the script stops, as
-before). Test: `objects_animations_playing`. nvinspect: 179 of 199.
+a frame aren't counted: a guess), each only while it plays: a looping one always, any
+other until its end (`preview::cell::sequence_playing`; its last pose is held, but it no
+longer counts). `IsAnimPlaying` answers from that report, comparing group names without
+case. People's animation data isn't carried out: asked about a group, the script stops;
+asked about any, a person on their feet reads 1 and one who is down 0 (Dead Money's ghost
+people). Tests: `objects_animations_playing`, and `a_one_shot_sequence_stops_playing_…` in
+`preview`. nvinspect: 179 of 199.
 
 ## Line of sight (`GetLineOfSight`)
 
@@ -266,20 +275,24 @@ and the target given; otherwise 0.
   target at 0.75, 0.5 and 0.25 of its bound height (max z − min z, vtable +0x1dc/+0x1d8)
   above its position; a ray hitting nothing or the target itself gives 1. Otherwise the
   actor test below decides.
-* **Anyone else** (`0088b880(0, target, 1, 0, 0)`): the target needs 3D. An actor
-  target: the caller's AI process answers (vtable +0x2cc; not traced: probably its
-  detection line of sight). Any other target: a view-cone test (`0088c570`), then rays
-  from the caller's eye (position + eye height, `008be940`) to the target at 0.75, 0.5
-  and 0.25 of its bound height (scaled, `00567400`; an actor's head and torso points
-  first), with the same hit rule.
+* **Anyone else** (the script command `0059c990` passes 0, 0, 1, the target, 0, so
+  `0088b880`'s first argument is 0; checked in the disassembly against the executable):
+  the target needs 3D. Within 2 units of the caller (`005723b0` against 2.0) the answer
+  is 1. Otherwise the caller's AI process answers for any target (vtable +0x2cc =
+  `HighProcess` `008f6930`), given the target only if it is an actor: it looks the target
+  up in its detection list (`008f6650`) and returns that entry's byte at +0x1e, so a
+  target that isn't an actor, with no entry, answers 0. The view cone (`0088c570`) and
+  the rays from the caller's eye are reached only with a nonzero first argument, which no
+  script command passes: they are not part of a script's `GetLineOfSight` for anyone but
+  the player.
 * With the console's debug flag, it prints "sees" or "can't see".
 
 Dead Money's uses: `Player.GetLOS` on Ghost People (36: the camera path) and
 `HoloA/B/C.GetLOS Player`, `NVDLC01DeanRef.GetLOS Player` (16: the actor test). The actor
 test's process answer is the `HighProcess`'s (`008f6930`): its detection data on the target
 (vtable +0x504), byte +0x1e, the line of sight its last detection run found; other
-processes (`008d0510`) say 0. `005723b0` is the distance between the two (must exceed 2;
-the exact comparison is unconfirmed).
+processes (`008d0510`) say 0. `005723b0` is the distance between the two (at most 2.0
+gives 1).
 
 **in code** (`crates/world/src/sight.rs`, test `line_of_sight`): the rules above in the
 world. The viewer answers what they ask through `world::sight::Sight`, given to the
@@ -290,9 +303,10 @@ corner or the middle of the box inside the frustum), and rays through the cell's
 collision. nv-rs's collision doesn't know which object a ray hit, so a ray stopping where
 it enters the target's box counts as hitting the target (a stand-in). The viewer's
 detection runs report their line of sight (`report_detection_sight`), which the actor
-test reads. Not carried out: an object target for someone other than the player (view
-cone `0088c570` and rays from the eyes), the player's test headless, and conditions
-(`CTDA`) asking it. Nothing compared in the original game.
+test reads. An object target for someone other than the player answers 0, and two
+within 2 units answer 1 (corrected from the disassembly; they were "not carried out" and
+0). Not carried out: the player's test headless, and conditions (`CTDA`) asking it.
+Nothing compared in the original game.
 
 ## Effect shaders (`PlayMagicShaderVisuals`, `StopMagicShaderVisuals`)
 
