@@ -1,35 +1,17 @@
 //! Walking through the cell as the player, and going through load doors.
 //!
-//! Movement uses the game's own numbers where they're known (see
-//! `MovementSettings`); the collision is the models' Havok shapes
+//! The rules (speeds, when running and jumping are allowed, the jump) are
+//! `world::locomotion`'s; the collision is the models' Havok shapes
 //! (`cellview::ViewerScene::collision`) and the capsule is the `physics`
 //! crate's character.
 
 use bevy::prelude::*;
 use cellview::{space, DoorData, ACTIVATE_REACH, EYE_HEIGHT};
 use physics::{Character, CharacterShape, Collider};
+use world::locomotion::{self, SpeedSettings};
 
 use crate::exterior::{door_start, PendingExterior};
 use crate::{FlyCamera, GameFiles, PendingScene};
-
-/// The game's movement settings, from its code and `FalloutNV.esm`
-/// (`GMST`). The game works out a speed as `SpeedMult (100) × 0.01 ×
-/// fMoveBaseSpeed`, times `fMoveRunMult` when running and
-/// `fMoveSneakMult` when sneaking (`00647d10` / `00647f00` in
-/// FalloutNV.exe), and × 0.85 / 0.75 with one or both legs crippled
-/// (`world::body_parts::leg_speed_mult`; armour penalties left out).
-struct MovementSettings;
-
-impl MovementSettings {
-    /// `fMoveBaseSpeed`: 77 in FalloutNV.esm (85 built in).
-    const BASE_SPEED: f32 = 77.0;
-    /// `fMoveRunMult`: 4 in FalloutNV.esm.
-    const RUN_MULT: f32 = 4.0;
-    /// `fMoveSneakMult`: 0.57 in FalloutNV.esm.
-    const SNEAK_MULT: f32 = 0.57;
-    /// `fJumpHeightMin`: 64 (built in, not changed by the game's files).
-    const JUMP_HEIGHT: f32 = 64.0;
-}
 
 /// The current cell's solid surfaces.
 #[derive(Resource)]
@@ -163,6 +145,7 @@ pub fn walk(
     mut player: ResMut<Player>,
     mut cameras: Query<(&mut Transform, &FlyCamera)>,
     walkers: Query<&crate::ai::Walker>,
+    mut settings: Local<Option<SpeedSettings>>,
 ) {
     if !player.walking || !player.ready {
         return;
@@ -196,17 +179,17 @@ pub fn walk(
     let len = (wish[0] * wish[0] + wish[1] * wish[1]).sqrt();
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let sneak = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::KeyC);
-    // Running is the game's default; Shift walks. Crippled legs and the
-    // perks' "Modify Run Speed" (Travel Light) scale the whole speed.
-    let mut speed = MovementSettings::BASE_SPEED
-        * world::body_parts::leg_speed_mult(&game.0.order, &state.0, world::dialogue::PLAYER_REF)
-        * world::combat::movement_speed_mult(&game.0.order, &state.0, world::dialogue::PLAYER_REF);
-    if !shift {
-        speed *= MovementSettings::RUN_MULT;
-    }
-    if sneak {
-        speed *= MovementSettings::SNEAK_MULT;
-    }
+    let order = &game.0.order;
+    let player_ref = world::dialogue::PLAYER_REF;
+    let settings = settings.get_or_insert_with(|| SpeedSettings::read(order));
+    let over_encumbered = state.0.over_encumbered(order, player_ref);
+    // Always Run is the game's default; Shift (Run) walks. Not over-encumbered
+    // (`world::locomotion::may_run`; iron sights and grabbing aren't here).
+    let running = locomotion::may_run(settings, !shift, over_encumbered, false, 0.0);
+    // The game's walking or running speed for the player
+    // (`world::locomotion::speed`: SpeedMult, legs, weapon away or drawn,
+    // armour, sneaking, and running's perks).
+    let speed = locomotion::speed(order, &state.0, settings, player_ref, running, sneak);
     let velocity = if len > 0.0 {
         [wish[0] / len * speed, wish[1] / len * speed]
     } else {
@@ -214,7 +197,7 @@ pub fn walk(
     };
     // How the player moves, for who notices them (`world::detection`).
     state.0.player_moving = len > 0.0;
-    state.0.player_running = len > 0.0 && !shift && !sneak;
+    state.0.player_running = len > 0.0 && running && !sneak;
     state.0.player_sneaking = sneak;
     // The same as the game's movement flags, for `IsMoving`, `IsRunning`
     // and `IsSneaking` (`world::more_functions::movement`).
@@ -247,12 +230,22 @@ pub fn walk(
         );
     }
     let shape = CharacterShape::PLAYER;
-    let jump = (keys.just_pressed(KeyCode::Space) && !locked)
-        .then(|| (2.0 * shape.gravity * MovementSettings::JUMP_HEIGHT).sqrt());
+    // Jump: not over-encumbered; `fJumpHeightMin` × the player's scale (1).
+    let jump = (keys.just_pressed(KeyCode::Space)
+        && !locked
+        && locomotion::may_jump(over_encumbered))
+    .then(|| locomotion::jump_speed(shape.gravity, locomotion::jump_height(settings, 1.0, false)));
     let dt = time.delta_secs();
-    player
-        .character
-        .update_with_jump(&collision.0, &shape, velocity, jump, dt);
+    // One controller update a frame: on the ground at the wanted velocity,
+    // in the air steered 0.3 of the way to it.
+    player.character.update_controlled(
+        &collision.0,
+        &shape,
+        velocity,
+        jump,
+        locomotion::air_gain(locomotion::AIR_CONTROL),
+        dt,
+    );
     if let Some(fell) = player.character.fell.take() {
         if !std::mem::take(&mut player.from_camera) {
             let hurt = world::combat::land(
