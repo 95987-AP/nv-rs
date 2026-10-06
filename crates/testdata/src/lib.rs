@@ -1439,6 +1439,14 @@ pub mod quest_ids {
     /// cases and removes itself (as the game's `Case10mmAddScript`).
     pub const CASE_BUNDLE: u32 = 0xAF0;
     pub const CASE_BUNDLE_SCRIPT: u32 = 0xAF1;
+    /// A bundle whose `OnAdd` only marks it and whose `GameMode` gives 5
+    /// cases and removes it (as the game's `PrimerShotshellAddScript`).
+    pub const LATE_BUNDLE: u32 = 0xAF2;
+    pub const LATE_BUNDLE_SCRIPT: u32 = 0xAF3;
+    /// A hat whose script sets `TestGlobal` to 99 when the player puts it
+    /// on and 7 when they take it off (as the faction outfits' warnings).
+    pub const SCRIPTED_HAT: u32 = 0xAF4;
+    pub const SCRIPTED_HAT_SCRIPT: u32 = 0xAF5;
     /// Settings the perks' rules read (seven forms from here):
     /// `fPackRatThreshold` 2, `fPackRatModifier` 0.5, `fAgilityReloadBase`
     /// 5, `fAgilityReloadModifier` 0.1, `fDamageToWeaponValue` 0.2,
@@ -1542,6 +1550,16 @@ pub fn quests(tag: &str) -> TempData {
         "TestCaseBundleScript",
         "scn TestCaseBundleScript\nBegin OnAdd Player\n\tPlayer.AddItem TestCase 25\n\tRemoveMe\nEnd\n",
     );
+    scripts.extend(script(
+        LATE_BUNDLE_SCRIPT,
+        "TestLateBundleScript",
+        "scn TestLateBundleScript\nint killme\nBegin OnAdd Player\n\tset killme to 1\nEnd\nBegin GameMode\n\tif killme == 1\n\t\tPlayer.AddItem TestCase 5\n\t\tRemoveMe\n\tendif\nEnd\n",
+    ));
+    scripts.extend(script(
+        SCRIPTED_HAT_SCRIPT,
+        "TestScriptedHatScript",
+        "scn TestScriptedHatScript\nBegin OnEquip Player\n\tset TestGlobal to 99\nEnd\nBegin OnUnequip Player\n\tset TestGlobal to 7\nEnd\n",
+    ));
     scripts.extend(script(
         QUEST_SCRIPT,
         "TestQuestScript",
@@ -1962,6 +1980,11 @@ pub fn quests(tag: &str) -> TempData {
     let mut apparel = clothes(SHIRT, "TestShirt", 0x04);
     apparel.extend(clothes(COAT, "TestCoat", 0x04 | 0x08));
     apparel.extend(clothes(HAT, "TestHat", 0x400));
+    let mut hat = edid("TestScriptedHat");
+    hat.extend(sub(b"FULL", &zstr("Scripted Hat")));
+    hat.extend(sub(b"SCRI", &SCRIPTED_HAT_SCRIPT.to_le_bytes()));
+    hat.extend(sub(b"BMDT", &[0, 4, 0, 0, 0, 0, 0, 0]));
+    apparel.extend(record(b"ARMO", SCRIPTED_HAT, &hat));
     // A trait (DATA: trait, level, ranks, playable, hidden) and a perk.
     let mut perks = Vec::new();
     for (id, name, is_trait) in [(TRAIT, "Test Trait", 1u8), (PERK, "Test Perk", 0)] {
@@ -2666,6 +2689,11 @@ pub fn quests(tag: &str) -> TempData {
     bundle.extend(sub(b"SCRI", &CASE_BUNDLE_SCRIPT.to_le_bytes()));
     bundle.extend(sub(b"DATA", &case_data));
     misc.extend(record(b"MISC", CASE_BUNDLE, &bundle));
+    let mut late = edid("TestLateBundle");
+    late.extend(sub(b"FULL", &zstr("Late Bundle")));
+    late.extend(sub(b"SCRI", &LATE_BUNDLE_SCRIPT.to_le_bytes()));
+    late.extend(sub(b"DATA", &case_data));
+    misc.extend(record(b"MISC", LATE_BUNDLE, &late));
     plugin.extend(group(*b"MISC", 0, &misc));
     plugin.extend(group(*b"LVLI", 0, &record(b"LVLI", LEVELED, &leveled)));
     let mut packages = record(b"PACK", TRAVEL, &travel);

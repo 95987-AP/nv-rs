@@ -185,7 +185,7 @@ pub fn after(
                             .iter()
                             .any(|(i, _)| *i == item)
                     {
-                        state.unequip(giver, item);
+                        state.unequip_item(order, giver, item);
                     }
                     // Taking from someone else's container is stealing
                     // (`world::crime`).

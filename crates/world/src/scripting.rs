@@ -239,11 +239,11 @@ pub struct GameState {
     /// Holders whose contents are kept in `items` (copied from their
     /// record the first time something changes them).
     pub stocked: HashSet<FormId>,
-    /// Scripted items added to holders, one entry an item, waiting for
-    /// the holder's next script run to see their `OnAdd` (the add flags
-    /// the event, `00574fa0`; the holder's run carries it out,
-    /// `00565870` → `004d2480`). Not saved.
-    pub item_adds: Vec<(FormId, FormId)>,
+    /// Scripted items' own scripts (the game's `ExtraScript` on each
+    /// scripted item, `004821a0` adding them one at a time): holder, item,
+    /// variables and the events waiting for the holder's next script run
+    /// (`00565870` → `004d2480`). Not saved.
+    pub item_scripts: Vec<ItemScript>,
     /// Topics the player has learned (`AddTopic`).
     pub topics: HashSet<FormId>,
     /// Seconds since each running quest's script last ran.
@@ -544,7 +544,7 @@ impl GameState {
         for (item, n) in &moved {
             self.items.remove(&(from, *item));
             *self.items.entry((to, *item)).or_insert(0) += n;
-            self.added(order, to, *item, *n);
+            self.moved(order, from, to, *item, *n);
         }
         moved
     }
@@ -553,6 +553,7 @@ impl GameState {
     /// and armour take off what's worn on any of the same body slots
     /// (`BMDT`, as the game's apparel does).
     pub fn equip(&mut self, order: &LoadOrder, who: FormId, item: FormId) {
+        self.item_event(order, who, item, event::EQUIP);
         let kind = |f: FormId| order.get(f).map(|r| r.entry.header.kind);
         let item_kind = kind(item);
         let slots = crate::actor::Armor::load(order, item).map_or(0, |a| a.slots);
@@ -579,21 +580,74 @@ impl GameState {
         }
     }
 
+    /// [`Self::unequip`], with the item's script told (`OnUnequip`).
+    pub fn unequip_item(&mut self, order: &LoadOrder, who: FormId, item: FormId) {
+        if self.is_equipped(who, item) {
+            self.item_event(order, who, item, event::UNEQUIP);
+        }
+        self.unequip(who, item);
+    }
+
     /// Whether someone has an item equipped.
     pub fn is_equipped(&self, who: FormId, item: FormId) -> bool {
         self.equipped.get(&who).is_some_and(|w| w.contains(&item))
     }
 
-    /// Items added to a holder at runtime (an `AddItem`, a container
-    /// emptied into another, a pick-up…; not a holder's own contents): each
-    /// one with a script gets its `OnAdd` (`004821a0` adds scripted items
-    /// one at a time, each with its own script, and `00574fa0` flags the
-    /// event for the holder).
+    /// Items added to a holder at runtime (an `AddItem`, a pick-up…; not
+    /// a holder's own contents): each one with a script gets a script of
+    /// its own (`004821a0`) and its `OnAdd` for the holder (`00574fa0`).
     pub fn added(&mut self, order: &LoadOrder, holder: FormId, item: FormId, count: i32) {
         if count > 0 && item_script(order, item).is_some() {
             for _ in 0..count {
-                self.item_adds.push((holder, item));
+                self.item_scripts.push(ItemScript {
+                    holder,
+                    item,
+                    locals: None,
+                    events: vec![(event::ADD, holder)],
+                });
             }
+        }
+    }
+
+    /// Items moved between holders: their scripts go with them and each
+    /// sees `OnAdd` for its new holder; those without one yet (a holder's
+    /// own contents) get one.
+    fn moved(&mut self, order: &LoadOrder, from: FormId, to: FormId, item: FormId, count: i32) {
+        if count <= 0 || item_script(order, item).is_none() {
+            return;
+        }
+        let mut left = count;
+        for s in self.item_scripts.iter_mut() {
+            if left == 0 {
+                break;
+            }
+            if s.holder == from && s.item == item {
+                s.holder = to;
+                s.events.push((event::ADD, to));
+                left -= 1;
+            }
+        }
+        self.added(order, to, item, left);
+    }
+
+    /// An event for one of a holder's scripted items (`005ac750`): equipped
+    /// (2), unequipped (8), with the reference it's for.
+    fn item_event(&mut self, order: &LoadOrder, holder: FormId, item: FormId, mask: u32) {
+        if item_script(order, item).is_none() {
+            return;
+        }
+        match self
+            .item_scripts
+            .iter_mut()
+            .find(|s| s.holder == holder && s.item == item)
+        {
+            Some(s) => s.events.push((mask, holder)),
+            None => self.item_scripts.push(ItemScript {
+                holder,
+                item,
+                locals: None,
+                events: vec![(mask, holder)],
+            }),
         }
     }
 
@@ -620,7 +674,7 @@ impl GameState {
             self.items.insert((from, item), have - n);
         }
         *self.items.entry((to, item)).or_insert(0) += n;
-        self.added(order, to, item, n);
+        self.moved(order, from, to, item, n);
         n
     }
 
@@ -1352,6 +1406,32 @@ fn names_who(order: &LoadOrder, b: &script::Block, who: FormId) -> bool {
         }
         Some(_) => false,
     }
+}
+
+/// A scripted item's own script: who holds it, its variables (made on its
+/// first run), and its events waiting (bit, and the reference it's for).
+#[derive(Debug, Clone)]
+pub struct ItemScript {
+    pub holder: FormId,
+    pub item: FormId,
+    pub locals: Option<Locals>,
+    pub events: Vec<(u32, FormId)>,
+}
+
+/// Item script events (`005ac750`'s callers): the bit and the blocks it
+/// runs.
+pub mod event {
+    pub const ADD: u32 = 1;
+    pub const EQUIP: u32 = 2;
+    pub const DROP: u32 = 4;
+    pub const UNEQUIP: u32 = 8;
+    /// Each event's block (`0118e2f0`).
+    pub const BLOCKS: [(u32, &str); 4] = [
+        (ADD, "onadd"),
+        (EQUIP, "onequip"),
+        (DROP, "ondrop"),
+        (UNEQUIP, "onunequip"),
+    ];
 }
 
 /// An item record's script (`SCRI` on the item itself).
@@ -2208,8 +2288,10 @@ pub struct Runner<'a> {
     pub owner: Option<FormId>,
     /// `GetSecondsPassed`.
     pub seconds_passed: f32,
-    /// A scripted item's own run: its holder and the item (`RemoveMe`).
+    /// A scripted item's own run: its holder and the item (`RemoveMe`),
+    /// and whether `RemoveMe` took it.
     item: Option<(FormId, FormId)>,
+    removed: bool,
     depth: u8,
 }
 
@@ -2223,41 +2305,99 @@ impl<'a> Runner<'a> {
             owner: None,
             seconds_passed: 0.0,
             item: None,
+            removed: false,
             depth: 0,
         }
     }
 
-    /// The scripted items added since the last run see their `OnAdd`
-    /// (`004d2480`): each a fresh copy of its script (`004821a0` gives
-    /// every one its own), its `OnAdd` blocks whose argument is empty or
-    /// names the holder, run with the holder as the reference it runs on.
-    pub fn run_item_adds(&mut self) {
-        let pending = std::mem::take(&mut self.state.item_adds);
-        for (holder, item) in pending {
-            let Some(script) =
-                item_script(self.order, item).and_then(|s| self.scripts.script(self.order, s))
-            else {
-                continue;
-            };
-            if !script.blocks.iter().any(|b| b.kind == "onadd") {
+    /// The scripted items' own runs (`004d2480` for each holder's scripted
+    /// items): items gone from their holder lose their script; each one
+    /// held by the player runs (its `GameMode` blocks, each run); every
+    /// one with events waiting runs their blocks (`OnAdd`, `OnEquip`,
+    /// `OnUnequip`, `OnDrop` naming the reference or none), in the
+    /// script's order, the holder the reference it runs on; then its events
+    /// are cleared (`005a8ea0`). Holders other than the player run only
+    /// for events (the game runs a reference's items with its own script,
+    /// `00565870`, which nv-rs doesn't do for every reference).
+    pub fn run_item_scripts(&mut self) {
+        // Items gone by other means take their scripts with them.
+        let mut kept: std::collections::HashMap<(FormId, FormId), i32> =
+            std::collections::HashMap::new();
+        let order = self.order;
+        let state = &*self.state;
+        let keep: Vec<bool> = state
+            .item_scripts
+            .iter()
+            .map(|s| {
+                let n = kept.entry((s.holder, s.item)).or_insert(0);
+                *n += 1;
+                *n <= state.item_count(order, s.holder, s.item)
+            })
+            .collect();
+        let mut keep = keep.into_iter();
+        self.state
+            .item_scripts
+            .retain(|_| keep.next().unwrap_or(false));
+        let mut i = 0;
+        while i < self.state.item_scripts.len() {
+            let ItemScript {
+                holder,
+                item,
+                ref events,
+                ..
+            } = self.state.item_scripts[i];
+            let events = events.clone();
+            if holder != PLAYER_REF && events.is_empty() {
+                i += 1;
                 continue;
             }
-            let order = self.order;
-            let mut locals = Locals::new(&script);
-            let saved = (self.this, self.owner, self.item);
-            self.this = Some(holder);
-            self.owner = None;
-            self.item = Some((holder, item));
-            let action = self.state.action_ref.replace(holder);
-            interp::run_blocks(
-                &script,
-                "onadd",
-                |b| names_who(order, b, holder),
-                &mut locals,
-                self,
-            );
-            self.state.action_ref = action;
-            (self.this, self.owner, self.item) = saved;
+            let Some(script) = item_script(order, item).and_then(|s| self.scripts.script(order, s))
+            else {
+                i += 1;
+                continue;
+            };
+            let blocks: Vec<&script::Block> = script
+                .blocks
+                .iter()
+                .filter(|b| {
+                    b.kind == "gamemode"
+                        || event::BLOCKS.iter().any(|(bit, kind)| {
+                            b.kind == *kind
+                                && events
+                                    .iter()
+                                    .any(|(m, r)| m & bit != 0 && names_who(order, b, *r))
+                        })
+                })
+                .collect();
+            let mut locals = self.state.item_scripts[i]
+                .locals
+                .take()
+                .unwrap_or_else(|| Locals::new(&script));
+            self.state.item_scripts[i].events.clear();
+            if !blocks.is_empty() {
+                let saved = (self.this, self.owner, self.item, self.removed);
+                self.this = Some(holder);
+                self.owner = None;
+                self.item = Some((holder, item));
+                self.removed = false;
+                let action = self.state.action_ref.replace(holder);
+                for block in blocks {
+                    if interp::run(&block.body, &mut locals, self) != Flow::Done {
+                        break;
+                    }
+                }
+                self.state.action_ref = action;
+                let removed = self.removed;
+                (self.this, self.owner, self.item, self.removed) = saved;
+                if removed {
+                    self.state.item_scripts.remove(i);
+                    continue;
+                }
+            }
+            if let Some(s) = self.state.item_scripts.get_mut(i) {
+                s.locals = Some(locals);
+            }
+            i += 1;
         }
     }
 
@@ -2379,7 +2519,7 @@ impl<'a> Runner<'a> {
     /// running (a guess), with `GetSecondsPassed` the time since its last
     /// run.
     pub fn update(&mut self, seconds: f32) {
-        self.run_item_adds();
+        self.run_item_scripts();
         self.state.roll();
         self.state.seconds += f64::from(seconds.max(0.0));
         self.state.advance_clock(self.order, seconds);
@@ -2953,7 +3093,7 @@ impl<'a> Runner<'a> {
                 self.state.equip(self.order, who, arg(0).form());
             }
             "UnequipItem" => {
-                self.state.unequip(target?, arg(0).form());
+                self.state.unequip_item(self.order, target?, arg(0).form());
             }
             "KillActor" => {
                 let who = target?;
@@ -3266,13 +3406,14 @@ impl<'a> Runner<'a> {
             // `005b53d0`: one of the scripted item running goes from its
             // holder (outside an item's own run it does nothing).
             "RemoveMe" => {
-                if let Some((holder, item)) = self.item {
+                if let Some((holder, item)) = self.item.filter(|_| !self.removed) {
                     if let Some(n) = self.state.items.get_mut(&(holder, item)) {
                         *n -= 1;
                         if *n <= 0 {
                             self.state.items.remove(&(holder, item));
                         }
                     }
+                    self.removed = true;
                 }
             }
             "SetActorValue" | "ForceActorValue" | "ModActorValue" | "DamageActorValue"

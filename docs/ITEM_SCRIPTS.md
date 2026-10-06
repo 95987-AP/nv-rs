@@ -1,4 +1,4 @@
-# Scripts on items: `OnAdd` and `RemoveMe`
+# Scripts on items: their own runs, `OnAdd`, `RemoveMe`
 
 An item record can carry a script (`SCRI` on the item). The official
 master has 201 `OnAdd` blocks: ammunition bundles that give their rounds
@@ -38,23 +38,36 @@ Event bits set by the code (`005ac750`'s callers): 1 `OnAdd`, 2 `OnEquip`,
 
 ## Here (`world::scripting`)
 
-`GameState::added` queues one `OnAdd` an item for scripted items added at
-runtime (script `AddItem`, leveled lists through it, `AddItemHealthPercent`,
-`RemoveAllItems` into a container, a container emptied or moved from,
-picking up, a person picking up food); a holder's own contents aren't
-added. `Runner::run_item_adds` runs the queue at the next `update`: a fresh
-copy of the item's script, its `OnAdd` blocks whose argument is empty or
-names the holder, the holder as the reference it runs on. `RemoveMe` takes
-one of the item from its holder.
+Each scripted item gets a script of its own (`GameState::item_scripts`:
+holder, item, its variables, its events waiting), made when it's added at
+runtime (`GameState::added`: script `AddItem`, leveled lists through it,
+`AddItemHealthPercent`, picking up, a person picking up food) with `OnAdd`
+for the holder; moved between holders (`move_item`, `take_all`,
+`RemoveAllItems` into a container) it keeps its variables and sees `OnAdd`
+again; equipping (`equip`) and unequipping (`unequip_item`: the Pip-Boy,
+scripts, selling, giving away) add `OnEquip` / `OnUnequip`. A holder's
+own contents get scripts only when they move or are equipped.
 
-Check: `scripted_items_see_their_onadd` (`crates/world/tests/scripting.rs`,
-a bundle giving 25 cases): added twice to the player, 50 cases and no
-bundle; in a chest nothing (`OnAdd Player`); taken from the chest, it runs.
+`Runner::run_item_scripts`, at each `update`: items no longer held lose
+their scripts; every item the player holds runs, and any other with events
+waiting; a run takes the script's blocks in order: `GameMode`, and the
+event blocks whose events wait and whose argument is empty or names the
+event's reference; the holder is the reference it runs on; the events are
+then cleared. `RemoveMe` takes one of the item from its holder, and its
+script with it.
+
+Check: `scripted_items_see_their_onadd` (`crates/world/tests/scripting.rs`):
+a bundle giving 25 cases added twice to the player (50 cases, no bundle);
+in a chest nothing (`OnAdd Player`); taken from the chest, it runs; a
+bundle whose `OnAdd` only marks it and whose `GameMode` gives 5 cases and
+removes it (as `PrimerShotshellAddScript`); a hat whose `OnEquip` /
+`OnUnequip` set a global (as the faction outfits' warnings).
 
 ## Not done
 
-- `DropMe` (dropping needs items placed in the world, which `Drop` lacks
-  too), and the run stopping after `RemoveMe`.
-- `OnEquip`, `OnUnequip`, `OnDrop`, and items' `GameMode` blocks (an
-  inventory item's script runs every time its holder's does).
-- Variables kept per item between runs (only `OnAdd`'s fresh copy here).
+- `DropMe` and `OnDrop` (dropping needs items placed in the world, which
+  `Drop` lacks too), and the inventory run stopping after `RemoveMe`.
+- Items held by others run only for their events; the game runs them with
+  their holder's script run (`00565870`) when it's processed.
+- A crippled arm dropping its weapon doesn't send `OnUnequip`.
+- Item scripts aren't saved.

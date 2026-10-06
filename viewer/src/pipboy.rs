@@ -599,7 +599,7 @@ fn pipboy_keys(
             Action::Equip(form) => {
                 let item = FormId(form);
                 if state.is_equipped(PLAYER_REF, item) {
-                    state.unequip(PLAYER_REF, item);
+                    state.unequip_item(order, PLAYER_REF, item);
                 } else {
                     state.equip(order, PLAYER_REF, item);
                 }

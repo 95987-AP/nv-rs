@@ -1897,4 +1897,37 @@ fn scripted_items_see_their_onadd() {
     // `RemoveMe` outside an item's own run does nothing.
     Runner::new(&order, &scripts, &mut state).run_source("RemoveMe", None, None);
     assert!(state.unhandled.is_empty(), "{:?}", state.unhandled_first);
+    // Each item keeps its own variables: `OnAdd` marks it, the same run's
+    // `GameMode` (later in the script) gives 5 cases and removes it.
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.AddItem TestLateBundle 1",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(state.item_count(&order, PLAYER_REF, FormId(LATE_BUNDLE)), 0);
+    assert_eq!(state.item_count(&order, PLAYER_REF, case), 80);
+    assert!(state.item_scripts.is_empty());
+    // `OnEquip` and `OnUnequip` (the faction outfits' warnings).
+    let global = |state: &mut GameState| state.globals.get(&FormId(GLOBAL)).copied();
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.AddItem TestScriptedHat 1",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.EquipItem TestScriptedHat",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(global(&mut state), Some(99.0));
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.UnequipItem TestScriptedHat",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(global(&mut state), Some(7.0));
 }

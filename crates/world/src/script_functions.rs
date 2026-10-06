@@ -1021,7 +1021,7 @@ pub fn remove_all(
             continue;
         }
         state.items.remove(&(from, item));
-        state.unequip(from, item);
+        state.unequip_item(order, from, item);
         if let Some(to) = to {
             *state.items.entry((to, item)).or_insert(0) += n;
             state.added(order, to, item, n);

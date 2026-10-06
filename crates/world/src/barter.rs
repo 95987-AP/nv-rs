@@ -320,7 +320,7 @@ pub fn accept(
         let equipped = state.is_equipped(PLAYER_REF, item);
         state.move_item(order, PLAYER_REF, into, item, n);
         if equipped && state.item_count(order, PLAYER_REF, item) == 0 {
-            state.unequip(PLAYER_REF, item);
+            state.unequip_item(order, PLAYER_REF, item);
         }
     }
     // The total as a whole number (`00406ce0`: floored).
