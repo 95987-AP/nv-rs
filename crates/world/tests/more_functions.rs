@@ -817,8 +817,19 @@ fn objects_animations_playing() {
     assert_eq!(q(&mut state, "RadioRef.IsAnimPlaying forward"), 1.0);
     assert_eq!(q(&mut state, "RadioRef.IsAnimPlaying Backward"), 0.0);
     assert_eq!(q(&mut state, "CrateRef.IsAnimPlaying"), 0.0);
-    // People's animation data isn't carried out: the script stops.
-    assert_eq!(q(&mut state, "PersonRef.IsAnimPlaying"), STOPPED);
+    // People's animation data isn't carried out: asked about a group the
+    // script stops; asked about any, a person on their feet is playing
+    // their idle (one who is down isn't: `essential_people_go_down…`).
+    assert_eq!(q(&mut state, "PersonRef.IsAnimPlaying Forward"), STOPPED);
+    assert_eq!(q(&mut state, "PersonRef.IsAnimPlaying"), 1.0);
+    // The viewer stops reporting a one-shot group once it has ended
+    // (`preview::cell::sequence_playing`): it reads 0 from then on.
+    more::report_sequences(
+        &mut state,
+        [(FormId(RADIO_REF), Vec::new())].into_iter().collect(),
+    );
+    assert_eq!(q(&mut state, "RadioRef.IsAnimPlaying Forward"), 0.0);
+    assert_eq!(q(&mut state, "RadioRef.IsAnimPlaying"), 0.0);
 }
 
 /// A camera and collision for `GetLineOfSight`: boxes for the people and
@@ -916,9 +927,19 @@ fn line_of_sight() {
     assert_eq!(q(&mut state, &clear, "HeroRef.GetLOS PersonRef"), 1.0);
     // The caller must be an actor.
     assert_eq!(q(&mut state, &clear, "BarrelRef.GetLOS Player"), 0.0);
-    // Not carried out: an object target for someone else, and the player
-    // headless (no camera).
-    assert_eq!(q(&mut state, &clear, "HeroRef.GetLOS BarrelRef"), STOPPED);
+    // An object target for someone else: no detection entry, so 0.
+    assert_eq!(q(&mut state, &clear, "HeroRef.GetLOS BarrelRef"), 0.0);
+    // Within 2 units of the caller the answer is 1 whatever detection
+    // found (`0088b880` returns early), further it's detection's again.
+    let hero_at = state.place(&order, FormId(HERO_REF)).unwrap().2;
+    let beside = |d: f32| (hero_at.map(|c| c + d / 3f32.sqrt()), 0.0);
+    assert_eq!(q(&mut state, &clear, "PersonRef.GetLOS HeroRef"), 0.0);
+    state.positions.insert(FormId(PERSON_REF), beside(1.0));
+    assert_eq!(q(&mut state, &clear, "PersonRef.GetLOS HeroRef"), 1.0);
+    state.positions.insert(FormId(PERSON_REF), beside(3.0));
+    assert_eq!(q(&mut state, &clear, "PersonRef.GetLOS HeroRef"), 0.0);
+    state.positions.remove(&FormId(PERSON_REF));
+    // The player headless (no camera) isn't carried out.
     assert_eq!(
         ask(&order, &scripts, &mut state, "Player.GetLOS HeroRef"),
         STOPPED

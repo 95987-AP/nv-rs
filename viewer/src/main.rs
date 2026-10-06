@@ -439,7 +439,8 @@ fn move_pieces(
 ) {
     let seconds = time.elapsed_secs();
     // The sequences active on each object, for `IsAnimPlaying`: a
-    // script's group (held at its end once played), a door's `Open` or
+    // script's group (while it plays: a one-shot that has ended stops
+    // counting, though its last pose is held), a door's `Open` or
     // `Close`, or the ones its model plays from the start (those holding a
     // frame aren't counted: a guess).
     let mut active: std::collections::HashMap<esm::FormId, Vec<String>> =
@@ -462,16 +463,32 @@ fn move_pieces(
             }
         };
         let motion = &piece.motion.motion;
+        // A one-shot that has reached its end no longer counts as playing
+        // (its pose is held, but `IsAnimPlaying` reads 0).
+        let named = |name: &str| {
+            motion
+                .all
+                .iter()
+                .find(|s| s.name.eq_ignore_ascii_case(name))
+        };
         match (group, door_pose) {
-            (Some((name, _)), _)
-                if motion.all.iter().any(|s| s.name.eq_ignore_ascii_case(name)) =>
-            {
-                add(name)
+            (Some((name, since)), _) if named(name).is_some() => {
+                if named(name).is_some_and(|s| preview::cell::sequence_playing(s, since)) {
+                    add(name)
+                }
             }
-            (None, Some((opening, _))) => add(if opening { "Open" } else { "Close" }),
+            (None, Some((opening, since))) => {
+                let name = if opening { "Open" } else { "Close" };
+                // A door model without that sequence still counts as it did.
+                if named(name).is_none_or(|s| preview::cell::sequence_playing(s, since)) {
+                    add(name)
+                }
+            }
             _ => {
                 for p in motion.sequences.iter().filter(|p| p.runs) {
-                    add(&p.sequence.name);
+                    if preview::cell::sequence_playing(&p.sequence, seconds) {
+                        add(&p.sequence.name);
+                    }
                 }
             }
         }
