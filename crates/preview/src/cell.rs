@@ -1544,7 +1544,8 @@ impl CellScene {
     }
 }
 
-/// One piece of a model's collision, placed, into the collider.
+/// One piece of a model's collision, placed, into the collider, with its
+/// body's friction and restitution (for rigid bodies resting on it).
 fn add_part(
     collider: &mut physics::Collider,
     part: &nif::CollisionPart,
@@ -1552,27 +1553,155 @@ fn add_part(
     owner: u32,
 ) {
     let at = |v: &[f32; 3]| place.apply_point(*v);
+    let surface = (part.body != nif::RigidBodyInfo::default()).then_some(physics::Surface {
+        friction: part.body.friction,
+        restitution: part.body.restitution,
+    });
+    let mut add = |v: &[[f32; 3]], t: &[[u32; 3]]| {
+        collider.add_solid_surface(v, t, (part.shell, owner, part.material), surface);
+    };
     match &part.shape {
         nif::CollisionShape::Triangles {
             vertices,
             triangles,
         } => {
             let v: Vec<[f32; 3]> = vertices.iter().map(at).collect();
-            collider.add_solid_material(&v, triangles, part.shell, owner, part.material);
+            add(&v, triangles);
         }
         nif::CollisionShape::Convex { vertices, planes } => {
             let tris = physics::shapes::hull(vertices, planes);
             let v: Vec<[f32; 3]> = vertices.iter().map(at).collect();
-            collider.add_solid_material(&v, &tris, part.shell, owner, part.material);
+            add(&v, &tris);
         }
         nif::CollisionShape::Sphere { center, radius } => {
             let (v, t) = physics::shapes::sphere(at(center), radius * place.scale);
-            collider.add_solid_material(&v, &t, part.shell, owner, part.material);
+            add(&v, &t);
         }
         nif::CollisionShape::Capsule { a, b, radius } => {
             let (v, t) = physics::shapes::capsule(at(a), at(b), radius * place.scale);
-            collider.add_solid_material(&v, &t, part.shell, owner, part.material);
+            add(&v, &t);
         }
+    }
+}
+
+/// A placed reference whose model carries a body Havok moves (clutter,
+/// weapons, props: `nif::RigidBodyInfo`, motion systems other than
+/// keyframed and fixed), for [`physics::rigid::RigidWorld`]: its body in the
+/// model's space (the reference's scale applied to the shapes, the centre
+/// and the inertia; the mass as stored: how the game's scaled clone,
+/// `00c8f2a0`, treats mass and inertia isn't traced) and where it's placed.
+#[derive(Debug, Clone)]
+pub struct DynamicBody {
+    pub reference: esm::FormId,
+    /// The base's editor ID, for messages.
+    pub name: String,
+    pub setup: physics::rigid::RigidSetup,
+    pub pose: physics::rigid::Pose,
+}
+
+/// The one body a model's moving parts belong to (the `bhkRigidBody`
+/// block), when they all belong to one: a model with several moving
+/// bodies (joined by constraints) isn't simulated here and stays solid
+/// where it's placed.
+fn moving_body(collision: &[nif::CollisionPart]) -> Option<usize> {
+    let mut block = None;
+    for p in collision.iter().filter(|p| moving_part(p)) {
+        match block {
+            None => block = Some(p.body.block),
+            Some(b) if b != p.body.block => return None,
+            _ => {}
+        }
+    }
+    block
+}
+
+fn moving_part(p: &nif::CollisionPart) -> bool {
+    p.dynamic && physics::impulses::moves(p.body.motion) && p.body.mass > 0.0
+}
+
+/// A collision part as a rigid body's shape, scaled by `s`.
+fn body_shape(part: &nif::CollisionPart, s: f32) -> physics::rigid::Shape {
+    let sc = |v: &[f32; 3]| v.map(|x| x * s);
+    match &part.shape {
+        nif::CollisionShape::Convex { vertices, planes } => {
+            let planes: Vec<[f32; 4]> = planes
+                .iter()
+                .map(|p| [p[0], p[1], p[2], p[3] * s])
+                .collect();
+            physics::rigid::Shape::hull(vertices.iter().map(sc).collect(), &planes, part.shell)
+        }
+        nif::CollisionShape::Sphere { center, radius } => physics::rigid::Shape::Sphere {
+            center: sc(center),
+            radius: radius * s,
+        },
+        nif::CollisionShape::Capsule { a, b, radius } => physics::rigid::Shape::Capsule {
+            a: sc(a),
+            b: sc(b),
+            radius: radius * s,
+        },
+        nif::CollisionShape::Triangles {
+            vertices,
+            triangles,
+        } => physics::rigid::Shape::Mesh {
+            vertices: vertices.iter().map(sc).collect(),
+            triangles: triangles.clone(),
+            shell: part.shell,
+        },
+    }
+}
+
+impl CellScene {
+    /// The placed references Havok would move: each with its one moving
+    /// body ([`DynamicBody`]). Doors that open where they stand and
+    /// static collections' pieces aren't among them.
+    pub fn dynamic_bodies(&self, convention: RotationConvention) -> Vec<DynamicBody> {
+        let mut out = Vec::new();
+        for instance in &self.instances {
+            let object = &self.cell.objects[instance.object];
+            if instance.part.is_some() || is_opening_door(object) {
+                continue;
+            }
+            let model = &self.models[instance.model];
+            let Some(block) = moving_body(&model.collision) else {
+                continue;
+            };
+            let parts: Vec<&nif::CollisionPart> = model
+                .collision
+                .iter()
+                .filter(|p| moving_part(p) && p.body.block == block)
+                .collect();
+            let Some(first) = parts.first() else {
+                continue;
+            };
+            let place = self.transform(instance, convention);
+            let s = place.scale;
+            let info = first.body;
+            let setup = physics::rigid::RigidSetup {
+                reference: object.form_id.0,
+                layer: first.layer,
+                mass: info.mass,
+                center: info.center.map(|x| x * s),
+                inertia: info.inertia.map(|row| row.map(|x| x * s * s)),
+                linear_damping: info.linear_damping,
+                angular_damping: info.angular_damping,
+                friction: info.friction,
+                restitution: info.restitution,
+                max_linear_speed: info.max_linear_speed,
+                max_angular_speed: info.max_angular_speed,
+                motion: info.motion,
+                shapes: parts.iter().map(|p| body_shape(p, s)).collect(),
+            };
+            out.push(DynamicBody {
+                reference: object.form_id,
+                name: object
+                    .base_editor_id
+                    .clone()
+                    .unwrap_or_else(|| object.base.to_string()),
+                setup,
+                pose: (place.rotation, place.translation),
+            });
+        }
+        out
     }
 }
 
@@ -1689,10 +1818,13 @@ impl CellScene {
     /// moved where the animation puts it ([`physics::Collider::move_owner`]
     /// with [`SwingDoor::leaf_move`]); it's added where the model files it
     /// (closed), whatever the door's state. The frame stays put. Moving
-    /// clutter is solid where it was placed: the game's character runs
-    /// into clutter, weapons and props whatever they weigh (the contact
-    /// callback `00c711d0` only stops lighter ones than `fMoveLimitMass`
-    /// from being pushed by the contact's own speed).
+    /// clutter with one body is left out: it's simulated
+    /// ([`Self::dynamic_bodies`], `physics::rigid`), and the simulation
+    /// adds its triangles under the reference's form ID and moves them
+    /// with it. The game's character runs into clutter, weapons and props
+    /// whatever they weigh (the contact callback `00c711d0` only stops
+    /// lighter ones than `fMoveLimitMass` from being pushed by the
+    /// contact's own speed).
     pub fn collider(&self, convention: RotationConvention) -> physics::Collider {
         let mut collider = physics::Collider::new();
         for instance in &self.instances {
@@ -1703,8 +1835,16 @@ impl CellScene {
             let object = &self.cell.objects[instance.object];
             let place = self.transform(instance, convention);
             let door = is_opening_door(object);
+            // A body Havok moves isn't here: whoever simulates it
+            // ([`Self::dynamic_bodies`]) adds and moves its triangles.
+            let moving = (!door && instance.part.is_none())
+                .then(|| moving_body(&model.collision))
+                .flatten();
             for part in &model.collision {
                 if !nif::collision::layers::blocks_walking(part.layer) {
+                    continue;
+                }
+                if moving.is_some_and(|b| moving_part(part) && part.body.block == b) {
                     continue;
                 }
                 let owner = if door && part.keyframed {
