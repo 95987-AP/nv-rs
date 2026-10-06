@@ -177,8 +177,8 @@ nvinspect <Data> play 60 --official --character characters\dead-money-entry.txt 
   viewer issue, not Dead Money's.
 * The slideshow's first view looked tilted; check against the game in D3.
 * That the gear really moves to the equipment container isn't checked yet (D3).
-* The bunker's vending machine, workbench and reloading bench open the recipe menu, which
-  nv-rs doesn't have (see "Crafting and casino menus").
+* The bunker's vending machine, workbench and reloading bench open the recipe menu (see
+  "Crafting").
 * Calls from other quests that aren't carried out, seen running headless: Lonesome Road's
   `AddItemToLeveledList`, and base-game scripts' `GetInSameCell`, `GetDetected`, and
   `GetAngle` / `GetDistance` on the player (the viewer knows where the player is; the
@@ -576,9 +576,9 @@ yet; a ragdoll asleep keeps its last report. The player isn't reported (counts a
 opened and closed at once, so the scripts' `MenuMode` blocks run. Test:
 `recipe_and_casino_menus_open_with_their_data`. nvinspect: 199 of 199.
 
-**Not done**: nv-rs has no crafting (recipes `RCPE`, categories `RCCT`, the recipe menu)
-and no casino games (slots, blackjack, roulette, the `CSNO` data, winnings), so nothing
-can be crafted or played yet. That is a separate piece of work, larger than a function.
+**Not done**: nv-rs has no casino games (slots, blackjack, roulette, the `CSNO` data,
+winnings), so nothing can be played yet (crafting is done: see "Crafting"). That is a separate
+piece of work, larger than a function.
 What the three numbers mean in each game isn't traced; the reference's +0x81 check for
 talking activators is taken to be met. Nothing compared in the original game.
 
@@ -605,6 +605,19 @@ talking activators is taken to be met. Nothing compared in the original game.
 **In code**: `Recipe::load`, `offers` (the list for a category), `sub_categories`, `can_make`,
 `make`. Tests: `crates/world/tests/crafting.rs`.
 
+**The menu**: `ui::menus::recipe` (class 1077, `menusecipe_menu.xml`; 6 tests) and
+`viewer/src/game_menus/recipe.rs`. A script's `ShowRecipeMenu` opens it on the category
+(`Shown::RecipeMenu`); `--open-menu recipes:CampfireRecipes` opens it for testing. It fills the
+file's own tiles: recipes in a list (id 3), the title (1) with the filter arrows (0, 2), "Made at"
+(4), the skill requirement (5), the ingredients' list (6, "have/need" on the right), the picture of
+the first output (9), Accept (7, key A) and Exit (8, key X, also Escape). Accept makes the chosen
+recipe through `world::crafting::make` and refills the lists. Seen with the real data: the
+vending machine's 14 recipes under the file's own layout. The pointer path (choosing a row with the
+mouse, Accept) is unit-tested only, not tried by hand.
+
+**Not done**: the item data card under the list (`RM_ItemData`: damage, weight, value ...) stays
+empty; no crafting sound; no experience.
+
 **Guessed, to check in the original game**:
 
 * A recipe is listed when its conditions pass, and also when the player lacks the skill or an
@@ -614,7 +627,13 @@ talking activators is taken to be met. Nothing compared in the original game.
 * Making one uses up each ingredient in full and adds the outputs; "Items Crafted" (misc stat 32)
   goes up by one for each recipe made, whatever it makes. No experience, no skill gain, no sound.
 * The list is sorted by name; the filter arrows go through the sub-categories in the order they first
-  appear.
+  appear, "all" first, wrapping round, and the title shows the sub-category's name in capitals.
+* Clicking a row makes it, as the Accept button does; the button is off (answering a key with the
+  cancel sound) while nothing makeable is chosen. Whether the original needs a second click is
+  unknown.
+* The ingredients show "have/need" on the right; a recipe that can't be made, and an ingredient the
+  player lacks, get the failed-check look.
+* "Made at" shows the category's name, and only once a recipe is chosen.
 
 ## D3: the intro slideshow and the Villa start
 

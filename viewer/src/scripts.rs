@@ -1372,6 +1372,11 @@ pub fn run_scripts(
                     // ragdoll that gets up again) isn't drawn yet; only the
                     // dead go limp here (`ActorRig::go_limp`).
                     world::more_functions::Shown::PushedAway { .. } => {}
+                    // `ShowRecipeMenu`: the recipe menu on the category
+                    // (`game_menus::recipe`).
+                    world::more_functions::Shown::RecipeMenu { category, .. } => {
+                        waiting.push(crate::menus::Menu::Recipes(category));
+                    }
                     // `FireWeapon`: shot in `combat::object_shots`.
                     world::more_functions::Shown::WeaponFired { from, weapon } => {
                         object_shots.0.push((from, weapon));
