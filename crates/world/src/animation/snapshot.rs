@@ -223,6 +223,7 @@ impl Snapshot {
                 }
                 (None, None) => None,
             };
+            let attach = seq.as_ref().map_or(0.0, |s| GroupData::read(s).attach);
             let candidate = Active {
                 bone_tracks: seq
                     .as_ref()
@@ -231,7 +232,10 @@ impl Snapshot {
                 frozen: saved.frozen.clone(),
                 group: saved.group,
                 section: saved.section,
-                data: saved.data,
+                data: GroupData {
+                    attach,
+                    ..saved.data
+                },
                 state: saved.state,
                 ease: saved.ease,
                 ease_length: saved.ease_length,
@@ -250,6 +254,8 @@ impl Snapshot {
             weapon_rate: self.weapon_rate,
             // Lasts one update at most: nothing to restore.
             skip_blend: false,
+            // The camera's player has no weapon section of its own.
+            weapon_drawn: false,
         })
     }
 }
@@ -284,7 +290,12 @@ fn sequence_signature(seq: &Sequence) -> SequenceSignature {
                 priority: track.priority,
             })
             .collect(),
-        data: GroupData::read(seq),
+        // The attach key isn't saved (camera snapshots predate it): it is
+        // read again from the file on restore.
+        data: GroupData {
+            attach: 0.0,
+            ..GroupData::read(seq)
+        },
     }
 }
 
