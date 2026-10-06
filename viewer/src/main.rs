@@ -276,7 +276,10 @@ fn main() {
         .init_resource::<dialogue::TalkTarget>()
         .init_resource::<dialogue::Conversation>()
         .init_resource::<dialogue::DialogueView>()
-        .insert_resource(dialogue::AutoTalk(args.talk))
+        .insert_resource(dialogue::AutoTalk(
+            args.talk,
+            args.choose.iter().copied().collect(),
+        ))
         .insert_resource(player)
         .insert_resource(walk::CellCollision(physics::Collider::new()))
         .insert_resource(walk::Doors(Vec::new()))
