@@ -113,6 +113,11 @@ constructors are now identified; runtime configuration and original comparison
 remain unverified. Do not repeat the established
 package-look lock or tester activation fixes.
 
+M2 blocker batch `claude/m2-explosives` (Ghost Town Gunfight dynamite):
+thrown weapons, grenade flight and explosion damage traced and implemented
+with generated regressions; not compared with the original game. Evidence,
+gaps and next action: [EXPLOSIVES.md](EXPLOSIVES.md).
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,
