@@ -254,6 +254,12 @@ fn refresh_cell_scripts(
     if state.player_cell == cell_scripts.cell {
         return;
     }
+    // A script that moved the player to another worldspace set their cell
+    // before the viewer swapped its grid in: wait for the grid, or the new
+    // cell would keep the old one's objects and triggers.
+    if outdoors.is_some_and(|(grid, square)| grid_behind(state.player_cell, grid.cell_at(square))) {
+        return;
+    }
     cell_scripts.cell = state.player_cell;
     cell_scripts.inside.clear();
     cell_scripts.refs = match (state.player_cell, outdoors) {
@@ -267,6 +273,13 @@ fn refresh_cell_scripts(
     for r in cell_scripts.refs.iter().filter(|r| r.script.is_some()) {
         runner.run_blocks(r.reference, Some(r.reference), "onload", |_| true);
     }
+}
+
+/// Whether the loaded outdoor grid hasn't caught up with the player's cell
+/// (`grid_cell`: what its square holds): a script moved them (`MoveTo`)
+/// into another worldspace and the grid is still the old one's.
+fn grid_behind(player_cell: Option<FormId>, grid_cell: Option<FormId>) -> bool {
+    player_cell.is_some() && player_cell != grid_cell
 }
 
 /// Whether an object's script has an `OnActivate` block.
@@ -1440,6 +1453,21 @@ mod tests {
             [0.0, 1.0, 0.0],
         )
         .is_none());
+    }
+
+    #[test]
+    fn an_outdoor_grid_that_lags_a_scripted_move_is_waited_for() {
+        let (old, new) = (Some(FormId(0x0100_0BBD)), Some(FormId(0x0100_359D)));
+        // A script moved the player into the new worldspace's cell while the
+        // grid is still the old one's: not yet.
+        assert!(grid_behind(new, old));
+        // The grid has caught up, or they walked within it, or the square
+        // has no cell and neither has the player.
+        assert!(!grid_behind(new, new));
+        assert!(!grid_behind(None, old));
+        assert!(!grid_behind(None, None));
+        // The player is in a cell the grid has no square for.
+        assert!(grid_behind(old, None));
     }
 
     #[test]
