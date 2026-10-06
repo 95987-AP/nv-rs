@@ -82,6 +82,28 @@ fn the_guard_fights_with_the_best_weapon_that_reaches() {
 }
 
 #[test]
+fn a_gunman_fights_with_the_gun_and_rounds_his_leveled_list_gives() {
+    // Ghost Town Gunfight: the Powder Gangers carry their guns only
+    // through `WithAmmoNV…Loot` lists (e.g. `GSPGAAM2`'s
+    // `WithAmmoNVSingleShotgunLoot`). Untouched (never stocked), the
+    // fight must still see the gun and its rounds, not leave them fists.
+    let (_data, order) = order("npcc-leveled");
+    let settings = SettingCache::default();
+    let s = |n: &str, d: f32| settings.get(&order, n, d);
+    let gunman = FormId(GUNMAN_REF);
+    let style = CombatStyle::of(&order, gunman);
+    let mut state = GameState::new(&order);
+    state.player_cell = Some(FormId(CELL));
+    npc_combat::choose_weapon(&order, &mut state, gunman, &style, Some(600.0), &s);
+    assert_eq!(
+        combat::weapon_in_hand(&order, &state, gunman).map(|w| w.form_id),
+        Some(FormId(RIFLE))
+    );
+    assert_eq!(state.item_count(&order, gunman, FormId(ROUND)), 10);
+    assert!(!state.npc_combat.unarmed.contains(&gunman));
+}
+
+#[test]
 fn guns_need_their_ammunition_and_far_targets_keep_the_best_gun() {
     let (_data, order) = order("npcc-ammo");
     let settings = SettingCache::default();

@@ -69,6 +69,13 @@ pub mod ids {
     /// (`TestRaiderScript`: `Begin OnStartCombat player`) adds 1 to.
     pub const FIGHT_GLOBAL: u32 = 0xB33;
     pub const RAIDER_SCRIPT: u32 = 0xB34;
+    /// A leveled item list giving the rifle and 10 rounds together ("use
+    /// all", as the game's `WithAmmoNV…Loot` lists), and a gunman
+    /// (`GSPGAAM`-like: raiders' faction) carrying only that list, placed
+    /// at 0,-600.
+    pub const RIFLE_WITH_AMMO: u32 = 0xB35;
+    pub const GUNMAN: u32 = 0xB36;
+    pub const GUNMAN_REF: u32 = 0xB37;
     /// The player's faction, as in the game.
     pub const PLAYER_FACTION: u32 = 0x1B2A4;
 }
@@ -351,6 +358,22 @@ pub fn fighting(tag: &str) -> TempData {
     lvlo.extend([0, 0]);
     list.extend(sub(b"LVLO", &lvlo));
     let leveled = record(b"LVLC", SPAWN_LIST, &list);
+    let with_ammo = {
+        let entry = |form: u32, count: u16| {
+            let mut d = 1u16.to_le_bytes().to_vec();
+            d.extend([0; 2]);
+            d.extend(form.to_le_bytes());
+            d.extend(count.to_le_bytes());
+            d.extend([0; 2]);
+            sub(b"LVLO", &d)
+        };
+        let mut d = edid("TestRifleWithAmmo");
+        d.extend(sub(b"LVLD", &[0]));
+        d.extend(sub(b"LVLF", &[0x04]));
+        d.extend(entry(RIFLE, 1));
+        d.extend(entry(ROUND, 10));
+        record(b"LVLI", RIFLE_WITH_AMMO, &d)
+    };
 
     // Factions: XNAM other faction, modifier, reaction (1 enemy, 2 ally).
     let faction = |id: u32, name: &str, relations: &[(u32, u32)]| {
@@ -421,6 +444,14 @@ pub fn fighting(tag: &str) -> TempData {
         Some(MACHETE),
         Some(RAIDER_SCRIPT),
     ));
+    npcs.extend(npc(
+        GUNMAN,
+        "TestGunman",
+        (1, 2, 1),
+        RAIDERS,
+        Some(RIFLE_WITH_AMMO),
+        None,
+    ));
 
     let actor = |id: u32, base: u32, pos: [f32; 3], name: &str| {
         let mut r = placed(id, base, pos, [0.0; 3], &sub(b"EDID", &zstr(name)));
@@ -441,6 +472,12 @@ pub fn fighting(tag: &str) -> TempData {
         "TestRaiderRef",
     ));
     refs.extend(actor(GECKO_REF, GECKO, [0.0, 1000.0, 0.0], "TestGeckoRef"));
+    refs.extend(actor(
+        GUNMAN_REF,
+        GUNMAN,
+        [0.0, -600.0, 0.0],
+        "TestGunmanRef",
+    ));
     refs.extend(actor(GIANT_REF, GIANT, [5000.0, 0.0, 0.0], "TestGiantRef"));
     refs.extend(actor(
         SPAWNED_REF,
@@ -471,6 +508,7 @@ pub fn fighting(tag: &str) -> TempData {
     plugin.extend(group(*b"WEAP", 0, &weapons));
     plugin.extend(group(*b"CREA", 0, &creatures));
     plugin.extend(group(*b"LVLC", 0, &leveled));
+    plugin.extend(group(*b"LVLI", 0, &with_ammo));
     plugin.extend(group(*b"NPC_", 0, &npcs));
     plugin.extend(cells);
     data.write("FalloutNV.esm", &plugin);

@@ -641,6 +641,14 @@ pub fn choose_weapon(
     {
         return false;
     }
+    // What they carry includes what their leveled lists give
+    // (`WithAmmoNV…Loot`: a gun and its rounds). The game has those in
+    // the actor's inventory before any fight; the viewer picks them when
+    // the holder's contents are first copied into the state
+    // (`GameState::stock`), so that happens here at the latest. Without it
+    // the arsenal saw only the record's direct items and the Powder
+    // Gangers fought with their fists.
+    state.stock(order, who);
     let a = arsenal(order, state, who, style, target_distance, s);
     state
         .npc_combat
