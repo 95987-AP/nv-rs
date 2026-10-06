@@ -584,13 +584,18 @@ const BRING_IN_REACH: f32 = 2.5 * world::land::CELL_SIZE;
 /// door, or by a script's `MoveTo`) come on screen: once a second, anyone
 /// the state has here (`world::ai::moved_into`) who isn't drawn yet is
 /// spawned, lit as the place is; outdoors, those within the loaded
-/// squares.
+/// squares. They join the place's people ([`dialogue::Talkers`]: talking,
+/// trigger volumes, combat), and are put back among them when an outdoor
+/// square load rebuilds that list from the squares' own people. Without
+/// this Sunny Smiles, walking out of the saloon for `VCG02`, never counted
+/// in `VCG02SunnyPatrolTrigger` (its `OnTrigger SunnyREF` sets stage 20).
 fn bring_in_people(
     time: Res<Time>,
     game: Res<GameFiles>,
     state: Res<dialogue::DialogueState>,
     player: Res<walk::Player>,
-    walkers: Query<&ai::Walker>,
+    walkers: Query<(&ai::Walker, &Visibility)>,
+    mut talkers: ResMut<dialogue::Talkers>,
     mut spawner: Spawner,
     mut last: Local<f32>,
 ) {
@@ -605,7 +610,19 @@ fn bring_in_people(
         return;
     };
     let shown: std::collections::HashSet<esm::FormId> =
-        walkers.iter().map(|w| w.reference).collect();
+        walkers.iter().map(|(w, _)| w.reference).collect();
+    let moved = world::ai::moved_into(order, state, space);
+    add_talkers(
+        &mut talkers.0,
+        walkers
+            .iter()
+            .filter(|(w, v)| **v != Visibility::Hidden && moved.contains(&w.reference))
+            .map(|(w, _)| dialogue::Talker {
+                reference: w.reference,
+                base: world::scripting::base_of(order, w.reference).unwrap_or(w.reference),
+                position: w.position,
+            }),
+    );
     let near = |r: esm::FormId| {
         state.player_world.is_none()
             || state
@@ -615,7 +632,7 @@ fn bring_in_people(
                     (p[0] - me[0]).hypot(p[1] - me[1]) <= BRING_IN_REACH
                 })
     };
-    let new: Vec<esm::FormId> = world::ai::moved_into(order, state, space)
+    let new: Vec<esm::FormId> = moved
         .into_iter()
         .filter(|r| !shown.contains(r) && near(*r))
         .collect();
@@ -627,7 +644,23 @@ fn bring_in_people(
     for r in &new {
         println!("{r} comes into view");
     }
+    add_talkers(
+        &mut talkers.0,
+        scene.actors.iter().map(dialogue::Talker::from_actor),
+    );
     spawner.spawn_with(&scene, lighting);
+}
+
+/// Adds people to the place's people, each once.
+fn add_talkers(
+    talkers: &mut Vec<dialogue::Talker>,
+    people: impl IntoIterator<Item = dialogue::Talker>,
+) {
+    for p in people {
+        if !talkers.iter().any(|t| t.reference == p.reference) {
+            talkers.push(p);
+        }
+    }
 }
 
 /// References scripts made (`PlaceAtMe`, `world::more_functions::placed`)
@@ -2307,6 +2340,25 @@ fn quit_on_escape(keys: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sunny Smiles walking out of the saloon (`VCG02`) must join the
+    /// outdoor people, once, so trigger volumes see her.
+    #[test]
+    fn people_brought_in_join_the_place_once() {
+        let at = |r: u32, x: f32| dialogue::Talker {
+            reference: esm::FormId(r),
+            base: esm::FormId(r + 1),
+            position: [x, 0.0, 0.0],
+        };
+        let mut talkers = vec![at(0x10, 0.0)];
+        add_talkers(&mut talkers, [at(0x00104E85, 5.0), at(0x10, 9.0)]);
+        add_talkers(&mut talkers, [at(0x00104E85, 7.0)]);
+        let refs: Vec<u32> = talkers.iter().map(|t| t.reference.0).collect();
+        assert_eq!(refs, [0x10, 0x00104E85]);
+        // The ones already there keep their places.
+        assert_eq!(talkers[0].position[0], 0.0);
+        assert_eq!(talkers[1].position[0], 5.0);
+    }
 
     #[test]
     fn mouse_motion_cannot_turn_player_during_script_package_and_releases_afterward() {
