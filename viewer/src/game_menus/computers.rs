@@ -186,11 +186,24 @@ fn use_item(
     else {
         return Used::default();
     };
+    let before = state.events.len();
     if let Some(script) = &item.script {
         Runner::new(order, scripts, state).run_source(script, Some(reference), Some(reference));
     }
+    // `ForceTerminalBack` from the item's own script acts on this menu.
+    let mut back = false;
+    let mut i = before.min(state.events.len());
+    while i < state.events.len() {
+        if matches!(state.events[i], world::scripting::Event::TerminalBack) {
+            state.events.remove(i);
+            back = true;
+        } else {
+            i += 1;
+        }
+    }
     let mut used = Used {
         result: item.result.clone(),
+        back,
         ..Used::default()
     };
     if let Some(sub) = item.submenu {

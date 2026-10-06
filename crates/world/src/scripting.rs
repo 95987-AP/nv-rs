@@ -933,6 +933,9 @@ pub enum Event {
     /// What `world::more_functions` has to show (a reference made, an
     /// actor's alpha, a save asked for…).
     More(crate::more_functions::Shown),
+    /// `ForceTerminalBack` (`005dc4e0`): an open terminal menu goes back a
+    /// screen (out of the first, it closes).
+    TerminalBack,
 }
 
 /// Which package lifecycle action `AddScriptPackage` requested.
@@ -3195,6 +3198,7 @@ impl<'a> Runner<'a> {
                 }
             }
             "ShowRaceMenu" => events.push(Event::Menu(RACE_SEX_MENU)),
+            "ForceTerminalBack" => events.push(Event::TerminalBack),
             "SetActorValue" | "ForceActorValue" | "ModActorValue" | "DamageActorValue"
             | "RestoreActorValue" => {
                 let who = target?;
@@ -3664,6 +3668,7 @@ pub const HANDLED: &[&str] = &[
     "SetStage",
     "ShowMessage",
     "ShowRaceMenu",
+    "ForceTerminalBack",
     "StartConversation",
     "StartQuest",
     "StopQuest",

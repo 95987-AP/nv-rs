@@ -31,6 +31,7 @@ export plus whole-function disassembly; `menus\computers_menu.xml` from
 | An item typed again after a note | `00759560` |
 | Running an item's result script | `00501830` |
 | Giving a note | `00966a70` |
+| `ForceTerminalBack` | `005dc4e0` (command table entry `01195e88`) |
 
 ## The record
 
@@ -85,6 +86,10 @@ zone's text, 15 the separator.
 - Code 10 (`007583f0`): out of a note, else back a screen ("Back" too,
   `00758a80`); from the first screen the menu closes. The viewer sends it
   for Tab and Escape.
+
+`ForceTerminalBack` (`005dc4e0`, 30 calls in the official scripts, all
+in terminal items): an open terminal menu goes back a screen, from inside
+the item's script, before the item's result and note.
 
 After the password, the hacking menu hands over to this one
 (`TransitionToComputersMenu`), so a hacked terminal logs on.

@@ -1381,6 +1381,10 @@ pub fn run_scripts(
                 }
             }
             Event::Activate { .. } => None,
+            // An item's own `ForceTerminalBack` is carried out by the
+            // terminal menu (`game_menus::computers`). From another script
+            // it isn't (the game's goes back if a terminal menu is open).
+            Event::TerminalBack => None,
             Event::More(shown) => {
                 println!("{}", world::more_functions::describe(order, state, &shown));
                 match shown {

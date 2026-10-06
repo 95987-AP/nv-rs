@@ -161,6 +161,9 @@ pub struct Used {
     /// Flag 0x02: the screen filled again (now, with no note; after the
     /// note, with one).
     pub redraw: Option<Screen>,
+    /// The item's script said `ForceTerminalBack`: back a screen first
+    /// (`005dc4e0` runs `00758a80` from inside the script).
+    pub back: bool,
 }
 
 /// What the menu asks of the game.
@@ -476,6 +479,12 @@ impl ComputersMenu {
 
     /// The world's answer to [`Request::Use`] (the rest of `00757f70`).
     pub fn used(&mut self, ui: &mut Ui, used: Used) {
+        if used.back {
+            self.back(ui);
+            if self.closed {
+                return;
+            }
+        }
         if let Some(result) = used.result.filter(|r| !r.is_empty()) {
             self.rate = 0.0;
             let tile = self.tile(RESULT);
@@ -984,5 +993,16 @@ mod tests {
         m.click(&mut ui, -1, Some(back), now);
         assert!(m.requests.contains(&Request::Fill { terminal: 0xA5D }));
         assert!(!m.closed);
+        // An item whose script says `ForceTerminalBack`: back first; from
+        // the first screen the menu closes.
+        m.fill(&mut ui, screen(0xA5D, &[(0, "Disengage Lock")]));
+        m.used(
+            &mut ui,
+            Used {
+                back: true,
+                ..Used::default()
+            },
+        );
+        assert!(m.closed);
     }
 }

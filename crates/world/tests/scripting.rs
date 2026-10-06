@@ -1015,6 +1015,13 @@ fn locks_keys_and_terminals() {
     assert_eq!(access(&order, &state, &t, r), Access::LockedOut);
     Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Unlock", None, None);
     Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 0", None, None);
+    // `ForceTerminalBack` (a terminal item's script) asks the menu back.
+    state.events.clear();
+    Runner::new(&order, &scripts, &mut state).run_source("ForceTerminalBack", Some(r), Some(r));
+    assert!(state
+        .events
+        .iter()
+        .any(|e| matches!(e, world::scripting::Event::TerminalBack)));
     // Quest scripts reward experience too.
     Runner::new(&order, &scripts, &mut state).run_source("RewardXP 25", None, None);
     assert_eq!(world::experience::xp(&state), 85.0);
