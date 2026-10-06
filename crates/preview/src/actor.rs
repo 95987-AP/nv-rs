@@ -113,6 +113,7 @@ impl Loader<'_> {
                 skeleton: Some(pose.skeleton.clone()),
                 sequences: Default::default(),
                 particles: None,
+                bsx_flags: 0,
             });
             Some(self.models.len() - 1)
         });

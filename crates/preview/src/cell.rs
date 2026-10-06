@@ -617,6 +617,8 @@ pub struct Model {
     pub sequences: std::sync::Arc<Vec<nif::Sequence>>,
     /// Its particle systems, if it has any.
     pub particles: Option<std::sync::Arc<ParticleModel>>,
+    /// Its `BSXFlags` value (0 without the block).
+    pub bsx_flags: u32,
 }
 
 /// A model's particle systems (`nif::particles`, as placed: the top node's
@@ -714,8 +716,10 @@ impl Loader<'_> {
         let mut sequences = Vec::new();
         let mut particle_systems = Vec::new();
         let mut particle_sequences = Vec::new();
+        let mut bsx_flags = 0;
         let scene = match nif::Nif::parse(bytes).and_then(|nif| {
             sequences = nif.sequences().unwrap_or_default();
+            bsx_flags = nif.bsx_flags().unwrap_or(0);
             // Particle systems that can't be read leave the model without
             // them (every one in the game's files reads).
             particle_systems = nif.particle_systems(keep_root).unwrap_or_default();
@@ -780,6 +784,7 @@ impl Loader<'_> {
             skeleton: None,
             sequences,
             particles,
+            bsx_flags,
         });
         Some(self.models.len() - 1)
     }
@@ -1405,6 +1410,7 @@ pub fn lod_block_scene(assets: &Assets, path: &str) -> Option<CellScene> {
                 skeleton: None,
                 sequences: Default::default(),
                 particles: None,
+                bsx_flags: 0,
             });
             cell.objects.push(world::Placement {
                 form_id: esm::FormId(segment),
@@ -1665,14 +1671,7 @@ pub struct DynamicBody {
     /// Each shape's Havok material (what a shot striking it sounds like).
     pub materials: Vec<u32>,
     pub pose: physics::rigid::Pose,
-    /// Whether Havok lets it settle when its place loads: unless the
-    /// reference carries the record flag 0x2000_0000 (named "Don't Havok
-    /// Settle" by xEdit; how the game reads it isn't traced here).
-    pub settle: bool,
 }
-
-/// The reference record flag xEdit names "Don't Havok Settle".
-pub const DONT_HAVOK_SETTLE: u32 = 0x2000_0000;
 
 /// The one body a model's moving parts belong to (the `bhkRigidBody`
 /// block), when they all belong to one: a model with several moving
@@ -1695,6 +1694,29 @@ fn moving_body(collision: &[nif::CollisionPart]) -> Option<usize> {
     block
 }
 
+/// Whether the game fixes a placed reference's bodies as its model gets
+/// Havok: a static's or a static collection's (base form types 0x20,
+/// 0x21) are set to the fixed motion (`TESObjectREFR::InitHavok`, Xbox
+/// PDB, `005768b0` → `00c6a350(3D, 5, …)`), which changes a model's bodies
+/// only when its `BSXFlags` has Havok (bit 1). The burnt fence pickets
+/// south of Goodsprings' square (`NVFencePickBurntBroken01`, a `STAT`
+/// with a moving clutter body and that flag) stay put so.
+// Translated from 005768b0 (decompiled, FalloutNV.exe 1.4.0.525)
+fn fixed_by_game(object: &world::Placement, model: &Model) -> bool {
+    let kind = object.base_type;
+    (kind == esm::FourCC::new(b"STAT") || kind == esm::FourCC::new(b"SCOL"))
+        && model.bsx_flags & nif::collision::BSX_HAVOK != 0
+}
+
+/// The body Havok moves for a placed reference: its model's one moving
+/// body ([`moving_body`]) unless the game fixes it ([`fixed_by_game`]).
+fn simulated_body(object: &world::Placement, model: &Model) -> Option<usize> {
+    if fixed_by_game(object, model) {
+        return None;
+    }
+    moving_body(&model.collision)
+}
+
 /// Placed references whose models have moving bodies that aren't
 /// simulated here ([`moving_body`]: several bodies, or constraints): their
 /// editor IDs, for the log.
@@ -1708,7 +1730,7 @@ impl CellScene {
             }
             let model = &self.models[instance.model];
             let moving = model.collision.iter().any(moving_part);
-            if moving && moving_body(&model.collision).is_none() {
+            if moving && !fixed_by_game(object, model) && moving_body(&model.collision).is_none() {
                 out.push((
                     object.form_id,
                     object
@@ -1769,7 +1791,7 @@ impl CellScene {
                 continue;
             }
             let model = &self.models[instance.model];
-            let Some(block) = moving_body(&model.collision) else {
+            let Some(block) = simulated_body(object, model) else {
                 continue;
             };
             let parts: Vec<&nif::CollisionPart> = model
@@ -1796,6 +1818,7 @@ impl CellScene {
                 max_linear_speed: info.max_linear_speed,
                 max_angular_speed: info.max_angular_speed,
                 motion: info.motion,
+                wind: info.body_flags & nif::collision::BODY_WIND != 0,
                 shapes: parts.iter().map(|p| body_shape(p, s)).collect(),
             };
             out.push(DynamicBody {
@@ -1807,7 +1830,6 @@ impl CellScene {
                 setup,
                 materials: parts.iter().map(|p| p.material).collect(),
                 pose: (place.rotation, place.translation),
-                settle: object.flags & DONT_HAVOK_SETTLE == 0,
             });
         }
         out
@@ -1947,7 +1969,7 @@ impl CellScene {
             // A body Havok moves isn't here: whoever simulates it
             // ([`Self::dynamic_bodies`]) adds and moves its triangles.
             let moving = (!door && instance.part.is_none())
-                .then(|| moving_body(&model.collision))
+                .then(|| simulated_body(object, model))
                 .flatten();
             for part in &model.collision {
                 if !nif::collision::layers::blocks_walking(part.layer) {

@@ -264,6 +264,8 @@ pub struct RigidSetup {
     pub max_angular_speed: f32,
     /// Havok's motion system (`nif::RigidBodyInfo::motion`).
     pub motion: u8,
+    /// The wind pushes it (`nif::collision::BODY_WIND`, [`crate::wind`]).
+    pub wind: bool,
     pub shapes: Vec<Shape>,
 }
 
@@ -771,6 +773,19 @@ impl RigidWorld {
         let b = &mut self.bodies[body];
         let arm = sub(point, b.x);
         b.kick(scale(impulse, HAVOK_UNIT), arm);
+        b.moved = true;
+    }
+
+    /// `hkpMotion::applyForce(deltaTime, force)` (Havok's, Xbox PDB slot
+    /// `+0x5c`) after waking the body (`00c9c1d0`): its velocity gains
+    /// force ÷ mass × `dt` (a force in Havok units).
+    pub fn apply_force(&mut self, body: usize, force: Vec3, dt: f32) {
+        if !self.bodies[body].dynamic() {
+            return;
+        }
+        self.wake(body);
+        let b = &mut self.bodies[body];
+        b.kick(scale(force, HAVOK_UNIT * dt), [0.0; 3]);
         b.moved = true;
     }
 
@@ -1697,6 +1712,7 @@ mod tests {
             max_linear_speed: 1068.0 * HAVOK_UNIT,
             max_angular_speed: 31.57,
             motion: 4,
+            wind: false,
             shapes: vec![Shape::hull(corners, &planes, 0.7)],
         }
     }
@@ -1856,6 +1872,7 @@ mod tests {
             max_linear_speed: 1068.0 * HAVOK_UNIT,
             max_angular_speed: 31.57,
             motion: 4,
+            wind: false,
             shapes: vec![Shape::hull(vertices, &planes, 0.7)],
         }
     }
