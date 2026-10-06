@@ -671,28 +671,35 @@ fn bring_in_enabled(
     mut placed: Query<(&scripts::PlacedRef, &mut Visibility)>,
     mut talkers: ResMut<dialogue::Talkers>,
     mut spawner: Spawner,
-    mut seen: Local<(Option<esm::FormId>, world::Disabled)>,
+    mut seen: Local<EnableSeen>,
 ) {
     let state = &state.0;
     if !player.ready {
         return;
     }
     let space = state.player_world.or(state.player_cell);
-    // A place loaded afresh is drawn as things are now.
-    if seen.0 != space {
-        *seen = (space, state.disabled.clone());
+    let mut squares: Vec<(i32, i32)> = match (&exterior, state.player_world) {
+        (Some(e), Some(_)) => e.loaded_squares().into_iter().collect(),
+        _ => Vec::new(),
+    };
+    squares.sort();
+    // Looked at again when scripts enable or disable something, and when
+    // the place or its loaded squares change (a square that was loading
+    // while a script enabled something may have left it out).
+    let place = (space, squares);
+    let moved_on = seen.place != place;
+    if !moved_on && seen.disabled == state.disabled {
         return;
     }
-    if seen.1 == state.disabled {
-        return;
-    }
-    let before = std::mem::replace(&mut seen.1, state.disabled.clone());
+    let before = std::mem::replace(&mut seen.disabled, state.disabled.clone());
+    seen.place = place;
     let order = &game.0.order;
     let refs: Vec<esm::FormId> = match (&exterior, state.player_world, here.0) {
-        (Some(e), Some(_), _) => e
-            .loaded_squares()
-            .into_iter()
-            .flat_map(|square| {
+        (Some(e), Some(_), _) => seen
+            .place
+            .1
+            .iter()
+            .flat_map(|&square| {
                 let mut refs: Vec<esm::FormId> = e
                     .grid
                     .cell_at(square)
@@ -715,8 +722,16 @@ fn bring_in_enabled(
             .collect(),
         _ => return,
     };
-    let came = world::newly_enabled(order, refs.iter().copied(), &before, &state.disabled);
-    let went = world::newly_enabled(order, refs.iter().copied(), &state.disabled, &before);
+    // Drawn ones whose state changed since the last look (only then, so
+    // people hidden for being elsewhere stay hidden).
+    let (came, went) = if moved_on {
+        (Vec::new(), Vec::new())
+    } else {
+        (
+            world::newly_enabled(order, refs.iter().copied(), &before, &state.disabled),
+            world::newly_enabled(order, refs.iter().copied(), &state.disabled, &before),
+        )
+    };
     let mut drawn = std::collections::HashSet::new();
     for (p, mut visibility) in &mut placed {
         let r = esm::FormId(p.0);
@@ -727,9 +742,18 @@ fn bring_in_enabled(
             *visibility = Visibility::Hidden;
         }
     }
-    let new: Vec<world::Placement> = came
+    // Shown now but left out when loaded (as the data has them at first),
+    // still here and not drawn.
+    let shown_now = world::newly_enabled(
+        order,
+        refs.iter().copied(),
+        &world::Disabled::new(),
+        &state.disabled,
+    );
+    let new: Vec<world::Placement> = shown_now
         .iter()
         .filter(|r| !drawn.contains(r) && !state.dead.contains(r))
+        .filter(|&&r| state.place(order, r).is_some_and(|p| Some(p.0) == space))
         .filter_map(|&r| world::placement_of(order, r))
         .filter(|p| !world::is_marker(p.base, p.base_type, p.model.as_deref()))
         .collect();
@@ -750,6 +774,14 @@ fn bring_in_enabled(
     );
     let lighting = spawner.place_lighting.get();
     spawner.spawn_with(&scene, lighting);
+}
+
+/// What [`bring_in_enabled`] last looked at: the place (interior cell or
+/// worldspace, and the loaded squares) and the scripts' enable state.
+#[derive(Default)]
+struct EnableSeen {
+    place: (Option<esm::FormId>, Vec<(i32, i32)>),
+    disabled: world::Disabled,
 }
 
 /// Adds people to the place's people, each once.

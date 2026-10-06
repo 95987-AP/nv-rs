@@ -96,9 +96,8 @@ pub use image_space::{Cinematic, Hdr, ImageSpace};
 pub use land::{Land, LandTexture};
 pub use placement::{
     enabled_now, is_marker, light_flags, load_cell, load_cell_now, made_placement, newly_enabled,
-    placement_of,
-    resolve_emittance, Arrival, Disabled, Emittance, LeftOut, Light, LoadedCell, Part, PlacedLight,
-    Placement, Primitive, Teleport, COLLISION_MARKER, OPEN_BY_DEFAULT,
+    placement_of, resolve_emittance, Arrival, Disabled, Emittance, LeftOut, Light, LoadedCell,
+    Part, PlacedLight, Placement, Primitive, Teleport, COLLISION_MARKER, OPEN_BY_DEFAULT,
 };
 pub use rotation::{is_tilted, AxisOrder, RotationConvention};
 
