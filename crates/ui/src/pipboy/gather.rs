@@ -317,9 +317,11 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
             if let Some(w) = world::combat::Weapon::load(order, item) {
                 // The damage card (`006450f0`, drawn at the file's alpha 0):
                 // the hit's damage (`00644ce0`, `world::combat::
-                // hit_damage`); `006450f0` then applies the ammunition's
-                // damage effects and perk entry 0, not done here.
-                let damage = world::combat::hit_damage(order, state, PLAYER_REF, &w);
+                // hit_damage`) × a split beam's 1.3; `006450f0` also
+                // applies the ammunition's damage effects and perk entry 0,
+                // not done here.
+                let damage = world::combat::hit_damage(order, state, PLAYER_REF, &w)
+                    * world::weapon_mods::shown_damage_mult(order, state, PLAYER_REF, item);
                 line.damage = Some(damage);
                 let ammo = w.ammo_in_use(order, state, PLAYER_REF);
                 line.projectiles = w.shot(order, ammo).0.max(1);

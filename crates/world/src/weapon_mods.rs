@@ -153,7 +153,8 @@ pub fn round(x: f32) -> i32 {
 
 /// A weapon as its holder's mods change it: clip (`004fe160`), spread
 /// (`00524b80`, `00524be0`), attack speed (`00646020`), projectiles
-/// (`00525b20`), most condition (`004bcf00`).
+/// (`00525b20`) and split beam's cone (`00523150`), most condition
+/// (`004bcf00`).
 pub fn modded(order: &LoadOrder, state: &GameState, holder: FormId, mut weapon: Weapon) -> Weapon {
     let f = flags(state, holder, weapon.form_id);
     if f == 0 {
@@ -174,11 +175,35 @@ pub fn modded(order: &LoadOrder, state: &GameState, holder: FormId, mut weapon: 
     }
     if has(effect::SPLIT_BEAM) {
         weapon.projectiles = round(value(effect::SPLIT_BEAM) + f32::from(weapon.projectiles)) as u8;
+        // The cone (`00523150`): × the second value (0 on both laser
+        // rifles, whose split beams fly straight).
+        weapon.cone_mult = value_of(order, id, effect::SPLIT_BEAM, true);
     }
     if has(effect::MAX_HEALTH) {
         weapon.health = (weapon.health as f64 + f64::from(value(effect::MAX_HEALTH))) as i32;
     }
     weapon
+}
+
+/// What the damage the menus show is multiplied by (`006450f0`, the
+/// figure the Pip-Boy, the mod screen and the repair menus show): 1.3 with
+/// a split beam fitted, else 1.
+pub fn shown_damage_mult(
+    order: &LoadOrder,
+    state: &GameState,
+    holder: FormId,
+    weapon: FormId,
+) -> f32 {
+    if has_effect(
+        order,
+        flags(state, holder, weapon),
+        weapon,
+        effect::SPLIT_BEAM,
+    ) {
+        1.3
+    } else {
+        1.0
+    }
 }
 
 /// The one weapon the exe never gives its mod models (`00522df0`,

@@ -1495,11 +1495,14 @@ pub mod quest_ids {
     pub const FIRST_PERSON_GUN: u32 = 0xB5E;
     pub const FIRST_PERSON_GUN_EXT: u32 = 0xB5F;
     /// Noise: `TestLoudGun` (a pistol, `VNAM` 0 loud) whose first slot is
-    /// `TestSilencer` (effect 11), and `TestKnife` (one-handed melee). The
-    /// gecko's `NAM5` is 0 (loud).
+    /// `TestSilencer` (effect 11) and second `TestBeamSplitter` (effect 12,
+    /// +2 projectiles, cone × 0.5; min spread 2°), and `TestKnife`
+    /// (one-handed melee).
+    /// The gecko's `NAM5` is 0 (loud).
     pub const LOUD_GUN: u32 = 0xB60;
     pub const SILENCER: u32 = 0xB61;
     pub const KNIFE: u32 = 0xB62;
+    pub const BEAM_SPLITTER: u32 = 0xB63;
     /// Caravan: `TestCardAce` (hearts ace), `TestCardQueen` (spades queen),
     /// both with `TestCardScript` (the game's `CardAddToPlayerScript`:
     /// `OnAdd`, held by the player, `AddCardToPlayer` and `RemoveMe`), and
@@ -2789,10 +2792,15 @@ End
     weapons.extend(record(b"WEAP", MOD_GUN, &mod_gun));
     let mut loud_gun = edid("TestLoudGun");
     loud_gun.extend(sub(b"WMI1", &SILENCER.to_le_bytes()));
+    loud_gun.extend(sub(b"WMI2", &BEAM_SPLITTER.to_le_bytes()));
     loud_gun.extend(sub(b"DATA", &mod_gun_data));
     let mut loud_dnam = weapon_dnam.clone();
     loud_dnam[0] = 3;
     loud_dnam[140..144].copy_from_slice(&11u32.to_le_bytes());
+    loud_dnam[144..148].copy_from_slice(&12u32.to_le_bytes());
+    loud_dnam[156..160].copy_from_slice(&2.0f32.to_le_bytes());
+    loud_dnam[188..192].copy_from_slice(&0.5f32.to_le_bytes());
+    loud_dnam[16..20].copy_from_slice(&2.0f32.to_le_bytes()); // min spread
     loud_gun.extend(sub(b"DNAM", &loud_dnam));
     loud_gun.extend(sub(b"VNAM", &0u32.to_le_bytes()));
     weapons.extend(record(b"WEAP", LOUD_GUN, &loud_gun));
@@ -2831,6 +2839,7 @@ End
     mods.extend(weapon_mod(BARREL, "TestBarrel"));
     mods.extend(weapon_mod(LIGHT_FRAME, "TestLightFrame"));
     mods.extend(weapon_mod(SILENCER, "TestSilencer"));
+    mods.extend(weapon_mod(BEAM_SPLITTER, "TestBeamSplitter"));
     plugin.extend(group(*b"IMOD", 0, &mods));
     plugin.extend(group(*b"CREA", 0, &record(b"CREA", GECKO, &gecko)));
     let mut bodies = record(

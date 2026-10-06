@@ -117,3 +117,36 @@ fn modded_models() {
         weapon_mods::model(&order, pistol, 0)
     );
 }
+
+/// A split beam (`00525b20`, `00523150`, `006450f0`): more projectiles, the
+/// cone × its second value, the shown damage × 1.3.
+#[test]
+fn split_beam() {
+    let (_data, order) = order("weapon-mods-split");
+    let mut state = GameState::new(&order);
+    let gun = FormId(LOUD_GUN);
+    state.items.insert((PLAYER_REF, gun), 1);
+    state.items.insert((PLAYER_REF, FormId(BEAM_SPLITTER)), 1);
+    let plain = world::combat::Weapon::load(&order, gun).unwrap();
+    let (count, cone) = plain.shot(&order, None);
+    assert!(cone > 0.0);
+    assert_eq!(
+        weapon_mods::shown_damage_mult(&order, &state, PLAYER_REF, gun),
+        1.0
+    );
+    assert!(weapon_mods::attach(
+        &order,
+        &mut state,
+        PLAYER_REF,
+        gun,
+        FormId(BEAM_SPLITTER)
+    ));
+    let split = weapon_mods::modded(&order, &state, PLAYER_REF, plain);
+    let (more, narrower) = split.shot(&order, None);
+    assert_eq!(more, count + 2);
+    assert_eq!(narrower, cone * 0.5);
+    assert_eq!(
+        weapon_mods::shown_damage_mult(&order, &state, PLAYER_REF, gun),
+        1.3
+    );
+}

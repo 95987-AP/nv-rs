@@ -107,6 +107,9 @@ pub struct Weapon {
     /// animations start from (1 on the vanilla weapons; the game's weapon
     /// `+0xf8`, read by `004e4620`).
     pub speed: f32,
+    /// What its shots' cone is multiplied by: 1, or a fitted split beam
+    /// mod's second value (`00523150`; `world::weapon_mods::modded`).
+    pub cone_mult: f32,
 }
 
 impl Weapon {
@@ -170,6 +173,7 @@ impl Weapon {
             aim_arc: f(100).unwrap_or(0.0),
             semi_auto_delay: (f(128).unwrap_or(0.0), f(132).unwrap_or(0.0)),
             speed: f(4).unwrap_or(1.0),
+            cone_mult: 1.0,
         })
     }
 
@@ -246,7 +250,7 @@ impl Weapon {
     /// carrying the weapon's damage ÷ the count; the cone the weapon's min
     /// spread (degrees) after the ammunition's spread effects — the
     /// spread × wobble term is always 0 in the game, and the player's sway
-    /// doesn't move unscoped shots.
+    /// doesn't move unscoped shots; all of it × [`Weapon::cone_mult`].
     pub fn shot(&self, order: &LoadOrder, ammo: Option<FormId>) -> (u32, f32) {
         let from_ammo = ammo
             .and_then(|a| order.get(a))
@@ -262,7 +266,8 @@ impl Weapon {
         let effects = ammo.map(|a| ammo_effects(order, a)).unwrap_or_default();
         let cone = with_ammo(&effects, 3, self.min_spread)
             .max(0.0)
-            .to_radians();
+            .to_radians()
+            * self.cone_mult;
         (count, cone)
     }
 

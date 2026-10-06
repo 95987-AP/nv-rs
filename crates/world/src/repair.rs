@@ -187,8 +187,9 @@ pub struct Stat {
 }
 
 /// [`Stat`] for an item at a condition (0..1): a weapon's damage
-/// (`006450f0`, rounded; here [`crate::combat::weapon_damage_at`], without
-/// the ammunition's effects and perk entry 0 that `006450f0` adds),
+/// (`006450f0`, rounded; here [`crate::combat::weapon_damage_at`] × a
+/// split beam's 1.3, without the ammunition's effects and perk entry 0
+/// that `006450f0` adds),
 /// `sInventoryDamage`; armour's damage threshold there when above 0
 /// (`sInventoryDamageThreshold`), else its resistance
 /// (`sInventoryDamageResistance`, "--" when neither), truncated.
@@ -202,7 +203,8 @@ pub fn shown_stat(
     if kind == WEAP {
         let w = crate::combat::Weapon::load(order, item)?;
         let d =
-            crate::combat::weapon_damage_at(order, state, PLAYER_REF, Some(&w), false, condition);
+            crate::combat::weapon_damage_at(order, state, PLAYER_REF, Some(&w), false, condition)
+                * crate::weapon_mods::shown_damage_mult(order, state, PLAYER_REF, item);
         return Some(Stat {
             title: "sInventoryDamage",
             value: Some(crate::barter::round_to(d, 1.0) as i32),
