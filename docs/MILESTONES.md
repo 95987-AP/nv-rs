@@ -212,6 +212,21 @@ beyond its action costs is inferred. Evidence and gaps:
 fight in the original game and compare weapon switches and dynamite
 throws.
 
+## M2 blocker batch: NPC aim and next target
+
+`claude/m2-npc-aim` (2026-10-06): people's shots now fly as the game aims
+them (`00523150` NPC branch: aim point `009a8460`, cone = weapon min
+spread + gun wobble × `fNPCMaxGunWobbleAngle`, iron sights past 512 ×
+sight usage `008f74c0`) as rays to the first body, object or wall, with
+the line-of-fire hold (`009a6e90`); after a kill or give-up fighters take
+the best of their remaining targets (`CombatGroup::GetBestTarget`,
+`00986c60`). Gangers' leveled guns are now resolved (they had chosen
+fists). Gunfight re-run: both `bTrudyHelp` branches reach stage 100; the
+varmint-rifle ganger hits the player 1–3 times in 9 shots at 3000–2000
+units (was 10/10). Generated regressions pass; not compared with the
+original. Evidence and gaps: [NPC_COMBAT.md](NPC_COMBAT.md). **Next
+action:** record ganger hit rates at range in the original game.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

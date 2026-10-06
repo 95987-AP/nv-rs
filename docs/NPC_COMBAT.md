@@ -165,3 +165,149 @@ original game.** Executable: `FalloutNV.exe` 1.4.0.525; names marked
 Record a Goodsprings powder-ganger fight in the original game (weapon
 switches, dynamite throws, reload pauses, VMS16b stage 110 on the
 gangers' `OnStartCombat`) and compare.
+
+## Aim, spread and the next target (batch `claude/m2-npc-aim`)
+
+2026-10-06. Code: `crates/world/src/npc_aim.rs` (rules),
+`viewer/src/fighting.rs` (`resolve_shots`, `Targets`, `next_target`),
+`viewer/src/combat.rs` (`first_met_past`). Status: **implemented and
+tested on generated inputs; not compared with the original game.**
+
+### What the game does (traced)
+
+- **Who fires how** — `00523150` (weapon fire), branch for an actor other
+  than the player with a combat controller (vtable +0x428,
+  `Actor::GetCombatController`, Xbox PDB; the PC slots are the Xbox ones
+  + 4 from +0x20c on: +0x20c `GetFireNode`, +0x22c `IsDead`, +0x230
+  `IsKnockedOut`):
+  - origin: the fire node's world position (`Actor::GetFireNode`), else
+    feet + 0.75 × height (`009a8050` → `009a7fa0`, `0101de30`);
+  - direction: straight from the origin at the attack procedure's
+    targeted point (`009807f0` = `CombatController::GetTargetedPoint`,
+    Xbox PDB → action procedure (+0x84, Xbox +0x94 `pActionProcedure`)
+    vtable +0x18); no point → no shot. The ranged procedure
+    (`009d0a30`) makes the point with `009d1c90` → `009a8bf0`: the
+    target's feet + `009a8460` (height × 0.25 / 0.5 / 0.75 (0.9 crouched)
+    by the segment in view 0/1(3)/2; × 0.1 when dead, knocked out or
+    paralysed; 0 for segment 4, which `009a8bf0` picks for slow
+    projectiles), led by the target's velocity (`009a8df0` →
+    `009a8f00`, `iAimingNumIterations`) unless the projectile is
+    hitscan (`009a7f80` = projectile flag 0x1). The segment is the
+    controller's combat state `+0x7c` (`00981920`), default 1 without a
+    controller; who sets it isn't traced;
+  - cone (radians) = (weapon spread × W₁ + min spread) × π/180, the
+    ammunition's spread effects (`0059a030` type 3), + W₂ ×
+    `fNPCMaxGunWobbleAngle` (data 15) × π/180 + process `+0x1d0`
+    (`008d8330`; written by `008d8350`, decaying in `009295c0`; taken as
+    0); W₁ is always 0 (`findings\hits.md` §1); × the split-beam mod;
+  - each projectile: r = U(0, cone), θ = U(0, 2π), added to heading and
+    pitch.
+- **W₂** = `008b0dd0(2)` → `00646910` (`world::vats::wobble`): standing
+  0.1, walking 0.1 / running 0.2, not aiming 0.2, crippled arms,
+  Strength and skill short of the weapon's, × (1 − skill × 0.005), at
+  least 0.01; `008b0dd0` then applies perk entry 34 (`005e58f0(0x22)`)
+  for anyone (the existing function applies it only to the player).
+- **Aiming down the sights** (the "not aiming" term) — `008f74c0` and
+  `009d0a30`: on when |aim point − shooter|² > (`fCombatIronSightsDistance`
+  512 × the weapon's sight usage)², the weapon's `+0x170` = `DNAM` f32 at
+  124 (`008f7710`; `DNAM` starts at `+0xf4`); melee weapons never
+  (`006450c0`); stored as the controller's `cUseIronSights` (+0xc6, Xbox
+  +0xd6) and the process's aim flag (`008bb650` → process +0x400).
+- **NPC gun sway**: `008b2c30` (`Actor::AddGunWobble`, Xbox PDB) runs only
+  for the player (the pointer at `011dea3c`), so people's guns don't sway; their
+  wobble only widens the cone.
+- **Not read anywhere** (settings inventory: initialiser only): every
+  `fGunSpread*`, `fWeaponConditionSpread1–10` (condition doesn't change
+  spread), `fCombatRangedStandoffTimer`, `fAICombatTargetUnreachable
+  PriorityMult`, `fAICombatUnreachableTargetPriorityMult`,
+  `fAICombatNoTargetLOSPriorityMult`. There is no `fAIMaxRangedAttack`.
+  Range: the projectile's (`PROJ` range); the hitscan cast runs that far.
+- **Next target** — `0097f4d0` (a target removed from the controller):
+  when it was the current one, `00980830(00986c60(attacker))` =
+  `CombatController::SetTarget(CombatGroup::GetBestTarget)`, Xbox PDB;
+  no target left ends combat. The controller update (`0097da50`,
+  `CombatController::Update`) picks again whenever it plans anew.
+  `00986c60` over the group's targets (`CombatTarget`, Xbox PDB):
+  skipped outside the style's targeting FOV (`00639aa0`, CSSD 48), in
+  another cell under a flag (`00408d60`), or, for teammates, ones
+  they wouldn't attack (`008b06d0`); group detection level (`009887b0`:
+  the highest member's) below 1 → candidate for the "most recently
+  detected" fallback; else, with more than one target, score: +1000 in
+  view (detection record +0x1e, `cMemberLOSCount`), +100 360° line of
+  sight (+0x1c), +100 current (+1000 more when out of view and seen
+  within 2 s, controller +0x98), +100 same melee/ranged kind
+  (`009a9630`), + (1 − min(d², 2048²)/2048²) × 1000, + `011f18b0` (0)
+  when others attack it, −2000 near an unreachable location
+  (`009a0f40`), −2500 another cell not loaded (`009a96f0`), −500
+  `IsDead`/`IsKnockedOut`, −500 `008a6650`. Weights `011a4d50`–`011a4d78`
+  (500, 500, 2500, 2000, 1000, 2048, 100, 2.0, 100, 100, 1000).
+
+### Implemented (with tests)
+
+- `world::npc_aim`: `aim_height`, `fire_height`, `actor_height`,
+  `sight_usage`, `uses_iron_sights`, `npc_cone`, `deviate`,
+  `heading_pitch`/`direction`, `best_target` (8 unit tests).
+- Viewer: a person's shot is queued and flown after the AI frame
+  (`resolve_shots`): from feet + 0.75 × height to the target's feet +
+  0.5 × height, cone = `Weapon::shot`'s + wobble (gait: walking, fast
+  walk → walking; run → running; aiming by the sights rule) × 15°, per
+  pellet a ray through `first_met_past` (skeleton capsules, scripted
+  objects, walls; the shooter passed by) and the player's bounds
+  cylinder; the pellet's share of the damage on the part struck
+  (`hit_at`); misses strike the world (impact effects). Line of fire
+  (`009d0a30` → `009a6e90`: the hit actor must be the target or one of
+  the group's targets, `009865b0`): someone else first on the straight
+  line holds the shot (the round and the sound are already spent: a
+  simplification). A scripted object whose bounds contain the shooter
+  doesn't stop the shot (bounds stand in for collision).
+  Fighters keep their targets (`Targets`): the one they start with,
+  everyone rising whom they'd attack (in a fight too), allies' enemies
+  they'd help against (out of a fight only); on a kill or give-up,
+  `next_target` → `best_target`.
+- Leveled inventories: `choose_weapon` stocks the fighter first
+  (`GameState::stock`), so a base whose guns come from leveled lists
+  (`GSPGHM`: `WithAmmoNVVarmintRifleLoot`, `RaiderLoot`, dynamite lists,
+  all `LVLF` 0x04 "use all") is armed; before, every Powder Ganger chose
+  its fists. When the game resolves them isn't traced.
+- Tests: `crates/world/src/npc_aim.rs` tests; viewer
+  `fighting::tests` (target list and choice on generated values);
+  `crates/world/tests/npc_combat.rs`
+  `a_gun_from_a_leveled_list_is_chosen_with_its_rounds` (generated
+  gunman with a use-all rifle kit).
+
+### Gunfight re-run (2026-10-06, private outputs `nv-re\work\npcaim-2026-10-06`)
+
+As `docs/GOODSPRINGS_ROUTE.md` (player at −67845,3000, 150 s): run 7 with
+Trudy's help, run 8 without; both reach stage 100 ("Defeat the Powder
+Gangers"). The varmint-rifle ganger (GSPG03, 00104C75) shooting the
+standing player while walking in: 1 hit in 10 shots (run 7) and 3 in 9
+(run 8) between 3000 and 2000 units, cones 1.3° (standing, aiming) to
+2.6° (walking); run 1 of the route batch had 10 hits in 10. Many misses
+strike the ground short of the player. Gangers now carry their
+rifles, revolvers, shotguns, bats, cleavers and dynamite. Fighters
+"turn to" their next target after kills; strays occasionally hit
+bystanders, and one ganger killed another. **Not compared** with the
+original game.
+
+### Inferred or not done (labelled in code)
+
+- The fire node and the animated gun aren't used: the origin is the
+  game's no-fire-node fallback. Segment in view fixed at 1 (middle).
+  Projectile lead not done (hitscan bullets don't lead; missiles, flames
+  and lobbed shots are resolved as rays). Process `+0x1d0` aim offset 0.
+- The player is met by their bounds' cylinder (no third-person capsules);
+  people crouching (sneaking) aren't modelled, so the crouched heights
+  aren't used.
+- Perk entry 34 isn't applied to people's wobble (`world::vats::wobble`
+  applies it to the player only).
+- Target choice: no combat groups — each fighter's own targets and own
+  detection stand in for the group's; teammates' rule, the cell/area
+  penalties, `008a6650` and the planner's re-choice timer aren't done;
+  `same kind` ignores the combat plan's melee actions (`00981940(7|8)`);
+  "in view" = line of sight within `fDetectionViewCone` (inferred from the
+  LOS/360° LOS counter names).
+- Not verified on the CPU with `nv-call` (the functions read actor and
+  process objects).
+- Stray hits on bystanders go through the existing "whoever is hurt
+  fights back" rule (`Runner::strike_at`); the game's tolerance of
+  friends' hits (`iFriendHit…` settings) isn't traced.
