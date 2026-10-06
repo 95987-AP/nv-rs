@@ -13,6 +13,71 @@ use crate::cell::{le_f32, le_u32};
 const REGN: FourCC = FourCC::new(b"REGN");
 const WNAM: FourCC = FourCC::new(b"WNAM");
 const RPLD: FourCC = FourCC::new(b"RPLD");
+const RDAT: FourCC = FourCC::new(b"RDAT");
+const RDMP: FourCC = FourCC::new(b"RDMP");
+const XCLR: FourCC = FourCC::new(b"XCLR");
+
+/// A region's map name (its region data of type 4, `RDAT` then `RDMP`)
+/// and that data's priority (`RDAT` byte 5).
+pub fn map_name(order: &LoadOrder, region: FormId) -> Option<(String, u8)> {
+    let record = order.get(region)?.record().ok()?;
+    let mut current: Option<(u32, u8)> = None;
+    for s in &record.subrecords {
+        if s.kind == RDAT && s.data.len() >= 6 {
+            current = Some((le_u32(&s.data, 0), s.data[5]));
+        } else if s.kind == RDMP {
+            if let Some((4, priority)) = current {
+                let name = s.zstring();
+                if !name.is_empty() {
+                    return Some((name, priority));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The name of the place at (x, y) in a worldspace, as the worldspace
+/// gives it (`TESWorldSpace` vtable +0x138, `00586500`): among the regions
+/// of the cell there (its `XCLR`; with no cell, every region of the
+/// worldspace) the map regions whose outline holds the point, the one of
+/// highest priority. `None` when none does (the game then falls back to
+/// other names, `00408da0` / `00586980`, not followed).
+// Translated from 00586500 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn location_name(
+    order: &LoadOrder,
+    world: FormId,
+    cell: Option<FormId>,
+    x: f32,
+    y: f32,
+) -> Option<String> {
+    let listed: Option<Vec<FormId>> = cell.and_then(|c| {
+        let rr = order.get(c)?;
+        let record = rr.record().ok()?;
+        let xclr = record.get(XCLR)?;
+        Some(
+            xclr.data
+                .chunks_exact(4)
+                .map(|b| rr.plugin.to_global(FormId(le_u32(b, 0))))
+                .collect(),
+        )
+    });
+    let candidates: Vec<FormId> = match listed {
+        Some(list) => list,
+        None => order.records_of_type(REGN).map(|rr| rr.form_id).collect(),
+    };
+    candidates
+        .into_iter()
+        .filter_map(|id| {
+            let region = Region::load(order, id)?;
+            if region.world != Some(world) || !region.contains(x, y) {
+                return None;
+            }
+            map_name(order, id)
+        })
+        .max_by_key(|(_, priority)| *priority)
+        .map(|(name, _)| name)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Region {

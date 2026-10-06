@@ -513,6 +513,11 @@ impl TempData {
         }
     }
 
+    /// An empty fixture folder, for a test that writes its own plugin.
+    pub fn empty(tag: &str) -> Self {
+        Self::new(tag)
+    }
+
     pub fn write(&self, relative: &str, bytes: &[u8]) {
         let path = self.0.join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();

@@ -9,6 +9,7 @@ mod ai;
 mod args;
 mod chatter;
 mod combat;
+mod controls;
 mod daylight;
 mod dialogue;
 mod doors;
@@ -183,6 +184,7 @@ fn main() {
         .insert_resource(ai::Moves::new(&game))
         .insert_resource(ai::CellBuffer::new(&game))
         .insert_resource(player_camera::PlayerView::new(&game.order, &game.settings))
+        .insert_resource(controls::Controls::read(&game.settings))
         .init_resource::<player_body::PlayerBody>()
         .insert_resource(GameFiles(game))
         .init_resource::<scripts::Scripts>()
@@ -226,6 +228,8 @@ fn main() {
         .insert_resource(vats::Vats::new(args.vats))
         .init_resource::<viewmodel::PlaceLighting>()
         .init_resource::<viewmodel::ViewModel>()
+        .init_resource::<viewmodel::IronSightsFov>()
+        .init_resource::<viewmodel::SightingNode>()
         .init_resource::<sounds::SoundRequests>()
         .init_resource::<sounds::Ambient>()
         .init_resource::<scripts::Activatable>()
@@ -350,6 +354,7 @@ fn main() {
                 quit_on_escape.after(menus::run_menus),
                 take_screenshot,
                 update_help,
+                grab_cursor,
                 (
                     weather::run_weather,
                     follow_sky,
@@ -2395,8 +2400,8 @@ fn spawn_scene(
 
 fn help_text(ev100: f32, speed: f32, walking: bool) -> String {
     let moving = if walking {
-        "Walking: hold the right mouse button to look, left to attack (R reloads); WASD, \
-         Shift to walk slowly, Ctrl to sneak, Space to jump, E to use things"
+        "Walking: the mouse looks, left button attacks, right aims (R: reload, hold: holster); \
+         WASD, Shift to walk slowly, Ctrl: sneak on/off, Space to jump, E to use things"
             .to_string()
     } else {
         format!(
@@ -2429,7 +2434,31 @@ fn update_help(
     }
 }
 
-/// Holding a mouse button turns the view, walking or flying.
+/// Whether the game is in menu mode for the mouse: a menu, the Pip-Boy,
+/// lockpicking, the dialogue menu (not a line said in passing) or
+/// V.A.T.S. is up. Then the mouse is the menus' pointer; otherwise, walking,
+/// it turns the view as the game's always does.
+fn mouse_in_menus(
+    menus: Option<&menus::Menus>,
+    conversation: Option<&dialogue::Conversation>,
+    vats: Option<&vats::Vats>,
+) -> bool {
+    menus.is_some_and(|m| m.is_open())
+        || conversation.is_some_and(|c| c.0.as_ref().is_some_and(|t| !t.is_line_only()))
+        || vats.is_some_and(|v| v.is_on())
+}
+
+/// What says the mouse belongs to the menus ([`mouse_in_menus`]).
+type MenuGates<'w> = (
+    Option<Res<'w, menus::Menus>>,
+    Option<Res<'w, dialogue::Conversation>>,
+    Option<Res<'w, vats::Vats>>,
+);
+
+/// The mouse turns the view: walking, always (the game's mouse look; the
+/// right button is the Aim control, `combat`), except in menus; flying,
+/// while a button is held.
+#[allow(clippy::too_many_arguments)]
 fn look_around(
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
@@ -2438,6 +2467,7 @@ fn look_around(
     start_stage: Res<scripts::StartStage>,
     view: Option<Res<player_camera::PlayerView>>,
     mut cameras: Query<(&mut Transform, &mut FlyCamera)>,
+    (menus, conversation, vats): MenuGates,
 ) {
     let Ok((mut transform, mut camera)) = cameras.single_mut() else {
         return;
@@ -2453,13 +2483,43 @@ fn look_around(
     // lock (005cc4f0 -> 005cc7a0), or while the place is still loading.
     let locked = player.walking
         && (!player.ready || start_stage.0.is_some() || state.0.player_looking_blocked());
-    let held =
-        mouse.pressed(MouseButton::Right) || (!player.walking && mouse.pressed(MouseButton::Left));
+    let held = if player.walking {
+        !mouse_in_menus(menus.as_deref(), conversation.as_deref(), vats.as_deref())
+    } else {
+        mouse.pressed(MouseButton::Right) || mouse.pressed(MouseButton::Left)
+    };
     if !locked && held && !taken {
         camera.yaw -= motion.delta.x * LOOK_SPEED;
         camera.pitch = (camera.pitch - motion.delta.y * LOOK_SPEED).clamp(-1.54, 1.54);
     }
     transform.rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
+}
+
+/// Walking outside menus the pointer is hidden and held in the window, as
+/// the game holds it for its mouse look; in menus, flying or with the
+/// window in the background it's free.
+fn grab_cursor(
+    player: Res<walk::Player>,
+    menus: Option<Res<menus::Menus>>,
+    conversation: Option<Res<dialogue::Conversation>>,
+    vats: Option<Res<vats::Vats>>,
+    mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
+) {
+    let Ok(mut window) = windows.single_mut() else {
+        return;
+    };
+    let grab = player.walking
+        && window.focused
+        && !mouse_in_menus(menus.as_deref(), conversation.as_deref(), vats.as_deref());
+    let (mode, visible) = if grab {
+        (bevy::window::CursorGrabMode::Locked, false)
+    } else {
+        (bevy::window::CursorGrabMode::None, true)
+    };
+    if window.cursor_options.grab_mode != mode || window.cursor_options.visible != visible {
+        window.cursor_options.grab_mode = mode;
+        window.cursor_options.visible = visible;
+    }
 }
 
 /// G switches the cell's color adjustment (saturation, tint, contrast,

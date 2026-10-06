@@ -102,9 +102,9 @@ impl ObjectBounds {
         Self(bounds.iter().map(|b| (b.reference, (b.lo, b.hi))).collect())
     }
 
-    fn hit(&self, reference: FormId, eye: [f32; 3], dir: [f32; 3]) -> Option<f32> {
+    fn hit(&self, reference: FormId, eye: [f32; 3], dir: [f32; 3], margin: f32) -> Option<f32> {
         let (lo, hi) = self.0.get(&reference.0)?;
-        ray_box(eye, dir, *lo, *hi)
+        ray_box(eye, dir, lo.map(|v| v - margin), hi.map(|v| v + margin))
     }
 }
 
@@ -126,21 +126,26 @@ fn ray_box(origin: [f32; 3], dir: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Optio
     (near <= far).then_some(near)
 }
 
+/// How far along the view the activation pick meets an object: a sphere
+/// of `fActivatePickSphereRadius` (16) cast from the eye (`0070bc20`),
+/// met where it touches the object's bounds (the game casts against the
+/// object's collision; its bounds stand in for that here).
 fn target_hit_distance(
     object: &Interactive,
     object_bounds: &ObjectBounds,
     eye: [f32; 3],
     dir: [f32; 3],
 ) -> Option<f32> {
+    let r = world::activation::PICK_RADIUS;
     let empty_record_bounds = object
         .bounds
         .is_none_or(|(lo, hi)| lo == [0.0; 3] && hi == [0.0; 3]);
     if empty_record_bounds {
         object_bounds
-            .hit(object.reference, eye, dir)
-            .or_else(|| object.ray_hit(eye, dir))
+            .hit(object.reference, eye, dir, r)
+            .or_else(|| object.ray_hit_within(eye, dir, r))
     } else {
-        object.ray_hit(eye, dir)
+        object.ray_hit_within(eye, dir, r)
     }
 }
 
@@ -327,6 +332,8 @@ enum Used {
     Sleep,
     /// Furniture to sit in or get up from (`sitting::player_furniture`).
     Furniture(FormId),
+    /// An item taken that the game doesn't announce (`004ce380`'s types).
+    Taken,
 }
 
 /// E on an object: its `OnActivate` script runs, if it has one, and its
@@ -374,7 +381,13 @@ fn use_object(
                 println!("Seen stealing {}.", counted(r.base, r.count));
             }
         }
-        return Some(Used::Notice(format!("{} added", counted(r.base, r.count))));
+        // "<name> added" / "<n> <name>(s) added" (`004ce380`).
+        return Some(
+            match world::activation::pickup_message(order, r.base, r.count) {
+                Some(message) => Used::Notice(message),
+                None => Used::Taken,
+            },
+        );
     }
     if r.is_container() {
         let label = r.name.clone().unwrap_or_else(|| "Container".into());
@@ -446,7 +459,7 @@ fn object_in_view(
         let Some(d) = target_hit_distance(r, object_bounds, eye, dir) else {
             continue;
         };
-        if d > cellview::ACTIVATE_REACH || best.is_some_and(|(bd, _)| d >= bd) {
+        if d > world::activation::PICK_LENGTH || best.is_some_and(|(bd, _)| d >= bd) {
             continue;
         }
         let usable =
@@ -1097,12 +1110,15 @@ pub fn run_scripts(
                     waiting.push(crate::menus::Menu::SleepWait { sleep: true });
                 }
                 Some(Used::Furniture(f)) => player_seat.activated = Some(f),
-                None => {}
+                Some(Used::Taken) | None => {}
             }
-            // A taken item's pick-up sound.
+            // A taken item's pick-up sound: its own (`YNAM`), else a
+            // weapon's by its kind, else the generic one (`008adcf0(item,
+            // 1, 0)`, which `004ce380` hands the "added" message).
             if let Some(o) = object.filter(|o| o.is_item()) {
                 if !world::enabled_now(order, o.reference, &state.disabled) {
-                    if let Some(s) = world::sound::pickup_sound(order, o.base) {
+                    if let Some(s) = world::sound::item_sound(order, o.base, true) {
+                        println!("Pick-up sound: {}", record_name(order, s));
                         sound_requests.0.push(s);
                     }
                 }
@@ -2041,8 +2057,10 @@ mod tests {
             lo: [1842.0, 1746.0, 7360.0],
             hi: [1924.0, 1782.0, 7522.0],
         }]);
+        // The pick's sphere (radius 16) touches the front plane, 146 ahead,
+        // 16 sooner.
         let hit = target_hit_distance(&object, &object_bounds, eye, dir).unwrap();
-        assert!((hit - 146.0).abs() < 1e-5, "{hit}");
+        assert!((hit - 130.0).abs() < 1e-5, "{hit}");
 
         // The same NIF's collision hull reaches the same front plane, so it
         // is not mistaken for a blocking wall before the rendered target.

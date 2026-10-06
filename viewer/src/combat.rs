@@ -46,6 +46,9 @@ use crate::sounds::SoundRequests;
 use crate::walk::{game_point, CellCollision, Player};
 use crate::{FlyCamera, GameFiles};
 
+/// The critical hit message's icon (`0089a760`).
+const CRITICAL_ICON: &str = "Interface\\Icons\\Message Icons\\glow_message_vaultboy_very_happy.dds";
+
 /// How far a shot can reach when nothing else says (units).
 pub(crate) const SHOT_RANGE: f32 = 10_000.0;
 
@@ -87,6 +90,10 @@ pub struct PlayerAttack {
     busy_until: f32,
     /// The Ready Item key's press (`world::combat::ReadyKey`).
     ready: combat::ReadyKey,
+    /// Looking down the sights (the process's iron sights flag, vfunc
+    /// +0x404 `GetIronSights` (Xbox PDB); `world::iron_sights`): the Aim
+    /// control (right mouse button) held with a gun out.
+    pub iron_sights: bool,
     /// Bodies by base record: half width and height (from `OBND`).
     bodies: HashMap<FormId, (f32, f32)>,
     /// Body part data by person or creature (`world::body_parts`).
@@ -116,6 +123,19 @@ impl PlayerAttack {
         self.out = out;
         self.readied_at = Some((now, out));
         self.busy_until = now;
+    }
+
+    /// The player's animation action now, by the game's numbers
+    /// (`GetAnimAction`, process vfunc +0x3e4: 0 drawing the weapon, 1
+    /// putting it away, 8 reloading; the attacks and the rest aren't kept
+    /// here), for what waits on it (the Sneak control, `walk`).
+    pub fn anim_action(&self, now: f32) -> Option<u8> {
+        if now < self.busy_until {
+            return self
+                .readied_at
+                .map(|(_, drawing)| if drawing { 0 } else { 1 });
+        }
+        (now < self.reloaded_at).then_some(8)
     }
 
     /// The weapon `weapon` (`None`: fists) in hand and out, without the
@@ -447,6 +467,14 @@ pub(crate) fn ray_body(
     (0.0..=height).contains(&z).then_some(t)
 }
 
+/// What the Aim control's handling needs: the view (switching or not),
+/// V.A.T.S., the bindings.
+type AimGates<'w> = (
+    Res<'w, crate::player_camera::PlayerView>,
+    Res<'w, crate::vats::Vats>,
+    Option<Res<'w, crate::controls::Controls>>,
+);
+
 /// Left click: an attack, if one is ready; R: reloading.
 #[allow(clippy::too_many_arguments)]
 pub fn player_attack(
@@ -468,6 +496,7 @@ pub fn player_attack(
     cameras: Query<&Transform, With<FlyCamera>>,
     mut hud: Query<&mut Text, With<HudText>>,
     rigs: Query<(&Walker, &ActorRig)>,
+    (aim_gates, mut messages): (AimGates, ResMut<crate::hud::HudMessages>),
 ) {
     let order = &game.0.order;
     let now = time.elapsed_secs();
@@ -482,6 +511,7 @@ pub fn player_attack(
         // unequipping a weapon does too).
         attack.out = false;
         attack.readied_at = None;
+        attack.iron_sights = false;
     }
     if attack.out {
         state.weapon_out.insert(PLAYER_REF);
@@ -538,7 +568,29 @@ pub fn player_attack(
         || state.dead.contains(&PLAYER_REF)
         || state.controls_off[world::scripting::controls::FIGHTING];
     if busy {
+        attack.iron_sights = false;
         return;
+    }
+    // The Aim control (6, the right mouse button), as `0093e860` reads it
+    // (at `00941f4f`): held, a drawn gun's sights come up (`008bb650(1, 0,
+    // 0)`), unless the view is switching or V.A.T.S. is on; let go, they
+    // go down. A drawn melee weapon or fists would block (`00894cc0(1)`),
+    // which isn't here.
+    let (view, vats, controls) = aim_gates;
+    let aim = controls.map_or(crate::controls::Controls::default().aim, |c| c.aim);
+    let switching = view.camera.want_third != view.camera.actually_third;
+    if aim.pressed(&keys, &mouse) {
+        let control =
+            world::iron_sights::aim_control(weapon.as_ref().map(|w| w.animation), attack.out);
+        if !attack.iron_sights
+            && !switching
+            && !vats.is_on()
+            && control == world::iron_sights::AimControl::IronSights
+        {
+            attack.iron_sights = true;
+        }
+    } else {
+        attack.iron_sights = false;
     }
     // A reload takes the weapon's reload time at the reload rate
     // (`world::combat::reload_rate`: Agility and Rapid Reload).
@@ -717,8 +769,35 @@ pub fn player_attack(
             );
             continue;
         };
+        // A sneak attack, as the hit works it out (`world::scripting`):
+        // sneaking, and the target not detecting the player.
+        let sneak_attack = state.player_sneaking
+            && world::scripting::Facts {
+                order,
+                state,
+                speaker: None,
+            }
+            .detection(target, PLAYER_REF)
+            .is_none_or(|v| v < 1);
+        let alive = !state.dead.contains(&target);
         let hit =
             Runner::new(order, &scripts.0, state).hit_at(PLAYER_REF, target, pellet.as_ref(), part);
+        // The player's critical on someone alive (`0089a760`): "Sneak Attack
+        // Critical on <name>" (hit flag 0x400) or "Critical Strike on
+        // <name>", with the very happy Vault Boy.
+        if hit.as_ref().is_some_and(|h| h.critical) && alive {
+            let (setting, exe) = if sneak_attack {
+                ("sSneakAttackCriticalStrike", "Sneak Attack Critical on")
+            } else {
+                ("sCriticalStrike", "Critical Strike on")
+            };
+            let words = world::scripting::game_setting_text(order, setting)
+                .unwrap_or_else(|| exe.to_string());
+            let name = world::script_functions::full_name(order, state, target).unwrap_or_default();
+            messages
+                .with_icon
+                .push((format!("{words} {name}"), CRITICAL_ICON.to_string()));
+        }
         let Some(hit) = hit else {
             // An object (a scripted bottle): its impact where the shot
             // meets the cell's collision there.

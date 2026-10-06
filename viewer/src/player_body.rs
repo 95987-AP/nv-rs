@@ -13,8 +13,14 @@
 //! (`PlayerCamera::actually_third`, `00951a10`); the first-person view
 //! (`viewmodel`) shows otherwise.
 //!
-//! Not yet (left out, not substituted): sneaking's and jumping's groups
-//! (`sneakmt*.kf`, `mtjump*.kf`; how the game picks them isn't traced),
+//! Sneaking, the sneaking set of the movement groups (`sneakmt*.kf` beside
+//! the skeleton: the game sorts each file by its name's move-type prefix,
+//! "Sneak" first in the table `005f38d0` reads, so sneaking actors play
+//! these; falling back to the plain group when the set lacks one is this
+//! viewer's assumption): the sneak idle as the base loop, the sneak walk
+//! and run, their back, left and right.
+//!
+//! Not yet (left out, not substituted): jumping's groups (`mtjump*.kf`),
 //! the weapon kind's own movement groups while it's out (back, left and
 //! right then play nothing), turning in place, the face's blinking and lip
 //! movement, the body fading when the camera is inside it, the dead
@@ -46,6 +52,18 @@ const MOVES: [(u8, &str); 7] = [
     (group::FAST_RIGHT, "mtfastright.kf"),
 ];
 
+/// The sneaking set (move type 1, "Sneak"): files beside the skeleton.
+const SNEAK_MOVES: [(u8, &str); 8] = [
+    (group::FORWARD, "sneakmtforward.kf"),
+    (group::BACKWARD, "sneakmtbackward.kf"),
+    (group::LEFT, "sneakmtleft.kf"),
+    (group::RIGHT, "sneakmtright.kf"),
+    (group::FAST_FORWARD, "sneakmtfastforward.kf"),
+    (group::FAST_BACKWARD, "sneakmtfastbackward.kf"),
+    (group::FAST_LEFT, "sneakmtfastleft.kf"),
+    (group::FAST_RIGHT, "sneakmtfastright.kf"),
+];
+
 /// A file beside the walk animation.
 fn beside(walk: &str, file: &str) -> String {
     let folder = walk.rfind(['\\', '/']).map_or("", |i| &walk[..=i]);
@@ -72,6 +90,9 @@ pub struct PlayerBody {
     scale: f32,
     /// The movement groups besides the walk and run, loaded.
     moves: Vec<(u8, Arc<nif::Sequence>)>,
+    /// The sneaking set, and its idle.
+    sneak_moves: Vec<(u8, Arc<nif::Sequence>)>,
+    sneak_idle: Option<Arc<nif::Sequence>>,
 }
 
 /// The holder's placement: at the feet, turned to the heading (clockwise
@@ -172,6 +193,16 @@ pub fn update_player_body(
                     .map(|s| (g, Arc::new(s)))
             })
             .collect();
+        body.sneak_moves = SNEAK_MOVES
+            .iter()
+            .filter_map(|&(g, file)| {
+                crate::viewmodel::sequence(&game.0, &beside(&look.skeleton, file))
+                    .map(|s| (g, Arc::new(s)))
+            })
+            .collect();
+        body.sneak_idle =
+            crate::viewmodel::sequence(&game.0, &beside(&look.skeleton, "sneakmtidle.kf"))
+                .map(Arc::new);
         commands.entity(root).insert(rig);
         body.root = Some(root);
         return;
@@ -215,8 +246,18 @@ pub fn update_player_body(
         turn_right: false,
         ..player.moving
     });
+    let sneaking = player.sneaking && sitter.is_none();
     rig.moves = if attack.out {
         Vec::new()
+    } else if sneaking {
+        // The sneaking set, the plain groups where it has none.
+        let mut moves = body.sneak_moves.clone();
+        for (g, s) in &body.moves {
+            if !moves.iter().any(|(id, _)| id == g) {
+                moves.push((*g, s.clone()));
+            }
+        }
+        moves
     } else {
         body.moves.clone()
     };
@@ -236,7 +277,8 @@ pub fn update_player_body(
                 .and_then(|p| Some((seats.sequence(&game.0, &p.model)?, p.elapsed)));
         }
         None => {
-            rig.dynamic_idle = None;
+            // Sneaking: the sneak idle under everything.
+            rig.dynamic_idle = sneaking.then(|| body.sneak_idle.clone()).flatten();
             rig.overlay = None;
         }
     }

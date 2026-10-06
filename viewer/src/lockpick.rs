@@ -158,7 +158,7 @@ impl Plugin for LockpickPlugin {
 }
 
 /// A DirectInput key number (the INI's `[Controls]` values) as Bevy's key.
-fn scan_code_key(code: u32) -> Option<KeyCode> {
+pub(crate) fn scan_code_key(code: u32) -> Option<KeyCode> {
     use KeyCode::*;
     Some(match code {
         0x01 => Escape,
