@@ -66,13 +66,15 @@ pub struct DataMenu {
     /// scrolling stay).
     filled_map: Option<Option<super::WorldMapLine>>,
     filled_lists: Option<(Vec<QuestLine>, Vec<super::NoteLine>, Vec<String>)>,
-    /// The last row the pointer was over (`DAT_011da400`).
+    /// The last row the pointer was over (`011da400`).
     hovered: Option<usize>,
     /// The game's cursor is hidden (its alpha 0) while it's over the map:
     /// the highlight box follows it instead (`0079a130`).
     pub cursor_hidden: bool,
-    /// The map's place when the button went down (`param_1[0x48]`,
-    /// `[0x49]`): a release elsewhere is a drag, not a click on a marker.
+    /// The map's place when the button went down (the menu's +0x120 /
+    /// +0x124, compared by `00796fd0` case 0x1a; where the game stores
+    /// them isn't traced, a guess): a release after the map moved is a
+    /// drag, not a click on a marker.
     pressed_at: Option<(f32, f32)>,
 }
 
@@ -90,10 +92,10 @@ pub const FIRST_TAB_ID: i32 = 0x20;
 pub const WORLD_MAP_ID: i32 = 4;
 pub const LOCAL_MAP_ID: i32 = 2;
 /// A map marker's `id` (`MapMarkerTemplate`, `0079cdb0`): 26, compared as
-/// `DAT_01074f60` (26.0) by `00799dc0`.
+/// `01074f60` (26.0) by `00799dc0`.
 pub const MARKER_ID: i32 = 26;
 /// The part of the map clip window the cursor is "on the map" in
-/// (`0079a130`: 0 .. `DAT_01074f68` 850 across, 0 .. `DAT_010301a8` 500
+/// (`0079a130`: 0 .. `01074f68` 850 across, 0 .. `010301a8` 500
 /// down).
 pub const MAP_AREA: [f32; 2] = [850.0, 500.0];
 

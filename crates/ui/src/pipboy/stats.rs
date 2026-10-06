@@ -58,7 +58,7 @@ pub struct StatsMenu {
     /// changes, so choices and scrolling stay).
     filled: Option<ListSources>,
     /// Per page, the last row the pointer was over (`007dfd20`'s
-    /// `DAT_011dad60` .. `DAT_011dad70`).
+    /// `011dad60` .. `011dad70`).
     hovered: [Option<usize>; 5],
 }
 

@@ -42,7 +42,7 @@ pub struct ItemsMenu {
     /// The forms of the rows now, in order.
     pub shown: Vec<u32>,
     filled: Option<(usize, Vec<ItemLine>)>,
-    /// The last row the pointer was over (`DAT_011d9f34`, its
+    /// The last row the pointer was over (`011d9f34`, its
     /// `listindex`): the knob clicks when it changes.
     hovered: Option<usize>,
 }

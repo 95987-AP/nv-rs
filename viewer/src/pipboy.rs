@@ -29,13 +29,27 @@
 //! The lamps over STATS, ITEMS and DATA: only the shown menu's lit
 //! (`007fa010`); the light's cone shown with the light on (`007fa310`).
 //!
+//! F1, F2 and F3 put it up on STATS, ITEMS or DATA, or turn to that menu;
+//! the shown menu's own key puts it away (`0070c4a0`). Tab let go again
+//! puts it away (control 14 come up).
+//!
+//! The mouse (`007f8720`, `0070c4a0`, `007126c0`): the pointer's ray from
+//! the first-person camera that draws the arm meets `pipboyscreen:0`
+//! (skinned as drawn); its texture coordinates × 1280 × 960 are the place
+//! on the menus' picture, where the interface picks tiles, moves the
+//! mouse-over, clicks, drags and turns the wheel
+//! (`ui::pipboy::Pipboy::pointer`). Off the screen nothing is picked.
+//! Pressing and letting go over the same one of the model's
+//! `PipBoyButton01` .. `03` shows STATS, ITEMS or DATA with `UIMenuMode`.
+//! The game's cursor is drawn over it (`game_menus`), hidden over DATA's
+//! map where the highlight box follows the pointer.
+//!
 //! Guesses: the picture's size in pixels (one a menu unit); the arm held at
 //! the raising animation's `Hit` key while up (where it's highest) and
 //! lowered by playing on from there.
-//! Not done: the mouse (the game maps the cursor through the screen's
-//! texture coordinates, `007f8720`: pressing buttons, the world map's
-//! markers and dragging the map, so travelling from the map isn't
-//! possible yet), the keys held repeating, the light lighting the place
+//! Not done: the right button's custom map marker, zooming the maps, the
+//! fast-travel question box (the travel is asked for at once), the keys
+//! held repeating, the light lighting the place
 //! (only its cone on the arm shows), the world paused while it's up, the
 //! knobs, needle and buttons moving, the `xbox` button labels swapped for
 //! the PC's, Page Up / Page Down (the pad's bumpers: zooming the maps,
@@ -195,6 +209,122 @@ struct Arm {
     light_effect: Vec<Entity>,
     /// The lamps over the STATS, ITEMS and DATA buttons.
     glows: Vec<Entity>,
+    /// What the mouse picks (`007f8720`): `pipboyscreen:0`, and the
+    /// shapes of `PipBoyButton01` .. `03` (STATS, ITEMS, DATA).
+    screen_pick: Option<PickMesh>,
+    button_picks: [Vec<PickMesh>; 3],
+}
+
+/// A piece's triangles as the GPU skins them, kept for picking with the
+/// mouse: its bind-pose vertices and texture coordinates, and per joint
+/// the joint's entity and the piece-to-joint (inverse bind) transform.
+struct PickMesh {
+    positions: Vec<Vec3>,
+    uvs: Vec<Vec2>,
+    indices: Vec<u16>,
+    joints: Vec<(Entity, Mat4)>,
+    joint_indices: Vec<[u16; 4]>,
+    weights: Vec<[f32; 4]>,
+}
+
+impl PickMesh {
+    fn new(data: &cellview::MeshData, joints: &[Entity]) -> Option<PickMesh> {
+        let rig = data.rig.as_ref()?;
+        let skin = crate::actors::skin_joints(data, joints);
+        Some(PickMesh {
+            positions: data
+                .positions
+                .iter()
+                .map(|&p| Vec3::from_array(p))
+                .collect(),
+            uvs: data.uvs.iter().map(|&u| Vec2::from_array(u)).collect(),
+            indices: data.indices.clone(),
+            joints: skin
+                .into_iter()
+                .zip(&rig.joints)
+                .map(|(e, (_, bind))| (e, Mat4::from_cols_array(bind)))
+                .collect(),
+            joint_indices: rig.joint_indices.clone(),
+            weights: rig.joint_weights.clone(),
+        })
+    }
+
+    /// The nearest place the ray meets the piece as posed now (skinned as
+    /// the GPU does: the weighted joints' world matrices × their inverse
+    /// binds), its distance along the ray and its texture coordinates.
+    fn hit(&self, ray: Ray3d, globals: &Query<&GlobalTransform>) -> Option<(f32, Vec2)> {
+        let mats: Vec<Mat4> = self
+            .joints
+            .iter()
+            .map(|(e, bind)| {
+                globals
+                    .get(*e)
+                    .map_or(Mat4::ZERO, |g| g.compute_matrix() * *bind)
+            })
+            .collect();
+        let world: Vec<Vec3> = self
+            .positions
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| {
+                let (ji, w) = (self.joint_indices[i], self.weights[i]);
+                (0..4)
+                    .filter(|&k| w[k] > 0.0)
+                    .map(|k| w[k] * mats[ji[k] as usize].transform_point3(p))
+                    .sum()
+            })
+            .collect();
+        let mut best: Option<(f32, Vec2)> = None;
+        for tri in self.indices.as_chunks::<3>().0 {
+            let [a, b, c] = tri.map(usize::from);
+            let Some((t, u, v)) =
+                ray_triangle(ray.origin, *ray.direction, world[a], world[b], world[c])
+            else {
+                continue;
+            };
+            if best.is_none_or(|(bt, _)| t < bt) {
+                let uv = self.uvs[a] * (1.0 - u - v) + self.uvs[b] * u + self.uvs[c] * v;
+                best = Some((t, uv));
+            }
+        }
+        best
+    }
+}
+
+/// Where a ray meets a triangle, either side (Möller–Trumbore): the
+/// distance along the ray and the barycentric weights of `b` and `c`.
+fn ray_triangle(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<(f32, f32, f32)> {
+    let (e1, e2) = (b - a, c - a);
+    let p = dir.cross(e2);
+    let det = e1.dot(p);
+    if det.abs() < 1e-12 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let s = origin - a;
+    let u = s.dot(p) * inv;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = s.cross(e1);
+    let v = dir.dot(q) * inv;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = e2.dot(q) * inv;
+    (t > 0.0).then_some((t, u, v))
+}
+
+/// The point on the menus' picture a place on the screen's texture is
+/// (`007f8720`: x = u × the screen's height × 4/3 (`01078128`
+/// 1.333333), y = v × the height, in pixels of the 4:3 rectangle the
+/// menus' camera covers with 1280 × 960 units, `007fba00`): u × 1280,
+/// v × 960 menu units.
+fn menu_point(uv: Vec2) -> [f32; 2] {
+    [
+        uv.x * ui::pipboy::PICTURE_SIZE[0],
+        uv.y * ui::pipboy::PICTURE_SIZE[1],
+    ]
 }
 
 /// The Pip-Boy's state.
@@ -222,6 +352,21 @@ pub struct Pipboy {
     arm: Option<Arm>,
     /// A menu and page to show once filled.
     pending: Option<(Section, Option<usize>)>,
+    /// The model's button the mouse button went down on (`011a0ba0`,
+    /// 0 .. 2), kept until it comes up over the same one.
+    button_down: Option<usize>,
+}
+
+impl Pipboy {
+    /// Whether the game's cursor is hidden over the Pip-Boy (DATA's map
+    /// under it: the highlight box stands in for it, `0079a130`).
+    pub fn cursor_hidden(&self) -> bool {
+        self.open
+            && self
+                .built
+                .as_ref()
+                .is_some_and(|b| b.pipboy.cursor_hidden())
+    }
 }
 
 /// A picture to render into, read as stored values.
@@ -466,12 +611,46 @@ pub struct Around<'w> {
     markers: Res<'w, crate::map::MapMarkers>,
 }
 
-/// Tab, the light, and the keys while it's up.
+/// The mouse as the Pip-Boy reads it: the window's pointer, the first-
+/// person camera that draws the arm (its ray through the pointer), the
+/// joints' places, the left button and the wheel.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Mouse<'w, 's> {
+    windows: Query<'w, 's, &'static Window, With<bevy::window::PrimaryWindow>>,
+    camera: Query<
+        'w,
+        's,
+        (&'static Camera, &'static GlobalTransform),
+        With<crate::viewmodel::FirstPersonCamera>,
+    >,
+    globals: Query<'w, 's, &'static GlobalTransform>,
+    buttons: ResMut<'w, ButtonInput<MouseButton>>,
+    scroll: ResMut<'w, bevy::input::mouse::AccumulatedMouseScroll>,
+}
+
+/// The function keys that open or turn to a menu (`0070c4a0` reads the
+/// keys themselves, `00a24180` DIK 0x3B .. 0x3D): F1 STATS, F2 ITEMS, F3
+/// DATA.
+fn section_key(keys: &ButtonInput<KeyCode>) -> Option<Section> {
+    if keys.just_pressed(KeyCode::F1) {
+        Some(Section::Stats)
+    } else if keys.just_pressed(KeyCode::F2) {
+        Some(Section::Items)
+    } else if keys.just_pressed(KeyCode::F3) {
+        Some(Section::Data)
+    } else {
+        None
+    }
+}
+
+/// Tab, the light, the function keys, and the mouse and keys while it's
+/// up.
 fn pipboy_keys(
     mut commands: Commands,
     mut pipboy: ResMut<Pipboy>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
     around: Around,
+    mut mouse: Mouse,
 ) {
     let Around {
         time,
@@ -492,9 +671,16 @@ fn pipboy_keys(
     let allowed = !state.0.controls_off[world::scripting::controls::PIPBOY];
     let free = !menus.others_open() && conversation.0.is_none();
 
+    let section_key = section_key(&keys);
     if pipboy.open {
-        // The Pip-Boy control again puts it away.
-        if keys.just_pressed(KeyCode::Tab) {
+        // The Pip-Boy control let go again puts it away (`0070c4a0`:
+        // control 14 come up, `00a24660(0xe, 2)`, → `0070f690`); so does
+        // the function key of the menu shown, while another's turns to
+        // its menu (`00704c10` / `007048f0` / `00704170`).
+        let shown = pipboy.built.as_ref().map(|b| b.pipboy.section);
+        let close_now =
+            keys.just_released(KeyCode::Tab) || (section_key.is_some() && section_key == shown);
+        if close_now {
             close(
                 &mut commands,
                 pipboy,
@@ -507,7 +693,22 @@ fn pipboy_keys(
             keys.reset(KeyCode::Tab);
             return;
         }
+        if let (Some(section), Some(b)) = (section_key, pipboy.built.as_mut()) {
+            b.pipboy.show(&mut b.ui, section);
+            b.ui.refresh();
+            if let Some(fx) = pipboy.effects.as_mut() {
+                fx.tab_changed(now * 1000.0);
+            }
+        }
     } else {
+        // F1 .. F3 put it up on their menu (`0070f4e0(0, class)`).
+        if let Some(section) = section_key {
+            if free && allowed && open(pipboy, &mut menus, &mut player, now, false) {
+                pipboy.pending = Some((section, None));
+                sound(order, &mut requests, "UIPipBoyAccessUp");
+            }
+            return;
+        }
         // Tab (control 14, `00a24b70`'s default): held past
         // `fPlayerPipBoyLightTimer`, the light; let go sooner, the Pip-Boy
         // (`009673d0`).
@@ -554,15 +755,89 @@ fn pipboy_keys(
     let held: Vec<KeyCode> = keys
         .get_pressed()
         .copied()
-        .filter(|&k| k != KeyCode::Escape)
+        // Tab stays, so that letting it go puts the Pip-Boy away.
+        .filter(|&k| k != KeyCode::Escape && k != KeyCode::Tab)
         .collect();
     for k in held {
         keys.reset(k);
     }
+    // The mouse is the Pip-Boy's too (no looking, attacking or the
+    // flying camera's speed while it's up).
+    let button = ui::pipboy::Button {
+        down: mouse.buttons.pressed(MouseButton::Left),
+        pressed: mouse.buttons.just_pressed(MouseButton::Left),
+        released: mouse.buttons.just_released(MouseButton::Left),
+    };
+    let notches = match mouse.scroll.unit {
+        bevy::input::mouse::MouseScrollUnit::Line => mouse.scroll.delta.y,
+        bevy::input::mouse::MouseScrollUnit::Pixel => mouse.scroll.delta.y / 40.0,
+    }
+    .round() as i32;
+    mouse.buttons.reset_all();
+    mouse.scroll.delta = Vec2::ZERO;
+    // Where the pointer is on the screen and on the model's buttons
+    // (`007f8720`), while the arm is up and posed.
+    let ray = mouse
+        .windows
+        .single()
+        .ok()
+        .and_then(|w| w.cursor_position())
+        .zip(mouse.camera.single().ok())
+        .and_then(|(at, (camera, global))| camera.viewport_to_world(global, at).ok());
+    let mut at = None;
+    let mut model_button = None;
+    if let (Some(ray), Some(arm)) = (ray, pipboy.arm.as_ref()) {
+        at = arm
+            .screen_pick
+            .as_ref()
+            .and_then(|m| m.hit(ray, &mouse.globals))
+            .map(|(_, uv)| menu_point(uv));
+        if button.pressed || button.released {
+            let over = arm
+                .button_picks
+                .iter()
+                .position(|picks| picks.iter().any(|m| m.hit(ray, &mouse.globals).is_some()));
+            if button.pressed {
+                // Kept from an earlier press when this one isn't on a
+                // button, as the game keeps `011a0ba0`.
+                if over.is_some() {
+                    pipboy.button_down = over;
+                }
+            } else if over.is_some() && over == pipboy.button_down {
+                model_button = over;
+                pipboy.button_down = None;
+            }
+        }
+    }
     let (Some(b), Some(input)) = (pipboy.built.as_mut(), pipboy.input.clone()) else {
         return;
     };
-    let mut actions = Vec::new();
+    let before_pointer = (
+        b.pipboy.section,
+        b.pipboy.stats.page,
+        b.pipboy.items.tab,
+        b.pipboy.data.tab,
+    );
+    let mut actions = b
+        .pipboy
+        .pointer(&mut b.ui, at, button, f64::from(now), &input);
+    if notches != 0 {
+        actions.extend(b.pipboy.wheel(&mut b.ui, notches, &input));
+    }
+    if let Some(i) = model_button {
+        actions.extend(b.pipboy.press_section(&mut b.ui, i + 1));
+    }
+    let after_pointer = (
+        b.pipboy.section,
+        b.pipboy.stats.page,
+        b.pipboy.items.tab,
+        b.pipboy.data.tab,
+    );
+    if before_pointer != after_pointer {
+        if let Some(fx) = pipboy.effects.as_mut() {
+            fx.tab_changed(now * 1000.0);
+        }
+    }
     for key in pressed {
         let before = (
             b.pipboy.section,
@@ -740,6 +1015,13 @@ fn update_pipboy(
     mut transforms: Query<&mut Transform, (Without<FlyCamera>, Without<PipboyCamera>)>,
     mut visibility: Query<&mut Visibility>,
     piece_materials: Query<&MeshMaterial3d<GameLitMaterial>>,
+    first_person: Query<
+        &Projection,
+        (
+            With<crate::viewmodel::FirstPersonCamera>,
+            Without<FlyCamera>,
+        ),
+    >,
 ) {
     let Around {
         time,
@@ -1016,9 +1298,13 @@ fn update_pipboy(
     }
 
     // The arm.
-    let Some((camera, camera_transform, projection)) = view else {
+    let Some((camera, camera_transform, world_projection)) = view else {
         return;
     };
+    // The arm's pieces are drawn by the first-person camera
+    // (`viewmodel::FIRST_PERSON_LAYER`), so its field of view is the one
+    // the arm's scale makes up for.
+    let projection = first_person.single().unwrap_or(world_projection);
     let Some(lighting) = spawner.place_lighting.get() else {
         return;
     };
@@ -1201,6 +1487,28 @@ fn build_arm(
             (texture, m.material.unlit)
         })
         .collect();
+    // What the mouse picks, by the shapes' names (`007f8ba0` finds
+    // `pipboyscreen:0`, `007f9070` `PipBoyButton01` .. `03`, whose shapes
+    // are `PipBoyButton0N:0` and `:1`).
+    let mut screen_pick = None;
+    let mut button_picks: [Vec<PickMesh>; 3] = Default::default();
+    for data in scene
+        .draws
+        .iter()
+        .map(|d| &scene.meshes[d.mesh])
+        .filter(|m| m.rig.is_some())
+    {
+        let name = data.shape_name.to_ascii_lowercase();
+        if name == "pipboyscreen" || name.starts_with("pipboyscreen:") {
+            screen_pick = PickMesh::new(data, &joints);
+        }
+        for (i, picks) in button_picks.iter_mut().enumerate() {
+            let node = format!("pipboybutton0{}", i + 1);
+            if name == node || name.starts_with(&format!("{node}:")) {
+                picks.extend(PickMesh::new(data, &joints));
+            }
+        }
+    }
     let mut screen = None;
     let mut light_effect = Vec::new();
     let mut glows = Vec::new();
@@ -1275,6 +1583,8 @@ fn build_arm(
         screen,
         light_effect,
         glows,
+        screen_pick,
+        button_picks,
     })
 }
 
@@ -1334,12 +1644,15 @@ fn pose_arm(
     projection: &Projection,
     transforms: &mut Query<&mut Transform, (Without<FlyCamera>, Without<PipboyCamera>)>,
 ) {
-    let world_fov = match projection {
+    // `projection` is the camera that draws the arm (the first-person
+    // one): scaled across by k, the arm looks as it would drawn with the
+    // Pip-Boy's own field of view.
+    let drawn_fov = match projection {
         Projection::Perspective(p) => p.fov,
         _ => cellview::vertical_fov(cellview::GAME_FOV_DEGREES),
     };
     let own_fov = cellview::vertical_fov(PIPBOY_FOV_DEGREES);
-    let k = (world_fov * 0.5).tan() / (own_fov * 0.5).tan();
+    let k = (drawn_fov * 0.5).tan() / (own_fov * 0.5).tan();
     if let Ok(mut t) = transforms.get_mut(arm.holder) {
         *t = Transform::from_scale(Vec3::new(k, k, 1.0));
     }
@@ -1405,6 +1718,25 @@ mod tests {
             [255, 182, 66]
         );
         assert_eq!(c.w, 1.0);
+    }
+
+    /// The pointer's ray meets a screen triangle and its texture
+    /// coordinates map onto the menus' picture (`007f8720`).
+    #[test]
+    fn the_pointer_lands_on_the_screens_picture() {
+        let (a, b, c) = (
+            Vec3::new(0.0, 0.0, -2.0),
+            Vec3::new(2.0, 0.0, -2.0),
+            Vec3::new(0.0, 2.0, -2.0),
+        );
+        let (t, u, v) = ray_triangle(Vec3::new(0.5, 0.5, 0.0), Vec3::NEG_Z, a, b, c).unwrap();
+        assert_eq!((t, u, v), (2.0, 0.25, 0.25));
+        // Either side; nothing behind the ray or beside the triangle.
+        assert!(ray_triangle(Vec3::new(0.5, 0.5, -4.0), Vec3::Z, a, b, c).is_some());
+        assert!(ray_triangle(Vec3::new(0.5, 0.5, -4.0), Vec3::NEG_Z, a, b, c).is_none());
+        assert!(ray_triangle(Vec3::new(1.5, 1.5, 0.0), Vec3::NEG_Z, a, b, c).is_none());
+        // The screen shows 0 .. 0.753 × 0 .. 0.7625 of the picture.
+        assert_eq!(menu_point(Vec2::new(0.5, 0.25)), [640.0, 240.0]);
     }
 
     #[test]
