@@ -312,8 +312,8 @@ pub const FIRST_PERSON_SKELETON: &str = "Characters\\_1stPerson\\Skeleton.NIF";
 /// (`WEAP` `DNAM`): `<kind>aim.kf` beside the first-person skeleton, the
 /// kinds the game ships (h2h fists, 1hm and 2hm melee, 1hp pistols, 2hr
 /// rifles, 2ha automatic rifles, 2hh handles, 2hl launchers, 1gt thrown,
-/// 1lm land mines, 1md mine drops). That energy pistols share 1hp and
-/// energy rifles 2hr, as their names' families suggest, is a guess.
+/// 1md mines, 1lm lunchbox mines): the game's table of weapon kinds by
+/// animation type (`0118a838`, `world::animation::groups::weapon_kind`).
 pub fn first_person_pose(animation: Option<u32>) -> String {
     format!(
         "Characters\\_1stPerson\\{}aim.kf",
@@ -321,7 +321,10 @@ pub fn first_person_pose(animation: Option<u32>) -> String {
     )
 }
 
-/// The first-person animations' prefix for a weapon's animation type.
+/// The animations' prefix for a weapon's animation type: its weapon kind's
+/// name (`0118a838`, the names at `011977a4`): energy pistols as pistols,
+/// energy rifles as rifles, thrown weapons as grenades, `OneHandMine` 1md
+/// and `OneHandLunchboxMine` 1lm.
 pub fn first_person_kind(animation: Option<u32>) -> &'static str {
     match animation {
         Some(1) => "1hm",
@@ -332,8 +335,8 @@ pub fn first_person_kind(animation: Option<u32>) -> &'static str {
         Some(8) => "2hh",
         Some(9) => "2hl",
         Some(10 | 13) => "1gt",
-        Some(11) => "1lm",
-        Some(12) => "1md",
+        Some(11) => "1md",
+        Some(12) => "1lm",
         _ => "h2h",
     }
 }

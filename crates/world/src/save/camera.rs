@@ -418,6 +418,8 @@ fn read_group_data(r: &mut Reader<'_>) -> Result<animation::GroupData, String> {
         loop_start: r.f32()?,
         loop_end: r.f32()?,
         travel: [r.f32()?, r.f32()?, r.f32()?],
+        // Not saved: the animation snapshot reads it from the file.
+        attach: 0.0,
     })
 }
 
@@ -492,6 +494,7 @@ mod tests {
                                 loop_start: 0.125,
                                 loop_end: 0.875,
                                 travel: [0.0, 1.0, -2.0],
+                                attach: 0.0,
                             },
                         }),
                         frozen: Vec::new(),
@@ -506,6 +509,7 @@ mod tests {
                             loop_start: 0.125,
                             loop_end: 0.875,
                             travel: [0.0, 1.0, -2.0],
+                            attach: 0.0,
                         },
                         state: animation::State::EaseIn,
                         ease: 0.05,
@@ -529,6 +533,7 @@ mod tests {
                             loop_start: 0.0,
                             loop_end: 1.0,
                             travel: [0.0; 3],
+                            attach: 0.0,
                         },
                         state: animation::State::TransSource,
                         ease: 0.1,

@@ -375,6 +375,23 @@ original. `WG`/`VAL` re-checked: invisible by data and code. Evidence
 and gaps: [PLAYER_ACTIONS.md](PLAYER_ACTIONS.md). **Next action:**
 compare the scope, block/power attack and death timing in the original.
 
+NPC animation batch 2 (`claude/m2-npc-anims-2`, 2026-10-06):
+`Actor::PickAnimations` (`00895110`) is now translated whole for
+standing, walking, running, sneaking, turning and the weapon: every
+`.kf` of the actor's folders indexed by group id (weapon kind, movement
+kind) with the game's lookup and fallbacks (`00495740`); drawing and
+putting away (`Equip`/`Unequip`, the weapon in hand at `Attach`); the aim
+over a drawn weapon; NPC sneak and weapon-out rules (`00888b50`,
+`008eeec0`); the strafe/back choice facing a target (`009e2aa0`); idles
+in their record's section (upper-body greets, movement-section hit
+reactions); the say's speaker/listener requests outside the menu
+(`008a20d0`, GREET, conversations); hit reactions (`0089a760`); the
+player's third-person body on the same path with `cSkipNextBlend`.
+Verified live in the gunfight and with injected keys in third person;
+not compared with the original. Evidence and gaps:
+[ANIMATION.md](ANIMATION.md). **Next action:** record a ganger drawing
+and a settler greeting in the original and compare.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

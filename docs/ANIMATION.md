@@ -101,26 +101,121 @@ tests, clippy and fmt clean.
   player"`: seated Doc gets `SitChairTalkPlayerC` from `ChairTalk`; after
   the Goodbye the idle is freed and the relax idles resume.
 
+
+## Batch 2: the whole picking, weapons, sections, lines outside the menu
+
+Branch `claude/m2-npc-anims-2`, 2026-10-06. Private exports in
+`%USERPROFILE%\nv-re\work\npcanims2-2026-10-06`.
+
+### What plays, picked as the game picks it
+
+| Address | What | Used for |
+| --- | --- | --- |
+| `005f2370`, `005f2400`, `005f23c0` | group id: group, weapon kind (bits 8–11), movement kind (12–14), power armour (15) | `animation::groups::id` |
+| `005f38d0`, `01197794`, `011977a4` | a file's kinds from its name: `PA`, `Sneak`/`Swim`/`Fly`, `H2H` … `1LM` | `groups::file_kinds` |
+| `005f3a20` | the group is the sequence's name | `AnimSet::add` |
+| `00447330`, `008b73f0`, `008b78c0` | a 3D loads every `.kf` of its skeleton folder and `Locomotion\`, people also `Locomotion\Male` or `\Female` (`\Child`, `\Hurt` not done) | viewer `anim_library` |
+| `0048f450` (`AnimSequenceMultiple`, Xbox PDB) | several files for one id: one drawn at random | `AnimSet::file` |
+| `00495740` | the lookup and its fallbacks (iron sights → plain; 2HM → 1HM; other kinds → 1HP; → no kind; run → walk; movement kind → none; → the kinds' idle) | `AnimSet::lookup` |
+| `0118a838` | weapon animation type → weapon kind (mines: type 11 `1MD`, 12 `1LM`; `world::actor::first_person_kind` had them swapped, fixed) | `groups::weapon_kind` |
+| `00895110` (`Actor::PickAnimations`, Xbox PDB) | the movement/idle/turn group with the kinds (weapon kind while drawn, or drawing/putting away; sneak), speed < 1 → idle, the rate = speed ÷ whole units a second of the kinds' `Forward`/`FastForward` (`00494300`: single file only), the idle re-picked on a movement-kind change, the walk stopped when a non-movement group is chosen unless still blending in | `animation::pick::Picker::pick` |
+| `00895110` cases 0/1, `00491180` kinds 3/4 | `Equip`/`Unequip` start when the process wants the weapon out and it isn't drawn (or the reverse); the weapon is in hand / put away once the `Attach`/`Detach` key is passed; at `end` the section stops | `Picker::pick`, `GroupData::attach` |
+| `00888070` → `008b28c0` | weapon drawn, nothing in the weapon section: the aim (with kinds) | `Picker::pick` |
+| `004994f0`, `00496080` | stopping the weapon section with the weapon drawn stops only up/down and cross-fades into the aim; 0x14/0x15 fan out | `Player::stop_section`, `Player::weapon_drawn`, `Picker::ended` |
+| `00888070` (combat turn scale), Xbox PDB `Actor` | actor +0x104 is `bInCombat` | `Frame::in_combat` |
+| `008a6970`, `008a6840` | `IsWeaponOut` = process `GetWantWeaponDrawn` (vtable +0x44c, Xbox PDB names, PC slots = PDB), `SetWeaponOut` | `ActorRig::want_drawn` |
+| `008eeec0`, `009da7c0`, `0067a460` | weapon out: in combat the combat's equip action draws; out of combat a running package with flag 0x800000 ("weapon drawn") or `GetAlert` draws, otherwise a drawn, wanted weapon is put away (not the player's) | `pick::want_weapon_out`, `package_draws` |
+| `00888b50`, `0067a4f0`, actor +0x125 (`bForceSneak`, Xbox PDB) | an NPC sneaks when forced or its package has flag 0x20000 | `pick::npc_sneaks` |
+| `009e2aa0` (`DetailedActorPathHandler`, Xbox PDB) | walking a path while facing a point: within 1° the mover's (forward); > 135° back (if the 3D has `Backward`); ≤ 45° forward; else left/right by the sign; after 0.25 s | `pick::facing_direction` (viewer: fighters stepping while they move) |
+| `00888070` → `004955c0(0x14, 0xe0, −1)` | a 3D with a plain `Death` group takes its first frame before the ragdoll (robots: `mtdeath.kf`) | `ActorRig::go_limp` |
+
+### Idles in their sections
+
+`00497f20` → `00498290` play an `IDLE`'s `SpecialIdle` sequence in its
+record's section (`00494740` with the section): 0 the base loop, 1 or
+0x14 the movement slot, 0x15 the weapon slot (upper body: `HeadUpGreet`,
+`2hrLoiter`, the NVS fidgets), 7 the special idle. Base/movement-section
+idles set anim action 0xd (`00496fe0`), which keeps the walk from taking
+the section (`00895110`). Implemented: `Player::play_in`,
+`play_idle_in`, `request_idle_in`, `free_idle_in`, `cut_section`;
+`Picker::idle_played`; the viewer plays tree idles, requested and
+scripted idles in their sections (`ActorRig::idle_section`,
+`overlay_section`).
+
+### Lines said outside the menu, listeners, hits
+
+| Address | What | Used for |
+| --- | --- | --- |
+| `008a20d0` (`SpeakSoundFunction`, Xbox PDB slot +0x280 = PC +0x284) | every say: the speaker asks for the response's `SNAM` idle, or the tree when the caller forces it (forced unless in combat); a listener who is an actor with a process asks for the `LNAM` idle, or the tree unless its running package has idles (+0x34), always forced; the player listener takes none (`008dab40` clears it) | `talk_idles::say_requests` |
+| `008dbe30` (`ProcessGreet`) | greetings, chatter, Say To: force unless the current package has idles or the run-once package is type 0x1a | `greet_forces_tree` |
+| `009ee0a0`, `009edd80`, `008b2170`, `008b19c0`, `00935480` | conversations: force as made (script `StartConversation` yes; package conversations unless the package has idles); with no line said, both ask the tree forced | `conversation_forces_tree`, `BETWEEN_LINES` |
+| `008dade0` | a running package with flag 0x1000000 refuses requests | `package_refuses_idles` |
+| `005a5330` | `IsGreetingPlayer`: process greeting flag (+0x30c) and the player as target | `IdleQuestion::greeting_player` (flag taken as set while a GREET line to the player is said: its lifetime isn't traced) |
+| `0089a760`, `005a3c30`, `011df760` | a hit that doesn't kill, with `bPlayHitLocationIdles`, a known part and `IgnoreCrippledLimbs` (AV 72) ≤ 0: the tree is asked at once with `GetHitLocation` set (the `HitReactionIdles` branch: its idles need the part's condition at 0, i.e. crippled) | viewer `sitting::idle_requests`, `GameState::hits_taken`, `IdleQuestion::hit_location` |
+
+Viewer: `chatter::Lines::started` (each response begun),
+`Lines::say_in_conversation`; `sitting::idle_requests` (a system after
+`say_lines`) and `sitting::request_idle` (the menu, lines and hits share
+it).
+
+### The player's third-person body
+
+Same picking (`player_body` sets the flags: keys' directions, sneak, the
+Ready state as `want_drawn`, weapon kind, attack group); the furniture
+procedure's `skip_next_blend` reaches it through `PlayerSeat`; the body
+rebuilt for lighting/clothes/weapon keeps its animation state (before,
+every lighting change restarted the animations).
+
+## Verified live (installed data, release viewer)
+
+- Gunfight (`docs/GOODSPRINGS_ROUTE.md` command, logs and frames in the
+  private folder): the gangers on `GSPGTravelPackage` (flags 0x00801004,
+  weapon drawn) and the settlers on their gunfight packages draw at the
+  start (`Equip` 0x0418/0x0518/0x0218/0x0318, in hand 0.25–0.5 s later at
+  `Attach`), Settler04 puts his away (`Unequip` 0x0419) when his ambush
+  package ends; attacks with the weapons' groups (0x0432 `1hpattackright`,
+  0x0544 `2hrattack8`), reloads (0x05bd), hit reactions from the tree
+  (`1stPHitLegLeft`, section 1, after a leg was crippled); frames show a
+  pistol settler in the 1hp aim and a disarmed ganger in the unarmed
+  stance.
+- The player's body in third person (keys injected, `drive.ps1`):
+  drawing fists (`Equip` 0x0118, in hand at 0.13 s) and the body
+  dropping into the unarmed stance, walking, backing up, sneaking
+  (crouched), strafing; putting them away (`Unequip` 0x0119).
+- Greetings outside the menu reach the request (the tree is asked; for
+  that settler `GreetIdles`' `HighDisposition` failed, so nothing played).
+- Saloon: Sunny's menu idles still play (`DialogNoBodyShiftTalkSubtle`).
+- Animation sets load once per skeleton folder (1029 files, 0.5 s).
+
+## Implemented, tested (generated data)
+
+`world::animation::groups` (ids, kinds, lookup, draws), `pick` (walk,
+sneak, back-up rates; draw/put away by the attach keys; aim after an
+attack; an idle holding the movement section; sneak/weapon/facing
+rules), `talk_idles` say requests; viewer actor tests on a test library.
+
 ## Not compared with the original game
 
-No side-by-side recording yet: entry/exit timing, the talking idle
-choices and their timing need a recording of Doc's chair and of a Sunny
-conversation in the original.
+None of this is compared side by side: draw/holster timing, the walk
+groups with weapons and sneaking, the strafe choice, greetings and
+conversation gestures, hit reactions.
 
 ## Gaps (not implemented, not substituted)
 
-- Lines said outside the menu (`SayTo`, `005c9100` → `0061b320`; NPC
-  conversations): their say arguments and the listener's idle request
-  aren't traced, so no talking idles there.
-- The listener idle (`LNAM`, the tree for the listener) is read but not
-  played: in the menu the listener is the player (first person); NPC
-  listeners belong to the untraced path above.
-- A tree answer for the base loop (section 0) during dialogue isn't
-  played (how `00497f20` places one isn't traced).
-- `008dab40`'s other refusals (vfuncs +0x230/+0x234, `00437bf0`,
-  `008dade0`) and the say's +0x104 animation flag (`00493bb0`, treated as
-  clear) aren't modelled.
-- The player's third-person body (`player_body.rs`, another owner) doesn't
-  yet take the Sitter's `skip_next_blend`.
-- Holster/unholster (`Equip`/`Unequip` groups), upper-body idles as their
-  own section, and replay delays counting during menu mode are unchanged.
+- Weapon up/down sections (aim pitch weights, `009295c0`); jumping;
+  swimming; `Hurt\`, `Child\`, `Toddler\` locomotion; power armour flags
+  (`008ba3e0`/`008ba410`) read as false; the per-weapon-kind precached
+  lists (`00600700`).
+- The combat equip action's own timing (`009da7c0`: drawing once the
+  combat weapon is in hand) is taken as "in combat → wanted"; the
+  stealthy-combat sneak (`00566950`/`009549a0`).
+- Attack-speed perk entry and melee rate (`005e58f0`, `00646020`):
+  weapon rate 1.
+- The strafe/back choice is applied to fighters only; whether other
+  procedures walk facing a point isn't traced.
+- `0089a760`'s other hit-reaction conditions; the GREET flag's lifetime;
+  the conversation's between-lines asks (the viewer's conversation timing
+  isn't the game's update cadence, so they aren't made).
+- Stagger (no character files; creatures' not wired), knockdown
+  (`GetKnockedState`), `Recoil`/`BlockHit`.
+- Replay delays counting in menu mode; `008dab40`'s `00437bf0`.

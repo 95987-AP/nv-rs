@@ -516,6 +516,17 @@ pub struct IdleQuestion {
     /// actor last said, when that response's emotion is to be used
     /// ([`crate::dialogue::Response::use_emotion`]); else −1.
     pub emotion: Option<u32>,
+    /// `GetHitLocation` (`005a3c30`): the body part of the hit being
+    /// taken (the process's last hit data, set while the damage is dealt,
+    /// `0089a760`), else −1.
+    pub hit_location: Option<i32>,
+    /// `IsSneaking` and `IsRunning`: the movement flags 0x400 (without
+    /// 0x800) and 0x200.
+    pub sneaking: bool,
+    pub running: bool,
+    /// `IsGreetingPlayer` (`005a5330`): the process's greeting flag
+    /// (vtable +0x30c) with the player as the one greeted.
+    pub greeting_player: bool,
 }
 
 /// The dialogue menu's number (`MenuMode 1009`; the idle tree's
@@ -588,19 +599,20 @@ impl<'a> IdleAsker<'a> {
                 // Translated from 005a4480 (decompiled, FalloutNV.exe
                 // 1.4.0.525): the speaking emotion, −1 when not used.
                 "GetDialogueEmotion" => Some(a.emotion.map_or(-1.0, f64::from)),
-                // Nothing hit, knocked down, greeting, using an item or in
-                // VATS here.
-                "GetHitLocation" => Some(-1.0),
+                "GetHitLocation" => Some(f64::from(a.hit_location.unwrap_or(-1))),
+                "IsSneaking" => Some(yes(a.sneaking)),
+                "IsRunning" => Some(yes(a.running)),
+                // Nothing knocked down, greeting, using an item or in VATS
+                // here.
+                "IsGreetingPlayer" => Some(yes(a.greeting_player)),
                 "GetKnockedState"
-                | "IsGreetingPlayer"
+                | "GetForceHitReaction"
                 | "GetUsedItemActivate"
                 | "GetIsUsedItemType"
                 | "GetVATSMode"
                 | "GetCannibal"
                 | "GetSandman"
-                | "GetPlantedExplosive"
-                | "IsRunning"
-                | "IsSneaking" => Some(0.0),
+                | "GetPlantedExplosive" => Some(0.0),
                 "GetIsSex" if self.facts.is_none() => Some(yes(u32::from(a.female) == c.params[0])),
                 "GetIsID" if self.facts.is_none() => Some(yes(
                     a.player && c.param_forms[0] == crate::dialogue::PLAYER_BASE

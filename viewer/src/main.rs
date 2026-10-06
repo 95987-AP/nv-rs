@@ -6,6 +6,7 @@
 
 mod actors;
 mod ai;
+mod anim_library;
 mod args;
 mod chatter;
 mod clutter;
@@ -215,6 +216,7 @@ fn main() {
         .init_resource::<ai::Chats>()
         .init_resource::<ai::Starts>()
         .init_resource::<chatter::Lines>()
+        .init_resource::<anim_library::AnimLibrary>()
         .init_resource::<menus::Menus>()
         .init_resource::<map::MapMarkers>()
         .init_resource::<hud::QuestCompass>()
@@ -385,7 +387,13 @@ fn main() {
                     report::report_key,
                     sounds::play_sounds,
                 ),
-                (look::set_up, actors::script_idles, actors::animate_actors).chain(),
+                (
+                    look::set_up,
+                    sitting::idle_requests.after(chatter::say_lines),
+                    actors::script_idles,
+                    actors::animate_actors,
+                )
+                    .chain(),
                 report_fps,
             )
                 .chain(),

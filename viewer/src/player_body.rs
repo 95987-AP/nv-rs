@@ -2,31 +2,24 @@
 //! (`world::actor::player_look`: the player's record for race, face and
 //! hair, the game state for sex, worn clothes and the weapon in hand) on
 //! the third-person skeleton, and animated through the same path as
-//! everyone (`actors::ActorRig`, driven by `actors::animate_actors`): the
-//! idle; the walk and run in the direction the keys move the player (the
-//! mover's flags, `00895110` picking `Forward` … `FastRight`, the
-//! back/left/right files from the walk's folder); the weapon's aim and
-//! attacks while it's out; sitting down, the seated loop and getting up
-//! from the furniture procedure (`world::furniture::Sitter`).
+//! everyone (`actors::ActorRig`, picked by `world::animation::pick` as
+//! `Actor::PickAnimations`, `00895110`, picks for people): the idle; the
+//! walk, run or sneak in the direction the keys move the player (the
+//! mover's flags), with the weapon kind's groups while it's drawn; drawing
+//! and putting the weapon away (`Equip`/`Unequip`, the weapon in hand at
+//! their `Attach`/`Detach` keys); the aim and attacks while it's out;
+//! sitting down, the seated loop and getting up from the furniture
+//! procedure (`world::furniture::Sitter`), switched without a blend where
+//! the procedure turns the player (`cSkipNextBlend`, as for people).
 //!
 //! Shown while the game shows the third-person body
 //! (`PlayerCamera::actually_third`, `00951a10`); the first-person view
 //! (`viewmodel`) shows otherwise.
 //!
-//! Sneaking, the sneaking set of the movement groups (`sneakmt*.kf` beside
-//! the skeleton: the game sorts each file by its name's move-type prefix,
-//! "Sneak" first in the table `005f38d0` reads, so sneaking actors play
-//! these; falling back to the plain group when the set lacks one is this
-//! viewer's assumption): the sneak idle as the base loop, the sneak walk
-//! and run, their back, left and right.
-//!
 //! Not yet (left out, not substituted): jumping's groups (`mtjump*.kf`),
-//! the weapon kind's own movement groups while it's out (back, left and
-//! right then play nothing), turning in place, the face's blinking and lip
-//! movement, the body fading when the camera is inside it, the dead
-//! player's ragdoll.
-
-use std::sync::Arc;
+//! turning in place (the player's turn flags aren't kept), the face's
+//! blinking and lip movement, the body fading when the camera is inside
+//! it, the dead player's ragdoll.
 
 use bevy::prelude::*;
 use cellview::space;
@@ -37,38 +30,6 @@ use world::dialogue::PLAYER_REF;
 use crate::actors::ActorRig;
 use crate::walk::Player;
 use crate::{FlyCamera, GameFiles, Spawner};
-
-/// The movement groups' files beside the walk (`mtforward.kf`) in its
-/// folder (`Characters\_Male\locomotion\male\`): the game loads every
-/// `.kf` of the skeleton's `locomotion` folders for an actor (`00447330`,
-/// see `preview::actor::turn_path`) and picks them by group.
-const MOVES: [(u8, &str); 7] = [
-    (group::BACKWARD, "mtbackward.kf"),
-    (group::LEFT, "mtleft.kf"),
-    (group::RIGHT, "mtright.kf"),
-    (group::FAST_FORWARD, "mtfastforward.kf"),
-    (group::FAST_BACKWARD, "mtfastbackward.kf"),
-    (group::FAST_LEFT, "mtfastleft.kf"),
-    (group::FAST_RIGHT, "mtfastright.kf"),
-];
-
-/// The sneaking set (move type 1, "Sneak"): files beside the skeleton.
-const SNEAK_MOVES: [(u8, &str); 8] = [
-    (group::FORWARD, "sneakmtforward.kf"),
-    (group::BACKWARD, "sneakmtbackward.kf"),
-    (group::LEFT, "sneakmtleft.kf"),
-    (group::RIGHT, "sneakmtright.kf"),
-    (group::FAST_FORWARD, "sneakmtfastforward.kf"),
-    (group::FAST_BACKWARD, "sneakmtfastbackward.kf"),
-    (group::FAST_LEFT, "sneakmtfastleft.kf"),
-    (group::FAST_RIGHT, "sneakmtfastright.kf"),
-];
-
-/// A file beside the walk animation.
-fn beside(walk: &str, file: &str) -> String {
-    let folder = walk.rfind(['\\', '/']).map_or("", |i| &walk[..=i]);
-    format!("{folder}{file}")
-}
 
 /// What the body is built from, to know when to rebuild it.
 #[derive(Clone, PartialEq)]
@@ -88,11 +49,12 @@ pub struct PlayerBody {
     holder: Option<Entity>,
     root: Option<Entity>,
     scale: f32,
-    /// The movement groups besides the walk and run, loaded.
-    moves: Vec<(u8, Arc<nif::Sequence>)>,
-    /// The sneaking set, and its idle.
-    sneak_moves: Vec<(u8, Arc<nif::Sequence>)>,
-    sneak_idle: Option<Arc<nif::Sequence>>,
+}
+
+/// A skeleton's bones by name (two bodies with the same can share their
+/// animations' state).
+fn bone_names(bones: &[nif::Bone]) -> Vec<String> {
+    bones.iter().map(|b| b.name.to_ascii_lowercase()).collect()
 }
 
 /// The holder's placement: at the feet, turned to the heading (clockwise
@@ -131,6 +93,7 @@ pub fn update_player_body(
     view: Res<crate::player_camera::PlayerView>,
     attack: Res<crate::combat::PlayerAttack>,
     mut seats: ResMut<crate::sitting::Seats>,
+    mut seat: ResMut<crate::sitting::PlayerSeat>,
     mut body: ResMut<PlayerBody>,
     mut spawner: Spawner,
     cameras: Query<&FlyCamera>,
@@ -162,6 +125,16 @@ pub fn update_player_body(
         lighting: spawner.place_lighting.changes(),
     };
     if body.built.as_ref() != Some(&wanted) {
+        // The animations playing go on in the new body (it's rebuilt for
+        // another weapon or clothes, and whenever the place's lighting
+        // changes): only the model changes, as in the game.
+        let carried = body.root.and_then(|r| rigs.get(r).ok()).map(|r| {
+            (
+                r.player.clone(),
+                r.picker.clone(),
+                bone_names(&r.skeleton.bones),
+            )
+        });
         if let Some(old) = body.holder.take() {
             if let Ok(mut e) = commands.get_entity(old) {
                 e.despawn();
@@ -186,23 +159,17 @@ pub fn update_player_body(
         body.scale = look.scale;
         let mut rig = ActorRig::new(skeleton, look.scale, 0.0);
         rig.joints = joints;
-        body.moves = MOVES
-            .iter()
-            .filter_map(|&(g, file)| {
-                crate::viewmodel::sequence(&game.0, &beside(&look.walk, file))
-                    .map(|s| (g, Arc::new(s)))
-            })
-            .collect();
-        body.sneak_moves = SNEAK_MOVES
-            .iter()
-            .filter_map(|&(g, file)| {
-                crate::viewmodel::sequence(&game.0, &beside(&look.skeleton, file))
-                    .map(|s| (g, Arc::new(s)))
-            })
-            .collect();
-        body.sneak_idle =
-            crate::viewmodel::sequence(&game.0, &beside(&look.skeleton, "sneakmtidle.kf"))
-                .map(Arc::new);
+        // A rebuilt body carries on what played; a first one starts as the
+        // weapon is: drawn or not (`ForceWeaponDrawnSheathed`, process
+        // vtable +0x1cc, puts the weapon where it belongs).
+        match carried {
+            Some((player, picker, names)) if names == bone_names(&rig.skeleton.bones) => {
+                rig.player = player;
+                rig.picker = picker;
+            }
+            _ => rig.picker.drawn = attack.out,
+        }
+        rig.want_drawn = attack.out;
         commands.entity(root).insert(rig);
         body.root = Some(root);
         return;
@@ -231,11 +198,13 @@ pub fn update_player_body(
     let Ok(mut rig) = rigs.get_mut(root) else {
         return;
     };
-    // The keys' movement; with the weapon out, its kind's movement groups
-    // (not loaded) would play, so only forward (the walk and run) does.
+    // The keys' movement (the mover's flags), sneaking (0x400), and the
+    // weapon: wanted out as the Ready Item key and attacking have it (the
+    // process's `GetWantWeaponDrawn`), its kind and attack group.
     let moving = player.speed > 0.0 && sitter.is_none();
     rig.walking = moving;
     rig.running = moving && player.moving.running;
+    rig.sneaking = st.player_sneaking;
     rig.speed = if moving {
         player.speed * body.scale
     } else {
@@ -246,23 +215,22 @@ pub fn update_player_body(
         turn_right: false,
         ..player.moving
     });
-    let sneaking = player.sneaking && sitter.is_none();
-    rig.moves = if attack.out {
-        Vec::new()
-    } else if sneaking {
-        // The sneaking set, the plain groups where it has none.
-        let mut moves = body.sneak_moves.clone();
-        for (g, s) in &body.moves {
-            if !moves.iter().any(|(id, _)| id == g) {
-                moves.push((*g, s.clone()));
-            }
-        }
-        moves
-    } else {
-        body.moves.clone()
+    rig.want_drawn = attack.out;
+    rig.fighting = false;
+    rig.character = true;
+    rig.seated = sitter.is_some();
+    rig.weapon_kind = weapon
+        .as_ref()
+        .map(|w| world::animation::groups::weapon_kind(w.animation));
+    rig.attack_group = match weapon.as_ref().map(|w| w.attack_animation) {
+        Some(g @ 26..=0xa8) => g,
+        _ => group::ATTACK_RIGHT,
     };
-    rig.fighting = attack.out;
     rig.attack_at = attack.fired_at;
+    // The procedure turned the player: no blend (`cSkipNextBlend`).
+    if std::mem::take(&mut seat.skip_next_blend) {
+        rig.player.skip_next_blend();
+    }
     // Furniture: the entry or exit over everything, the seat's loop
     // under it (as `sitting::furniture_frame` gives people).
     match sitter {
@@ -277,8 +245,7 @@ pub fn update_player_body(
                 .and_then(|p| Some((seats.sequence(&game.0, &p.model)?, p.elapsed)));
         }
         None => {
-            // Sneaking: the sneak idle under everything.
-            rig.dynamic_idle = sneaking.then(|| body.sneak_idle.clone()).flatten();
+            rig.dynamic_idle = None;
             rig.overlay = None;
         }
     }
@@ -287,17 +254,6 @@ pub fn update_player_body(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_movement_files_sit_beside_the_walk() {
-        assert_eq!(
-            beside(
-                "Characters\\_Male\\locomotion\\female\\mtforward.kf",
-                "mtbackward.kf"
-            ),
-            "Characters\\_Male\\locomotion\\female\\mtbackward.kf"
-        );
-    }
 
     #[test]
     fn the_body_stands_at_the_feet_facing_the_heading() {

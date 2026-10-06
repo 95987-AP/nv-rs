@@ -2328,7 +2328,14 @@ fn chat_frame(
         return;
     }
     let line = chat.lines[chat.next].clone();
-    lines.say(line.speaker, line.listener, line.info);
+    // Its says force a tree request unless the starter's package has idles
+    // of its own (`009edd80`'s last argument, `world::talk_idles`).
+    let force = world::talk_idles::conversation_forces_tree(
+        walker
+            .package
+            .map(|p| world::talk_idles::package_has_idles(order, p)),
+    );
+    lines.say_in_conversation(line.speaker, line.listener, line.info, force);
     chat.next += 1;
     chat.last_line = ctx.now;
     chat.talking = true;

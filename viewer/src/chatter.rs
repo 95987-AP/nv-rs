@@ -29,11 +29,29 @@ pub struct LineRequest {
     pub speaker: FormId,
     pub listener: FormId,
     pub info: Info,
+    /// Said in a conversation, with whether its says force a tree request
+    /// for the speaker (`world::talk_idles::conversation_forces_tree`);
+    /// none for the GREET procedure's lines (greetings, chatter, Say To),
+    /// which force one unless the speaker's package has idles
+    /// (`world::talk_idles::greet_forces_tree`).
+    pub conversation: Option<bool>,
+}
+
+/// A response begun this frame (each one of a line is its own say,
+/// `008a20d0`): who says it to whom, and how its caller asks for idles.
+#[derive(Debug, Clone)]
+pub struct ResponseStarted {
+    pub speaker: FormId,
+    pub listener: FormId,
+    pub response: world::dialogue::Response,
+    pub conversation: Option<bool>,
 }
 
 /// A line being said: the response and since when (seconds), its voice.
 struct Saying {
     info: Info,
+    listener: FormId,
+    conversation: Option<bool>,
     response: usize,
     since: f32,
     voice: Option<Entity>,
@@ -46,6 +64,9 @@ pub struct Lines {
     pub queue: Vec<LineRequest>,
     saying: HashMap<FormId, Saying>,
     pub done: Vec<(FormId, FormId)>,
+    /// The responses begun this frame (for the speakers' and listeners'
+    /// gestures, `sitting::idle_requests`).
+    pub started: Vec<ResponseStarted>,
 }
 
 impl Lines {
@@ -60,6 +81,24 @@ impl Lines {
             speaker,
             listener,
             info,
+            conversation: None,
+        });
+    }
+
+    /// Asks someone to say a conversation's line (`009ee0a0`), its says
+    /// forcing a tree request or not (`force_tree`).
+    pub fn say_in_conversation(
+        &mut self,
+        speaker: FormId,
+        listener: FormId,
+        info: Info,
+        force_tree: bool,
+    ) {
+        self.queue.push(LineRequest {
+            speaker,
+            listener,
+            info,
+            conversation: Some(force_tree),
         });
     }
 
@@ -69,6 +108,7 @@ impl Lines {
         self.queue.clear();
         self.saying.clear();
         self.done.clear();
+        self.started.clear();
     }
 }
 
@@ -146,6 +186,7 @@ pub fn say_lines(
     let now = time.elapsed_secs();
     let lines = &mut *lines;
     lines.done.clear();
+    lines.started.clear();
     for request in std::mem::take(&mut lines.queue) {
         if lines.saying.contains_key(&request.speaker) {
             continue;
@@ -176,10 +217,20 @@ pub fn say_lines(
             &info,
             0,
         );
+        if let Some(r) = info.responses.first() {
+            lines.started.push(ResponseStarted {
+                speaker: request.speaker,
+                listener: request.listener,
+                response: r.clone(),
+                conversation: request.conversation,
+            });
+        }
         lines.saying.insert(
             request.speaker,
             Saying {
                 info,
+                listener: request.listener,
+                conversation: request.conversation,
                 response: 0,
                 since: now,
                 voice,
@@ -187,6 +238,7 @@ pub fn say_lines(
         );
     }
     let mut over = Vec::new();
+    let started = &mut lines.started;
     for (&speaker, saying) in lines.saying.iter_mut() {
         let done = match saying.voice {
             Some(v) => voices.get(v).is_err(),
@@ -205,6 +257,12 @@ pub fn say_lines(
         saying.response += 1;
         saying.since = now;
         if saying.response < saying.info.responses.len() {
+            started.push(ResponseStarted {
+                speaker,
+                listener: saying.listener,
+                response: saying.info.responses[saying.response].clone(),
+                conversation: saying.conversation,
+            });
             saying.voice = play_voice(
                 &mut commands,
                 &mut audio,
