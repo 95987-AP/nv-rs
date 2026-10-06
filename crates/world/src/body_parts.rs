@@ -107,10 +107,14 @@ pub mod part {
 /// `BPND` flags the code reads.
 pub mod flags {
     pub const SEVERABLE: u8 = 0x01;
+    /// The part has IK data (the parts `005e5320` walks).
+    pub const IK_DATA: u8 = 0x02;
     /// `008b4360`.
     pub const EXPLODABLE: u8 = 0x08;
     /// Uses its own explode chance (`008b4cd0`).
     pub const OWN_EXPLODE_CHANCE: u8 = 0x40;
+    /// Head tracking (`0087e940`): the part whose IK start sets up LookIK.
+    pub const HEAD_TRACKING: u8 = 0x20;
 }
 
 /// Actor values for the body part conditions (`PerceptionCondition` 25 …
@@ -132,6 +136,12 @@ pub struct BodyPart {
     pub node: String,
     /// `BPNT`: the node VATS aims at.
     pub target: String,
+    /// `BPNI`: the node its IK starts at (`Bip01 Head` for the human
+    /// head; part `+0x14`, read by `0063d040`).
+    pub ik_start: Option<String>,
+    /// `BPND` f32 at 0x14: the head-tracking maximum angle in degrees
+    /// (part `+0x70`, `0051b860`, read by `0087e580`).
+    pub tracking_max_angle: f32,
     /// `BPND` f32 at 0: the damage multiplier for ranged hits (head ×2).
     pub damage_mult: f32,
     /// `BPND` u8 at 4 ([`flags`]).
@@ -217,6 +227,15 @@ impl BodyPartData {
         BodyPartData::load(order, data_form(order, who)?)
     }
 
+    /// The part that sets up head tracking (`0087e130`): the first, in
+    /// slot order, with IK data and the head-tracking flag.
+    pub fn head_tracking_part(&self) -> Option<&BodyPart> {
+        self.parts
+            .iter()
+            .flatten()
+            .find(|p| p.flags & flags::IK_DATA != 0 && p.flags & flags::HEAD_TRACKING != 0)
+    }
+
     /// The part of a type (`005e50f0`).
     pub fn part(&self, part_type: u8) -> Option<&BodyPart> {
         self.parts.get(usize::from(part_type))?.as_ref()
@@ -283,7 +302,7 @@ fn read_part(subrecords: &[esm::Subrecord], i: &mut usize) -> Option<BodyPart> {
     take(s, i, PNAM);
     let node = take(s, i, BPNN)?.zstring();
     let target = take(s, i, BPNT)?.zstring();
-    take(s, i, BPNI);
+    let ik_start = take(s, i, BPNI).map(|s| s.zstring());
     let d = &take(s, i, BPND)?.data;
     if d.len() < 84 {
         return None;
@@ -299,6 +318,8 @@ fn read_part(subrecords: &[esm::Subrecord], i: &mut usize) -> Option<BodyPart> {
         name,
         node,
         target,
+        ik_start,
+        tracking_max_angle: le_f32(d, 0x14),
         damage_mult: le_f32(d, 0),
         flags: d[4],
         part_type: d[5],
@@ -335,6 +356,21 @@ pub fn data_form(order: &LoadOrder, who: FormId) -> Option<FormId> {
         return Some(PLAYER_BODY_PART_DATA);
     }
     Some(DEFAULT_BODY_PART_DATA).filter(|f| exists(*f))
+}
+
+/// Whether someone (a placed person or creature, or their base record)
+/// is a creature (`Actor::IsCreature`, vtable `+0x21c`: `Creature` only).
+pub fn is_creature(order: &LoadOrder, who: FormId) -> bool {
+    let is_base = order
+        .get(who)
+        .is_some_and(|r| matches!(r.entry.header.kind.as_bytes(), b"NPC_" | b"CREA"));
+    let base = if is_base {
+        Some(who)
+    } else {
+        base_of(order, who)
+    };
+    base.and_then(|b| order.get(b))
+        .is_some_and(|r| r.entry.header.kind == CREA)
 }
 
 /// The condition points a hit takes off a part (`00647a30`): `100 ×

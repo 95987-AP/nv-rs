@@ -28,6 +28,9 @@ use preview::cell::ActorSkeleton;
 use world::animation::{self, group, section, GroupData, MoveFlags, Player};
 use world::movement::TurnSide;
 
+/// The player's reference.
+const PLAYER: esm::FormId = esm::FormId(0x14);
+
 /// The animation settings from the INI (`[General]`
 /// `fAnimationDefaultBlend` 0.2, `fAnimationMult` 1).
 #[derive(Resource, Clone, Copy)]
@@ -464,13 +467,20 @@ pub fn script_idles(
 /// in menu mode and stands still, animations included (someone talked to
 /// mid-stride kept walking on the spot before), except, in the dialogue
 /// menu, the speaker: they stop walking and turn to face the player.
+#[allow(clippy::too_many_arguments)]
 pub fn animate_actors(
     time: Res<Time>,
     settings: Option<Res<AnimSettings>>,
     conversation: Option<Res<crate::dialogue::Conversation>>,
     menus: Option<Res<crate::menus::Menus>>,
     collision: Option<Res<crate::walk::CellCollision>>,
-    mut rigs: Query<&mut ActorRig>,
+    look: Option<Res<crate::look::LookSettings>>,
+    camera: Query<&GlobalTransform, With<crate::FlyCamera>>,
+    mut rigs: Query<(
+        &mut ActorRig,
+        Option<&mut crate::look::HeadTrack>,
+        Option<&crate::ai::Walker>,
+    )>,
     mut joints: Query<&mut Transform>,
 ) {
     let now = time.elapsed_secs();
@@ -481,7 +491,11 @@ pub fn animate_actors(
     if menus.as_ref().is_some_and(|m| m.is_open()) {
         return;
     }
-    for mut rig in &mut rigs {
+    let speaker = conversation
+        .as_ref()
+        .and_then(|c| c.0.as_ref().map(|t| t.speaker()));
+    let player_point = camera.iter().next().map(crate::look::player_look_point);
+    for (mut rig, head_track, walker) in &mut rigs {
         let rig = &mut *rig;
         // In the dialogue menu only the speaker moves: `ai` holds everyone
         // else (`still`) and has the speaker stop walking and turn in place
@@ -508,7 +522,19 @@ pub fn animate_actors(
                 rig.player.settings = s.0;
             }
             rig.drive(dt);
-            rig.pose_now(now)
+            let mut pose = rig.pose_now(now);
+            if let (Some(mut ht), Some(w), Some(s)) = (head_track, walker, look.as_ref()) {
+                // Whom they look at: `ai`'s head-track target, or the
+                // player while they're the one talking to them. Only the
+                // player's look point is ported (00952ff0).
+                let looking = w
+                    .look_target()
+                    .or(speaker.filter(|s| *s == w.reference).map(|_| PLAYER));
+                let target = looking.filter(|who| *who == PLAYER).and(player_point);
+                let bones = rig.skeleton.bones.clone();
+                crate::look::track(&mut ht, &s.0, &bones, &mut pose, &w.placement(), target);
+            }
+            pose
         };
         for (joint, t) in rig.joints.iter().zip(&pose) {
             if let Ok(mut transform) = joints.get_mut(*joint) {

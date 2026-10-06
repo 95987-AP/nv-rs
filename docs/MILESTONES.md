@@ -1,6 +1,6 @@
 # nv-rs milestones
 
-Updated 2026-10-04. Priority tracker and session handoff.
+Updated 2026-10-06. Priority tracker and session handoff.
 
 ## Baseline
 
@@ -33,27 +33,23 @@ reading do not establish them.
 
 ## Active work: M1
 
-Methodology and pipeline batch, 2026-10-05 (cloud session without game
-files; PR #10). Research into precedent projects and tooling produced
-[METHODOLOGY.md](METHODOLOGY.md). The maintainer's decisions are in
-[adr/](adr/README.md): full use of the Xbox 360 prototype symbols,
-translating marked decompiled logic, and a Mudcrab-style layout (planned in
-ADR-0004). New tools in `research/`, tested only on synthetic binaries:
-Ghidra scripts (identity, gated full export, function cards, command-table
-labels, name import) and `nv-oracle` (`nv-call`, `nv-probe`, `nv-inject`).
-There is also a repository hygiene test. Root 976 tests, clippy and format
-pass, as do 24/24 `nv-oracle` Wine groups and the Ghidra suite. PR #10's
-Windows CI passed at `12d8321`. None of the tools has run against
-FalloutNV.exe yet.
-[PROTOTYPE_SYMBOLS.md](PROTOTYPE_SYMBOLS.md) lists likely names for the
-look-IK functions (`00c78610` BoneTrack, `00c755e0` LimitBoneRot); these are
-unverified. Order for the local session: land
-`codex/m1-reload-update-order`, merge PR #10 (`OPENING_LOOK_IK.md` will
-conflict), then run the ADR-0004 restructure. **Next action:** look-IK
-pilot. Load the prototype with its symbols, confirm the `bhkRagdollController`
-pairs and field names in the PC disassembly, then record `00c755e0` and
-`00c78610` arguments and results with `nv-probe` in a private game copy
-while Doc looks at the player.
+Look-IK batch, 2026-10-06 (local session, branch `claude/m1-look-ik`).
+Corrections: ADR-0004 (restructure) was rejected on 2026-10-06 and the
+layout stays; `codex/m1-reload-update-order` was dropped unmerged; Codex is
+no longer used. The Xbox 360 prototype's PDB confirmed the
+`bhkRagdollController` (Xbox PDB) field names and the look-IK function pairs
+in the PC disassembly. Native head and eye tracking is now ported in
+`world::look_ik` and runs on placed people in the viewer. Its helpers and
+the direction solve are checked against FalloutNV.exe with `nv-call` (the
+first runs of the oracle tools against the real executable). Root clippy
+and the look-IK tests pass. Doc's tracking has not been compared with the
+original game. Not yet done: the target choice of 008a3100 (the player is
+the only supported target), eye meshes (FaceGen eye update), and
+`nv-probe` recordings in a private game copy. Evidence:
+[OPENING_LOOK_IK.md](OPENING_LOOK_IK.md). Parallel batches (each on its own
+`claude/m1-*` branch) cover dialogue exit and fidelity, couch sitting,
+Pip-Boy mouse input and player movement. **Next action:** record Doc's
+look-IK in a private game copy with `nv-probe` and compare.
 
 The published baseline includes the opening package look lock, Doc's queued
 chair exit, native Info HUD and tester bounds correction, SPECIAL interface,
@@ -84,7 +80,8 @@ DB and inventory remain private. Shared query workflow and limitations:
 
 Outstanding M1 gates:
 - Exact opening camera transition replay and Doc/player assistance timing.
-- Native Doc head/eye tracking; final rotation math remains unresolved
+- Doc head/eye tracking: ported and unit-tested; the original-game
+  comparison, target choice and eye meshes remain
   ([OPENING_LOOK_IK.md](OPENING_LOOK_IK.md)).
 - Original face editor instead of auto-accept, and opening movie playback
   ([FACE_CREATION.md](FACE_CREATION.md)).

@@ -1,5 +1,93 @@
 # Opening Doc look IK trace
 
+## Implementation, 2026-10-06
+
+`crates/world/src/look_ik.rs` ports the controller; `viewer/src/look.rs`
+runs it on placed people after animation sampling (`ActorRig::pose_now`)
+and before skinning. Status: implemented and unit-tested. Pure helpers are
+checked against the original's code on the real CPU (nv-call); the whole
+behaviour has **not** been compared with the original game.
+
+Names come from the Xbox 360 prototype's PDB (`Fallout_Release_MemDebug`,
+Xbox PDB). The PC layout matches `bhkRagdollController` (Xbox PDB) with
+the PC 0xC bytes shorter before `bInitLookIK` and 0x10 shorter from
+`CurrentHeadRotOffset`, checked against the PC constructor 00c7f060 and
+the functions below:
+
+| PC | Field (Xbox PDB) |
+| --- | --- |
+| +0x10 | `WorldFromModel` (hkQsTransform) |
+| +0x54 | `pHeadPose` (two-bone head/eye pose) |
+| +0x88 | `pSGPose` (scene-graph pose) |
+| +0xb0..b3 | `bInitLookIK`, `bEnableLookIK`, `bEaseOutLookIK`, `bActiveLookIK` |
+| +0xc0 | `CurrentHeadRotOffset` |
+| +0xd0 | `CurrentTargetWS` |
+| +0xf0 | `BoneParamA[2]` (0x50 each: `pPose`, `ssBoneIdx`, `ssParentIdx`, `fLookAtMaxAngle`, `FwdLS`, `FwdParentMS`, `PrevRotLS`, `bLimitBoneRot`, `bActive`, `fDeadHeading`, `fDeadPitch`) |
+| +0x190 | `bUseHeadPose` |
+| +0x194 | `eCurrentBone` (0 `EYE_BONE`, 1 `HEAD_BONE`) |
+| +0x19c / +0x1a0 | `fEyeHeading` / `fEyePitch` |
+| +0x1a4 | `bTargetBehind` (not "below") |
+
+Function pairs confirmed by these field uses: 008a3b70
+`SetLookAtIKTarget`, 00c75580 `SetLookIKActive`, 00c755e0 `LimitBoneRot`
+(returns the angle applied), 00c78160 `AdjustCurrentTarget`, 00c78610
+`BoneTrack` (returns true when the target is outside the cone), 00c79340
+`InitBoneParams`, 00c7aa60 `DoLookAtIK`, 00c7d630 `DoRagdollAnim`,
+00c7de60 `InitLookIK`, 00c7f060 the constructor (all Xbox PDB names).
+
+Behaviour traced (PC addresses):
+- Set-up (0087e130): the first body part with IK data (BPND flag 0x02)
+  and head tracking (0x20) gives the head bone (BPNI) and its maximum
+  angle (BPND f32 at 0x14, degrees). Actors whose `IsCreature` (PC vtable
+  +0x21c; Xbox +0x218) is false get `bUseHeadPose`, a two-bone pose with
+  the eye 9, 6, 0 game units from the head, tracked inside the head frame.
+- `InitBoneParams`: `FwdLS` is model +Y in the bone's frame (inverse
+  rotation, normalized over xyz), `FwdParentMS` the same in the parent's
+  frame (not normalized). Note the native vector rotations come in both
+  directions; each is classified by its cross-product term.
+- `AdjustCurrentTarget`: targets behind (local Y < 0) move 5 Havok units
+  to the side of the eye point; while easing out the target is 3 units
+  ahead of the head; the stored target is kept within 5 Havok units.
+- `BoneTrack`: the cone around the parent-carried forward
+  (`fLookAtMaxAngle`, 60 degrees by default, the body part's value for
+  the head), the turn solve 00ce0290 including the eye-offset correction
+  asin(offset / distance), then `LimitBoneRot` caps the change to
+  `fAngleMax` 3.5 (easing out `fAngleMaxEase` 1.0) degrees per update;
+  easing ends below `fEaseAngleShutOff` 0.5 degrees.
+- `DoLookAtIK`: head first (when the head is active or there is no head
+  pose), `CurrentHeadRotOffset` applied, then the eye bone; the eye's
+  heading/pitch are pi/2 - acos of its forward against -Z and +X.
+- Units: Havok, game units / 6.9991255 (011b02ec; 01267c20 and
+  011c582c are set from it). Settings: the INI files set no LookIK
+  values (their `fLookAtGain`/`fLookAtTargetGain` aren't registered), so
+  the constructor defaults apply; `bLookIK`/`bRagdollAnim` default 1.
+- Target point: the player in first person is looked at at the camera
+  (00952ff0); other actors at their head node (008a2fa0).
+
+Oracle evidence (nv-call, image SHA-256 19406942...739F, AMD Ryzen AI 9
+HX 370): 005611c0 (normalize), 00c66320, 00c74ac0, 00c74c20, 00cb2450 and
+six 00ce0290 cases (with and without the eye offset, cone clamp) are
+regression tests in `look_ik.rs`; private vectors and scripts in
+`%USERPROFILE%\nv-re\work\lookik-2026-10-06\`. The x87 listing of
+00ce0a49 (`FMUL ST1`) stores into ST1; reading it the other way gives the
+wrong correction.
+
+Unresolved (labelled in the code):
+- The target choice of 008a3100/008a3ed0 is not ported; the viewer uses
+  `ai`'s look-at target or the dialogue speaker's listener, and only the
+  player as target (NPC-to-NPC tracking is not driven).
+- The model frame is taken as the skeleton root's (+Y forward); the
+  native SG pose's root (via `pRagdollRoot`) is not traced.
+- The head-pose head bone's local transform (00a86bf0) is taken as the
+  identity; `bEnableRagdollAnim` (+0x41) gating isn't modelled.
+- The eye heading/pitch go through 00888970 (process vfunc +0x144's
+  object) to 00888a20, which stores them as `BSFaceGenAnimationData`
+  `fDesiredEyeHeading`/`fDesiredEyePitch` (+0x150/+0x154, Xbox PDB);
+  that FaceGen eye update (toward `fCurrentEyeHeading`/`Pitch`, +0x140,
+  and the eye nodes) is not traced, so eyes don't move yet.
+- Precision: SSE estimates use exact reciprocals (tier C) and x87
+  extended precision is approximated with f64.
+
 ## Follow-up output trace, 2026-10-04
 
 No runtime gaze change is implemented. Ghidra assembly confirms mode1's

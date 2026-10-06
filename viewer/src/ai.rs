@@ -319,6 +319,11 @@ impl Walker {
         self.doors_ahead.clear();
     }
 
+    /// Whom they look at now (`look_at`), for head tracking.
+    pub(crate) fn look_target(&self) -> Option<FormId> {
+        self.look_at.map(|(who, _)| who)
+    }
+
     /// Where its skeleton stands in the world (game axes): turned by its
     /// heading (clockwise from north), at its scale.
     pub fn placement(&self) -> nif::Transform {
