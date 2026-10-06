@@ -198,7 +198,10 @@ fn the_pipboys_repair() {
     // A worn rifle doesn't count for the button, but is offered.
     state.equip(&order, PLAYER_REF, rifle);
     assert!(!repair::can_repair(&order, &state, pistol));
-    assert_eq!(repair::parts(&order, &state, pistol).len(), 1);
+    let parts = repair::parts(&order, &state, pistol);
+    let counts: Vec<(FormId, i32, bool)> =
+        parts.iter().map(|p| (p.item, p.count, p.chosen)).collect();
+    assert_eq!(counts, vec![(pistol, 0, true), (rifle, 1, false)]);
     state.unequip(PLAYER_REF, rifle);
     // A second pistol: the first is the chosen one.
     give(&order, &mut state, PISTOL, 1);

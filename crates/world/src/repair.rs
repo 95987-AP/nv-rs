@@ -455,6 +455,9 @@ pub struct Part {
     pub mends_to: f32,
     /// One of it is worn (the first line's mark).
     pub equipped: bool,
+    /// The chosen item's own kind: its first one is the chosen one (not
+    /// counted in `count`), listed where its kind comes.
+    pub chosen: bool,
 }
 
 /// Whether the Pip-Boy offers to repair an item (`00781860`): a weapon or
@@ -471,15 +474,21 @@ pub fn can_repair(order: &LoadOrder, state: &GameState, item: FormId) -> bool {
     if state.item_count(order, PLAYER_REF, item) >= 2 {
         return true;
     }
-    crate::items::inventory_lines(order, state, PLAYER_REF)
+    state
+        .inventory(order, PLAYER_REF)
         .iter()
-        .any(|l| l.item != item && !l.equipped && mends(order, state, item, l.item))
+        .any(|&(other, _)| {
+            other != item
+                && !state.is_equipped(PLAYER_REF, other)
+                && mends(order, state, item, other)
+        })
 }
 
-/// What the Pip-Boy can mend `chosen` with (`007b6aa0`): every one of each
-/// of the player's things [`mends`] accepts (each its own line), but the
-/// chosen one itself (the first of its kind, marked); of the chosen kind
-/// one worn isn't offered (the chosen one is that one here), of other
+/// What the Pip-Boy can mend `chosen` with (`007b6aa0`), in the player's
+/// things' order: every one of each thing [`mends`] accepts (each its own
+/// line) but the chosen one itself, the first of its kind (its kind's
+/// entry has `chosen` set, with what's left of it to use); of the chosen
+/// kind one worn isn't offered (the chosen one is that one here), of other
 /// kinds it is.
 pub fn parts(order: &LoadOrder, state: &GameState, chosen: FormId) -> Vec<Part> {
     let s = skill(order, state, PLAYER_REF);
@@ -500,16 +509,17 @@ pub fn parts(order: &LoadOrder, state: &GameState, chosen: FormId) -> Vec<Part> 
         } else {
             line.count
         };
-        if count <= 0 {
+        if count <= 0 && line.item != chosen {
             continue;
         }
         out.push(Part {
             item: line.item,
             name: line.name,
-            count,
+            count: count.max(0),
             condition: c,
             mends_to: mended_condition(order, s, at, c),
             equipped: line.equipped && line.item != chosen,
+            chosen: line.item == chosen,
         });
     }
     out

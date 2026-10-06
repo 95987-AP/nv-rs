@@ -1196,8 +1196,9 @@ ITEMS and DATA; Enter equips, takes off or uses the chosen item, or makes
 the chosen quest the active one; on the Status page Enter uses a Stimpak
 (RadAway under RAD). On STATS the letter keys press the buttons that show
 them (S Stimpak, E Doctor's Bag, A RadAway, X Rad-X, R reputations on the
-General page); the Repair and Mod buttons on ITEMS don't work yet. Tab puts
-it away.
+General page); R on ITEMS repairs the chosen weapon with another like it
+(or one on its repair list) as the game's repair screen does, E going back;
+the Mod button doesn't work yet. Tab puts it away.
 
 STATS shows your level, health, action points, experience, limbs, rads and
 effects, your S.P.E.C.I.A.L. and skills with their pictures and
@@ -1209,7 +1210,7 @@ places you've found, your quests with their objectives, notes and radio
 stations.
 
 Not there yet: the mouse (so travelling from the map), the local map,
-repairing and modding, the DPS figure and effect descriptions on item cards,
+modding, the DPS figure and effect descriptions on item cards,
 and the light actually lighting the room.
 
 For screenshots: `--pipboy stats`, `--pipboy items:1` (the tab from 0),

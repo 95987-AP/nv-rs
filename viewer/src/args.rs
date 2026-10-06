@@ -64,6 +64,9 @@ OPTIONS:
                             (stats, items or data) and page or tab (from
                             0: stats:1 is S.P.E.C.I.A.L., data:2 the
                             quests); screenshots then show it
+    --pipboy-keys K[,K...]  for testing: once the Pip-Boy is up, press these
+                            keys in it, one a frame: up, down, left, right,
+                            enter, or a letter (r: ITEMS' Repair)
     --vats [N]              for testing: open V.A.T.S. three seconds after
                             loading (as V does); with N, queue N attacks on
                             the part it opens on and play them
@@ -169,6 +172,8 @@ pub struct Args {
     pub freeze_ai: bool,
     /// Raise the Pip-Boy once loaded: its menu and page (stats:1).
     pub pipboy: Option<String>,
+    /// `--pipboy-keys`: keys to press in the Pip-Boy once it's up.
+    pub pipboy_keys: Vec<String>,
     /// `--lockpick REF`: try this lock once loaded.
     pub lockpick: Option<String>,
     /// `--open-menu`: a game menu to open once loaded (`name[:id]`).
@@ -234,6 +239,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut cloud_time = None;
     let mut freeze_ai = false;
     let mut pipboy = None;
+    let mut pipboy_keys = Vec::new();
     let mut lockpick = None;
     let mut open_menu = None;
     let mut menu_pointer = None;
@@ -294,6 +300,17 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
                     return Err(format!("--pipboy expects stats, items or data, got '{v}'"));
                 }
                 pipboy = Some(v);
+            }
+            "--pipboy-keys" => {
+                let v = value("--pipboy-keys")?;
+                for k in v.split(',').map(|k| k.trim().to_ascii_lowercase()) {
+                    let known = ["up", "down", "left", "right", "enter"].contains(&k.as_str())
+                        || (k.len() == 1 && k.as_bytes()[0].is_ascii_lowercase());
+                    if !known {
+                        return Err(format!("--pipboy-keys: don't know the key '{k}'"));
+                    }
+                    pipboy_keys.push(k);
+                }
             }
             "--open-menu" => open_menu = Some(value("--open-menu")?),
             "--menu-pointer" => {
@@ -366,6 +383,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             cloud_time,
             freeze_ai,
             pipboy,
+            pipboy_keys,
             lockpick,
             open_menu,
             menu_pointer,

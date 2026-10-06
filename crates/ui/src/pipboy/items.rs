@@ -254,6 +254,12 @@ impl ItemsMenu {
     /// `00707e30` the card): `_EquippableItem`, the picture
     /// (`Interface\Icons\` + the item's own), the cards its mask shows.
     fn show_card(&mut self, ui: &mut Ui, item: Option<&ItemLine>) {
+        // The Repair button usable on an item that can be mended
+        // (`00781680`: `00781860` on the chosen item, none without one).
+        if let Some(button) = by_id(ui, self.menu, 8) {
+            let can = item.is_some_and(|i| i.repairable);
+            ui.set_number(button, t::TARGET, if can { 1.0 } else { 0.0 });
+        }
         let equippable = trait_id(ui, "_EquippableItem");
         ui.set_number(
             self.menu,
@@ -365,6 +371,12 @@ impl ItemsMenu {
         }
     }
 
+    /// The chosen row's item.
+    pub fn chosen(&self, input: &PipboyInput) -> Option<ItemLine> {
+        let items = self.tab_items(input);
+        self.list.selected.and_then(|i| items.get(i)).cloned()
+    }
+
     /// Shows a tab (0 Weapons .. 4 Ammo).
     pub fn show_tab(&mut self, ui: &mut Ui, tab: usize, input: &PipboyInput) {
         self.tab = tab.min(4);
@@ -445,6 +457,7 @@ mod tests {
             ammo: None,
             weight_class: None,
             effects: None,
+            repairable: false,
         }
     }
 

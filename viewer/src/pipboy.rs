@@ -128,6 +128,23 @@ impl Plugin for PipboyPlugin {
 #[derive(Resource, Default)]
 pub struct StartPipboy(pub Option<String>);
 
+/// `--pipboy-keys`: keys pressed in it, one a frame, once it's up.
+#[derive(Resource, Default)]
+pub struct StartPipboyKeys(pub Vec<String>);
+
+/// A `--pipboy-keys` name as the key the menus get.
+fn named_key(name: &str) -> Option<Key> {
+    Some(match name {
+        "up" => Key::Up,
+        "down" => Key::Down,
+        "left" => Key::Left,
+        "right" => Key::Right,
+        "enter" => Key::Activate,
+        k if k.len() == 1 => Key::Letter(k.chars().next()?),
+        _ => return None,
+    })
+}
+
 /// The screen effect's constants (`ISIFSCANBLEND`'s `Params`,
 /// `DistortParams`, `Tint`, `Offsets`).
 #[derive(Clone, Copy, Debug, ShaderType)]
@@ -471,6 +488,7 @@ fn pipboy_keys(
     mut commands: Commands,
     mut pipboy: ResMut<Pipboy>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut start_keys: ResMut<StartPipboyKeys>,
     around: Around,
 ) {
     let Around {
@@ -548,7 +566,13 @@ fn pipboy_keys(
             return;
         }
     }
-    let pressed = menu_keys(&keys);
+    let mut pressed = menu_keys(&keys);
+    // `--pipboy-keys`: one a frame once its menus are filled.
+    if pipboy.input.is_some() && !start_keys.0.is_empty() {
+        let name = start_keys.0.remove(0);
+        println!("--pipboy-keys: {name}");
+        pressed.extend(named_key(&name));
+    }
     // The keyboard is the Pip-Boy's while it's up (Escape left to the
     // viewer).
     let held: Vec<KeyCode> = keys
@@ -638,6 +662,23 @@ fn pipboy_keys(
                 }
             }
             Action::ActiveQuest(form) => state.active_quest = Some(FormId(form)),
+            // ITEMS' Repair: the screen on that item (`007b7020`).
+            Action::OpenRepair(form) => {
+                let input = ui::pipboy::gather::repair_input(order, state, FormId(form));
+                if let Some(b) = pipboy.built.as_mut() {
+                    b.pipboy.open_repair(&mut b.ui, input);
+                }
+            }
+            // Mending with a part (`007b5d80`), then the screen again or
+            // ITEMS (`007b5b40`).
+            Action::Repair { chosen, part } => {
+                let to = world::repair::repair_with(order, state, FormId(chosen), FormId(part));
+                println!("Repaired {chosen:08X} with {part:08X}: {:.0}%.", to * 100.0);
+                let input = ui::pipboy::gather::repair_input(order, state, FormId(chosen));
+                if let Some(b) = pipboy.built.as_mut() {
+                    b.pipboy.repaired(&mut b.ui, input);
+                }
+            }
         }
     }
 }
@@ -873,6 +914,7 @@ fn update_pipboy(
     let at = whereabouts(order, &state.0, &markers, heading);
     let input = ui::pipboy::gather::gather(order, &state.0, &at);
     b.pipboy.fill(&mut b.ui, &input);
+    b.pipboy.update(&mut b.ui, f64::from(now));
     if let Some((section, page)) = pipboy.pending.take() {
         b.pipboy.show(&mut b.ui, section);
         if let Some(p) = page {

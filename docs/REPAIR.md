@@ -97,19 +97,32 @@ list in the menu's order), `repair_by` and `pay`, `mends`, `can_repair`,
 `ui::menus::repair_services` (`game_menus::repair`), which asks the world
 to repair and refills.
 
+The Pip-Boy: ITEMS' Repair button (R) is usable on an item
+`world::repair::can_repair` allows (`ItemLine::repairable`); pressing it
+asks the game (`Action::OpenRepair`) for the screen's lines
+(`ui::pipboy::gather::repair_input`) and opens `ui::pipboy::repair` over
+ITEMS, drawn on the Pip-Boy's screen; Enter on a line asks for the repair
+(`Action::Repair`: `world::repair::repair_with`), then the screen is filled
+again or closes; E goes back to ITEMS.
+
 Checks: `crates/world/tests/repair.rs` (the formulas, a merchant's list and
 order, a repair paid to the vendor, the Pip-Boy's rules with a repair list
 and Jury Rigging), `world::repair::tests` (an NPC's skill offset),
-`ui::menus::repair_services::tests` (filling, the pointer's stats, clicks).
+`ui::menus::repair_services::tests` (filling, the pointer's stats, clicks),
+`ui::pipboy::repair::tests` (the lines' order, what each does, closing).
 Seen in the viewer at Mick & Ralph's (`--open-menu
 repair:FreesideMickREF`): Repair 75, mending to 85%; a 9mm pistol at 30%
 for 110 caps; clicking it paid 110 caps and left it at 85%, "CANNOT
-REPAIR PAST 85%".
+REPAIR PAST 85%". The Pip-Boy in Doc Mitchell's house with three 9mm
+pistols at 30% and Repair 15 (`--pipboy items:0 --pipboy-keys r,down,enter`):
+the screen lists the pistol in brackets and its two spares, "CHOOSE ITEM TO
+REPAIR WITH"; on a spare "+9%" (3.875 → 38.75%) and DAM 6 → 7; Enter mends
+it, one spare left.
 
 ## Not done
 
-- The Pip-Boy's `RepairMenu` screen: the rules are here, ITEMS' Repair
-  button isn't wired to them yet.
+- The Pip-Boy's scroll knob turning with the repair list, the brackets'
+  move onto the item, the mouse on the Pip-Boy's screen.
 - An item's condition is kept per holder and kind, weapons only
   (`GameState::weapon_health`): a repair mends every one of a kind the
   player has, where the game mends one, and armour is always whole, so it's

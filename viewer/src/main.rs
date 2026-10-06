@@ -248,6 +248,7 @@ fn main() {
         .add_plugins((hud::HudPlugin, pipboy::PipboyPlugin))
         .add_plugins(game_menus::GameMenusPlugin)
         .insert_resource(pipboy::StartPipboy(args.pipboy.clone()))
+        .insert_resource(pipboy::StartPipboyKeys(args.pipboy_keys.clone()))
         .add_plugins(grass::GrassPlugin)
         .add_plugins(trees::TreePlugin)
         .add_plugins(water::WaterPlugin)
