@@ -104,6 +104,14 @@ Settings (exe default → the master's): `fRepairMax` 2, `fRepairMin` 0.5,
   (`00891360`): perk entry 68, the health less it, below 1 nothing left;
   the player told when it drops below 25% (`sArmorLowCond`, weapons
   `sWeaponLowCond`, with `WPNBreak`).
+- A weapon with nothing left breaks (`00891360` at 0): the player's is
+  taken off (`0088d7d0`) with `sWeaponBreak` and `WPNBreak`; someone
+  else's is dropped (the actor's slot 0x3cc) unless it can't be dropped
+  (`DNAM` flags 0x08), is embedded (0x20) or a quest item. Armour at 0
+  stays on.
+- Equipping (`0088c830`): a weapon or armour with no health (worn out, or
+  none at full: the master's eight "Broken …" / "Jammed Minigun" props) is
+  refused, the player told `sCantEquipBrokenItem`.
 - What armour gives (`008d2110` DT, `008d22b0` DR, each piece once): its
   figure at its condition, `004be0b0` / `004bdf90`: the record's value
   truncated × (1 above half, 0.5 + condition at or below, `00646d40`),
@@ -132,8 +140,8 @@ order, a repair paid to the vendor, the Pip-Boy's rules with a repair list
 and Jury Rigging), `world::repair::tests` (an NPC's skill offset),
 `ui::menus::repair_services::tests` (filling, the pointer's stats, clicks),
 `ui::pipboy::repair::tests` (the lines' order, what each does, closing),
-`armour_wears_and_loses_its_threshold` and `a_hit_wears_the_players_armour`
-(`crates/world/tests/repair.rs`).
+`armour_wears_and_loses_its_threshold`, `a_hit_wears_the_players_armour`
+and `broken_things_come_off_and_stay_off` (`crates/world/tests/repair.rs`).
 Seen in the viewer at Mick & Ralph's (`--open-menu
 repair:FreesideMickREF`): Repair 75, mending to 85%; a 9mm pistol at 30%
 for 110 caps; clicking it paid 110 caps and left it at 85%, "CANNOT
@@ -150,8 +158,10 @@ it, one spare left.
 - An item's condition is kept per holder and kind (weapons and armour,
   `GameState::weapon_health`): a repair or wear touches every one of a kind
   the holder has, where the game's touch one.
-- A weapon breaking at 0% (`sWeaponBreak`, `00891a6a`); fatigue damage (no
-  hit here does any), the shotgun's threshold share per projectile.
+- Fatigue damage (no hit here does any), the shotgun's threshold share
+  per projectile; a broken weapon an NPC drops stays in their inventory,
+  marked dropped (`GameState::dropped`), rather than becoming a reference
+  on the ground.
 - Weapon mods (a condition mod raising full health, `004bda70(10)`), the
   ammunition's and perk entry 0's part in the damage figure (`006450f0`).
 - The dialogue topic handed back when the merchant's menu closes

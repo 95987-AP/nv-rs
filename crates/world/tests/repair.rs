@@ -324,3 +324,48 @@ fn a_hit_wears_the_players_armour() {
     let c = world::combat::weapon_condition(&state, PLAYER_REF, FormId(ARMOR));
     assert!(c <= 0.97 + 1e-4, "{c}");
 }
+
+/// A weapon worn to nothing breaks (`00891360`): the player's is taken
+/// off with "Your weapon has broken."; someone else drops theirs. Nothing
+/// broken goes back on (`0088c830`): "Broken items cannot be equipped
+/// until they have been repaired."
+#[test]
+fn broken_things_come_off_and_stay_off() {
+    use world::combat;
+    let (_data, order) = order("repair-broken");
+    let mut state = GameState::new(&order);
+    let pistol = FormId(PISTOL);
+    give(&order, &mut state, PISTOL, 1);
+    state.equip(&order, PLAYER_REF, pistol);
+    state.events.clear();
+    // 150 health: 149.5 leaves under 1, so nothing.
+    combat::damage_item(&order, &mut state, PLAYER_REF, pistol, 149.5);
+    assert_eq!(combat::weapon_condition(&state, PLAYER_REF, pistol), 0.0);
+    assert!(!state.is_equipped(PLAYER_REF, pistol));
+    let said = |state: &GameState, t: &str| {
+        state
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::Message { text, .. } if text == t))
+    };
+    assert!(said(&state, "Your weapon has broken."));
+    state.events.clear();
+    state.equip(&order, PLAYER_REF, pistol);
+    assert!(!state.is_equipped(PLAYER_REF, pistol));
+    assert!(said(
+        &state,
+        "Broken items cannot be equipped until they have been repaired."
+    ));
+    // Mended, it goes on again.
+    state.weapon_health.insert((PLAYER_REF, pistol), 0.5);
+    state.equip(&order, PLAYER_REF, pistol);
+    assert!(state.is_equipped(PLAYER_REF, pistol));
+    // The doctor's breaks and he drops it.
+    let doc = FormId(DOC_REF);
+    state.stock(&order, doc);
+    state.items.insert((doc, pistol), 1);
+    state.equip(&order, doc, pistol);
+    combat::damage_item(&order, &mut state, doc, pistol, 200.0);
+    assert!(!state.is_equipped(doc, pistol));
+    assert!(state.dropped.contains(&(doc, pistol)));
+}

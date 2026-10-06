@@ -770,7 +770,7 @@ pub fn damage_weapon(
 /// left below 1; the condition kept as a share of its full health
 /// (`world::repair::max_health`). The player is told when one drops from
 /// 25% or more to below it: `sWeaponLowCond` / `sArmorLowCond`, with
-/// `WPNBreak`.
+/// `WPNBreak`. A weapon left with nothing breaks ([`break_weapon`]).
 pub fn damage_item(
     order: &LoadOrder,
     state: &mut GameState,
@@ -817,6 +817,38 @@ pub fn damage_item(
         if let Some(sound) = order.form_by_editor_id("WPNBreak") {
             state.events.push(Event::Sound(sound));
         }
+    }
+    if health <= 0.0 && order.get(item).is_some_and(|r| r.entry.header.kind == WEAP) {
+        break_weapon(order, state, holder, item);
+    }
+}
+
+/// A weapon with no health left breaks (`00891360` at 0): the player is
+/// told (`sWeaponBreak`, `WPNBreak`) and it's taken off; someone else drops
+/// it (the actor's slot 0x3cc), unless it can't be dropped (`DNAM` flags
+/// 0x08), is embedded (0x20) or is a quest item, which they only put
+/// away. (Broken things can't be put back on: `GameState::equip`.)
+fn break_weapon(order: &LoadOrder, state: &mut GameState, holder: FormId, item: FormId) {
+    if holder == PLAYER_REF {
+        let text = crate::scripting::game_setting_text(order, "sWeaponBreak")
+            .unwrap_or_else(|| "Your weapon has broken.".to_string());
+        state.events.push(Event::Message {
+            title: None,
+            text,
+            buttons: Vec::new(),
+        });
+        if let Some(sound) = order.form_by_editor_id("WPNBreak") {
+            state.events.push(Event::Sound(sound));
+        }
+        state.unequip_item(order, holder, item);
+        return;
+    }
+    let flags = Weapon::load(order, item).map_or(0, |w| w.flags1);
+    let keep =
+        flags & (0x08 | 0x20) != 0 || crate::script_functions::is_quest_item(order, state, item);
+    state.unequip_item(order, holder, item);
+    if !keep {
+        state.dropped.insert((holder, item));
     }
 }
 

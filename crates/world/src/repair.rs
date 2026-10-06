@@ -133,6 +133,11 @@ pub fn has_condition(order: &LoadOrder, item: FormId) -> bool {
 /// An item's full health (`004873d0`; weapons `004bcf00`, whose mods
 /// aren't kept here): `DATA` i32 at 4 for weapons and armour.
 pub fn max_health(order: &LoadOrder, item: FormId) -> i32 {
+    stated_health(order, item).unwrap_or(0)
+}
+
+/// [`max_health`] when the record has a `DATA` to give it.
+pub fn stated_health(order: &LoadOrder, item: FormId) -> Option<i32> {
     order
         .get(item)
         .filter(|r| r.entry.header.kind == WEAP || r.entry.header.kind == ARMO)
@@ -142,7 +147,6 @@ pub fn max_health(order: &LoadOrder, item: FormId) -> i32 {
                 .filter(|s| s.data.len() >= 8)
                 .map(|s| le_u32(&s.data, 4) as i32)
         })
-        .unwrap_or(0)
 }
 
 /// An item's condition in percent (`004bcdb0(…, 1)`), as kept (full when

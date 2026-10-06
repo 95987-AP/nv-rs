@@ -552,8 +552,32 @@ impl GameState {
 
     /// Someone equips an item: a weapon puts away the one in hand; clothes
     /// and armour take off what's worn on any of the same body slots
-    /// (`BMDT`, as the game's apparel does).
+    /// (`BMDT`, as the game's apparel does). A weapon or armour with no
+    /// health left (worn out, or none at full: the master's "Broken" junk)
+    /// isn't put on (`0088c830`); the player is told
+    /// (`sCantEquipBrokenItem`).
     pub fn equip(&mut self, order: &LoadOrder, who: FormId, item: FormId) {
+        if let Some(full) = crate::repair::stated_health(order, item) {
+            let full = full as f32;
+            let health = self
+                .weapon_health
+                .get(&(who, item))
+                .map_or(full, |c| c * full);
+            if health <= 0.0 {
+                if who == PLAYER_REF {
+                    let text =
+                        game_setting_text(order, "sCantEquipBrokenItem").unwrap_or_else(|| {
+                            "Broken items cannot be equipped until they have been repaired.".into()
+                        });
+                    self.events.push(Event::Message {
+                        title: None,
+                        text,
+                        buttons: Vec::new(),
+                    });
+                }
+                return;
+            }
+        }
         self.item_event(order, who, item, event::EQUIP);
         let kind = |f: FormId| order.get(f).map(|r| r.entry.header.kind);
         let item_kind = kind(item);
