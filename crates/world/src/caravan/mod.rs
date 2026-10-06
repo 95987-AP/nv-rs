@@ -22,6 +22,8 @@ use esm::{FormId, FourCC, LoadOrder};
 
 use crate::scripting::GameState;
 
+pub mod ai;
+
 pub const ACE: i32 = 1;
 pub const JACK: i32 = 12;
 pub const QUEEN: i32 = 13;
@@ -516,6 +518,84 @@ impl Game {
             (3..TRACKS).rev().find(|&t| self.tracks[t][0].is_empty())
         } else {
             (0..3).find(|&t| self.tracks[t][0].is_empty())
+        }
+    }
+}
+
+/// What a turn did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Turn {
+    /// A card played (where, and what it took away).
+    Played {
+        card: Card,
+        track: usize,
+        row: usize,
+        played: Played,
+    },
+    /// A card thrown away.
+    Discarded(Card),
+    /// A track thrown away.
+    DiscardedTrack(usize),
+}
+
+impl Game {
+    /// The opponent's turn (state 21: `ProcessAI`'s package carried out).
+    /// Starting the caravans, a number card goes on its last empty track,
+    /// row 0, nothing drawn; a card thrown away then is replaced and the
+    /// opponent goes again (`keeps_turn`).
+    pub fn npc_turn(&mut self, difficulty: i32, dice: Dice) -> (Turn, bool) {
+        let p = self.process_ai(difficulty);
+        if p.action == ai::action::DISCARD_CARD {
+            let card = self.npc_hand[p.card];
+            self.discard(true, p.card, dice);
+            return (Turn::Discarded(card), self.setup);
+        }
+        if self.setup {
+            let track = self.setup_track(true).unwrap_or(2);
+            let card = self.npc_hand[p.card];
+            let played = self.play(true, p.card, track, 0, dice);
+            return (
+                Turn::Played {
+                    card,
+                    track,
+                    row: 0,
+                    played,
+                },
+                false,
+            );
+        }
+        if p.action == ai::action::DESTROY_TRACK {
+            self.discard_track(p.track);
+            return (Turn::DiscardedTrack(p.track), false);
+        }
+        let card = self.npc_hand[p.card];
+        let played = self.play(true, p.card, p.track, p.row, dice);
+        self.resolve(&played);
+        (
+            Turn::Played {
+                card,
+                track: p.track,
+                row: p.row,
+                played,
+            },
+            false,
+        )
+    }
+
+    /// The player plays a hand card on a row (`DoGamepad`): starting the
+    /// caravans it ends once tracks 2 and 3 both have a card (state 11).
+    pub fn player_play(&mut self, hand_index: usize, track: usize, row: usize, dice: Dice) -> Turn {
+        let card = self.player_hand[hand_index];
+        let played = self.play(false, hand_index, track, row, dice);
+        self.resolve(&played);
+        if self.setup && self.setup_finished() {
+            self.setup = false;
+        }
+        Turn::Played {
+            card,
+            track,
+            row,
+            played,
         }
     }
 }

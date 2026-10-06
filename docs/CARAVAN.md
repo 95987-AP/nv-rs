@@ -69,6 +69,37 @@ member offsets (`trackInfo` at +0xDE4, the tracks at +0xB44).
   suit, on any track.
 - Throwing away a card draws one; throwing away a whole track empties it
   (state 15).
+- Turns (state 21, the byte at +0xE82): the opponent moves first, then
+  each in turn; a card thrown away while starting the caravans keeps the
+  turn.
+- The opponent (`ProcessAI`, `0074fdc0`; `CaravanAIPackage`): every move it
+  could make becomes a package (the value it would bring a track to, how
+  that stands, the action, track, row and hand card, a priority); sorted by
+  priority with the exe's own `qsort` (Visual Studio 2008's, `00ec6f20`, so
+  equal priorities fall as in the game), the first is played. For each of
+  its tracks: under 21, number cards and kings that don't pass 26
+  (priority the new value; kings +1, −5 at difficulty 2); sold but beaten
+  by the player's facing track, number cards (priority 100 − the margin
+  over it, 50 for a tie, else 25 − what's short of 26), jacks on rows
+  whose loss would put the player below it (75 + or 100 − the margin) and,
+  above difficulty 0, jokers (an estimate of what each track loses; at
+  difficulty 3 a score over all three pairs); sold and ahead, number cards
+  and kings that stay sold; over 26, jacks that bring it back (100 −
+  (26 − value + the row)). On the player's tracks: jacks on sold (51 −
+  what's left) or short (26 − what's left) tracks, kings that push one
+  over (its value − 1). With nothing to play it throws away its highest
+  card (priority: its place in the hand) or one of its unsold tracks
+  (value − 26; × 2 above difficulty 0; − 5 a jack in hand at 3). Starting
+  its caravans: easy plays its last number card unless it has six face
+  cards (then throws its last face card away); 1–2 keep 6–10s or 1–3s and
+  throw a face card away with too few (a joker first; a jack gives way to
+  anything, a king to anything but a jack); 3 plays the card nearest 6.
+- The game's oddities, kept: a jack meant for a player's row is checked
+  and played on the opponent's own track at that row number; the joker
+  estimate counts aces by value on an ace and otherwise sums the rows whose
+  suit number equals the card's value; a king counts once under 21 and
+  twice when sold; the queen move on the player's tracks can never happen
+  (it asks for an empty row inside a loop over non-empty ones).
 - The end (`IsGameOver`, before every turn): a caravan is sold at 21–26
   and wins its pair if the other isn't sold or is lower; all three pairs
   decided, the side with more wins. Otherwise a side with no cards in deck
@@ -80,13 +111,14 @@ member offsets (`trackInfo` at +0xDE4, the tracks at +0xB44).
 saved as `caravancard` / `caravanrecord` lines), `add_card_to_player`
 (the `AddCardToPlayer` command), `Game` (`new`, `is_valid_placement`,
 `update_track_value`, `is_game_over`, `play` and `resolve`, `discard`,
-`discard_track`, `setup_track`, `setup_finished`), `winning_state`.
-Checks: `world::caravan::tests`, `crates/world/tests/caravan.rs`.
+`discard_track`, `setup_track`, `setup_finished`, `npc_turn`,
+`player_play`), `winning_state`; `world::caravan::ai` (`process_ai`,
+`Package`, `crt_qsort`). Checks: `world::caravan::tests`,
+`world::caravan::ai::tests` (39 whole games each end),
+`crates/world/tests/caravan.rs`.
 
 ## Not done yet
 
-- The opponent (`ProcessAI`, `CaravanAIPackage`: its actions and their
-  priorities).
 - The ante and the bet (`PrepareAnteMenu`, `ExchangeCurrency`,
   `UpdateBettingUI`), the results and the player's record
   (`PrepareResultsMenu`, misc stats "Caravan Games Won/Lost").
