@@ -280,9 +280,10 @@ pub struct GameState {
     pub player_crimes: (u32, u32),
     pub steal_warnings: u32,
     pub last_theft_day: Option<u32>,
-    /// Hits the player has dealt friends and allies (forgiven up to an
-    /// allowance), and whether the player is a murderer (`IsPCAMurderer`).
-    pub friendly_hits: HashMap<FormId, u32>,
+    /// When the player hit each friend or ally lately, in [`Self::seconds`]
+    /// (forgiven up to an allowance, `world::crime::assault`), and whether
+    /// the player is a murderer (`IsPCAMurderer`).
+    pub friendly_hits: HashMap<FormId, Vec<f64>>,
     pub player_murderer: bool,
     /// How the player is moving, as the viewer last saw (for detection).
     pub player_moving: bool,
@@ -408,6 +409,11 @@ pub struct GameState {
     /// Who's fighting whom: attacker → target (`StartCombat`, being hit,
     /// an aggressive creature seeing the player).
     pub combat: HashMap<FormId, FormId>,
+    /// Attackers someone already fighting takes on as further targets on
+    /// being hurt by them (`world::combat_ai::attacked_by`: `0097f580` →
+    /// `CombatController::AddTarget`, Xbox PDB), victim → attackers, until
+    /// the viewer moves them into the fighter's target list. Not saved.
+    pub hit_targets: HashMap<FormId, Vec<FormId>>,
     /// Whose weapon (or fists) is out: the game's `IsWeaponOut` flag
     /// (`process+0x135`, read by `00915d40`). Kept by the viewer for the
     /// player (`combat::player_attack`: a new game and every change of
@@ -2740,8 +2746,7 @@ impl<'a> Runner<'a> {
             }
             self.run_event(target, "ondeath", attacker);
         } else if fights_back {
-            // Whoever is hurt fights back (unless already fighting).
-            self.state.combat.entry(target).or_insert(attacker);
+            self.attacked(target, attacker);
         }
         Some(crate::combat::Hit {
             dealt,
@@ -2750,6 +2755,30 @@ impl<'a> Runner<'a> {
             multiplier,
             hurt,
         })
+    }
+
+    /// `target`, hurt and alive, answers `attacker`. The player's hits (past
+    /// `world::crime::assault`) and the player hurt keep the viewer's rule:
+    /// the one hurt fights back unless already fighting (for the player that
+    /// entry is only their "in combat" state). Anyone else hurt by someone
+    /// other than the player follows `Actor::AttackedBy` (Xbox PDB,
+    /// [`crate::combat_ai::attacked_by`]): friends and allies tolerate hits,
+    /// and stray shots don't start fights.
+    fn attacked(&mut self, target: FormId, attacker: FormId) {
+        if attacker == PLAYER_REF || target == PLAYER_REF {
+            self.state.combat.entry(target).or_insert(attacker);
+            return;
+        }
+        let answer = crate::combat_ai::attacked_by(self.order, self.state, target, attacker);
+        if answer.enters_combat {
+            self.state.combat.entry(target).or_insert(attacker);
+        }
+        if answer.new_target {
+            let list = self.state.hit_targets.entry(target).or_default();
+            if !list.contains(&attacker) {
+                list.push(attacker);
+            }
+        }
     }
 
     /// An explosion made by `source` (with `weapon`, its maker's weapon)
@@ -2828,7 +2857,7 @@ impl<'a> Runner<'a> {
             }
             self.run_event(target, "ondeath", attacker);
         } else if let (true, Some(s)) = (fights_back, source) {
-            self.state.combat.entry(target).or_insert(s);
+            self.attacked(target, s);
         }
         Some(crate::combat::Hit {
             dealt,

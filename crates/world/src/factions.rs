@@ -207,3 +207,43 @@ pub fn attacks_on_sight(order: &LoadOrder, state: &GameState, who: FormId, other
         _ => matches!(reaction, Reaction::Enemy | Reaction::Neutral),
     }
 }
+
+/// Whether `who`, hit by `other`, would fight them: `GetShouldAttackActor`
+/// (Xbox PDB) with its "attacked" flag set, as `Actor::AttackedBy` and the
+/// combat controller ask it (`CanAttackActor` `008b0670`, `0097f580`).
+/// Someone frenzied (aggression 3) always; else only when the attacker is
+/// frenzied or isn't a friend or an ally (`008b87a0` reaction not 3/2):
+/// friends and allies tolerate each other's hits. A teammate attacker is
+/// taken as the player (`00566950` = actor `+0x18d`, then the call again
+/// with the player). A teammate hit by someone else answers by the
+/// attacker's reaction to the player (the `FollowerSwitchAggressive` ≠ 0
+/// branch: the follower's script variable isn't read, so its 0 branch,
+/// fighting only those already fighting the player or the follower,
+/// isn't done). The player as attacker (`008bffc0`, untraced, can make it
+/// 1) and the perk entry point 0x0F (`005e58f0`) aren't applied.
+// Translated from 008b06d0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn fights_when_hit(order: &LoadOrder, state: &GameState, who: FormId, other: FormId) -> bool {
+    let player = crate::dialogue::PLAYER_REF;
+    let teammate = |x: FormId| state.teammates.contains(&x);
+    if !teammate(who) && teammate(other) && other != player {
+        return fights_when_hit(order, state, who, player);
+    }
+    // A teammate never fights a child (vtable +0x1a0, `IsChild`); else
+    // takes their attacker's view of the player, at aggression 1.
+    if teammate(who) && other != player && crate::script_functions::is_child(order, state, other) {
+        return false;
+    }
+    let (aggression, reacting) = if teammate(who) && other != player {
+        (1, reaction(order, state, other, player))
+    } else {
+        (
+            crate::combat_ai::aggression(order, state, who),
+            reaction(order, state, who, other),
+        )
+    };
+    if aggression == 3 {
+        return true;
+    }
+    crate::combat_ai::aggression(order, state, other) == 3
+        || !matches!(reacting, Reaction::Ally | Reaction::Friend)
+}

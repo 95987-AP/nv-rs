@@ -455,6 +455,80 @@ pub fn assists_against(
     (enemy_value(enemy)? >= 1).then_some(enemy)
 }
 
+/// What someone hurt by another person or creature does about it
+/// ([`attacked_by`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Attacked {
+    /// They start fighting the attacker (`BaseProcess::EnterCombat`, Xbox
+    /// PDB, process vtable +0x33c).
+    pub enters_combat: bool,
+    /// Already fighting (or starting to), they take the attacker on as one
+    /// more target (`CombatController::AddTarget`, Xbox PDB, `0097f930`).
+    pub new_target: bool,
+}
+
+/// `victim` was hurt by `attacker`, someone other than the player:
+/// `Actor::AttackedBy` (Xbox PDB). Nothing for the dead, ghosts or a hit
+/// on oneself. Unless the victim is fighting already with the attacker as
+/// its target (`CombatController::IsActoraCombatTarget`, `0097fa10`), it
+/// starts fighting them only when it can (`CanAttackActor` `008b0670`: a
+/// teammate always, else [`factions::fights_when_hit`]: not a friend or
+/// ally, unless someone is frenzied) **and** the attacker was fighting the
+/// victim (the attacker's combat target, vtable +0x42c), or fighting the
+/// player when the victim follows the player (`008b0ba0`, the process's
+/// commanding actor; taken as the player's teammates). A stray shot from
+/// someone fighting somebody else doesn't start a fight. Then, when the
+/// victim is fighting (`0097f580`, likely `CombatController::
+/// DamagedByAttacker`, Xbox PDB, by its arguments): an attacker that isn't
+/// its target yet and that it would fight when hit ([`factions::
+/// fights_when_hit`]) becomes another target, whoever they aimed at.
+///
+/// Not done (labelled): the detection of the attacker set to 3 when the hit
+/// is noticed (process +0x504/+0xf0), an NPC's hit on a guard out of combat
+/// raising an assault alarm (`008c0460` with the attacker, vtables +0x304
+/// `IsActoraGuard`, +0x218 `IsNpc`, +0x37c `GetRace`, Xbox +4), the life
+/// state 4 / commanding-actor early return, `SetBeenAttacked` (+0x474).
+/// The player's hits go through `world::crime::assault` instead, and the
+/// player as victim isn't decided here.
+// Translated from 008987f0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn attacked_by(
+    order: &LoadOrder,
+    state: &GameState,
+    victim: FormId,
+    attacker: FormId,
+) -> Attacked {
+    let none = Attacked::default();
+    if victim == attacker || attacker == PLAYER_REF || victim == PLAYER_REF {
+        return none;
+    }
+    if state.dead.contains(&victim) || crate::more_functions::is_ghost(state, victim) {
+        return none;
+    }
+    let fighting = state.combat.contains_key(&victim);
+    let their_target = |t: FormId| {
+        state.combat.get(&victim) == Some(&t)
+            || state
+                .hit_targets
+                .get(&victim)
+                .is_some_and(|l| l.contains(&t))
+    };
+    let already = fighting && their_target(attacker);
+    let follows_player = state.teammates.contains(&victim);
+    let aimed = state.combat.get(&attacker) == Some(&victim)
+        || (follows_player && state.combat.get(&attacker) == Some(&PLAYER_REF));
+    // `CanAttackActor` (`008b0670`), the victim not the player here.
+    let can = follows_player || factions::fights_when_hit(order, state, victim, attacker);
+    let enters_combat = !already && can && aimed;
+    // `0097f580`: run when the victim has a combat controller (now).
+    let new_target = (fighting || enters_combat)
+        && !already
+        && factions::fights_when_hit(order, state, victim, attacker);
+    Attacked {
+        enters_combat,
+        new_target,
+    }
+}
+
 /// How sure of itself someone must be to stand (`011c52a8`, filled by
 /// `0047ed10`), by Confidence: `fConfidenceCowardly` (1000),
 /// `…Cautious` (data 0.375), `…Average` (0.1875), `…Brave` (0.0375),
