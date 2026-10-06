@@ -4,9 +4,9 @@
 //! markers) and the list code fill it.
 //!
 //! Not here yet: the local map (the game renders the place from above into
-//! a picture), notes' audio, challenges, the radio's stations playing, and
-//! the player's arrow turning with the heading (the menus' `rotateangle`
-//! isn't drawn).
+//! a picture), quest markers and waypoints on the map, notes' audio,
+//! challenges, the radio's stations playing, and the player's arrow turning
+//! with the heading (the menus' `rotateangle` isn't drawn).
 
 use super::{by_id, text, trait_id, Action, Key, PipboyInput, QuestLine};
 use crate::listbox::ListBox;
@@ -40,9 +40,35 @@ pub const UNDISCOVERED_PICTURE: &str = "Interface\\Icons\\World Map\\icon_map_un
 /// clamped, in a straight line from `fWorldMapMarkerMinSize` 20 to
 /// `MaxSize` 50).
 pub fn marker_size(magnification: f32) -> f32 {
-    let (lo, hi) = (0.75, 5.0);
-    let k = ((magnification - lo) / (hi - lo)).clamp(0.0, 1.0);
+    let k = zoom_share(magnification);
     20.0 + (50.0 - 20.0) * k
+}
+
+/// `fWorldMapMinZoom` and `fWorldMapMaxZoom` (`011d22f8`, `011d3d3c`).
+pub const WORLD_MIN_ZOOM: f32 = 0.75;
+pub const WORLD_MAX_ZOOM: f32 = 5.0;
+/// One notch of the mouse wheel zooms by this (`0079c530`: `01056528`
+/// 1.1), Page Up / Page Down (the pad's bumpers) by this (`00799790`
+/// cases 0x0f / 0x10: `01018204` 1.2).
+pub const WHEEL_ZOOM: f32 = 1.1;
+pub const KEY_ZOOM: f32 = 1.2;
+
+/// A magnification's share between the world map's least and most zoom,
+/// clamped.
+fn zoom_share(magnification: f32) -> f32 {
+    ((magnification - WORLD_MIN_ZOOM) / (WORLD_MAX_ZOOM - WORLD_MIN_ZOOM)).clamp(0.0, 1.0)
+}
+
+/// The world map's `user0` .. `user2` (`0079c5a0`): the markers'
+/// (`fWorldMapMarkerMinSize` 20 .. `MaxSize` 50), the quest markers'
+/// (`fWorldQuestMarkerMinSize` 30 .. 60) and the player's arrow's
+/// (`fWorldfPlayerCursorMinSize` 40 .. `fWorldPlayerCursorMaxSize` 70)
+/// widths, in a straight line by the magnification's share.
+fn set_marker_sizes(ui: &mut Ui, world: TileId, magnification: f32) {
+    let k = zoom_share(magnification);
+    ui.set_number(world, t::USER0, marker_size(magnification));
+    ui.set_number(world, t::USER0 + 1, 30.0 + 30.0 * k);
+    ui.set_number(world, t::USER0 + 2, 40.0 + 30.0 * k);
 }
 
 /// The DATA menu.
@@ -61,6 +87,8 @@ pub struct DataMenu {
     /// The world map's markers' tiles, and the one chosen.
     markers: Vec<TileId>,
     pub marker: Option<usize>,
+    /// The player's own marker's tile on the map.
+    markers_extra: Vec<TileId>,
     /// What the map and the lists were last made from (each made again
     /// only when its own part changes, so dragging, the pointer's row and
     /// scrolling stay).
@@ -72,9 +100,10 @@ pub struct DataMenu {
     /// the highlight box follows it instead (`0079a130`).
     pub cursor_hidden: bool,
     /// The map's place when the button went down (the menu's +0x120 /
-    /// +0x124, compared by `00796fd0` case 0x1a; where the game stores
-    /// them isn't traced, a guess): a release after the map moved is a
-    /// drag, not a click on a marker.
+    /// +0x124, stored by `00798480`, `MapMenu::DoDownClick` (Xbox PDB),
+    /// for a press on the world map, id 4; compared by `00796fd0` case
+    /// 0x1a): a release after the map moved is a drag, not a click on a
+    /// marker.
     pressed_at: Option<(f32, f32)>,
 }
 
@@ -94,6 +123,8 @@ pub const LOCAL_MAP_ID: i32 = 2;
 /// A map marker's `id` (`MapMarkerTemplate`, `0079cdb0`): 26, compared as
 /// `01074f60` (26.0) by `00799dc0`.
 pub const MARKER_ID: i32 = 26;
+/// The player's own marker's `id` (`0079f360`: 0x1c).
+pub const CUSTOM_MARKER_ID: i32 = 0x1c;
 /// The part of the map clip window the cursor is "on the map" in
 /// (`0079a130`: 0 .. `01074f68` 850 across, 0 .. `010301a8` 500
 /// down).
@@ -145,6 +176,7 @@ impl DataMenu {
             data_rect: by_id(ui, menu, 13),
             markers: Vec::new(),
             marker: None,
+            markers_extra: Vec::new(),
             filled_map: None,
             filled_lists: None,
             hovered: None,
@@ -228,9 +260,17 @@ impl DataMenu {
         let Some(world) = self.world else {
             return;
         };
-        for m in self.markers.drain(..) {
+        for m in self.markers.drain(..).chain(self.markers_extra.drain(..)) {
             ui.remove(m);
         }
+        // The same picture again (only markers changed): the map stays
+        // where it is and as zoomed.
+        let same_picture = self
+            .filled_map
+            .as_ref()
+            .and_then(|m| m.as_ref())
+            .zip(input.world_map.as_ref())
+            .is_some_and(|(a, b)| a.picture == b.picture && a.size == b.size);
         let Some(map) = &input.world_map else {
             ui.set_number(world, t::VISIBLE, 0.0);
             return;
@@ -241,12 +281,7 @@ impl DataMenu {
         ui.set_number(world, t::FILEHEIGHT, map.size[1]);
         let mag = trait_id(ui, "_Magnification");
         let magnification = ui.number(world, mag).max(0.01);
-        ui.set_number(world, t::USER0, marker_size(magnification));
-        // The player's arrow (`fWorldfPlayerCursorMinSize` 40 ..
-        // `MaxSize` 70) and quest markers (30 .. 60), by the same rule.
-        let k = ((magnification - 0.75) / (5.0 - 0.75)).clamp(0.0, 1.0);
-        ui.set_number(world, t::USER0 + 1, 30.0 + 30.0 * k);
-        ui.set_number(world, t::USER0 + 2, 40.0 + 30.0 * k);
+        set_marker_sizes(ui, world, magnification);
         let (x_id, y_id) = (trait_id(ui, "_x"), trait_id(ui, "_y"));
         let name_id = trait_id(ui, "_LocationName");
         let index_id = trait_id(ui, "_MarkerIndex");
@@ -271,6 +306,18 @@ impl DataMenu {
             ui.set_number(tile, index_id, i as f32);
             self.markers.push(tile);
         }
+        // The player's own marker (`0079f360`, `MapMenu::CreatePlayerMarker`
+        // (Xbox PDB)): a `WorldMapQuestMarkerTemplate` with the compass's
+        // `glow_hud_compass_pc_marker.dds`, `id` 0x1c, at its place.
+        if let Some(at) = map.custom {
+            if let Some(tile) = ui.instantiate(self.menu, world, "WorldMapQuestMarkerTemplate") {
+                ui.set_number(tile, x_id, at[0]);
+                ui.set_number(tile, y_id, at[1]);
+                ui.set_string(tile, t::FILENAME, "glow_hud_compass_pc_marker.dds");
+                ui.set_number(tile, t::ID, CUSTOM_MARKER_ID as f32);
+                self.markers_extra.push(tile);
+            }
+        }
         if let Some(cursor) = self.cursor {
             match map.player {
                 Some((at, _heading)) => {
@@ -285,7 +332,7 @@ impl DataMenu {
         // the mouse's drag and stays inside the window: its own operators).
         let centre = map.player.map(|(at, _)| at);
         self.marker = None;
-        if let Some(at) = centre {
+        if let Some(at) = centre.filter(|_| !same_picture) {
             self.centre_on(ui, at);
         }
     }
@@ -300,6 +347,70 @@ impl DataMenu {
         let h = ui.number(world, t::HEIGHT);
         ui.set_base(world, t::X, 427.5 - at[0] * w);
         ui.set_base(world, t::Y, 250.0 - at[1] * h);
+    }
+
+    /// Zooms the world map in or out by `factor` about the point at the
+    /// clip window's middle. Translated from 0079c5a0 (decompiled,
+    /// FalloutNV.exe 1.4.0.525), `MapMenu::ZoomMap` (Xbox PDB): only on the
+    /// world map's tab here (the local map, which the game zooms the same
+    /// way between `fLocalMapMinZoom` and `MaxZoom`, isn't drawn); the
+    /// magnification × or ÷ `factor`, clamped to `fWorldMapMinZoom` ..
+    /// `MaxZoom`; the markers' sizes from it; the map's point under the
+    /// window's middle (half the window less the map's `x`, `y`) scaled
+    /// by the new width over the old and put back there (the map's `x`
+    /// less its `dragdeltax`, as the file adds that); when the
+    /// magnification changed, the scroll knob turns (`007f8610`, which
+    /// plays `UIPipBoyScroll`).
+    pub fn zoom(&mut self, ui: &mut Ui, zoom_in: bool, factor: f32) -> Vec<Action> {
+        let mut out = Vec::new();
+        let Some(world) = self.world.filter(|_| self.tab == 1) else {
+            return out;
+        };
+        if ui.number(world, t::VISIBLE) == 0.0 {
+            return out;
+        }
+        let Some(window) = ui.tiles[world].parent else {
+            return out;
+        };
+        let mag_id = trait_id(ui, "_Magnification");
+        let old = ui.number(world, mag_id);
+        let by = if zoom_in { factor } else { 1.0 / factor };
+        let new = (old * by).clamp(WORLD_MIN_ZOOM, WORLD_MAX_ZOOM);
+        let (ww, wh) = (ui.number(window, t::WIDTH), ui.number(window, t::HEIGHT));
+        let old_width = ui.number(world, t::WIDTH);
+        let mut centre = (
+            ww / 2.0 - ui.number(world, t::X),
+            wh / 2.0 - ui.number(world, t::Y),
+        );
+        set_marker_sizes(ui, world, new);
+        if old_width > 0.0 {
+            let k = ui.number(world, t::FILEWIDTH) * new / old_width;
+            centre = (centre.0 * k, centre.1 * k);
+        }
+        ui.set_number(world, mag_id, new);
+        ui.refresh();
+        let delta = (
+            ui.number(world, crate::menu::drag::DELTA_X),
+            ui.number(world, crate::menu::drag::DELTA_Y),
+        );
+        ui.set_base(world, t::X, ww / 2.0 - centre.0 - delta.0);
+        ui.set_base(world, t::Y, wh / 2.0 - centre.1 - delta.1);
+        ui.refresh();
+        if new != old {
+            out.push(Action::Sound("UIPipBoyScroll".into()));
+        }
+        out
+    }
+
+    /// The mouse wheel over the menu: on the map tabs, a notch away from
+    /// the player zooms in. Translated from 0079c530 (decompiled,
+    /// FalloutNV.exe 1.4.0.525): the interface's wheel count (120 a notch)
+    /// ÷ 120 above 0 zooms in by 1.1, else out.
+    pub fn wheel(&mut self, ui: &mut Ui, delta: i32) -> Vec<Action> {
+        if self.tab > 1 {
+            return Vec::new();
+        }
+        self.zoom(ui, delta / 120 > 0, WHEEL_ZOOM)
     }
 
     /// The quests (`MM_ListMarkerTemplate`: the active one's square filled,
@@ -415,6 +526,13 @@ impl DataMenu {
                 }
                 self.show_selected(ui, input);
             }
+            // The bumpers (Page Up / Page Down) zoom the maps, Page Down
+            // in (`00799790` cases 0x0f / 0x10).
+            Key::PageUp | Key::PageDown => {
+                if self.tab <= 1 {
+                    out.extend(self.zoom(ui, key == Key::PageDown, KEY_ZOOM));
+                }
+            }
             Key::Activate => match self.tab {
                 1 => {
                     if let Some(m) = self
@@ -451,10 +569,10 @@ impl DataMenu {
     /// unless it's finished (`0059e400`, `009529d0`); the world map's
     /// picture (4) presses the marker the highlight box has found (case 4
     /// → 0x1a), when the map wasn't dragged since the button went down and
-    /// the marker can be travelled to. (The game asks "%s %s?" first,
-    /// `00703e80` with `00798710`: that box isn't here yet, so the travel is
-    /// asked for at once. Notes' audio, the radio playing, the custom
-    /// marker (0x0c) and challenges are not here yet.)
+    /// the marker can be travelled to (the caller then asks "%s %s?",
+    /// `00703e80` with `00798710`). (Notes' audio, the radio playing and
+    /// challenges are not here yet; the player's marker, 0x0c, comes from
+    /// the right button: [`DataMenu::right_pressed`].)
     pub fn click(
         &mut self,
         ui: &mut Ui,
@@ -493,6 +611,32 @@ impl DataMenu {
                 }
             }
             _ => {}
+        }
+        out
+    }
+
+    /// The right button went down (`0079a130` on the map tabs, the pointer
+    /// inside the map's area, the Pip-Boy control up: click 0x0c): the
+    /// player's marker is asked for at the point under the pointer. Case
+    /// 0x0c of 00796fd0 (decompiled, FalloutNV.exe 1.4.0.525), the mouse's
+    /// branch: the pointer less the map's place on the screen, both
+    /// divided by the map's width (`0053d280`), on the world map's tab
+    /// (the local map isn't drawn here).
+    pub fn right_pressed(&mut self, ui: &mut Ui, at: Option<[f32; 2]>) -> Vec<Action> {
+        let mut out = Vec::new();
+        let (Some(at), Some(world)) = (at, self.world) else {
+            return out;
+        };
+        if self.tab != 1 || !self.cursor_hidden || ui.number(world, t::VISIBLE) == 0.0 {
+            return out;
+        }
+        let (mx, my) = ui.screen_position(world);
+        let width = ui.number(world, t::WIDTH);
+        if width > 0.0 {
+            out.push(Action::PlaceMarker([
+                (at[0] - mx) / width,
+                (at[1] - my) / width,
+            ]));
         }
         out
     }
@@ -638,6 +782,8 @@ mod tests {
                     marker(0x901, "Goodsprings", true),
                 ],
                 player: Some(([0.5, 0.5], 90.0)),
+                corners: [[0.0, 1.0], [1.0, 0.0]],
+                custom: None,
             }),
             quests: vec![QuestLine {
                 form: 0x700,
@@ -692,6 +838,55 @@ mod tests {
         assert_eq!(d.tab, 4);
         let location = by_id(&ui, d.menu, 0).unwrap();
         assert_eq!(ui.string(location, t::STRING).unwrap(), "Goodsprings");
+    }
+
+    /// `0079c5a0` / `0079c530` / `00799790`: zooming keeps the map's point
+    /// under the window's middle there, clamps the magnification and sizes
+    /// the markers by it; the wheel zooms by 1.1, Page Down in by 1.2.
+    #[test]
+    fn zooming_the_world_map_keeps_its_middle() {
+        const ZOOM_MENU: &str = r#"<menu name="MapMenu"><locus>&true;</locus>
+          <hotrect name="clip"><y>50</y><width>855</width><height>500</height><locus>&true;</locus>
+            <hotrect name="world"><id>4</id><locus>&true;</locus><_Magnification>1</_Magnification>
+              <width><copy src="me()" trait="filewidth"/><mul src="me()" trait="_Magnification"/></width>
+              <height><copy src="me()" trait="fileheight"/><mul src="me()" trait="_Magnification"/></height>
+              <x><add src="me()" trait="dragdeltax"/></x><y><add src="me()" trait="dragdeltay"/></y>
+            </hotrect>
+          </hotrect>
+          <template name="MapMarkerTemplate"><image name="marker"><user0>1</user0></image></template>
+        </menu>"#;
+        let mut ui = crate::pipboy::tests::ui();
+        let mut read =
+            |p: &str| (p == crate::pipboy::DATA_FILE).then(|| ZOOM_MENU.as_bytes().to_vec());
+        let mut d = DataMenu::load(&mut ui, &mut read).unwrap();
+        d.fill(&mut ui, &input());
+        let world = by_id(&ui, d.menu, 4).unwrap();
+        let middle = |ui: &mut Ui| {
+            let (x, y) = (ui.number(world, t::X), ui.number(world, t::Y));
+            let (w, h) = (ui.number(world, t::WIDTH), ui.number(world, t::HEIGHT));
+            ((427.5 - x) / w, (250.0 - y) / h)
+        };
+        assert_eq!(middle(&mut ui), (0.5, 0.5));
+        let out = d.key(&mut ui, Key::PageDown, &input());
+        assert_eq!(out, [Action::Sound("UIPipBoyScroll".into())]);
+        let mag = ui.names.lookup("_Magnification").unwrap();
+        assert!((ui.number(world, mag) - 1.2).abs() < 1e-6);
+        assert_eq!(ui.number(world, t::WIDTH), 1200.0);
+        let (mx, my) = middle(&mut ui);
+        assert!((mx - 0.5).abs() < 1e-5 && (my - 0.5).abs() < 1e-5);
+        assert!((ui.number(world, t::USER0) - marker_size(1.2)).abs() < 1e-5);
+        // A notch towards the player: out by 1.1.
+        d.wheel(&mut ui, -120);
+        assert!((ui.number(world, mag) - 1.2 / 1.1).abs() < 1e-5);
+        // No further out than `fWorldMapMinZoom`, and no knob then.
+        for _ in 0..10 {
+            d.key(&mut ui, Key::PageUp, &input());
+        }
+        assert_eq!(ui.number(world, mag), WORLD_MIN_ZOOM);
+        assert!(d.key(&mut ui, Key::PageUp, &input()).is_empty());
+        // Not on the quests' tab.
+        d.show_tab(&mut ui, 2, &input());
+        assert!(d.wheel(&mut ui, 120).is_empty());
     }
 
     #[test]

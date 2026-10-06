@@ -258,6 +258,21 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
     ("sDayThursday", "Thursday"),
     ("sDayFriday", "Friday"),
     ("sDaySaturday", "Saturday"),
+    // The Pip-Boy's map (`00796fd0` case 0x0c: the player's marker) and
+    // ITEMS' Drop (`00780140` case 7).
+    ("sSetMarkerQuestion", "Do you want to set your marker?"),
+    (
+        "sMoveMarkerQuestion",
+        "Do you want to move your marker or remove it?",
+    ),
+    ("sMoveMarker", "Move It"),
+    ("sRemoveMarker", "Remove It"),
+    ("sLeaveMarker", "Leave It"),
+    (
+        "sDropQuestItemWarning",
+        "You cannot remove Quest Items from your Inventory.",
+    ),
+    ("sKeyring", "Keyring"),
 ];
 
 /// A text setting's exe default (see [`EXE_TEXT_SETTINGS`]), name compared
