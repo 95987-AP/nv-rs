@@ -54,6 +54,17 @@ pub enum DrawKind {
         font: usize,
         glyphs: Vec<([f32; 4], [[f32; 2]; 4], u32)>,
     },
+    /// A `nif` tile's model piece (`Tile3D` (Xbox PDB)) laid flat on the
+    /// screen: triangles of (x, y) in menu units and (u, v); no texture is
+    /// white; blended `src` × source + `dst` × destination with the NIF's
+    /// `NiAlphaProperty` factors (Gamebryo's numbering: 0 one, 1 zero,
+    /// 2 source colour, 3 one minus it, 4 destination colour, 5 one minus
+    /// it, 6 source alpha, 7 one minus it), or without blending.
+    Model {
+        texture: Option<String>,
+        triangles: Vec<[([f32; 2], [f32; 2]); 3]>,
+        blend: Option<(u8, u8)>,
+    },
 }
 
 /// Where a texture named in a tile's `filename` is (`Data\Textures\` +

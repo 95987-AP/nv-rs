@@ -12,6 +12,7 @@ pub mod levelup;
 pub mod message;
 pub mod quantity;
 pub mod sleepwait;
+pub mod start;
 pub mod textedit;
 pub mod traits;
 pub mod vigor;

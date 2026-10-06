@@ -298,6 +298,7 @@ pub fn menu(
                 "  {name}: {texture} at {:.2}, {:.2} size {:.2} x {:.2} uv {:.5} {:.5} .. {:.5} {:.5}, depth {}, {color}",
                 rect[0], rect[1], rect[2], rect[3], uv[0], uv[1], uv[2], uv[3], item.depth
             )?,
+            DrawKind::Model { triangles, .. } => writeln!(out, "model {} triangles depth {}", triangles.len(), item.depth)?,
             DrawKind::Text { font, glyphs } => {
                 let left = glyphs.iter().map(|g| g.0[0]).fold(f32::INFINITY, f32::min);
                 let top = glyphs.iter().map(|g| g.0[1]).fold(f32::INFINITY, f32::min);
@@ -492,6 +493,7 @@ pub fn pipboy(
                 "  {name}: {texture} at {:.1}, {:.1} size {:.1} x {:.1}, {color}",
                 rect[0], rect[1], rect[2], rect[3]
             )?,
+            DrawKind::Model { .. } => {}
             DrawKind::Text { glyphs, .. } => {
                 let text = ui
                     .string(item.tile, t::STRING)
