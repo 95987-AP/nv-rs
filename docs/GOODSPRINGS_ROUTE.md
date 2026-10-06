@@ -157,6 +157,19 @@ not clicked through):
 5. `player.ModAV Health 5000` so the standing, non-shooting automation
    player survives long enough to watch the fight (not part of the route).
 
+The exact command (one line, run from the worktree root after
+`cargo build --release` in `viewer/`; runs 8, 10 and 11):
+
+```
+viewer\target\release\nv-viewer.exe "C:\Games\Steam\steamapps\common\Fallout New Vegas\Data" WastelandNV --at -67845,3000,8400,180 --run "set VMS16.bTrudyHelp to 1" --run "SetStage VMS16 65" --run "SunnyRef.ResetHealth" --run "SunnyRef.MoveTo SunnySpawnMarker" --run "SunnyRef.AddScriptPackage SunnyTriggerGunfightDialoguePackage" --run "SunnyRef.RemoveScriptPackage" --run "GoodspringsPowderGangMarker.Enable" --run "SunnyRef.AddScriptPackage SunnyTravelPackage" --run "RingoRef.AddScriptPackage RingoTravelPackage" --run "RingoRef.AddToFaction GoodspringsFaction 1" --run "SetStage VMS16 70" --run "set VMS16.bGunFightStart to 1" --run "player.ModAV Health 5000" --screenshot <OUT>\run.png --wait 130 --walk --weapon WeapNV9mmPistol
+```
+
+The player position matters: at -67845,3000 the player is about 800
+units north of `PowderGangDestination`, within the gangers' detection
+range as they arrive, and the settlers at their markers see the gangers.
+From PowerShell, pass the arguments as an array to `Start-Process` (or
+the call operator) so each `--run` line stays one argument.
+
 Note: INFO 00105D09 sets `bGunFightStart` itself, so the quest script's
 own stage-70 block (`GSJoeCobbRef.AddScriptPackage GSPGTravelPackage`,
 the settlers' flee packages) does not run on this path; the gangers and
@@ -210,6 +223,25 @@ take part, as their packages say.
    `viewer/src/exterior.rs` `people_brought_in_stay_talkers_when_squares_change`.
    Run 9 (`--vats 4` next to Joe Cobb) now lists him as a V.A.T.S. target.
 
+3. **Gangers and settlers fought with their fists after the NPC-combat
+   merge.** The merged arsenal (`world::npc_combat::arsenal`, `009993c0`)
+   rates only weapons carried with ammunition, read from
+   `GameState::inventory`. For a holder never stocked that is the
+   record's direct `CNTO` items only; leveled lists are picked by
+   `GameState::stock`. The Powder Gangers, Joe Cobb, Sunny and the
+   settlers carry their guns only through `WithAmmoNV…Loot` lists
+   (`GSPGAAM2` 00104C76: `WithAmmoNVSingleShotgunLoot` 000F9DCF), so the
+   first merged run (run 10) had everyone but Trudy and Easy Pete "take up
+   their fists" (stage 100 still came, through Trudy and Easy Pete).
+   `choose_weapon` now stocks the fighter before rating (the game's actor
+   already holds its leveled items before a fight; when exactly it picks
+   them is not traced here). Test: `crates/world/tests/npc_combat.rs`
+   `a_gunman_fights_with_the_gun_and_rounds_his_leveled_list_gives`
+   (generated `TestRifleWithAmmo` use-all list). Run 11 on the merged
+   build: gangers take up varmint rifles, shotguns, revolvers, a bat and a
+   cleaver; all six die; stage 100 with XP +50; Ringo then talks to the
+   player.
+
 ### Investigated, not changed
 
 - Target after a kill: when a fighter's target dies the viewer drops it
@@ -235,10 +267,12 @@ take part, as their packages say.
   replayed as console lines, not chosen in the dialogue menu.
 - The player's own fighting was not driven (the automation cannot aim);
   the gangers were killed by the townspeople.
-- Owned by the NPC-combat batch (`claude/m2-npc-combat`), not done here:
-  `GetShouldAttack` (`GSJoeCobbTriggerScript`, VMS16b), `OnStartCombat`
-  (`GoodspringsPowderGangerScript`, VMS16b), `SetUnconscious`
-  (`GSVictorRef` at stages 70/100), NPC weapon switching (dynamite), NPC
-  reloads and finite ammo.
+- `GetShouldAttack`, `OnStartCombat`, `SetUnconscious`, NPC weapon
+  choice and finite ammo/reloads came from the NPC-combat batch
+  (`docs/NPC_COMBAT.md`); run 11 exercised weapon choice and reloads but
+  not the VMS16b branch (`GSJoeCobbTriggerScript`, `OnStartCombat
+  player`).
+- In run 10 Trudy killed Easy Pete (friendly fire during the melee); not
+  investigated, not seen in run 11.
 - The guard packages' intruder scan (`docs/PACKAGES.md`).
 - Save/reload during the fight was not tried.
