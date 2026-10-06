@@ -48,7 +48,7 @@ pub use blocks::{
     ObjectNet, ShaderProperty, SourceTexture, StencilProperty, TextureSet, TexturingProperty,
     ZBufferProperty,
 };
-pub use collision::{Collision, CollisionPart, CollisionShape};
+pub use collision::{Collision, CollisionPart, CollisionShape, RigidBodyInfo};
 pub use egm::Egm;
 pub use error::{Error, Result};
 pub use file::{BlockInfo, Nif};

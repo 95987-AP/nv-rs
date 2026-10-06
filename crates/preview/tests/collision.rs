@@ -144,6 +144,7 @@ fn doors_that_open_own_their_leaves_and_swing_them() {
         flags: 0,
         shell: 0.0,
         material: 0,
+        body: Default::default(),
         shape: box_shape(
             [5.0, 5.0, 100.0],
             &Transform {
@@ -268,6 +269,7 @@ fn a_placed_scale_scales_the_collision() {
             flags: 0,
             shell: 0.0,
             material: 0,
+            body: Default::default(),
             shape: box_shape([10.0, 10.0, 10.0], &Transform::IDENTITY),
         }],
         root_transform: None,
@@ -281,4 +283,77 @@ fn a_placed_scale_scales_the_collision() {
     let c = scene.collider(RotationConvention::DEFAULT);
     let d = ray(&c, [-100.0, 0.0, 0.0], [1.0, 0.0, 0.0]).unwrap();
     assert!((d - 80.0).abs() < 1e-3, "{d}");
+}
+
+#[test]
+fn moving_clutter_is_a_body_and_left_out_of_the_collider() {
+    // A bottle-like prop (layer 10, motion 4, mass 1) and a static shelf
+    // under it (friction 0.8), as models; both placed, the bottle at scale 2.
+    let body = |block: usize, mass: f32, motion: u8, friction: f32| nif::RigidBodyInfo {
+        block,
+        mass,
+        center: [0.0, 0.0, 5.0],
+        inertia: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.5]],
+        friction,
+        restitution: 0.4,
+        motion,
+        ..Default::default()
+    };
+    let part = |layer: u8, dynamic: bool, info: nif::RigidBodyInfo, half: [f32; 3]| CollisionPart {
+        layer,
+        dynamic,
+        keyframed: false,
+        node: 0,
+        nodes: Vec::new(),
+        flags: 0,
+        shell: 0.7,
+        material: 0,
+        body: info,
+        shape: box_shape(half, &Transform::IDENTITY),
+    };
+    let model = |collision: Vec<CollisionPart>| Model {
+        path: "meshes\\test\\thing.nif".into(),
+        meshes: Vec::new(),
+        collision,
+        root_transform: None,
+        skeleton: None,
+        sequences: Default::default(),
+        particles: None,
+    };
+    let bottle = model(vec![part(10, true, body(4, 1.0, 4, 0.5), [2.0, 2.0, 10.0])]);
+    let shelf = model(vec![part(
+        1,
+        false,
+        body(3, 0.0, 7, 0.8),
+        [50.0, 50.0, 5.0],
+    )]);
+    let mut b = placement(0x910, 0x804, b"MISC", [0.0, 0.0, 100.0], 90.0);
+    b.scale = 2.0;
+    let s = placement(0x911, 0x805, b"STAT", [0.0, 0.0, 0.0], 0.0);
+    let mut scene = scene(vec![b, s], Vec::new(), vec![bottle, shelf]);
+    scene.instances[1].model = 1;
+    let bodies = scene.dynamic_bodies(RotationConvention::DEFAULT);
+    assert_eq!(bodies.len(), 1);
+    let d = &bodies[0];
+    assert_eq!((d.reference, d.setup.reference), (FormId(0x910), 0x910));
+    assert_eq!((d.setup.layer, d.setup.mass, d.setup.motion), (10, 1.0, 4));
+    // The scale in the shapes, the centre and the inertia.
+    assert_eq!(d.setup.center, [0.0, 0.0, 10.0]);
+    assert_eq!(d.setup.inertia[2][2], 2.0);
+    let physics::rigid::Shape::Hull { vertices, .. } = &d.setup.shapes[0] else {
+        panic!("{:?}", d.setup.shapes[0])
+    };
+    let top = vertices.iter().map(|v| v[2]).fold(f32::MIN, f32::max);
+    assert!((top - 20.0).abs() < 1e-4, "{top}");
+    // Placed turned 90° at its position.
+    assert_eq!(d.pose.1, [0.0, 0.0, 100.0]);
+    assert!((d.pose.0[1][0].abs() - 1.0).abs() < 1e-5, "{:?}", d.pose.0);
+    // The collider has the shelf (with its friction) but not the bottle.
+    let c = scene.collider(RotationConvention::DEFAULT);
+    let (hit, tri) = c
+        .raycast([0.0, 0.0, 200.0], [0.0, 0.0, -1.0], 500.0)
+        .unwrap();
+    assert!((hit - 195.0).abs() < 1e-3, "{hit}");
+    assert_eq!(c.surface(tri).map(|s| s.friction), Some(0.8));
+    assert!(!c.owns(0x910));
 }

@@ -585,6 +585,9 @@ pub struct ViewerScene {
     pub collision: physics::Collider,
     /// Load doors: where they are and where they lead.
     pub doors: Vec<DoorData>,
+    /// Placed objects Havok moves (clutter): their bodies, for the viewer's
+    /// simulation (`physics::rigid`); their collision isn't in [`Self::collision`].
+    pub bodies: Vec<preview::cell::DynamicBody>,
     /// Doors that open where they stand (`world::doors`): their models'
     /// sequences and the collision their leaves swing with.
     pub swing_doors: Vec<SwingDoor>,
@@ -913,6 +916,7 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
     let collision = scene.collider(convention);
     let doors = cell_doors(scene, convention);
     let swing_doors = scene.swing_doors(convention);
+    let bodies = scene.dynamic_bodies(convention);
 
     let cell = &scene.cell;
     let lights: Vec<LightData> = cell
@@ -1038,6 +1042,10 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
     for (path, e) in report.unreadable_collision.iter() {
         notes.push(format!("unreadable collision: {path}: {e}"));
     }
+    notes.push(format!(
+        "{} placed objects Havok moves (clutter bodies)",
+        bodies.len()
+    ));
 
     ViewerScene {
         cell: cell.info.label(),
@@ -1056,6 +1064,7 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
         collision,
         doors,
         swing_doors,
+        bodies,
         terrain: Vec::new(),
         actors,
         sky: cell

@@ -337,6 +337,18 @@ his eating marker), door triangle registration, off-navmesh ends.
 Evidence: [PATHING.md](PATHING.md). **Next action:** record Doc's walk
 and Easy Pete's approach in the original.
 
+M2 batch (`claude/m2-physics`, 2026-10-06): clutter physics. Rigid body
+values read from the models; free bodies simulated at the game's Havok
+step clock (`00c66760`) against the cell's collision, each other and the
+player; shot pushes (`009c2e80`), explosion pushes (`009b0920`) and the
+gameplay impulse scaling (`0062b520`) translated; moved objects kept in
+the state and saves. The VCG02 bottles are plain Havok clutter (no `DEST`):
+verified live, a varmint rifle shot tips one off the fence onto the ground
+behind it and F5/F9 keeps it there. Solver internals are this solver's,
+labelled; not compared with the original. Evidence and gaps:
+[PHYSICS.md](PHYSICS.md). **Next action:** record a bottle shot off the
+fence in the original game and compare.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

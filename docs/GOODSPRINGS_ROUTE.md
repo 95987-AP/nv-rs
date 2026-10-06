@@ -141,8 +141,11 @@ for Sunny); it now goes where the state has them (`scripts.rs`
    above).
 3. ~~Package end actions are not run.~~ They run now (`docs/PACKAGES.md`);
    both end actions fire in the long-path runs.
-4. Not driven: aiming at the bottles, the player following Sunny, the
-   player starting the reward conversation, gecko fights.
+4. Not driven: the player following Sunny, the player starting the
+   reward conversation, gecko fights. Aiming at the bottles was driven on
+   `claude/m2-physics` (injected click on bottle `0010A208`: hit,
+   `OnHitWith`, the bottle knocked off the fence by its Havok push;
+   [PHYSICS.md](PHYSICS.md)).
 5. Seen in passing, not investigated: a sandboxing settler (00104F03)
    "eats" a Super Stimpak and its effect script applies
    `Addiction01ISFX` to the screen; the disabled `VCG02GSSettlerREF`'s

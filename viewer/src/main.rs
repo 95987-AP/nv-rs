@@ -8,6 +8,7 @@ mod actors;
 mod ai;
 mod args;
 mod chatter;
+mod clutter;
 mod combat;
 mod controls;
 mod daylight;
@@ -272,6 +273,7 @@ fn main() {
         .add_plugins(music::MusicPlugin)
         .add_plugins(hiteffects::HitEffectsPlugin)
         .add_plugins(explosives::ExplosivesPlugin)
+        .add_plugins(clutter::ClutterPlugin)
         .add_plugins(lockpick::LockpickPlugin)
         .add_audio_source::<sounds::PcmSound>()
         // The first-person camera runs the image space passes with the
@@ -1372,6 +1374,8 @@ impl Spawner<'_, '_> {
         lighting: Option<GameLighting>,
         land_blend: Option<LandBlendFrom>,
     ) -> Spawned {
+        // Its clutter's bodies go to the simulation (`clutter`).
+        clutter::arrive(&scene.bodies);
         // Every desktop graphics card takes block-compressed textures;
         // check when the device is visible from here.
         let compressed = self

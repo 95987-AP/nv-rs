@@ -343,6 +343,12 @@ pub struct GameState {
     pub unconscious: HashSet<FormId>,
     /// Sizes scripts set (`SetScale`).
     pub scales: HashMap<FormId, f32>,
+    /// Objects Havok moved (shot, blown or pushed clutter: the game's
+    /// "Havok moved" reference change, `CHANGE_REFR_HAVOK_MOVE`, named by
+    /// `0083fef0`): where they came to rest, as their model's turn
+    /// (row-major) and position in the world, which they keep when their
+    /// place loads again.
+    pub havok_moved: HashMap<FormId, ([[f32; 3]; 3], [f32; 3])>,
     /// Which weather it is, what's fading, the climate's pick, scripts'
     /// override, the player's weather region (`world::weather`).
     pub weather: crate::weather::WeatherState,

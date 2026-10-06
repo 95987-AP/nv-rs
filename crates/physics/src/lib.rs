@@ -21,7 +21,9 @@
 //! assert!(player.on_ground && player.feet[2].abs() < 1.0);
 //! ```
 
+pub mod impulses;
 pub mod ragdoll;
+pub mod rigid;
 pub mod shapes;
 mod vec;
 
@@ -61,10 +63,23 @@ struct Triangle {
     /// The Havok material of the shape it came from ([NO_MATERIAL] when
     /// none was given): what a shot striking it sounds and looks like.
     material: u32,
+    /// Its rigid body's friction and restitution: 1 + an index into
+    /// `Live::surfaces`, 0 for none given.
+    surface: u16,
+}
+
+/// How a surface rubs and bounces: its rigid body's friction and
+/// restitution (`nif::RigidBodyInfo`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Surface {
+    pub friction: f32,
+    pub restitution: f32,
 }
 
 #[derive(Debug, Clone, Default)]
 struct Live {
+    /// The surfaces triangles were added with (see `Triangle::surface`).
+    surfaces: Vec<Surface>,
     /// Objects whose triangles are switched off.
     hidden: HashSet<u32>,
     /// Other characters, as upright cylinders.
@@ -140,6 +155,21 @@ impl Collider {
         owner: u32,
         material: u32,
     ) {
+        self.add_solid_surface(vertices, triangles, (shell, owner, material), None);
+    }
+
+    /// [`Self::add_solid_material`] (shell, owner and material) with the
+    /// friction and restitution of the body they belong to, which rigid
+    /// bodies resting on them rub and bounce against
+    /// ([`crate::rigid`]).
+    pub fn add_solid_surface(
+        &mut self,
+        vertices: &[Vec3],
+        triangles: &[[u32; 3]],
+        (shell, owner, material): (f32, u32, u32),
+        surface: Option<Surface>,
+    ) {
+        let surface = surface.map_or(0, |s| self.surface_index(s));
         let base = self.vertices.len() as u32;
         self.vertices.extend_from_slice(vertices);
         if owner != 0 {
@@ -159,9 +189,31 @@ impl Collider {
                 [t[0] + base, t[1] + base, t[2] + base],
                 shell,
                 owner,
-                material,
+                (material, surface),
             );
         }
+    }
+
+    /// 1 + the index of a surface in the table (added if new; the table is
+    /// small: a few values per place). 0 once it's full.
+    fn surface_index(&mut self, s: Surface) -> u16 {
+        let table = &mut self.live.surfaces;
+        if let Some(i) = table.iter().position(|&t| t == s) {
+            return i as u16 + 1;
+        }
+        if table.len() >= usize::from(u16::MAX - 1) {
+            return 0;
+        }
+        table.push(s);
+        table.len() as u16
+    }
+
+    /// The friction and restitution a triangle was added with, if any.
+    pub fn surface(&self, index: u32) -> Option<Surface> {
+        let s = self.triangles.get(index as usize)?.surface;
+        (s > 0)
+            .then(|| self.live.surfaces.get(usize::from(s) - 1).copied())
+            .flatten()
     }
 
     /// Moves an object's triangles (`owner`, see [`Collider::add_solid`])
@@ -208,7 +260,13 @@ impl Collider {
     /// (their corners in a line: the game's meshes have a few) have no
     /// surface to touch, and the closest-point tests divide by their area,
     /// so they're left out.
-    fn push_triangle(&mut self, tri: [u32; 3], shell: f32, owner: u32, material: u32) {
+    fn push_triangle(
+        &mut self,
+        tri: [u32; 3],
+        shell: f32,
+        owner: u32,
+        (material, surface): (u32, u16),
+    ) {
         let [a, b, c] = tri.map(|i| self.vertices[i as usize]);
         if [a, b, c].iter().flatten().any(|v| !v.is_finite()) {
             return;
@@ -224,6 +282,7 @@ impl Collider {
             shell,
             owner,
             material,
+            surface,
         });
         if owner != 0 {
             self.live.owned.entry(owner).or_default().push(index);
@@ -239,12 +298,22 @@ impl Collider {
     pub fn extend(&mut self, other: &Collider) {
         let base = self.vertices.len() as u32;
         self.vertices.extend_from_slice(&other.vertices);
+        let surfaces: Vec<u16> = other
+            .live
+            .surfaces
+            .iter()
+            .map(|&s| self.surface_index(s))
+            .collect();
         for tri in &other.triangles {
+            let surface = match tri.surface {
+                0 => 0,
+                s => surfaces.get(usize::from(s) - 1).copied().unwrap_or(0),
+            };
             self.push_triangle(
                 tri.corners.map(|i| i + base),
                 tri.shell,
                 tri.owner,
-                tri.material,
+                (tri.material, surface),
             );
         }
         self.live.hidden.extend(other.live.hidden.iter().copied());
@@ -305,7 +374,7 @@ impl Collider {
 
     /// Whether any triangle belongs to this object.
     pub fn owns(&self, owner: u32) -> bool {
-        owner != 0 && self.triangles.iter().any(|t| t.owner == owner)
+        owner != 0 && self.live.owned.get(&owner).is_some_and(|t| !t.is_empty())
     }
 
     /// The other characters walkers run into, replacing the last list.
@@ -1193,7 +1262,7 @@ pub(crate) fn segment_triangle_closest(
 
 /// The point of triangle `a b c` nearest `p` (Ericson, Real-Time Collision
 /// Detection, 5.1.5).
-fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
+pub(crate) fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
     let ab = sub(b, a);
     let ac = sub(c, a);
     let ap = sub(p, a);
@@ -1232,7 +1301,7 @@ fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 
 /// The closest points between segments `p1`–`q1` and `p2`–`q2` (Ericson,
 /// 5.1.9).
-fn segment_segment_closest(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (Vec3, Vec3) {
+pub(crate) fn segment_segment_closest(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (Vec3, Vec3) {
     let d1 = sub(q1, p1);
     let d2 = sub(q2, p2);
     let r = sub(p1, p2);

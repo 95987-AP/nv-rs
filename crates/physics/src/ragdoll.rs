@@ -24,7 +24,7 @@ use crate::{segment_triangle_closest, Collider, Vec3};
 /// A rotation as a row-major matrix (column vectors), as `nif` stores it.
 pub type Mat3 = [[f32; 3]; 3];
 /// A rotation as a unit quaternion (x, y, z, w).
-type Quat = [f32; 4];
+pub(crate) type Quat = [f32; 4];
 
 /// The physics step: `[HAVOK] fMaxTime` (0.016 s).
 pub const STEP: f32 = 0.016;
@@ -628,7 +628,7 @@ fn twist_angle(a1: Vec3, a2: Vec3, b1: Vec3, b2: Vec3) -> Option<(Vec3, f32)> {
     Some((t, turn_about(t, b2, b1)?))
 }
 
-fn mat_vec(m: &Mat3, v: Vec3) -> Vec3 {
+pub(crate) fn mat_vec(m: &Mat3, v: Vec3) -> Vec3 {
     [
         m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
         m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
@@ -637,7 +637,7 @@ fn mat_vec(m: &Mat3, v: Vec3) -> Vec3 {
 }
 
 /// The transpose (inverse) of a rotation applied to `v`.
-fn mat_t_vec(m: &Mat3, v: Vec3) -> Vec3 {
+pub(crate) fn mat_t_vec(m: &Mat3, v: Vec3) -> Vec3 {
     [
         m[0][0] * v[0] + m[1][0] * v[1] + m[2][0] * v[2],
         m[0][1] * v[0] + m[1][1] * v[1] + m[2][1] * v[2],
@@ -645,7 +645,7 @@ fn mat_t_vec(m: &Mat3, v: Vec3) -> Vec3 {
     ]
 }
 
-fn quat_mul(a: Quat, b: Quat) -> Quat {
+pub(crate) fn quat_mul(a: Quat, b: Quat) -> Quat {
     let [ax, ay, az, aw] = a;
     let [bx, by, bz, bw] = b;
     [
@@ -656,11 +656,11 @@ fn quat_mul(a: Quat, b: Quat) -> Quat {
     ]
 }
 
-fn conjugate(q: Quat) -> Quat {
+pub(crate) fn conjugate(q: Quat) -> Quat {
     [-q[0], -q[1], -q[2], q[3]]
 }
 
-fn quat_normalize(q: Quat) -> Quat {
+pub(crate) fn quat_normalize(q: Quat) -> Quat {
     let l = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
     if l > 0.0 {
         q.map(|x| x / l)
@@ -670,7 +670,7 @@ fn quat_normalize(q: Quat) -> Quat {
 }
 
 /// `q` turned by the small rotation vector `by` (in the world).
-fn rotated(q: Quat, by: Vec3) -> Quat {
+pub(crate) fn rotated(q: Quat, by: Vec3) -> Quat {
     let d = quat_mul([by[0], by[1], by[2], 0.0], q);
     quat_normalize([
         q[0] + 0.5 * d[0],
@@ -680,7 +680,7 @@ fn rotated(q: Quat, by: Vec3) -> Quat {
     ])
 }
 
-fn quat_mat(q: Quat) -> Mat3 {
+pub(crate) fn quat_mat(q: Quat) -> Mat3 {
     let [x, y, z, w] = q;
     [
         [
@@ -702,7 +702,7 @@ fn quat_mat(q: Quat) -> Mat3 {
 }
 
 /// A rotation matrix as a quaternion (Shepperd's method).
-fn mat_quat(m: &Mat3) -> Quat {
+pub(crate) fn mat_quat(m: &Mat3) -> Quat {
     let trace = m[0][0] + m[1][1] + m[2][2];
     let q = if trace > 0.0 {
         let s = (trace + 1.0).sqrt() * 2.0;
