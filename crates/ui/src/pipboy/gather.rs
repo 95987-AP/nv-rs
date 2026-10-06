@@ -7,8 +7,8 @@ use world::dialogue::PLAYER_REF;
 use world::scripting::{Facts, GameState};
 
 use super::{
-    ItemLine, ItemTab, MarkerLine, NoteLine, PipboyInput, QuestLine, ReputationLine, StatLine,
-    WorldMapLine,
+    ItemLine, ItemTab, MarkerLine, ModSlotLine, NoteLine, PipboyInput, QuestLine, ReputationLine,
+    StatLine, WorldMapLine,
 };
 
 const WEAP: FourCC = FourCC::new(b"WEAP");
@@ -426,6 +426,10 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
                 weight_class: None,
                 effects: None,
                 repairable: false,
+                menders: Vec::new(),
+                mods: Vec::new(),
+                modded: false,
+                description: None,
             });
             continue;
         }
@@ -462,6 +466,10 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
             weight_class: None,
             effects: None,
             repairable: false,
+            menders: Vec::new(),
+            mods: Vec::new(),
+            modded: false,
+            description: None,
         };
         if kind == WEAP {
             if let Some(w) = world::combat::Weapon::load(order, item) {
@@ -543,6 +551,33 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
         // written yet, so their effects card stays hidden, as the game's
         // does for an item without one.
         line.repairable = repairable(order, state, item, count, line.condition);
+        if kind == WEAP || kind == ARMO {
+            line.menders = world::repair::menders(order, item)
+                .into_iter()
+                .map(|f| f.0)
+                .collect();
+        }
+        if kind == WEAP {
+            // The weapon's mod slots and which are fitted (`004bd820`).
+            let fitted = world::repair::fitted(state, item);
+            line.modded = fitted != 0;
+            line.mods = world::repair::mod_slots(order, item)
+                .into_iter()
+                .filter_map(|s| {
+                    let m = s.item?;
+                    Some(ModSlotLine {
+                        item: m.0,
+                        name: record_name(order, m).unwrap_or_else(|| m.to_string()),
+                        description: record_text(order, m, DESC).unwrap_or_default(),
+                        icon: record_text(order, m, ICON),
+                        fitted: fitted & s.flag != 0,
+                    })
+                })
+                .collect();
+        }
+        if kind.as_bytes() == b"IMOD" {
+            line.description = record_text(order, item, DESC);
+        }
         items.push(line);
     }
 
@@ -680,6 +715,8 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
         }),
         // The caller's (the sound playing).
         note_audio: None,
+        repair_skill: world::repair::repair_skill(order, state),
+        repair: world::repair::RepairSettings::load(order),
     }
 }
 

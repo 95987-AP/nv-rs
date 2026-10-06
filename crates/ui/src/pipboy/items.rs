@@ -80,15 +80,25 @@ pub const DROP_ID: i32 = 7;
 /// The first tab button's `id` (0x18 Weapons .. 0x1c Ammo, `0077fc10`).
 pub const FIRST_TAB_ID: i32 = 0x18;
 
-/// An item's row text (`00782850`): "name (count)" for more than one
-/// ("name+ (count)" for a modded weapon, not here).
+/// An item's row text (`00782850`): "name (count)" for more than one,
+/// "name+" for a weapon with a mod fitted.
 pub fn row_text(item: &ItemLine) -> String {
-    if item.count > 1 {
-        format!("{} ({})", item.name, item.count)
+    let name = if item.modded {
+        format!("{}+", item.name)
     } else {
         item.name.clone()
+    };
+    if item.count > 1 {
+        format!("{name} ({})", item.count)
+    } else {
+        name
     }
 }
+
+/// The Repair (`IM_RepairButton`, R) and Mod (`IM_ModButton`, X) buttons'
+/// ids.
+pub const REPAIR_ID: i32 = 8;
+pub const MOD_ID: i32 = 19;
 
 /// The card mask for an item (`00707e30`): weapons 0xc3e (DPS, weight,
 /// value, condition, ammunition ("--" without), strength, damage; the
@@ -482,6 +492,12 @@ impl ItemsMenu {
         }
     }
 
+    /// Lists the tab again on the next fill (back from the Repair or mod
+    /// menu, `007048f0` → `00782a90`).
+    pub fn refresh(&mut self, _ui: &mut Ui) {
+        self.filled = None;
+    }
+
     /// Whether the hot key wheel shows (`00701740`).
     pub fn wheel_shown(&self, ui: &mut Ui) -> bool {
         self.wheel.is_some_and(|w| ui.number(w, t::VISIBLE) != 0.0)
@@ -736,6 +752,18 @@ impl ItemsMenu {
             }
             KEYRING_ID if !self.keyring => self.set_keyring(ui, true, input),
             CANCEL_ID if self.keyring => self.set_keyring(ui, false, input),
+            // Repair (case 8): the menu for the chosen item; Mod (0x13): for
+            // a chosen weapon (form type 0x28).
+            REPAIR_ID | MOD_ID => {
+                let items = self.tab_items(input);
+                if let Some(item) = self.list.selected.and_then(|i| items.get(i)) {
+                    if id == REPAIR_ID && item.repairable {
+                        out.push(Action::OpenRepair(item.form));
+                    } else if id == MOD_ID && item.tab == ItemTab::Weapons && !self.keyring {
+                        out.push(Action::OpenMod(item.form));
+                    }
+                }
+            }
             ROW_ID if self.wheel_shown(ui) => {
                 let items = self.tab_items(input);
                 let index = tile
@@ -839,6 +867,10 @@ pub(crate) mod tests {
             weight_class: None,
             effects: None,
             repairable: false,
+            menders: Vec::new(),
+            mods: Vec::new(),
+            modded: false,
+            description: None,
         }
     }
 

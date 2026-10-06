@@ -334,6 +334,10 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     for ((who, weapon), h) in weapon_health {
         line(format!("weaponhealth {} {} {h}", id(*who), id(*weapon)));
     }
+    let weapon_mods: BTreeMap<_, _> = state.weapon_mods.iter().collect();
+    for ((who, weapon), m) in weapon_mods {
+        line(format!("weaponmods {} {} {m}", id(*who), id(*weapon)));
+    }
     for (i, item) in state.hotkeys.iter().enumerate() {
         if let Some(item) = item {
             line(format!("hotkey {i} {}", id(*item)));
@@ -646,6 +650,11 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                 state
                     .weapon_health
                     .insert((form(1)?, form(2)?), num(3)? as f32);
+            }
+            "weaponmods" => {
+                state
+                    .weapon_mods
+                    .insert((form(1)?, form(2)?), num(3)? as u8);
             }
             "hotkey" => {
                 let slot = num(1)? as usize;

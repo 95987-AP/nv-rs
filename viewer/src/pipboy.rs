@@ -581,6 +581,9 @@ pub struct Pipboy {
     marker_asked: Option<(FormId, [f32; 3])>,
     /// The item waiting for "how many?" to drop.
     drop_asked: Option<u32>,
+    /// What putting the Pip-Boy away left to do (the mod menu's weapon put
+    /// back on).
+    leftover: Vec<Action>,
     /// The number keys (hot keys 1 to 8) held, as their events said.
     hotkeys_held: [bool; 8],
     /// A note's audio playing.
@@ -1104,6 +1107,17 @@ fn pipboy_keys(
         }
     }
 
+    for action in std::mem::take(&mut pipboy.leftover) {
+        if let Action::Equip(form) = action {
+            let item = FormId(form);
+            if state.0.is_equipped(PLAYER_REF, item) {
+                state.0.unequip(PLAYER_REF, item);
+            } else {
+                state.0.equip(order, PLAYER_REF, item);
+            }
+        }
+    }
+
     // One of the game's own menus over the Pip-Boy (the fast-travel
     // question, "how many?") takes the keys and the mouse, as the game's
     // interface hands them to the menu on top (`0070f6e0`; how it orders
@@ -1443,6 +1457,25 @@ fn pipboy_keys(
                 }
             }
             Action::ActiveQuest(form) => state.active_quest = Some(FormId(form)),
+            // The Repair menu's click (`007b5b40` → `007b5d80`).
+            Action::Repair { broken, with } => {
+                if world::repair::repair(order, state, FormId(broken), FormId(with)) {
+                    println!(
+                        "Repaired {} with {}: {:.0}%.",
+                        FormId(broken),
+                        FormId(with),
+                        world::repair::condition_percent(order, state, FormId(broken))
+                    );
+                }
+            }
+            // The mod menu's click (`007838a0` → `00783af0`).
+            Action::FitMod { weapon, item } => {
+                if world::repair::fit_mod(order, state, FormId(weapon), FormId(item)) {
+                    println!("Fitted {} to {}.", FormId(item), FormId(weapon));
+                }
+            }
+            // Opened by the Pip-Boy itself.
+            Action::OpenRepair(_) | Action::OpenMod(_) => {}
             // `007019e0` → `004bf800`: the item onto that hot key, off any
             // other.
             Action::SetHotkey { slot, item } => {
@@ -1819,9 +1852,12 @@ fn close(
     pipboy.since = Some(now);
     pipboy.at_once = false;
     menus.pipboy = false;
-    // The stats menu closes with it, and its healing mode.
+    // The stats menu closes with it, and its healing mode; the Repair or
+    // mod menu too (the mod menu's weapon back on).
     if let Some(b) = pipboy.built.as_mut() {
         b.pipboy.stats.healing = false;
+        let left = b.pipboy.put_away(&mut b.ui);
+        pipboy.leftover.extend(left);
     }
     if !menus.others_open() && conversation.0.is_none() {
         player.ready = true;

@@ -376,6 +376,9 @@ pub struct GameState {
     /// Weapons' condition (0 to 1) where scripts changed it, (holder,
     /// weapon); others are in full condition.
     pub weapon_health: HashMap<(FormId, FormId), f32>,
+    /// Mods fitted to weapons, (holder, weapon) → the slots' flags 1, 2, 4
+    /// (`world::repair::fit_mod`).
+    pub weapon_mods: HashMap<(FormId, FormId), u8>,
     /// The player's hot keys 1 to 8 (`InventoryChanges::SetHotKeyItem`
     /// (Xbox PDB), `004bf800`): the item on each.
     pub hotkeys: [Option<FormId>; 8],

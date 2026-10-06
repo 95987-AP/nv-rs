@@ -70,6 +70,7 @@ pub mod quest;
 pub mod quest_targets;
 pub mod ref_scripts;
 pub mod region;
+pub mod repair;
 pub mod reputation;
 mod rotation;
 pub mod sandbox;
