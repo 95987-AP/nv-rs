@@ -93,7 +93,11 @@ pub struct DataMenu {
     /// only when its own part changes, so dragging, the pointer's row and
     /// scrolling stay).
     filled_map: Option<Option<super::WorldMapLine>>,
-    filled_lists: Option<(Vec<QuestLine>, Vec<super::NoteLine>, Vec<String>)>,
+    filled_lists: Option<(
+        Vec<QuestLine>,
+        Vec<super::NoteLine>,
+        Vec<super::StationLine>,
+    )>,
     /// The last row the pointer was over (`011da400`).
     pub(crate) hovered: Option<usize>,
     /// The game's cursor is hidden (its alpha 0) while it's over the map:
@@ -242,10 +246,17 @@ impl DataMenu {
                 self.notes
                     .select(ui, Some(keep.unwrap_or(0).min(input.notes.len() - 1)));
             }
+            // Translated from 0079bea0 (decompiled, FalloutNV.exe 1.4.0.525):
+            // id 0x19, `_selected` the tuned station, `_TextAlpha` 255 in
+            // range, else 128 (the rows come sorted).
             self.radio.clear(ui);
+            let selected = trait_id(ui, "_selected");
+            let alpha = trait_id(ui, "_TextAlpha");
             for s in &input.stations {
-                if let Some(row) = self.radio.add(ui, Some(s)) {
+                if let Some(row) = self.radio.add(ui, Some(&s.name)) {
                     ui.set_number(row, t::ID, RADIO_ROW_ID as f32);
+                    ui.set_number(row, selected, f32::from(u8::from(s.tuned)));
+                    ui.set_number(row, alpha, if s.in_range { 255.0 } else { 128.0 });
                 }
             }
             self.filled_lists = Some(lists);
@@ -767,6 +778,16 @@ impl DataMenu {
                 if audio && (!same || !was_playing) && self.playing == Some(n.form) {
                     out.push(Action::PlayNote(n.form));
                     out.push(Action::Sound("UIPipBoyHolotapeStart".into()));
+                }
+            }
+            // A station's row (`00796fd0` case 0x19): only one in range
+            // reacts (its `_TextAlpha` 255).
+            RADIO_ROW_ID => {
+                let index = tile.and_then(|t| self.radio.index_of(t));
+                if let Some(s) = index.and_then(|i| input.stations.get(i)) {
+                    if s.in_range {
+                        out.push(Action::Radio(s.reference));
+                    }
                 }
             }
             WORLD_MAP_ID if self.tab == 1 => {

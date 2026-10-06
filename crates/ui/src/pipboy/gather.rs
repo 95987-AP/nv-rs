@@ -671,7 +671,17 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
         quests,
         notes,
         world_map: world_map(order, state, at),
-        stations: Vec::new(),
+        stations: state
+            .radio
+            .rows(&|r| world::radio::disabled(order, state, r))
+            .into_iter()
+            .map(|(r, name, in_range, tuned)| super::StationLine {
+                reference: r.0,
+                name,
+                in_range,
+                tuned,
+            })
+            .collect(),
         // Hot keys whose items are still carried (`004bf4b0` finds them
         // among the inventory's items).
         hotkeys: state.hotkeys.map(|h| {

@@ -399,6 +399,11 @@ pub struct GameState {
     /// The player's own map marker, set on the Pip-Boy's map
     /// (`world::map::CustomMarker`; the player's `+0x6f4`).
     pub custom_marker: Option<crate::map::CustomMarker>,
+    /// The radio (`world::radio`): stations, what plays, what's been
+    /// found; its discovered list and on/tuned are saved.
+    pub radio: crate::radio::Radio,
+    /// The local map's fog of war (`SeenData` (Xbox PDB)), saved.
+    pub seen: crate::local_map::Seen,
     /// The body part condition (actor value 25 .. 30) the Pip-Boy's STATS
     /// healing mode aims at while it's on (`StatsMenu` `+0x2a0` and its
     /// body part controller, `007e06b0`): effects added then are aimed at

@@ -177,6 +177,17 @@ pub struct WorldMapLine {
     pub quest: Vec<[f32; 2]>,
 }
 
+/// A radio station's row (`0079bea0`): the station's reference, its name,
+/// whether it's in range now (else its text at alpha 128) and whether it's
+/// the one the radio plays (`_selected`: the filled square).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationLine {
+    pub reference: u32,
+    pub name: String,
+    pub in_range: bool,
+    pub tuned: bool,
+}
+
 /// What the Pip-Boy shows, from the game's state.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PipboyInput {
@@ -226,7 +237,8 @@ pub struct PipboyInput {
     pub quests: Vec<QuestLine>,
     pub notes: Vec<NoteLine>,
     pub world_map: Option<WorldMapLine>,
-    pub stations: Vec<String>,
+    /// DATA › Radio's rows (`world::radio::Radio::rows`).
+    pub stations: Vec<StationLine>,
     /// The items on the hot keys 1 to 8 (carried ones).
     pub hotkeys: [Option<u32>; 8],
     /// A note's sound playing (the caller's).
@@ -282,6 +294,10 @@ pub enum Key {
 pub enum Action {
     /// Play a sound record (by editor ID).
     Sound(String),
+    /// A radio station's row clicked (`00796fd0` case 0x19): in range,
+    /// the radio is turned off, then on and tuned to it unless it was the
+    /// one playing (`world::radio::Radio::click_row`).
+    Radio(u32),
     /// Equip or take off an item, or use it (aid, books).
     Equip(u32),
     Use(u32),

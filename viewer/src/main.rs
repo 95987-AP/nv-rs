@@ -38,6 +38,7 @@ mod pipboy;
 mod player_body;
 mod player_camera;
 mod player_idle;
+mod radio;
 mod report;
 mod scope;
 mod scripts;
@@ -275,7 +276,7 @@ fn main() {
         .add_plugins(trees::TreePlugin)
         .add_plugins(water::WaterPlugin)
         .add_plugins(particles::ParticlesPlugin)
-        .add_plugins(music::MusicPlugin)
+        .add_plugins((music::MusicPlugin, radio::RadioPlugin))
         .add_plugins(hiteffects::HitEffectsPlugin)
         .add_plugins(explosives::ExplosivesPlugin)
         .add_plugins(clutter::ClutterPlugin)
@@ -359,8 +360,6 @@ fn main() {
                 adjust_exposure,
                 // The cell's grade, then the screen effects scripts applied.
                 (toggle_grade, effects::play_effects).chain(),
-                // After the menus, which take Escape while they're open.
-                quit_on_escape.after(menus::run_menus),
                 take_screenshot,
                 update_help,
                 grab_cursor,
@@ -2424,7 +2423,7 @@ fn help_text(ev100: f32, speed: f32, walking: bool) -> String {
         "{moving}\n\
          F: first/third person (hold: look around; wheel: zoom)   `: walk/fly\n\
          V: V.A.T.S.   Tab: Pip-Boy   T: wait   F5/F9: save/load   \
-         [ ]: exposure (EV {ev100:.1})   G: image space   Home: start   Esc: quit"
+         [ ]: exposure (EV {ev100:.1})   G: image space   Home: start   Esc: pause menu"
     )
 }
 
@@ -2621,12 +2620,6 @@ fn adjust_exposure(keys: Res<ButtonInput<KeyCode>>, mut cameras: Query<&mut Expo
     }
 }
 
-fn quit_on_escape(keys: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit>) {
-    if keys.just_pressed(KeyCode::Escape) {
-        exit.write(AppExit::Success);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2803,6 +2796,7 @@ mod tests {
             rig: None,
             motion: None,
             billboard: None,
+            local_map: false,
         }
     }
 

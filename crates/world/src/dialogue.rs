@@ -93,6 +93,10 @@ pub struct Response {
     /// Xbox PDB; read by `0061e780`, said by `008a20d0`).
     pub speaker_idle: Option<FormId>,
     pub listener_idle: Option<FormId>,
+    /// `TRDT` bytes 16..20: a sound form said instead of the voice file
+    /// (`DialogueResponse::pVoiceSound` (Xbox PDB), `+0x20`): the radio's
+    /// songs.
+    pub sound: Option<FormId>,
 }
 
 /// How a condition compares (the top three bits of its first byte).
@@ -590,6 +594,9 @@ impl Info {
                         use_emotion: sub.data.get(20).is_some_and(|b| *b != 0),
                         speaker_idle: None,
                         listener_idle: None,
+                        sound: (sub.data.len() >= 20)
+                            .then(|| global(rr, &sub.data[16..]))
+                            .filter(|id| id.0 != 0),
                     });
                 }
                 k if k == NAM1 => {

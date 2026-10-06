@@ -861,6 +861,9 @@ pub struct Around<'w> {
     markers: Res<'w, crate::map::MapMarkers>,
     asks: ResMut<'w, crate::game_menus::asks::PipboyAsks>,
     collision: Res<'w, crate::walk::CellCollision>,
+    controls: Option<Res<'w, crate::controls::Controls>>,
+    real: Res<'w, Time<bevy::time::Real>>,
+    radio_out: ResMut<'w, crate::radio::RadioOut>,
 }
 
 /// The mouse as the Pip-Boy reads it: the window's pointer, the first-
@@ -899,38 +902,33 @@ fn view_heading(view: &Query<&Transform, With<FlyCamera>>) -> f32 {
     })
 }
 
-/// The number keys 1 to 8 (the Hotkey1 .. Hotkey8 controls' default keys,
-/// 0x11 .. 0x18 in `00a24b70`'s table: a guess at the defaults, read as
-/// the keyboard's digits).
-const HOTKEY_KEYS: [KeyCode; 8] = [
-    KeyCode::Digit1,
-    KeyCode::Digit2,
-    KeyCode::Digit3,
-    KeyCode::Digit4,
-    KeyCode::Digit5,
-    KeyCode::Digit6,
-    KeyCode::Digit7,
-    KeyCode::Digit8,
-];
+/// The hot key wheel's controls' keys (0x11 .. 0x18: Hotkey1, Ammo Swap,
+/// Hotkey3 .. Hotkey8), from the INI or the exe's defaults
+/// (`controls::Controls::hotkeys`, `00a24b70`: the digits 1 to 8).
+fn hotkey_keys(controls: Option<&crate::controls::Controls>) -> [Option<KeyCode>; 8] {
+    let c = controls.copied().unwrap_or_default();
+    c.hotkeys.map(|b| b.key)
+}
 
 /// The hot keys' keys from their events: held now (carried over in
-/// `held`), and those that came up this frame.
+/// `held`), and those that came up this frame. Each control is looked up
+/// on its own (`00a24660`), so a key bound to two of them holds both.
 fn hotkey_events(
+    keys: &[Option<KeyCode>; 8],
     held: &mut [bool; 8],
     events: impl Iterator<Item = (KeyCode, bevy::input::ButtonState)>,
 ) -> [bool; 8] {
     let mut released = [false; 8];
     for (code, state) in events {
-        let Some(n) = HOTKEY_KEYS.iter().position(|&k| k == code) else {
-            continue;
-        };
-        match state {
-            bevy::input::ButtonState::Pressed => held[n] = true,
-            bevy::input::ButtonState::Released => {
-                if held[n] {
-                    released[n] = true;
+        for n in (0..8).filter(|&n| keys[n] == Some(code)) {
+            match state {
+                bevy::input::ButtonState::Pressed => held[n] = true,
+                bevy::input::ButtonState::Released => {
+                    if held[n] {
+                        released[n] = true;
+                    }
+                    held[n] = false;
                 }
-                held[n] = false;
             }
         }
     }
@@ -1010,6 +1008,9 @@ fn pipboy_keys(
         mut oggs,
         mut wavs,
         collision,
+        controls,
+        real,
+        mut radio_out,
         ..
     } = around;
     let order = &game.0.order;
@@ -1023,6 +1024,7 @@ fn pipboy_keys(
         mouse.events.read().map(|e| (e.button, e.state)),
     );
     let hotkeys_released = hotkey_events(
+        &hotkey_keys(controls.as_deref()),
         &mut pipboy.hotkeys_held,
         mouse.keyboard.read().map(|e| (e.key_code, e.state)),
     );
@@ -1443,6 +1445,10 @@ fn pipboy_keys(
                 }
             }
             Action::ActiveQuest(form) => state.active_quest = Some(FormId(form)),
+            Action::Radio(station) => {
+                let now = crate::music::audio_clock(&real);
+                crate::radio::click(state, &mut radio_out, station, now);
+            }
             // `007019e0` → `004bf800`: the item onto that hot key, off any
             // other.
             Action::SetHotkey { slot, item } => {
@@ -1538,7 +1544,7 @@ struct NotePlayback {
 /// How long a sound file plays, in milliseconds: a WAV's samples over its
 /// rate; an OGG's last page's granule position over the rate its
 /// identification header gives.
-fn audio_ms(path: &str, bytes: &[u8]) -> Option<f32> {
+pub(crate) fn audio_ms(path: &str, bytes: &[u8]) -> Option<f32> {
     if path.to_ascii_lowercase().ends_with(".wav") {
         let pcm = cellview::sound::read_wav(bytes).ok()?;
         let frames = pcm.samples.len() as f32 / f32::from(pcm.channels.max(1));
@@ -2179,6 +2185,7 @@ fn update_pipboy(
                         pieces.push((handle, vec![(*rect, corners)]));
                     }
                 }
+                DrawKind::Model { .. } => continue,
                 DrawKind::Text { font, glyphs } => {
                     let Some(f) = b.ui.fonts.get(font - 1).cloned().flatten() else {
                         continue;
@@ -3131,16 +3138,31 @@ mod tests {
     #[test]
     fn hot_keys_from_their_events() {
         use bevy::input::ButtonState::{Pressed, Released};
+        let keys = hotkey_keys(None);
         let mut held = [false; 8];
-        let up = hotkey_events(&mut held, [(KeyCode::Digit3, Pressed)].into_iter());
+        let up = hotkey_events(&keys, &mut held, [(KeyCode::Digit3, Pressed)].into_iter());
         assert!(held[2] && up == [false; 8]);
         let up = hotkey_events(
+            &keys,
             &mut held,
             [(KeyCode::Digit3, Released), (KeyCode::KeyA, Released)].into_iter(),
         );
         assert!(!held[2] && up[2]);
-        let up = hotkey_events(&mut held, [(KeyCode::Digit9, Released)].into_iter());
+        let up = hotkey_events(&keys, &mut held, [(KeyCode::Digit9, Released)].into_iter());
         assert_eq!(up, [false; 8]);
+        // The 2 key is Ammo Swap's (slot 1, not a hot key); bound by the
+        // INI to R, the 2 key holds nothing and R holds slot 1.
+        let up = hotkey_events(&keys, &mut held, [(KeyCode::Digit2, Pressed)].into_iter());
+        assert!(held[1] && up == [false; 8]);
+        held = [false; 8];
+        let mut ini = assets::IniSettings::default();
+        ini.add("[Controls]\nAmmo Swap=0013FF01\nHotkey3=0003FFFF\n");
+        let c = crate::controls::Controls::read(&ini);
+        let keys = hotkey_keys(Some(&c));
+        hotkey_events(&keys, &mut held, [(KeyCode::Digit2, Pressed)].into_iter());
+        assert!(!held[1] && held[2]);
+        hotkey_events(&keys, &mut held, [(KeyCode::KeyR, Pressed)].into_iter());
+        assert!(held[1]);
     }
 
     #[test]
