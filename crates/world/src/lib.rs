@@ -49,6 +49,7 @@ pub mod lip;
 pub mod living;
 pub mod lockpick;
 pub mod locks;
+pub mod locomotion;
 pub mod lod;
 pub mod look_ik;
 pub mod magic;
