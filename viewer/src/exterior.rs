@@ -57,10 +57,7 @@ enum Square {
         talkers: Vec<crate::dialogue::Talker>,
         /// People it left out as disabled when it loaded
         /// (`world::ai::disabled_people_in_square`), who come in once a
-        /// script enables them. Unused since `bring_in_enabled` (merged from
-        /// the VCG02 route) brings them in; kept until the two paths are
-        /// unified.
-        #[allow(dead_code)]
+        /// script enables them (`bring_in_people`).
         disabled_people: Vec<esm::FormId>,
     },
 }
@@ -143,7 +140,6 @@ impl Exterior {
     }
 
     /// The people the loaded squares left out as disabled when they loaded.
-    #[allow(dead_code)]
     pub fn disabled_people(&self) -> Vec<esm::FormId> {
         self.squares
             .values()

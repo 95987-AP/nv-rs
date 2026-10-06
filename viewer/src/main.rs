@@ -361,9 +361,8 @@ fn main() {
                     map::find_markers,
                     hud::follow_quest_targets,
                     ai::move_offstage,
-                    bring_in_people,
+                    (bring_in_enabled, bring_in_people).chain(),
                     bring_in_made,
-                    bring_in_enabled,
                     ai::move_actors,
                     scripts::save_and_load,
                     report::report_key,
@@ -623,8 +622,10 @@ const BRING_IN_REACH: f32 = 2.5 * world::land::CELL_SIZE;
 /// square load rebuilds that list from the squares' own people. Without
 /// this Sunny Smiles, walking out of the saloon for `VCG02`, never counted
 /// in `VCG02SunnyPatrolTrigger` (its `OnTrigger SunnyREF` sets stage 20).
-/// Those a script enabled after their square loaded come in through
-/// [`bring_in_enabled`].
+/// Also whom a script enabled after their square loaded
+/// (`world::ai::enabled_since_load`): `GoodspringsPowderGangMarker.Enable`
+/// brings in the Powder Gangers following it, whose marker isn't loaded
+/// here, which [`bring_in_enabled`] (run first) doesn't cover.
 #[allow(clippy::too_many_arguments)]
 fn bring_in_people(
     time: Res<Time>,
@@ -632,6 +633,7 @@ fn bring_in_people(
     state: Res<dialogue::DialogueState>,
     player: Res<walk::Player>,
     walkers: Query<(&ai::Walker, &Visibility)>,
+    exterior: Option<Res<exterior::Exterior>>,
     (mut talkers, mut brought): (ResMut<dialogue::Talkers>, ResMut<BroughtIn>),
     mut spawner: Spawner,
     mut last: Local<f32>,
@@ -669,10 +671,17 @@ fn bring_in_people(
                     (p[0] - me[0]).hypot(p[1] - me[1]) <= BRING_IN_REACH
                 })
     };
-    let new: Vec<esm::FormId> = moved
+    let enabled = exterior
+        .as_deref()
+        .map(|e| world::ai::enabled_since_load(order, state, space, &e.disabled_people()))
+        .unwrap_or_default();
+    let mut new: Vec<esm::FormId> = moved
         .into_iter()
+        .chain(enabled)
         .filter(|r| !shown.contains(r) && near(*r))
         .collect();
+    new.sort();
+    new.dedup();
     if new.is_empty() {
         return;
     }
