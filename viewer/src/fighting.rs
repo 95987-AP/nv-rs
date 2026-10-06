@@ -350,14 +350,16 @@ pub(crate) fn detect(n: &Noticing, state: &mut GameState, walker: &mut Walker, o
         }
         if v > 0 {
             let value_of = |x: FormId| values.iter().find(|e| e.0 == x).map(|e| e.1);
-            if let Some(enemy) = combat_ai::assists_against(order, state, me, r, v, value_of) {
-                let added = walker.targets.add(enemy);
-                if !fighting {
-                    println!("{:.1} s: {me} helps {r} against {enemy}.", n.now);
-                    start = Some(enemy);
-                } else if added {
-                    println!("{:.1} s: {me} also takes on {enemy}, helping {r}.", n.now);
-                }
+            // Only out of a fight: whether `008ff350`'s help check runs for
+            // someone already fighting isn't traced (and the player's
+            // "fight" here is only whoever hurt them last).
+            let helping = (!fighting)
+                .then(|| combat_ai::assists_against(order, state, me, r, v, value_of))
+                .flatten();
+            if let Some(enemy) = helping {
+                println!("{:.1} s: {me} helps {r} against {enemy}.", n.now);
+                walker.targets.add(enemy);
+                start = Some(enemy);
             }
         }
     }
@@ -1170,6 +1172,60 @@ fn body_of(
     Some((feet, height))
 }
 
+/// What a person's shot along `dir` from `origin` meets first within
+/// `reach` (`combat::first_met_past`, passing by the shooter), the player
+/// by their bounds included: who or what, how far, the body part; and the
+/// world's collision met, if any.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn met_first(
+    order: &LoadOrder,
+    state: &GameState,
+    caches: &mut crate::combat::PlayerAttack,
+    around: (
+        &crate::dialogue::Talkers,
+        &crate::scripts::CellScripts,
+        &crate::walk::CellCollision,
+        &Query<(&Walker, &ActorRig)>,
+    ),
+    (origin, dir, reach): ([f32; 3], [f32; 3], f32),
+    shooter: FormId,
+    now: f32,
+) -> (Option<(f32, FormId, Option<u8>)>, Option<(f32, u32)>) {
+    let collision = around.2;
+    let met = crate::combat::first_met_past(
+        order,
+        state,
+        caches,
+        around,
+        (origin, dir),
+        reach,
+        (false, Some(shooter)),
+        now,
+    );
+    let wall = collision.0.raycast(origin, dir, reach);
+    let player = (shooter != PLAYER_REF && !state.dead.contains(&PLAYER_REF))
+        .then_some(state.player_position)
+        .flatten()
+        .and_then(|p| {
+            let (radius, tall) = crate::combat::body(order, PLAYER_BASE);
+            crate::combat::ray_body(origin, dir, p, radius, tall)
+        })
+        .filter(|d| *d <= reach && wall.is_none_or(|(w, _)| w >= d - 5.0));
+    let first = match (&met, player) {
+        (
+            crate::combat::Met::Thing {
+                distance: d,
+                reference,
+                part,
+            },
+            p,
+        ) if p.is_none_or(|p| *d <= p) => Some((*d, *reference, *part)),
+        (_, Some(p)) => Some((p, PLAYER_REF, None)),
+        _ => None,
+    };
+    (first, wall)
+}
+
 /// Flies the shots people fired this frame (`world::npc_aim`; see the
 /// module notes): each pellet from 0.75 of the shooter's height toward the
 /// middle of the target's, turned within the cone, to the first body,
@@ -1247,46 +1303,58 @@ pub(crate) fn resolve_shots(
         let mut pellet = w.clone();
         pellet.damage /= count.max(1) as f32;
         let (heading, pitch) = world::npc_aim::heading_pitch(origin, aim);
+        // The line of fire (`009d0a30` → `009a6e90`): someone other than
+        // the target or another of the shooter's targets first on the line
+        // to the aim point holds the shot.
+        let mine = |who: FormId| {
+            who == shot.target
+                || rigs
+                    .iter()
+                    .find(|(w, _)| w.reference == me)
+                    .is_some_and(|(w, _)| w.targets.list.contains(&who))
+        };
+        let straight = world::npc_aim::direction(heading, pitch);
+        let (first, _) = met_first(
+            order,
+            state,
+            &mut caches,
+            (&talkers, &cell_scripts, &collision, &rigs),
+            (origin, straight, reach),
+            me,
+            now,
+        );
+        if let Some((_, friend, _)) =
+            first
+                .filter(|(_, who, _)| !mine(*who))
+                .filter(|(_, who, _)| {
+                    *who == PLAYER_REF || talkers.0.iter().any(|t| t.reference == *who)
+                })
+        {
+            println!(
+                "{now:.1} s: {me} holds fire at {}: {friend} is in the way.",
+                shot.target
+            );
+            continue;
+        }
         let mut struck_any = false;
+        let mut walled = None;
         for _ in 0..count.max(1) {
             let unit = |v: u64| (v % 1_000_000) as f32 / 1_000_000.0;
             let (u_r, u_turn) = (unit(state.roll()), unit(state.roll()));
             let (h, p) = world::npc_aim::deviate(heading, pitch, cone, u_r, u_turn);
             let dir = world::npc_aim::direction(h, p);
-            let met = crate::combat::first_met_past(
+            let (victim, wall) = met_first(
                 order,
                 state,
                 &mut caches,
                 (&talkers, &cell_scripts, &collision, &rigs),
-                (origin, dir),
-                reach,
-                (false, Some(me)),
+                (origin, dir, reach),
+                me,
                 now,
             );
-            let wall = collision.0.raycast(origin, dir, reach);
-            // The player, by their bounds, if nearer than what else is met.
-            let player = (me != PLAYER_REF && !state.dead.contains(&PLAYER_REF))
-                .then_some(state.player_position)
-                .flatten()
-                .and_then(|p| {
-                    let (radius, tall) = crate::combat::body(order, PLAYER_BASE);
-                    crate::combat::ray_body(origin, dir, p, radius, tall)
-                })
-                .filter(|d| *d <= reach && wall.is_none_or(|(w, _)| w >= d - 5.0));
-            let victim = match (&met, player) {
-                (
-                    crate::combat::Met::Thing {
-                        distance: d,
-                        reference,
-                        part,
-                    },
-                    p,
-                ) if p.is_none_or(|p| *d <= p) => Some((*d, *reference, *part)),
-                (_, Some(p)) => Some((p, PLAYER_REF, None)),
-                _ => None,
-            };
             let Some((d, victim, part)) = victim else {
                 if let Some(at) = wall {
+                    walled = Some(at.0);
                     hits.shot_on_world(&collision.0, (origin, dir), at, me, w.form_id);
                 }
                 continue;
@@ -1319,10 +1387,11 @@ pub(crate) fn resolve_shots(
         }
         if !struck_any {
             println!(
-                "{now:.1} s: {me} misses {} from {:.0} units (cone {:.2}°).",
+                "{now:.1} s: {me} misses {} from {:.0} units (cone {:.2}°{}).",
                 shot.target,
                 distance(from, feet),
-                cone.to_degrees()
+                cone.to_degrees(),
+                walled.map_or(String::new(), |d| format!(", into the world at {d:.0}"))
             );
         }
     }

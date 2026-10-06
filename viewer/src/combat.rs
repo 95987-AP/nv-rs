@@ -248,7 +248,12 @@ pub(crate) fn first_met_past(
         .filter(|r| r.script.is_some() && r.trigger.is_none())
     {
         if let Some(d) = r.ray_hit(eye, dir) {
-            if d <= reach && best.is_none_or(|(bd, _, _)| d < bd) {
+            // A person's shot leaving from inside an object's bounds (Easy
+            // Pete on his porch) isn't stopped by them: the bounds stand in
+            // for the object's collision here, and the shooter stands in
+            // that space.
+            let inside = skip.is_some() && d < 1.0;
+            if !inside && d <= reach && best.is_none_or(|(bd, _, _)| d < bd) {
                 best = Some((d, r.reference, None));
             }
         }
