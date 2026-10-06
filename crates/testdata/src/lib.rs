@@ -17,6 +17,7 @@ pub mod lod;
 pub mod more;
 pub mod music;
 pub mod particles;
+pub mod ref_scripts;
 pub mod trees;
 pub mod vats;
 pub mod water;

@@ -6,8 +6,6 @@
 //! things the player can use where they are: E takes an item, takes what's
 //! in a container, or runs an object's `OnActivate`.
 
-use std::collections::HashSet;
-
 use bevy::prelude::*;
 use esm::FormId;
 use world::dialogue::PLAYER_REF;
@@ -56,14 +54,15 @@ pub struct StartStage(pub Option<(String, u16)>);
 #[derive(Resource, Default)]
 pub struct StartCommands(pub Vec<String>);
 
-/// The objects to use where the player is (the interior, or the outdoor
-/// square stood in), and the triggers the player is inside.
+/// The objects of the attached cells (the interior, or outdoors the
+/// `uGridsToLoad` grid's loaded squares), whose scripts run
+/// (`world::ref_scripts`) and which the player can use.
 #[derive(Resource, Default)]
 pub struct CellScripts {
-    cell: Option<FormId>,
     pub refs: Vec<Interactive>,
-    /// (trigger, who) for everyone inside a trigger.
-    inside: HashSet<(FormId, FormId)>,
+    /// The game's reference-script pass: attached cells, pending events,
+    /// trigger occupancy.
+    scheduler: world::ref_scripts::RefScripts,
 }
 
 /// World-space bounds of rendered placed objects in the loaded cell(s).
@@ -133,11 +132,6 @@ pub struct Activatable(pub Option<(FormId, String)>);
 /// E was pressed on [`Activatable`]'s object.
 #[derive(Resource, Default)]
 pub struct ActivateRequest(pub Option<FormId>);
-
-/// Heights above the feet at which the player's body is tested against
-/// trigger volumes (feet, middle, head; the game tests the character's
-/// collision shape).
-const BODY_HEIGHTS: [f32; 3] = [10.0, 64.0, 110.0];
 
 /// Why something locked doesn't open now.
 pub enum Locked {
@@ -236,26 +230,52 @@ pub fn door_opens(
     opened
 }
 
-/// The scripted objects where the player now is: a new place runs their
-/// `OnLoad` blocks.
+/// The attached cells (in the game's pass order) and how to read one's
+/// objects: outdoors the `uGridsToLoad` grid around the game's grid
+/// centre (`world::ref_scripts::grid_center`), those of its squares loaded
+/// here; indoors the interior.
+fn attached_cells(
+    cell_scripts: &mut CellScripts,
+    exterior: Option<&crate::exterior::Exterior>,
+    interior: Option<FormId>,
+    feet: [f32; 3],
+) -> Vec<(FormId, Option<(i32, i32)>)> {
+    use world::ref_scripts::{grid_squares, GRIDS_TO_LOAD};
+    match exterior {
+        Some(e) => {
+            let center =
+                cell_scripts
+                    .scheduler
+                    .exterior_center(e.grid.world.form_id, feet, GRIDS_TO_LOAD);
+            // A square still loading isn't attached yet.
+            let loaded = e.loaded_squares();
+            grid_squares(center, GRIDS_TO_LOAD)
+                .into_iter()
+                .filter(|s| loaded.contains(s))
+                .filter_map(|s| e.grid.cell_at(s).map(|c| (c, Some(s))))
+                .collect()
+        }
+        None => {
+            cell_scripts.scheduler.interior();
+            interior.map(|c| (c, None)).into_iter().collect()
+        }
+    }
+}
+
+/// Makes `cells` the attached ones: newly attached cells' objects get
+/// `OnLoad`, detached triggers let their occupants go
+/// (`world::ref_scripts::RefScripts::attach`).
 fn refresh_cell_scripts(
     order: &esm::LoadOrder,
     cache: &ScriptCache,
     state: &mut world::scripting::GameState,
     cell_scripts: &mut CellScripts,
+    cells: &[FormId],
+    load: impl FnMut(FormId) -> Vec<Interactive>,
 ) {
-    if state.player_cell == cell_scripts.cell {
-        return;
-    }
-    cell_scripts.cell = state.player_cell;
-    cell_scripts.inside.clear();
-    cell_scripts.refs = state
-        .player_cell
-        .map(|c| world::scripting::interactive_references(order, c))
-        .unwrap_or_default();
     let mut runner = Runner::new(order, cache, state);
-    for r in cell_scripts.refs.iter().filter(|r| r.script.is_some()) {
-        runner.run_blocks(r.reference, Some(r.reference), "onload", |_| true);
+    if cell_scripts.scheduler.attach(&mut runner, cells, load) {
+        cell_scripts.refs = cell_scripts.scheduler.refs().to_vec();
     }
 }
 
@@ -361,9 +381,10 @@ fn use_object(
     None
 }
 
-/// Each frame in the game (not in a menu): the objects' `GameMode`
-/// blocks, and triggers that the player's body, or a person, enters, stays
-/// in or leaves (`people`: reference and feet).
+/// Each frame in the game (not in a menu): the attached objects'
+/// scripts, with the events flagged since their last run (`OnLoad`, and
+/// triggers that the player's body, or a person, enters, stays in or
+/// leaves; `people`: reference and feet). See `world::ref_scripts`.
 fn run_cell_scripts(
     order: &esm::LoadOrder,
     cache: &ScriptCache,
@@ -374,35 +395,7 @@ fn run_cell_scripts(
 ) {
     let mut runner = Runner::new(order, cache, state);
     runner.seconds_passed = seconds;
-    for r in cell_scripts.refs.iter().filter(|r| r.script.is_some()) {
-        if !world::enabled_now(order, r.reference, &runner.state.disabled) {
-            continue;
-        }
-        runner.run_blocks(r.reference, Some(r.reference), "gamemode", |_| true);
-        if r.trigger.is_none() {
-            continue;
-        }
-        for &(who, feet) in people {
-            let inside = BODY_HEIGHTS
-                .iter()
-                .any(|h| r.contains([feet[0], feet[1], feet[2] + h]));
-            let key = (r.reference, who);
-            let was = cell_scripts.inside.contains(&key);
-            match (was, inside) {
-                (false, true) => {
-                    cell_scripts.inside.insert(key);
-                    runner.run_event(r.reference, "ontriggerenter", who);
-                    runner.run_event(r.reference, "ontrigger", who);
-                }
-                (true, true) => runner.run_event(r.reference, "ontrigger", who),
-                (true, false) => {
-                    cell_scripts.inside.remove(&key);
-                    runner.run_event(r.reference, "ontriggerleave", who);
-                }
-                (false, false) => {}
-            }
-        }
-    }
+    cell_scripts.scheduler.frame(&mut runner, people);
 }
 
 /// What the player looks at within reach that E would use: an item, a
@@ -981,7 +974,32 @@ pub fn run_scripts(
             println!("{line}: {flow:?}");
         }
     }
-    refresh_cell_scripts(order, &scripts.0, state, &mut cell_scripts);
+    let attached = attached_cells(
+        &mut cell_scripts,
+        exterior.as_deref(),
+        here.0.map(FormId),
+        feet,
+    );
+    let cells: Vec<FormId> = attached.iter().map(|(c, _)| *c).collect();
+    refresh_cell_scripts(
+        order,
+        &scripts.0,
+        state,
+        &mut cell_scripts,
+        &cells,
+        |cell| match (
+            &exterior,
+            attached
+                .iter()
+                .find(|(c, _)| *c == cell)
+                .and_then(|(_, s)| *s),
+        ) {
+            (Some(e), Some(square)) => {
+                world::scripting::interactive_in_square(order, &e.grid, square)
+            }
+            _ => world::scripting::interactive_references(order, cell),
+        },
+    );
     // Time stands still in the dialogue menu (not while a line is said)
     // and in the other menus.
     let dt = time.delta_secs();
@@ -1732,7 +1750,6 @@ mod tests {
         state.stages.insert(FormId(0x104c1c), 55);
         let before = world::save::save(&state, None);
         let mut cells = CellScripts::default();
-        cells.inside.insert((FormId(1), PLAYER_REF));
         let mut idle = crate::player_idle::PlayerIdle::default();
         idle.requests.push(FormId(42));
         let mut pending = crate::PendingScene(None);
@@ -1757,7 +1774,6 @@ mod tests {
             )
             .is_err());
             assert_eq!(world::save::save(&state, None), before);
-            assert!(cells.inside.contains(&(FormId(1), PLAYER_REF)));
             assert_eq!(idle.requests, [FormId(42)]);
             assert!(pending.0.is_none());
             assert!(exterior.0.is_none());
@@ -1784,7 +1800,6 @@ mod tests {
         )
         .unwrap());
         assert_eq!(state.stages[&FormId(0x104c1c)], 60);
-        assert!(cells.inside.is_empty());
         assert!(idle.requests.is_empty());
         assert_eq!(pitch.0, 0.0);
         let start = &pending.0.as_ref().unwrap().start;
@@ -1844,6 +1859,18 @@ mod tests {
         );
     }
 
+    fn attach_test_cell(
+        order: &esm::LoadOrder,
+        cache: &ScriptCache,
+        state: &mut GameState,
+        cells: &mut CellScripts,
+        cell: u32,
+    ) {
+        refresh_cell_scripts(order, cache, state, cells, &[FormId(cell)], |c| {
+            world::scripting::interactive_references(order, c)
+        });
+    }
+
     #[test]
     fn same_cell_reload_reenters_triggers_from_the_loaded_state() {
         use esm::{ActivePlugins, LoadOrder};
@@ -1855,17 +1882,20 @@ mod tests {
         let mut state = GameState::new(&order);
         state.player_cell = Some(FormId(HOUSE));
         let mut cells = CellScripts::default();
-        refresh_cell_scripts(&order, &cache, &mut state, &mut cells);
+        attach_test_cell(&order, &cache, &mut state, &mut cells, HOUSE);
         let people = [(PLAYER_REF, [1888.0, 1835.0, 7360.0])];
         // Enter before the quest permits the instruction, then load a save
         // at stage55 in that same volume. Old occupancy must not suppress it.
         run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016);
-        assert!(!cells.inside.is_empty());
+        assert!(!cells
+            .scheduler
+            .inside(FormId(testdata::functions::ids::VIGOR_TRIGGER_REF))
+            .is_empty());
         let mut loaded = GameState::new(&order);
         loaded.player_cell = Some(FormId(HOUSE));
         loaded.stages.insert(FormId(VIGOR_QUEST), 55);
         restore_script_state(&mut state, &mut cells, loaded);
-        refresh_cell_scripts(&order, &cache, &mut state, &mut cells);
+        attach_test_cell(&order, &cache, &mut state, &mut cells, HOUSE);
         run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016);
         assert_eq!(state.stages.get(&FormId(VIGOR_QUEST)), Some(&60));
     }
@@ -1898,10 +1928,8 @@ mod tests {
             .iter()
             .any(|e| matches!(e, Event::CharacterMenu(_))));
         assert_eq!(state.stages.get(&FormId(VIGOR_QUEST)), Some(&55));
-        let mut cell_scripts = CellScripts {
-            refs,
-            ..Default::default()
-        };
+        let mut cell_scripts = CellScripts::default();
+        attach_test_cell(&order, &cache, &mut state, &mut cell_scripts, HOUSE);
         run_cell_scripts(
             &order,
             &cache,
