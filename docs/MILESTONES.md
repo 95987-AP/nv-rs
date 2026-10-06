@@ -113,6 +113,13 @@ constructors are now identified; runtime configuration and original comparison
 remain unverified. Do not repeat the established
 package-look lock or tester activation fixes.
 
+M2 blocker batch (branch `claude/m2-quest-targets`): quest targets (`QSTA`),
+the active quest, the door the compass follows and the blinking compass
+quest icons, traced and translated; generated-data tests and an
+installed-data check pass; not compared with the game; Pip-Boy map quest
+markers and the navmesh-level path search remain. See
+[QUEST_TARGETS.md](QUEST_TARGETS.md).
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,
