@@ -3,6 +3,14 @@
 version = 3
 
 [[package]]
+name = "nv-bink"
+version = "0.1.0"
+dependencies = [
+ "nv-oracle-core",
+ "nv-win",
+]
+
+[[package]]
 name = "nv-call"
 version = "0.1.0"
 dependencies = [

@@ -3,7 +3,7 @@
 # It has no external dependencies: only std and core::arch.
 [workspace]
 resolver = "2"
-members = ["nv-oracle-core", "nv-win", "nv-call", "nv-call-engine", "nv-probe", "nv-inject"]
+members = ["nv-oracle-core", "nv-win", "nv-call", "nv-call-engine", "nv-probe", "nv-inject", "nv-bink"]
 
 [workspace.package]
 edition = "2021"

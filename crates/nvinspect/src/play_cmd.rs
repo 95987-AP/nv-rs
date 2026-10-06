@@ -1178,7 +1178,7 @@ pub fn play(
                 describe_id(order, *m),
                 if *on { "applied" } else { "removed" }
             ),
-            Event::Video(file) => format!("video {file}"),
+            Event::Video(v) => format!("video {}", v.file),
             Event::Music(m) => format!("music {}", describe_id(order, *m)),
             Event::Weather(w) => match w {
                 Some(w) => format!("weather forced to {}", describe_id(order, *w)),

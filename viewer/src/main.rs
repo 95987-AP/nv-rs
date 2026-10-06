@@ -28,6 +28,7 @@ mod lod;
 mod lod_objects;
 mod map;
 mod menus;
+mod movie;
 mod music;
 mod particles;
 mod pipboy;
@@ -178,6 +179,7 @@ fn main() {
         .insert_resource(ai::Moves::new(&game))
         .insert_resource(ai::CellBuffer::new(&game))
         .insert_resource(GameFiles(game))
+        .insert_resource(movie::Movies::new(data.clone(), args.movies))
         .init_resource::<scripts::Scripts>()
         .init_resource::<player_idle::PlayerIdle>()
         .init_resource::<scripts::Here>()
@@ -254,6 +256,10 @@ fn main() {
         .add_audio_source::<sounds::PcmSound>()
         // The first-person camera runs the image space passes with the
         // main camera's grade, once everything has set it.
+        .add_systems(
+            PreUpdate,
+            movie::withhold_input.after(bevy::input::InputSystem),
+        )
         .add_systems(PostUpdate, viewmodel::copy_grade.after(grade::adapt_eyes))
         .add_systems(
             Startup,
@@ -303,6 +309,9 @@ fn main() {
                 (dialogue::talk, chatter::say_lines).chain(),
                 // The scripts, then E on doors, then the doors' swings.
                 (scripts::run_scripts, walk::doors, doors::update_doors).chain(),
+                (movie::start_movies, movie::play_movies)
+                    .chain()
+                    .after(scripts::run_scripts),
                 walk::toggle_walking,
                 adjust_exposure,
                 // The cell's grade, then the screen effects scripts applied.

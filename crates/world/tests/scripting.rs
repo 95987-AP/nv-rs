@@ -1815,3 +1815,47 @@ fn play_group_has_an_object_play_its_models_sequence() {
         }]
     );
 }
+
+#[test]
+fn play_bink_gives_the_movie_and_its_flags_with_the_games_defaults() {
+    use world::scripting::Video;
+    let (_data, order) = order("scripting-playbink");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let mut play = |line: &str| {
+        Runner::new(&order, &scripts, &mut state).run_source(line, None, None);
+        state.events.pop()
+    };
+    // The opening quest's own call.
+    assert_eq!(
+        play("PlayBink \"FNVIntro.bik\" 1 1 0 1"),
+        Some(Event::Video(Video {
+            file: "FNVIntro.bik".into(),
+            interruptable: true,
+            mute_audio: true,
+            pause_music: false,
+            letterbox: true,
+        }))
+    );
+    // Left out: the handler's defaults 0, 1, 1, 1.
+    assert_eq!(
+        play("PlayBink \"Other.bik\""),
+        Some(Event::Video(Video {
+            file: "Other.bik".into(),
+            interruptable: false,
+            mute_audio: true,
+            pause_music: true,
+            letterbox: true,
+        }))
+    );
+    assert_eq!(
+        play("PlayBink \"Other.bik\" 0 0"),
+        Some(Event::Video(Video {
+            file: "Other.bik".into(),
+            interruptable: false,
+            mute_audio: false,
+            pause_music: true,
+            letterbox: true,
+        }))
+    );
+}

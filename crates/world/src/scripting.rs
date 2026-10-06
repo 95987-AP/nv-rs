@@ -878,8 +878,8 @@ pub enum Event {
     Menu(u16),
     /// An image space modifier (`IMAD`) applied (true) or removed.
     ImageSpace(FormId, bool),
-    /// `PlayBink`: a video file (under `Data\Video`).
-    Video(String),
+    /// `PlayBink`: a movie to play before anything else happens.
+    Video(Video),
     /// `PlayMusic`: a music type (`MUSC`).
     Music(FormId),
     /// The weather forced (`ForceWeather`) or released (`None`).
@@ -942,6 +942,33 @@ pub enum PackageActionKind {
 /// The face and body menu (`ShowRaceMenu`): `VCG01SCRIPT` opens it at
 /// stage 36 and carries on from a `MenuMode 1036` block.
 pub const RACE_SEX_MENU: u16 = 1036;
+
+/// What `PlayBink` asks for. The command's four optional integers have no
+/// names in the PC program; their effects were read from its handler
+/// (`005d15d0`) and the movie player it calls (1.4.0.525):
+///
+/// - the first goes to the player's per-frame continue check
+///   (vtable `01082564` + 0x40, `00867440`), which ends the movie when control
+///   5 or 28 is pressed only if it is set;
+/// - the second brackets the movie with the player's audio mute and unmute
+///   (+0x4 `008671a0`, +0x8 `00867220`);
+/// - the third with its music pause and resume (+0xc, +0x10);
+/// - the fourth picks the fit (`00ec2aa0`, `00ec2b20`, `00ec2bb0`): set, the
+///   movie fills the screen's width and is centred vertically; clear, it
+///   fills the height and is centred horizontally.
+///
+/// The handler's defaults are 0, 1, 1 and 1. The Xbox 360 prototype's
+/// symbols (Xbox PDB) name the handler's locals `iinterruptable`,
+/// `imuteGameAudio`, `ipauseGameMusic` and `iletterBoxed`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Video {
+    /// The file, relative to `Data\Video`.
+    pub file: String,
+    pub interruptable: bool,
+    pub mute_audio: bool,
+    pub pause_music: bool,
+    pub letterbox: bool,
+}
 
 /// A function argument once worked out.
 #[derive(Debug, Clone, PartialEq)]
@@ -3050,7 +3077,15 @@ impl<'a> Runner<'a> {
                 let Value::Text(file) = arg(0) else {
                     return None;
                 };
-                events.push(Event::Video(file));
+                let flag =
+                    |i: usize, default: bool| args.get(i).map_or(default, |v| v.number() != 0.0);
+                events.push(Event::Video(Video {
+                    file,
+                    interruptable: flag(1, false),
+                    mute_audio: flag(2, true),
+                    pause_music: flag(3, true),
+                    letterbox: flag(4, true),
+                }));
             }
             "PlayMusic" => events.push(Event::Music(arg(0).form())),
             "SetUnconscious" => {

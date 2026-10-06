@@ -99,6 +99,9 @@ pub fn spawn_camera(commands: &mut Commands, parent: Entity, exposure: Exposure)
             Transform::IDENTITY,
             ChildOf(parent),
             RenderLayers::layer(FIRST_PERSON_LAYER),
+            // The text and menus stay on this camera when a movie's camera
+            // (`movie`, a higher order) is on screen.
+            IsDefaultUiCamera,
             // Replaced by the main camera's every frame (`copy_grade`).
             ImageSpaceGrade::NEUTRAL,
             FirstPersonCamera,
