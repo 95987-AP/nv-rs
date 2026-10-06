@@ -603,10 +603,22 @@ pub struct Band {
 /// projectile the optimal at most its reach × `fCombatProjectileMaxRange
 /// OptimalMult` (0.85), the absolute maximum at most its reach, and the
 /// minimum at most the optimal − 256 (not below 0). No weapon: 512 and 1024
-/// × the multipliers. (A projectile that explodes keeps the minimum outside
-/// its blast: not done.)
+/// × the multipliers. For a projectile that explodes see
+/// [`ranged_band_blast`].
 pub fn ranged_band(
     weapon: Option<(&Weapon, Option<f32>)>,
+    style: &CombatStyle,
+    s: Setting,
+) -> Band {
+    ranged_band_blast(weapon, None, style, s)
+}
+
+/// [`ranged_band`] for a weapon whose projectile explodes with `blast`
+/// units of radius (`world::explosions::blast_radius`): the minimum is at
+/// least the radius before it's held under the optimal − 256 (`009a9180`).
+pub fn ranged_band_blast(
+    weapon: Option<(&Weapon, Option<f32>)>,
+    blast: Option<f32>,
     style: &CombatStyle,
     s: Setting,
 ) -> Band {
@@ -628,6 +640,9 @@ pub fn ranged_band(
     if let Some(r) = reach {
         optimal = optimal.min(r * s("fCombatProjectileMaxRangeOptimalMult", 0.85));
         absolute_max = absolute_max.min(r);
+        if let Some(b) = blast {
+            min = min.max(b);
+        }
         min = min.min(optimal - 256.0).max(0.0);
     }
     Band {
@@ -1338,6 +1353,29 @@ mod tests {
         // No weapon: 512 / 1024.
         let b = ranged_band(None, &style, &exe);
         assert_eq!((b.min, b.optimal, b.absolute_max), (512.0, 1024.0, 1536.0));
+    }
+
+    #[test]
+    fn dynamite_keeps_its_thrower_out_of_the_blast() {
+        // `WeapNVDynamite`'s 500 / 1024, its projectile's reach 1200² ÷
+        // 686.61 (2097), its blast 750: min 750, optimal 1024.
+        let dynamite = Weapon {
+            min_range: 500.0,
+            max_range: 1024.0,
+            animation: 10,
+            ..pistol()
+        };
+        let style = CombatStyle::default();
+        let reach = Some(1200.0f32 * 1200.0 / WORLD_GRAVITY);
+        let b = ranged_band_blast(Some((&dynamite, reach)), Some(750.0), &style, &data);
+        assert_eq!((b.min, b.optimal), (750.0, 1024.0));
+        // Still under the optimal − 256.
+        let b = ranged_band_blast(Some((&dynamite, reach)), Some(900.0), &style, &data);
+        assert_eq!(b.min, 768.0);
+        assert_eq!(
+            ranged_band(Some((&dynamite, reach)), &style, &data).min,
+            500.0
+        );
     }
 
     #[test]

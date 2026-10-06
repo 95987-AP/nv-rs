@@ -604,6 +604,58 @@ fn hits_hurt_kill_and_run_the_targets_scripts() {
 }
 
 #[test]
+fn explosions_hurt_through_the_hit_path() {
+    use world::combat::{self, Weapon};
+    let (_data, order) = order("scripting-explosion");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let gecko = FormId(GECKO_REF);
+    let pistol = Weapon::load(&order, FormId(PISTOL)).unwrap();
+    // No criticals (Luck 0), no armour: the damage given is taken.
+    state.actor_values.insert((PLAYER_REF, 11), 0.0);
+    let hit = Runner::new(&order, &scripts, &mut state)
+        .explosion_hit(Some(PLAYER_REF), gecko, Some(&pistol), 20.0)
+        .unwrap();
+    assert!((hit.dealt - 20.0).abs() < 1e-4 && hit.part.is_none() && !hit.critical);
+    assert!((combat::health(&order, &state, gecko).unwrap() - 10.0).abs() < 1e-4);
+    // Hurt, it fights its maker.
+    assert_eq!(state.combat.get(&gecko), Some(&PLAYER_REF));
+    // Armour comes off as for any hit: DR 50 halves it.
+    let mut armoured = state.clone();
+    armoured.actor_values.insert((gecko, 18), 50.0);
+    let dealt = Runner::new(&order, &scripts, &mut armoured)
+        .explosion_hit(Some(PLAYER_REF), gecko, Some(&pistol), 8.0)
+        .unwrap()
+        .dealt;
+    assert!((dealt - 4.0).abs() < 1e-4, "{dealt}");
+    // Another kills it: its OnDeath runs, the player the killer.
+    state.globals.insert(FormId(GLOBAL), 0.0);
+    Runner::new(&order, &scripts, &mut state).explosion_hit(
+        Some(PLAYER_REF),
+        gecko,
+        Some(&pistol),
+        20.0,
+    );
+    assert!(state.dead.contains(&gecko));
+    assert_eq!(state.globals[&FormId(GLOBAL)], 100.0);
+    assert!(state.events.contains(&Event::Died {
+        who: gecko,
+        by: PLAYER_REF
+    }));
+    // An object's OnHitWith blocks run (the bottle counts the weapon); it
+    // takes no damage.
+    state.globals.insert(FormId(GLOBAL), 0.0);
+    let bottle = Runner::new(&order, &scripts, &mut state).explosion_hit(
+        Some(PLAYER_REF),
+        FormId(BOTTLE_REF),
+        Some(&pistol),
+        20.0,
+    );
+    assert_eq!(bottle, None);
+    assert_eq!(state.globals[&FormId(GLOBAL)], 1.0);
+}
+
+#[test]
 fn clothes_go_on_by_slot_and_aid_heals() {
     let (_data, order) = order("scripting-pipboy");
     let mut state = GameState::new(&order);
