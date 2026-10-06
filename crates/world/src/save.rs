@@ -223,6 +223,16 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     for (r, s) in scales {
         line(format!("scale {} {s}", id(*r)));
     }
+    let moved: BTreeMap<_, _> = state.havok_moved.iter().collect();
+    for (r, (turn, at)) in moved {
+        let numbers: Vec<String> = turn
+            .iter()
+            .flatten()
+            .chain(at.iter())
+            .map(|v| v.to_string())
+            .collect();
+        line(format!("havokmove {} {}", id(*r), numbers.join(" ")));
+    }
     for (word, set) in [
         ("unconscious", &state.unconscious),
         ("marker", &state.map_markers),
@@ -526,6 +536,16 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
             "scale" => {
                 state.scales.insert(form(1)?, num(2)? as f32);
             }
+            "havokmove" => {
+                let mut v = [0.0f32; 12];
+                for (k, x) in v.iter_mut().enumerate() {
+                    *x = num(2 + k)? as f32;
+                }
+                let turn = [[v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]];
+                state
+                    .havok_moved
+                    .insert(form(1)?, (turn, [v[9], v[10], v[11]]));
+            }
             "unconscious" => {
                 state.unconscious.insert(form(1)?);
             }
@@ -702,6 +722,19 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
 mod file_tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn havok_moved_objects_keep_their_pose_through_a_save() {
+        let mut state = GameState::default();
+        let turn = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        state
+            .havok_moved
+            .insert(FormId(0x0010_ABCD), (turn, [-68250.5, 5800.25, 8390.0]));
+        let text = save(&state, None);
+        let (back, _) = load(&text).unwrap();
+        assert_eq!(back.havok_moved, state.havok_moved);
+        assert_eq!(save(&back, None), text);
+    }
 
     #[test]
     fn failed_save_write_preserves_the_previous_save_and_cleans_up() {
