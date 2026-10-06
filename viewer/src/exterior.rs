@@ -55,10 +55,18 @@ enum Square {
         doors: Vec<DoorData>,
         swing_doors: Vec<cellview::SwingDoor>,
         talkers: Vec<crate::dialogue::Talker>,
+        /// People it left out as disabled when it loaded
+        /// (`world::ai::disabled_people_in_square`), who come in once a
+        /// script enables them (`bring_in_people`).
+        disabled_people: Vec<esm::FormId>,
     },
 }
 
-type Finished = ((i32, i32), Result<Option<ViewerScene>, String>);
+type Finished = (
+    (i32, i32),
+    Result<Option<ViewerScene>, String>,
+    Vec<esm::FormId>,
+);
 
 /// Distant water (`water.rs`) is drawn from the level-4 chunks out to this
 /// many cells from the player: the game's `uGridDistantCount` (20 in
@@ -128,6 +136,20 @@ impl Exterior {
             .iter()
             .filter(|(_, s)| matches!(s, Square::Loaded { .. }))
             .map(|(at, _)| *at)
+            .collect()
+    }
+
+    /// The people the loaded squares left out as disabled when they loaded.
+    pub fn disabled_people(&self) -> Vec<esm::FormId> {
+        self.squares
+            .values()
+            .filter_map(|s| match s {
+                Square::Loaded {
+                    disabled_people, ..
+                } => Some(disabled_people.iter().copied()),
+                _ => None,
+            })
+            .flatten()
             .collect()
     }
 
@@ -237,6 +259,8 @@ pub fn stream_squares(
     mut cameras: Query<(&mut Transform, &mut FlyCamera, &mut ImageSpaceGrade)>,
     mut state: ResMut<crate::dialogue::DialogueState>,
     mut swing_doors: ResMut<crate::doors::SwingDoors>,
+    shown: Query<&crate::ai::Walker>,
+    (old_talkers, brought): (Option<Res<crate::dialogue::Talkers>>, Res<crate::BroughtIn>),
 ) {
     let Some(mut exterior) = exterior else {
         return;
@@ -257,7 +281,7 @@ pub fn stream_squares(
         .lock()
         .map(|r| r.try_iter().collect())
         .unwrap_or_default();
-    for (square, result) in finished {
+    for (square, result, disabled_people) in finished {
         let far = (square.0 - here.0).abs().max((square.1 - here.1).abs()) > KEEP_RADIUS;
         let state = match result {
             Ok(Some(scene)) if !far => {
@@ -339,6 +363,7 @@ pub fn stream_squares(
                     collision: Box::new(scene.collision),
                     doors: scene.doors,
                     swing_doors: scene.swing_doors,
+                    disabled_people,
                 }
             }
             Ok(_) => Square::Empty,
@@ -404,11 +429,16 @@ pub fn stream_squares(
         let game = Arc::clone(&game.0);
         let grid = Arc::clone(&exterior.grid);
         let sender = exterior.sender.clone();
-        // What scripts have enabled and disabled, as it is now.
-        let disabled = state.0.disabled.clone();
+        // What scripts have enabled and disabled, as it is now; people
+        // already on screen (brought in after their square loaded,
+        // `bring_in_people`) are not drawn a second time.
+        let mut disabled = state.0.disabled.clone();
+        disabled.extend(shown.iter().map(|w| (w.reference, true)));
         std::thread::spawn(move || {
             let result = load_square(&game, &grid, square, &disabled);
-            let _ = sender.send((square, result));
+            let people =
+                world::ai::disabled_people_in_square(&game.order, &grid, square, &disabled);
+            let _ = sender.send((square, result, people));
         });
     }
 
@@ -436,6 +466,12 @@ pub fn stream_squares(
                     .0
                     .extend(bounds.iter().map(|b| (b.reference, (b.lo, b.hi))));
             }
+        }
+        // People brought in after their place loaded (`bring_in_people`)
+        // stay, as long as they're on screen.
+        if let Some(old) = &old_talkers {
+            let on_screen: HashSet<esm::FormId> = shown.iter().map(|w| w.reference).collect();
+            talkers = with_brought_in(talkers, &old.0, &brought.people, &on_screen);
         }
         commands.insert_resource(crate::dialogue::Talkers(talkers));
         // The loaded squares' doors that swing (their leaves are put where
@@ -741,6 +777,24 @@ pub fn stream_distant_land(
     }
 }
 
+/// The loaded squares' people to talk to (`squares`), plus those from
+/// the `old` list that were brought in after their place loaded and are
+/// still on screen (they belong to no square).
+fn with_brought_in(
+    mut squares: Vec<crate::dialogue::Talker>,
+    old: &[crate::dialogue::Talker],
+    brought: &HashSet<esm::FormId>,
+    on_screen: &HashSet<esm::FormId>,
+) -> Vec<crate::dialogue::Talker> {
+    let ours: HashSet<esm::FormId> = squares.iter().map(|t| t.reference).collect();
+    squares.extend(old.iter().copied().filter(|t| {
+        brought.contains(&t.reference)
+            && on_screen.contains(&t.reference)
+            && !ours.contains(&t.reference)
+    }));
+    squares
+}
+
 fn load_square(
     game: &Game,
     grid: &WorldGrid,
@@ -804,5 +858,26 @@ mod tests {
         // The triangle rises 100 units over 500 northward.
         assert!((z - 8020.0).abs() < 0.05, "{z}");
         assert_eq!(ground_under(&c, [-100.0, -100.0]), None);
+    }
+
+    #[test]
+    fn people_brought_in_stay_talkers_when_squares_change() {
+        // Ghost Town Gunfight: Ringo (00104C7D) is moved into the
+        // worldspace by a script; after the squares change he must still
+        // be someone to talk to (his after-the-fight dialogue package).
+        use crate::dialogue::Talker;
+        let t = |r: u32| Talker {
+            reference: esm::FormId(r),
+            base: esm::FormId(r + 1),
+            position: [r as f32, 0.0, 0.0],
+        };
+        let set = |rs: &[u32]| rs.iter().map(|&r| esm::FormId(r)).collect::<HashSet<_>>();
+        let squares = vec![t(10), t(20)];
+        let old = [t(10), t(30), t(40), t(50)];
+        // 30 brought in and on screen: kept with its last position; 40
+        // brought in but gone; 50 a square's person whose square left.
+        let out = with_brought_in(squares, &old, &set(&[30, 40]), &set(&[10, 20, 30, 50]));
+        let refs: Vec<u32> = out.iter().map(|t| t.reference.0).collect();
+        assert_eq!(refs, [10, 20, 30]);
     }
 }

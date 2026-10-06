@@ -1057,6 +1057,66 @@ pub fn moved_into(order: &LoadOrder, state: &GameState, space: FormId) -> Vec<Fo
     out
 }
 
+/// People (`ACHR`/`ACRE`) of one exterior grid square — its cell's and the
+/// worldspace's persistent ones standing in it — that loading the square
+/// with these enable states leaves out as disabled
+/// ([`crate::placement::enabled_now`], the cell load's "disabled when the
+/// cell loads").
+pub fn disabled_people_in_square(
+    order: &LoadOrder,
+    grid: &crate::WorldGrid,
+    square: (i32, i32),
+    disabled: &crate::placement::Disabled,
+) -> Vec<FormId> {
+    let Some(cell) = grid.cell_at(square) else {
+        return Vec::new();
+    };
+    let persistent = grid
+        .persistent_in(square)
+        .iter()
+        .filter_map(|&id| order.get(id));
+    let mut out: Vec<FormId> = order
+        .references_in_cell(cell)
+        .into_iter()
+        .chain(persistent)
+        .filter(|rr| {
+            !rr.entry.header.is_deleted()
+                && (rr.entry.header.kind == esm::sig::ACHR
+                    || rr.entry.header.kind == esm::sig::ACRE)
+        })
+        .map(|rr| rr.form_id)
+        .filter(|&r| !crate::placement::enabled_now(order, r, disabled))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Of the people a loaded place left out as disabled
+/// ([`disabled_people_in_square`]), those a script has enabled since —
+/// themselves, or through their enable parent, as `GoodspringsPowderGangMarker`
+/// (00105D4C) brings in the Powder Gangers of Ghost Town Gunfight — that are
+/// alive and still placed in `space`. The game loads an enabled reference's
+/// 3D (`Enable`, 005c43d0, then `Load3D`; `docs/SCRIPTS_RUNTIME.md`), so
+/// they come into the place now.
+pub fn enabled_since_load(
+    order: &LoadOrder,
+    state: &GameState,
+    space: FormId,
+    left_out: &[FormId],
+) -> Vec<FormId> {
+    let mut out: Vec<FormId> = left_out
+        .iter()
+        .copied()
+        .filter(|r| !state.dead.contains(r))
+        .filter(|&r| crate::placement::enabled_now(order, r, &state.disabled))
+        .filter(|&r| state.place(order, r).is_some_and(|p| p.0 == space))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// How far from the navmesh a path may start or end (a person or marker
 /// standing just off its edge).
 pub const OFF_MESH: f32 = 128.0;

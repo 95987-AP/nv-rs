@@ -201,6 +201,7 @@ fn main() {
         .init_resource::<ai::CellNav>()
         .init_resource::<ai::CombatSettings>()
         .init_resource::<ai::Moved>()
+        .init_resource::<BroughtIn>()
         .init_resource::<ai::Chats>()
         .init_resource::<ai::Starts>()
         .init_resource::<chatter::Lines>()
@@ -609,15 +610,19 @@ const BRING_IN_REACH: f32 = 2.5 * world::land::CELL_SIZE;
 
 /// People the game has taken into this place after it loaded (through a
 /// door, or by a script's `MoveTo`) come on screen: once a second, anyone
-/// the state has here (`world::ai::moved_into`) who isn't drawn yet is
-/// spawned, lit as the place is; outdoors, those within the loaded
-/// squares.
+/// the state has here (`world::ai::moved_into`), or whom a script enabled
+/// after their square loaded (`world::ai::enabled_since_load`), who isn't
+/// drawn yet is spawned, lit as the place is; outdoors, those within the
+/// loaded squares.
+#[allow(clippy::too_many_arguments)]
 fn bring_in_people(
     time: Res<Time>,
     game: Res<GameFiles>,
     state: Res<dialogue::DialogueState>,
     player: Res<walk::Player>,
     walkers: Query<&ai::Walker>,
+    exterior: Option<Res<exterior::Exterior>>,
+    (mut talkers, mut brought): (Option<ResMut<dialogue::Talkers>>, ResMut<BroughtIn>),
     mut spawner: Spawner,
     mut last: Local<f32>,
 ) {
@@ -642,10 +647,19 @@ fn bring_in_people(
                     (p[0] - me[0]).hypot(p[1] - me[1]) <= BRING_IN_REACH
                 })
     };
-    let new: Vec<esm::FormId> = world::ai::moved_into(order, state, space)
+    // Also those the loaded squares left out as disabled whom a script
+    // has enabled since (an enable parent's `Enable`).
+    let enabled = exterior
+        .as_deref()
+        .map(|e| world::ai::enabled_since_load(order, state, space, &e.disabled_people()))
+        .unwrap_or_default();
+    let mut new: Vec<esm::FormId> = world::ai::moved_into(order, state, space)
         .into_iter()
+        .chain(enabled)
         .filter(|r| !shown.contains(r) && near(*r))
         .collect();
+    new.sort();
+    new.dedup();
     if new.is_empty() {
         return;
     }
@@ -655,6 +669,30 @@ fn bring_in_people(
         println!("{r} comes into view");
     }
     spawner.spawn_with(&scene, lighting);
+    // They can be talked to, shot and targeted like the place's own people.
+    if brought.space != Some(space) {
+        *brought = BroughtIn {
+            space: Some(space),
+            people: Default::default(),
+        };
+    }
+    for a in &scene.actors {
+        let talker = dialogue::Talker::from_actor(a);
+        brought.people.insert(talker.reference);
+        if let Some(t) = talkers.as_deref_mut() {
+            t.0.retain(|t| t.reference != talker.reference);
+            t.0.push(talker);
+        }
+    }
+}
+
+/// The people [`bring_in_people`] put on screen in the current place (not
+/// part of a loaded square or cell): outdoors they stay among the talkers
+/// when the loaded squares change (`exterior::stream_squares`).
+#[derive(Resource, Default)]
+pub struct BroughtIn {
+    space: Option<esm::FormId>,
+    pub people: std::collections::HashSet<esm::FormId>,
 }
 
 /// References scripts made (`PlaceAtMe`, `world::more_functions::placed`)

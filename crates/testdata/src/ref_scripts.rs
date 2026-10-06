@@ -1,6 +1,7 @@
 //! A world for the reference-script pass (`world::ref_scripts`): an outdoor
 //! worldspace `ScriptWorld` with squares 0,0, 1,0 and 3,0 and a persistent
-//! object standing in 1,0, and the interior `ScriptRoom`. Counters count
+//! object standing in 1,0, people in 0,1 (one following an enable parent, a
+//! persistent disabled one), and the interior `ScriptRoom`. Counters count
 //! their `OnLoad` and `GameMode` runs; a trigger counts its events; a mover
 //! calls `Activate` (a command that stops the pass) every frame.
 
@@ -41,6 +42,16 @@ pub mod ids {
     pub const PERSISTENT_REF: u32 = 0x2305;
     /// In `ScriptRoom`.
     pub const ROOM_REF: u32 = 0x2306;
+    /// Square 0,1, holding people.
+    pub const CAMP: u32 = 0x2050;
+    /// A person (`NPC_`) with no script.
+    pub const SETTLER: u32 = 0x2203;
+    /// In 0,1: follows `DISABLED_REF`'s enable state (`XESP`).
+    pub const FOLLOWER_REF: u32 = 0x2307;
+    /// In 0,1, enabled.
+    pub const AWAKE_REF: u32 = 0x2308;
+    /// Persistent and initially disabled, standing in 0,1 at 100,4200.
+    pub const LONE_REF: u32 = 0x2309;
 }
 
 fn script(id: u32, name: &str, source: &str) -> Vec<u8> {
@@ -87,6 +98,7 @@ pub fn ref_scripts(tag: &str) -> TempData {
     let mut activators = activator(COUNTER, "Counter", COUNTER_SCRIPT);
     activators.extend(activator(TRIGGER, "Trigger", TRIGGER_SCRIPT));
     activators.extend(activator(MOVER, "Mover", MOVER_SCRIPT));
+    let people = record(b"NPC_", SETTLER, &sub(b"EDID", &zstr("Settler")));
 
     let children = |cell: u32, kind: i32, contents: &[u8]| {
         group(
@@ -111,8 +123,16 @@ pub fn ref_scripts(tag: &str) -> TempData {
         d.extend(sub(b"XCLC", &[0u8; 12]));
         record_flagged(b"CELL", PERSISTENT_CELL, 0x400, &d)
     };
+    let actor = |id: u32, pos: [f32; 3], extra: &[u8]| {
+        let mut r = placed(id, SETTLER, pos, [0.0; 3], extra);
+        r[..4].copy_from_slice(b"ACHR");
+        r
+    };
     let mut persistent = placed(PERSISTENT_REF, COUNTER, [5000.0, 100.0, 0.0], [0.0; 3], &[]);
     persistent[8..12].copy_from_slice(&0x400u32.to_le_bytes());
+    let mut lone = actor(LONE_REF, [100.0, 4200.0, 0.0], &[]);
+    lone[8..12].copy_from_slice(&0xC00u32.to_le_bytes());
+    persistent.extend(lone);
     world_children.extend(children(PERSISTENT_CELL, 8, &persistent));
 
     let mut squares = exterior_cell(FIELD, 0, 0);
@@ -134,6 +154,12 @@ pub fn ref_scripts(tag: &str) -> TempData {
         9,
         &placed(MOVER_REF, MOVER, [4200.0, 100.0, 0.0], [0.0; 3], &[]),
     ));
+    squares.extend(exterior_cell(CAMP, 0, 1));
+    let mut xesp = DISABLED_REF.to_le_bytes().to_vec();
+    xesp.extend([0, 0, 0, 0]);
+    let mut camp = actor(FOLLOWER_REF, [200.0, 4200.0, 0.0], &sub(b"XESP", &xesp));
+    camp.extend(actor(AWAKE_REF, [300.0, 4200.0, 0.0], &[]));
+    squares.extend(children(CAMP, 9, &camp));
     squares.extend(exterior_cell(FAR, 3, 0));
     squares.extend(children(
         FAR,
@@ -165,6 +191,7 @@ pub fn ref_scripts(tag: &str) -> TempData {
     let mut plugin = record(b"TES4", 0, &sub(b"HEDR", &hedr));
     plugin.extend(group(*b"SCPT", 0, &scripts));
     plugin.extend(group(*b"ACTI", 0, &activators));
+    plugin.extend(group(*b"NPC_", 0, &people));
     plugin.extend(interiors);
     plugin.extend(group(*b"WRLD", 0, &worlds));
     data.write("FalloutNV.esm", &plugin);
