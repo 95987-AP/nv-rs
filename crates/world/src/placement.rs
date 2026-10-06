@@ -677,6 +677,24 @@ pub fn enabled_now(order: &LoadOrder, reference: FormId, disabled: &Disabled) ->
     }
 }
 
+/// The references among `refs` shown with `now` but not with `before`
+/// (two states of scripts' `Enable` / `Disable`): enabled themselves, or
+/// following an enable parent that was. The game's `Enable` (`005c43d0`)
+/// queues the reference's own enabling (`005aa5d0`) and ignores a
+/// reference that has an enable parent (it follows the parent), so a
+/// parent's `Enable` is what brings its children in: `VCG02BottleMarkerREF`
+/// for the tutorial's sarsaparilla bottles.
+pub fn newly_enabled(
+    order: &LoadOrder,
+    refs: impl IntoIterator<Item = FormId>,
+    before: &Disabled,
+    now: &Disabled,
+) -> Vec<FormId> {
+    refs.into_iter()
+        .filter(|&r| enabled_now(order, r, now) && !enabled_now(order, r, before))
+        .collect()
+}
+
 /// Whether the game shows a reference: a script's `Enable` / `Disable` of
 /// it, else its enable parent's state (the reference follows the parent,
 /// or does the opposite, and its own "initially disabled" flag is then

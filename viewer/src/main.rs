@@ -333,6 +333,7 @@ fn main() {
                     ai::move_offstage,
                     bring_in_people,
                     bring_in_made,
+                    bring_in_enabled,
                     ai::move_actors,
                     scripts::save_and_load,
                     report::report_key,
@@ -648,6 +649,106 @@ fn bring_in_people(
         &mut talkers.0,
         scene.actors.iter().map(dialogue::Talker::from_actor),
     );
+    spawner.spawn_with(&scene, lighting);
+}
+
+/// References a script's `Enable` / `Disable` changed after their place
+/// loaded: those of the loaded place now shown (themselves, or through
+/// their enable parent: `world::newly_enabled`) come on screen, drawn if
+/// they were left out when it loaded (people join its people); drawn ones
+/// now hidden through their parent are hidden. Their own `Enable` is
+/// carried out by `run_scripts`; this covers what wasn't drawn and the
+/// children (`VCG02BottleMarkerREF.Enable` shows the tutorial's bottles,
+/// `VCG02Gecko1REF.Enable` brings in a gecko left out at load). The game
+/// loads an enabled reference's 3D (`005c43d0` → `005aa5d0`).
+#[allow(clippy::too_many_arguments)]
+fn bring_in_enabled(
+    game: Res<GameFiles>,
+    state: Res<dialogue::DialogueState>,
+    player: Res<walk::Player>,
+    here: Res<scripts::Here>,
+    exterior: Option<Res<exterior::Exterior>>,
+    mut placed: Query<(&scripts::PlacedRef, &mut Visibility)>,
+    mut talkers: ResMut<dialogue::Talkers>,
+    mut spawner: Spawner,
+    mut seen: Local<(Option<esm::FormId>, world::Disabled)>,
+) {
+    let state = &state.0;
+    if !player.ready {
+        return;
+    }
+    let space = state.player_world.or(state.player_cell);
+    // A place loaded afresh is drawn as things are now.
+    if seen.0 != space {
+        *seen = (space, state.disabled.clone());
+        return;
+    }
+    if seen.1 == state.disabled {
+        return;
+    }
+    let before = std::mem::replace(&mut seen.1, state.disabled.clone());
+    let order = &game.0.order;
+    let refs: Vec<esm::FormId> = match (&exterior, state.player_world, here.0) {
+        (Some(e), Some(_), _) => e
+            .loaded_squares()
+            .into_iter()
+            .flat_map(|square| {
+                let mut refs: Vec<esm::FormId> = e
+                    .grid
+                    .cell_at(square)
+                    .map(|c| {
+                        order
+                            .references_in_cell(c)
+                            .into_iter()
+                            .map(|rr| rr.form_id)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                refs.extend_from_slice(e.grid.persistent_in(square));
+                refs
+            })
+            .collect(),
+        (_, None, Some(cell)) => order
+            .references_in_cell(esm::FormId(cell))
+            .into_iter()
+            .map(|rr| rr.form_id)
+            .collect(),
+        _ => return,
+    };
+    let came = world::newly_enabled(order, refs.iter().copied(), &before, &state.disabled);
+    let went = world::newly_enabled(order, refs.iter().copied(), &state.disabled, &before);
+    let mut drawn = std::collections::HashSet::new();
+    for (p, mut visibility) in &mut placed {
+        let r = esm::FormId(p.0);
+        drawn.insert(r);
+        if came.contains(&r) {
+            *visibility = Visibility::Inherited;
+        } else if went.contains(&r) {
+            *visibility = Visibility::Hidden;
+        }
+    }
+    let new: Vec<world::Placement> = came
+        .iter()
+        .filter(|r| !drawn.contains(r) && !state.dead.contains(r))
+        .filter_map(|&r| world::placement_of(order, r))
+        .filter(|p| !world::is_marker(p.base, p.base_type, p.model.as_deref()))
+        .collect();
+    if new.is_empty() {
+        return;
+    }
+    for p in &new {
+        println!(
+            "{} ({}) comes into view (enabled)",
+            p.form_id,
+            p.base_editor_id.as_deref().unwrap_or("?")
+        );
+    }
+    let scene = game.0.made_scene(new);
+    add_talkers(
+        &mut talkers.0,
+        scene.actors.iter().map(dialogue::Talker::from_actor),
+    );
+    let lighting = spawner.place_lighting.get();
     spawner.spawn_with(&scene, lighting);
 }
 
