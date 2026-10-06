@@ -531,6 +531,11 @@ impl Interface {
         }
     }
 
+    /// Whether the left button is held down on a tile.
+    pub fn held(&self) -> bool {
+        self.pressed.is_some()
+    }
+
     /// Forgets tiles the menu's code took away (a list's lines filled
     /// again): the game's tiles let the interface go of them as they're
     /// deleted, so the tile under the pointer is picked afresh.

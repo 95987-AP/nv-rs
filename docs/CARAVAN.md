@@ -246,6 +246,9 @@ state reached), `world::caravan::money::tests`,
   as if each were read.
 - The camera keeps its 45° across and the window's shape (the game keeps
   the file's 16:9 frustum on any screen).
-- The deck screen's scrollbar drag (its tile's mouse handling), the gamepad
-  stick. The order money is paid in follows the form IDs here, not the
+- The deck screen's scrollbar: its arrows, page areas, wheel and marker
+  drag move it (its prefab's operators), and once let go the cards move
+  from the chosen one to it as the game's drag does (a step each up to 4,
+  else one fast move); what starts the game's own drag besides a press on
+  the bar (the interface's +0x48) isn't traced. The gamepad stick. The order money is paid in follows the form IDs here, not the
   inventory's own order.

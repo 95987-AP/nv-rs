@@ -692,6 +692,20 @@ pub fn after(screen: &mut Screen, game: &Game, state: &mut GameState, now_ms: f6
         for tile in std::mem::take(&mut c.menu.clicks) {
             fx.extend(c.game.click(tile, &mut dice));
         }
+        // The deck screen's scrollbar moved by the pointer (its arrows, the
+        // wheel, its marker let go): the cards move from the chosen one to
+        // where it was left (`007492f0`, `DoIdle`; what starts the game's
+        // drag besides a press on the bar itself, the interface's +0x48,
+        // isn't traced).
+        if c.game.screen == world::caravan::menu::Screen::Deck
+            && c.game.state == world::caravan::menu::state::IDLE
+            && !screen.interface.held()
+        {
+            if let Some(at) = c.menu.meter_moved(&mut screen.ui, c.game.chosen) {
+                c.game.meter_press();
+                c.game.meter_release(at);
+            }
+        }
         let models = c.models.clone();
         fx.extend(c.game.update(now_ms as u32, &Clips(&models), &mut dice));
         let mut asks = Vec::new();

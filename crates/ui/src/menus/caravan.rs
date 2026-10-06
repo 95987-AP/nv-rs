@@ -233,9 +233,16 @@ impl CaravanMenu {
                 self.set_value(ui, id::IN_DECK, m.in_deck as i64);
                 self.set_value(ui, id::OWNED, m.cards.len() as i64);
                 if let Some(bar) = self.tile(id::SCROLLBAR) {
-                    let current = ui.names.lookup_or_add("_current_value").unwrap_or(0);
                     ui.set_number(bar, t::USER0, m.cards.len() as f32);
-                    ui.set_number(bar, current, m.chosen as f32);
+                    // Set from the code only when the code moved it
+                    // (`_SetInCode`), so a drag isn't undone.
+                    if self.values.get(&id::SCROLLBAR) != Some(&(m.chosen as i64)) {
+                        self.values.insert(id::SCROLLBAR, m.chosen as i64);
+                        let current = ui.names.lookup_or_add("_current_value").unwrap_or(0);
+                        // Its operators kept (the arrows, wheel and drag
+                        // add to it).
+                        ui.set_base(bar, current, m.chosen as f32);
+                    }
                 }
                 // Below 30 the count's first child is dimmed.
                 if let Some(first) = self
@@ -382,6 +389,19 @@ impl CaravanMenu {
                 self.shift(ui, info, t::WIDTH, 150.0);
             }
         }
+    }
+
+    /// Where the deck screen's scrollbar is (its `_current_value`, which its
+    /// prefab's arrows, wheel and marker drag move), when the player moved
+    /// it away from the chosen card.
+    pub fn meter_moved(&mut self, ui: &mut Ui, chosen: usize) -> Option<usize> {
+        let bar = self.tile(id::SCROLLBAR)?;
+        let current = ui.names.lookup_or_add("_current_value").unwrap_or(0);
+        let at = ui.number(bar, current).round().max(0.0) as usize;
+        (at != chosen).then(|| {
+            self.values.insert(id::SCROLLBAR, at as i64);
+            at
+        })
     }
 
     /// The track values' places (state 2's end, `00741d4f`): x = the width
