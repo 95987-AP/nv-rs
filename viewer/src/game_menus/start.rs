@@ -478,6 +478,7 @@ pub fn background_draws(
                     ([0.0, 4000.0], [0.0, 1.0]),
                 ],
             ],
+            alpha: Vec::new(),
             blend: None,
         },
     }];
@@ -494,6 +495,7 @@ pub fn background_draws(
             kind: DrawKind::Model {
                 texture: p.texture.clone(),
                 triangles,
+                alpha: Vec::new(),
                 blend: p.blend,
             },
         });

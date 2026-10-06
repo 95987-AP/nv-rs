@@ -427,7 +427,12 @@ pub(crate) fn upload_font_picture(
 
 /// A model piece's triangles in menu units ((x, y), (u, v)) as a mesh in
 /// the HUD camera's pixels, the same way as [`quads_mesh`].
-pub(crate) fn triangles_mesh(triangles: &[[([f32; 2], [f32; 2]); 3]], k: f32, size: UVec2) -> Mesh {
+pub(crate) fn triangles_mesh(
+    triangles: &[[([f32; 2], [f32; 2]); 3]],
+    alpha: &[[f32; 3]],
+    k: f32,
+    size: UVec2,
+) -> Mesh {
     let (w, h) = (size.x as f32, size.y as f32);
     let point = |p: [f32; 2]| [p[0] * k + 0.5 - w / 2.0, h / 2.0 - (p[1] * k + 0.5), 0.0];
     let mut positions = Vec::with_capacity(triangles.len() * 3);
@@ -439,13 +444,22 @@ pub(crate) fn triangles_mesh(triangles: &[[([f32; 2], [f32; 2]); 3]], k: f32, si
         }
     }
     let indices: Vec<u32> = (0..positions.len() as u32).collect();
-    Mesh::new(
+    let mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD,
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
-    .with_inserted_indices(Indices::U32(indices))
+    .with_inserted_indices(Indices::U32(indices));
+    // Each corner's alpha (the local map's fog of war) as a vertex colour.
+    if alpha.len() == triangles.len() {
+        let colors: Vec<[f32; 4]> = alpha
+            .iter()
+            .flat_map(|a| a.map(|v| [1.0, 1.0, 1.0, v]))
+            .collect();
+        return mesh.with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    }
+    mesh
 }
 
 /// Quads in menu units (x, y, width, height; texture coordinates of the
@@ -1157,6 +1171,7 @@ fn update_hud(
             DrawKind::Model {
                 texture,
                 triangles,
+                alpha,
                 blend,
             } => {
                 let texture = match texture {
@@ -1174,7 +1189,7 @@ fn update_hud(
                 let Some(texture) = texture else {
                     continue;
                 };
-                let mesh = meshes.add(triangles_mesh(triangles, k, size));
+                let mesh = meshes.add(triangles_mesh(triangles, alpha, k, size));
                 let material = materials.add(TileMaterial {
                     params: TileParams {
                         tint,

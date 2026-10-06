@@ -63,8 +63,64 @@ pub enum DrawKind {
     Model {
         texture: Option<String>,
         triangles: Vec<[([f32; 2], [f32; 2]); 3]>,
+        /// Each corner's alpha (empty: all 1): the local map's fog of war.
+        alpha: Vec<[f32; 3]>,
         blend: Option<(u8, u8)>,
     },
+}
+
+/// A triangle's corner: (x, y) in menu units, (u, v), alpha.
+pub type Corner = ([f32; 2], [f32; 2], f32);
+
+/// Triangles cut to a rectangle (x, y, width, height; Sutherland–Hodgman
+/// on each edge, the corners' texture coordinates and alpha carried
+/// along), fanned back into triangles.
+pub fn clip_triangles(tris: &[[Corner; 3]], r: [f32; 4]) -> Vec<[Corner; 3]> {
+    let lerp = |a: Corner, b: Corner, k: f32| -> Corner {
+        (
+            [
+                a.0[0] + (b.0[0] - a.0[0]) * k,
+                a.0[1] + (b.0[1] - a.0[1]) * k,
+            ],
+            [
+                a.1[0] + (b.1[0] - a.1[0]) * k,
+                a.1[1] + (b.1[1] - a.1[1]) * k,
+            ],
+            a.2 + (b.2 - a.2) * k,
+        )
+    };
+    let edges: [(usize, f32, f32); 4] = [
+        (0, r[0], 1.0),
+        (0, r[0] + r[2], -1.0),
+        (1, r[1], 1.0),
+        (1, r[1] + r[3], -1.0),
+    ];
+    let mut out = Vec::new();
+    for tri in tris {
+        let mut poly: Vec<Corner> = tri.to_vec();
+        for &(axis, at, sign) in &edges {
+            let d = |c: &Corner| (c.0[axis] - at) * sign;
+            let mut next = Vec::with_capacity(poly.len() + 2);
+            for i in 0..poly.len() {
+                let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+                let (da, db) = (d(&a), d(&b));
+                if da >= 0.0 {
+                    next.push(a);
+                }
+                if (da >= 0.0) != (db >= 0.0) {
+                    next.push(lerp(a, b, da / (da - db)));
+                }
+            }
+            poly = next;
+            if poly.len() < 3 {
+                break;
+            }
+        }
+        for i in 1..poly.len().saturating_sub(1) {
+            out.push([poly[0], poly[i], poly[i + 1]]);
+        }
+    }
+    out
 }
 
 /// Where a texture named in a tile's `filename` is (`Data\Textures\` +
@@ -464,6 +520,48 @@ pub fn draw_list(
         let Some((texture, rect, uv)) = image_geometry(ui, tile, textures) else {
             continue;
         };
+        // `rotateangle` (radians [guess: the unit and the turn's sense
+        // aren't traced; the local map's arrow, 0079dbb0, fits them]) about
+        // (`rotateaxisx`, `rotateaxisy`) from the tile's corner: the picture
+        // as two turned triangles, cut to its clip window.
+        let angle = ui.number(tile, t::ROTATEANGLE);
+        if angle != 0.0 {
+            let (ax, ay) = (
+                rect[0] + ui.number(tile, 4091),
+                rect[1] + ui.number(tile, 4092),
+            );
+            let (s, c) = angle.sin_cos();
+            let turn = |x: f32, y: f32| {
+                let (dx, dy) = (x - ax, y - ay);
+                [ax + c * dx + s * dy, ay - s * dx + c * dy]
+            };
+            let [x0, y0, w, h] = rect;
+            let corners = [
+                (turn(x0, y0), [uv[0], uv[1]], 1.0),
+                (turn(x0 + w, y0), [uv[2], uv[1]], 1.0),
+                (turn(x0, y0 + h), [uv[0], uv[3]], 1.0),
+                (turn(x0 + w, y0 + h), [uv[2], uv[3]], 1.0),
+            ];
+            let mut tris = vec![
+                [corners[0], corners[1], corners[2]],
+                [corners[1], corners[3], corners[2]],
+            ];
+            if let Some(c) = clip_rect(ui, tile) {
+                tris = clip_triangles(&tris, c);
+            }
+            items.push(DrawItem {
+                tile,
+                depth,
+                color,
+                kind: DrawKind::Model {
+                    texture: Some(texture),
+                    triangles: tris.iter().map(|t| t.map(|c| (c.0, c.1))).collect(),
+                    alpha: Vec::new(),
+                    blend: None,
+                },
+            });
+            continue;
+        }
         let (rect, uv) = match clip {
             Some(c) => {
                 let corners = [

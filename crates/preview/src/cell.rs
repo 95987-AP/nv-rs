@@ -164,9 +164,12 @@ pub struct ModelMesh {
     /// the model's space: what the game sorts blended meshes by (see
     /// `cellview::MaterialData::sort_center`).
     pub bound_center: Vec3,
-    /// Drawn into the local map's pictures (`RegisterObject_LocalMap`,
-    /// `00b64440`): the shader's second flags have 0x40000 (`Show in
-    /// Local Map`) and the mesh's bound reaches 50 units.
+    /// Big enough for the local map's pictures (`RegisterObject_LocalMap`,
+    /// `00b64440`: the mesh's bound reaches 50 units). The pass also wants
+    /// the property's runtime flag 0x40000 (`Show in Local Map`), which no
+    /// mesh of Doc Mitchell's house has in its file: the game sets it on the
+    /// place's objects at run time [guess: where isn't traced; every placed
+    /// object not hidden from the local map is taken].
     pub local_map: bool,
     pub lit: bool,
     /// Self-lit color, with its multiplier applied. It is added to the light
@@ -955,11 +958,7 @@ impl Loader<'_> {
             depth_test,
             depth_write,
             bound_center: mesh.model_bound().0,
-            local_map: mesh
-                .shader
-                .as_ref()
-                .is_some_and(|s| s.shader_flags2 & 0x0004_0000 != 0)
-                && mesh.model_bound().1 >= 50.0,
+            local_map: mesh.model_bound().1 >= 50.0,
             lit: !unlit,
             emissive,
             emissive_mult,

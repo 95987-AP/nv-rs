@@ -682,6 +682,8 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
                 tuned,
             })
             .collect(),
+        // The local map is made by the caller (its pictures).
+        local_map: None,
         // Hot keys whose items are still carried (`004bf4b0` finds them
         // among the inventory's items).
         hotkeys: state.hotkeys.map(|h| {

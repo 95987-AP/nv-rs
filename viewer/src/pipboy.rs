@@ -1915,12 +1915,14 @@ struct QuestPoints {
 pub struct Drawing<'w> {
     tiles: ResMut<'w, Assets<TileMaterial>>,
     screens: ResMut<'w, Assets<ScreenMaterial>>,
+    /// DATA › Local Map's line and pictures (`local_map`).
+    local_map: Res<'w, crate::local_map::LocalMap>,
 }
 
 /// Every frame while it's up: the menus filled from the game's state, the
 /// picture's pieces, the screen effect's values, the arm.
 #[allow(clippy::too_many_arguments)]
-fn update_pipboy(
+pub(crate) fn update_pipboy(
     mut commands: Commands,
     mut pipboy: ResMut<Pipboy>,
     start: Option<ResMut<StartPipboy>>,
@@ -1956,6 +1958,7 @@ fn update_pipboy(
     let Drawing {
         mut tiles,
         mut screens,
+        local_map,
     } = drawing;
     let order = &game.0.order;
     let now = time.elapsed_secs();
@@ -2092,6 +2095,7 @@ fn update_pipboy(
     });
     let at = whereabouts(order, &state.0, &markers, heading, &mut pipboy.quest_points);
     let mut input = ui::pipboy::gather::gather(order, &state.0, &at);
+    input.local_map = local_map.line.clone();
     input.note_audio = note_audio;
     b.pipboy.fill(&mut b.ui, &input);
     b.pipboy.frame(&mut b.ui, f64::from(now));
@@ -2138,7 +2142,28 @@ fn update_pipboy(
             atlases: &mut b.atlases,
         };
         ui::draw::update_file_sizes(&mut b.ui, menu, &mut files);
-        ui::draw_list(&mut b.ui, menu, &mut files, &|_| None)
+        let mut items = ui::draw_list(&mut b.ui, menu, &mut files, &|_| None);
+        // DATA › Local Map's pictures under its markers (`local_map`).
+        if let Some(input) = pipboy.input.as_ref() {
+            let extra = b.pipboy.data.local_map_draws(&mut b.ui, input);
+            if let Some(first) = extra.first() {
+                // The map's tile is a hot rectangle (a solid picture, its
+                // `alpha` 255 in `map_menu.xml`); its pictures stand in for
+                // that square, so unexplored ground is see-through to the
+                // Pip-Boy's background [guess: what happens to the tile's
+                // own square once `0079ffb0` adds the pictures isn't
+                // traced].
+                let map_tile = first.tile;
+                items
+                    .retain(|it| it.tile != map_tile || !matches!(it.kind, DrawKind::Image { .. }));
+                let at = items
+                    .iter()
+                    .position(|it| it.depth > first.depth)
+                    .unwrap_or(items.len());
+                items.splice(at..at, extra);
+            }
+        }
+        items
     };
     if items != b.last {
         for (e, mesh, material) in b.drawn.drain(..) {
@@ -2185,7 +2210,51 @@ fn update_pipboy(
                         pieces.push((handle, vec![(*rect, corners)]));
                     }
                 }
-                DrawKind::Model { .. } => continue,
+                DrawKind::Model {
+                    texture,
+                    triangles,
+                    alpha,
+                    ..
+                } => {
+                    // A local map tile's picture (made by `local_map`), or a
+                    // file's.
+                    let handle = match texture {
+                        Some(name) if name.starts_with("nvrs:localmap:") => {
+                            local_map.images.get(name).cloned()
+                        }
+                        Some(path) => b
+                            .images
+                            .entry((path.clone(), false, false))
+                            .or_insert_with(|| {
+                                crate::hud::upload_picture(
+                                    &mut spawner.images,
+                                    &game.0,
+                                    path,
+                                    (false, false),
+                                    compressed,
+                                )
+                            })
+                            .clone(),
+                        None => Some(white.clone()),
+                    };
+                    let Some(texture) = handle else {
+                        continue;
+                    };
+                    let mesh = spawner
+                        .meshes
+                        .add(crate::hud::triangles_mesh(triangles, alpha, 1.0, PICTURE));
+                    let material = tiles.add(TileMaterial::plain(tint, texture, white.clone()));
+                    let entity = commands
+                        .spawn((
+                            Mesh2d(mesh.clone()),
+                            MeshMaterial2d(material.clone()),
+                            Transform::from_xyz(0.0, 0.0, i as f32 * 0.01),
+                            RenderLayers::layer(MENU_LAYER),
+                        ))
+                        .id();
+                    b.drawn.push((entity, mesh, material));
+                    continue;
+                }
                 DrawKind::Text { font, glyphs } => {
                     let Some(f) = b.ui.fonts.get(font - 1).cloned().flatten() else {
                         continue;

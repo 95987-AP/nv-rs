@@ -366,10 +366,20 @@ pub fn door_markers(
     state: &crate::scripting::GameState,
     cell: FormId,
 ) -> Vec<DoorMarker> {
+    doors_among(order, state, order.references_in_cell(cell))
+}
+
+/// [`door_markers`] among some references (an outdoor square's
+/// persistent ones too).
+pub fn doors_among<'a>(
+    order: &'a LoadOrder,
+    state: &crate::scripting::GameState,
+    refs: impl IntoIterator<Item = esm::RecordRef<'a>>,
+) -> Vec<DoorMarker> {
     use crate::cell::{le_f32, le_u32};
     let door_kind = esm::FourCC::new(b"DOOR");
     let mut out = Vec::new();
-    for rr in order.references_in_cell(cell) {
+    for rr in refs {
         let flags = rr.entry.header.flags;
         if flags & 0x20 != 0 || flags & 0x0080_0000 != 0 {
             continue;
@@ -409,10 +419,13 @@ pub fn door_markers(
             .and_then(|(c, w)| {
                 let info = crate::cell_info(order, c).ok()?;
                 let interior = info.flags & crate::CELL_INTERIOR != 0;
-                Some(match (interior, w) {
-                    (false, Some(w)) => crate::Worldspace::load(order, w)
-                        .map(|w| w.label())
-                        .unwrap_or_else(|_| info.label()),
+                // The cell's own name, else outdoors its worldspace's.
+                Some(match (info.name.clone(), interior, w) {
+                    (Some(n), _, _) if !n.is_empty() => n,
+                    (_, false, Some(w)) => crate::Worldspace::load(order, w)
+                        .ok()
+                        .and_then(|w| w.name)
+                        .unwrap_or_else(|| info.label()),
                     _ => info.label(),
                 })
             })

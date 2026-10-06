@@ -111,6 +111,14 @@ pub struct DataMenu {
     pressed_at: Option<(f32, f32)>,
     /// The note shown and marked (`+0x90`), whose audio plays.
     pub playing: Option<u32>,
+    /// The local map's picture (`MM_LocalMap_ParentImage`, id 2), the
+    /// player's arrow (id 3), its markers, and what it was made from.
+    local: Option<TileId>,
+    local_cursor: Option<TileId>,
+    local_markers: Vec<TileId>,
+    filled_local: Option<super::LocalMapLine>,
+    /// The door marker under the highlight box.
+    local_marker: Option<TileId>,
 }
 
 /// The list rows' `id`s the click and mouse-over handlers look for
@@ -191,6 +199,11 @@ impl DataMenu {
             cursor_hidden: false,
             pressed_at: None,
             playing: None,
+            local: by_id(ui, menu, LOCAL_MAP_ID),
+            local_cursor: by_id(ui, menu, 3),
+            local_markers: Vec::new(),
+            filled_local: None,
+            local_marker: None,
         };
         d.set_tab(ui, 1);
         Ok(d)
@@ -223,6 +236,10 @@ impl DataMenu {
             ui.set_string(tile, t::STRING, &input.date_time);
         }
         let mut changed = false;
+        if self.filled_local != input.local_map {
+            self.fill_local_map(ui, input);
+            self.filled_local = input.local_map.clone();
+        }
         if self.filled_map.as_ref() != Some(&input.world_map) {
             self.fill_world_map(ui, input);
             self.filled_map = Some(input.world_map.clone());
@@ -265,6 +282,187 @@ impl DataMenu {
         if changed {
             self.show_selected(ui, input);
         }
+    }
+
+    /// The local map (`0079d410` `UpdateLocalMap`, `0079dbb0`, `0079e0a0`
+    /// (Xbox PDB `MapMenu`)): the picture's size the grid's (`filewidth` =
+    /// tile size × tiles), shown once every tile is drawn; a new map zoomed
+    /// by 1.0 (`0079c5a0`, clamped to 0.9) and centred on the player; door
+    /// markers (`MapMarkerTemplate`, id 0x1a, `icon_local_door.dds`, their
+    /// alpha the fog's, `_LocationName` where they lead), quest markers and
+    /// the player's own (`LocalMapQuestMarkerTemplate`, ids 0x1b / 0x1c),
+    /// the arrow (`_x`, `_y`, `rotateangle`).
+    // Translated from 0079d410 / 0079dbb0 / 0079e0a0 (decompiled, FalloutNV.exe 1.4.0.525)
+    fn fill_local_map(&mut self, ui: &mut Ui, input: &PipboyInput) {
+        let Some(image) = self.local else {
+            return;
+        };
+        for m in self.local_markers.drain(..) {
+            ui.remove(m);
+        }
+        self.local_marker = None;
+        let Some(map) = &input.local_map else {
+            ui.set_number(image, t::VISIBLE, 0.0);
+            if let Some(c) = self.local_cursor {
+                ui.set_number(c, t::VISIBLE, 0.0);
+            }
+            return;
+        };
+        let new_map = !self.filled_local.as_ref().is_some_and(|m| m.key == map.key);
+        let side = map.tile_px * map.grids as f32;
+        ui.set_number(image, t::FILEWIDTH, side);
+        ui.set_number(image, t::FILEHEIGHT, side);
+        ui.set_number(image, t::VISIBLE, f32::from(u8::from(map.done)));
+        let mag_id = trait_id(ui, "_Magnification");
+        if new_map {
+            let m = ui
+                .number(image, mag_id)
+                .clamp(world::local_map::MIN_ZOOM, world::local_map::MAX_ZOOM);
+            ui.set_number(image, mag_id, m);
+        }
+        let magnification = ui.number(image, mag_id);
+        let [doors, quests, arrow] = world::local_map::marker_sizes(magnification);
+        ui.set_number(image, t::USER0, doors);
+        ui.set_number(image, t::USER0 + 1, quests);
+        ui.set_number(image, t::USER0 + 2, arrow);
+        ui.refresh();
+        let (x_id, y_id) = (trait_id(ui, "_x"), trait_id(ui, "_y"));
+        let name_id = trait_id(ui, "_LocationName");
+        for d in &map.doors {
+            let Some(tile) = ui.instantiate(self.menu, image, "MapMarkerTemplate") else {
+                continue;
+            };
+            ui.set_number(tile, t::ID, MARKER_ID as f32);
+            ui.set_number(tile, x_id, d.at[0]);
+            ui.set_number(tile, y_id, d.at[1]);
+            ui.set_number(tile, t::ALPHA, d.alpha);
+            ui.set_string(tile, t::FILENAME, world::local_map::DOOR_ICON);
+            ui.set_string(tile, name_id, &d.name);
+            self.local_markers.push(tile);
+        }
+        let quest_marker = |ui: &mut Ui, at: [f32; 2], picture: &str, id: i32| {
+            let tile = ui.instantiate(self.menu, image, "LocalMapQuestMarkerTemplate")?;
+            ui.set_number(tile, x_id, at[0]);
+            ui.set_number(tile, y_id, at[1]);
+            ui.set_string(tile, t::FILENAME, picture);
+            ui.set_number(tile, t::ID, id as f32);
+            Some(tile)
+        };
+        for &at in &map.quests {
+            if let Some(tile) = quest_marker(
+                ui,
+                at,
+                "glow_hud_compass_objective_marker.dds",
+                QUEST_MARKER_ID,
+            ) {
+                self.local_markers.push(tile);
+            }
+        }
+        if let Some(at) = map.custom {
+            if let Some(tile) =
+                quest_marker(ui, at, "glow_hud_compass_pc_marker.dds", CUSTOM_MARKER_ID)
+            {
+                self.local_markers.push(tile);
+            }
+        }
+        if let Some(cursor) = self.local_cursor {
+            match map.player {
+                Some((at, angle)) => {
+                    ui.set_number(cursor, x_id, at[0]);
+                    ui.set_number(cursor, y_id, at[1]);
+                    ui.set_number(cursor, t::ROTATEANGLE, angle);
+                    ui.set_number(cursor, t::VISIBLE, f32::from(u8::from(map.done)));
+                }
+                None => ui.set_number(cursor, t::VISIBLE, 0.0),
+            }
+        }
+        ui.refresh();
+        if new_map {
+            if let Some((at, _)) = map.player {
+                let w = ui.number(image, t::WIDTH);
+                let h = ui.number(image, t::HEIGHT);
+                ui.set_base(image, t::X, 427.5 - at[0] * w);
+                ui.set_base(image, t::Y, 250.0 - at[1] * h);
+                ui.refresh();
+            }
+        }
+    }
+
+    /// The local map's pictures as drawn (`0079ffb0`'s grid): each tile a
+    /// 16 × 16 quad mesh (`tile_px / 16` a quad) with its picture at
+    /// `(i / 17, 1 − j / 17)` and each corner's fog as alpha, laid on the
+    /// map's picture tile (scaled by its magnification), tinted the Pip-Boy
+    /// colour (system colour 4, `007a12c1`), cut to the map's clip window.
+    /// Empty unless the local map's tab shows it.
+    // Translated from 0079ffb0 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn local_map_draws(&self, ui: &mut Ui, input: &PipboyInput) -> Vec<crate::DrawItem> {
+        let mut out = Vec::new();
+        let (Some(image), Some(map)) = (self.local, input.local_map.as_ref()) else {
+            return out;
+        };
+        if self.tab != 0 || !map.done || !ui.shown(image) {
+            return out;
+        }
+        let (ix, iy) = ui.screen_position(image);
+        let filewidth = ui.number(image, t::FILEWIDTH);
+        if filewidth <= 0.0 {
+            return out;
+        }
+        let mag = ui.number(image, t::WIDTH) / filewidth;
+        let clip = ui.tiles[image]
+            .parent
+            .map(|w| {
+                let (x, y) = ui.screen_position(w);
+                [x, y, ui.number(w, t::WIDTH), ui.number(w, t::HEIGHT)]
+            })
+            .unwrap_or([ix, iy, 1e9, 1e9]);
+        let colour = ui.colors.get(4).unwrap_or([1.0; 3]);
+        let depth = ui.screen_depth(image);
+        let q = map.tile_px / 16.0;
+        let n = map.grids;
+        for tile in &map.tiles {
+            let corner = |i: usize, j: usize| -> crate::draw::Corner {
+                let x = ix + (tile.gx as f32 * map.tile_px + i as f32 * q) * mag;
+                let y = iy + ((n - tile.gy) as f32 * map.tile_px - j as f32 * q) * mag;
+                let a = tile.fog.get(j * 17 + i).copied().unwrap_or(1.0);
+                ([x, y], [i as f32 / 17.0, 1.0 - j as f32 / 17.0], a)
+            };
+            let mut tris = Vec::with_capacity(512);
+            for j in 0..16 {
+                for i in 0..16 {
+                    let (a, b, c, d) = (
+                        corner(i, j),
+                        corner(i + 1, j),
+                        corner(i, j + 1),
+                        corner(i + 1, j + 1),
+                    );
+                    // The diagonals alternate (a checkerboard).
+                    if (i + j) % 2 == 0 {
+                        tris.push([a, b, d]);
+                        tris.push([a, d, c]);
+                    } else {
+                        tris.push([a, b, c]);
+                        tris.push([b, d, c]);
+                    }
+                }
+            }
+            let tris = crate::draw::clip_triangles(&tris, clip);
+            if tris.is_empty() {
+                continue;
+            }
+            out.push(crate::DrawItem {
+                tile: image,
+                depth,
+                color: [colour[0], colour[1], colour[2], 1.0],
+                kind: crate::DrawKind::Model {
+                    texture: Some(tile.picture.clone()),
+                    triangles: tris.iter().map(|t| t.map(|c| (c.0, c.1))).collect(),
+                    alpha: tris.iter().map(|t| t.map(|c| c.2)).collect(),
+                    blend: None,
+                },
+            });
+        }
+        out
     }
 
     /// The world map (`0079cdb0`): the worldspace's picture with its
@@ -403,7 +601,19 @@ impl DataMenu {
     /// plays `UIPipBoyScroll`).
     pub fn zoom(&mut self, ui: &mut Ui, zoom_in: bool, factor: f32) -> Vec<Action> {
         let mut out = Vec::new();
-        let Some(world) = self.world.filter(|_| self.tab == 1) else {
+        // Tab 0 zooms the local map (`fLocalMapMinZoom` .. `MaxZoom`, not
+        // while its tiles are still being drawn: `007a1750`), tab 1 the
+        // world map.
+        let local = self.tab == 0;
+        let picture = if local {
+            self.local
+                .filter(|_| self.filled_local.as_ref().is_some_and(|m| m.done))
+        } else if self.tab == 1 {
+            self.world
+        } else {
+            None
+        };
+        let Some(world) = picture else {
             return out;
         };
         if ui.number(world, t::VISIBLE) == 0.0 {
@@ -415,14 +625,25 @@ impl DataMenu {
         let mag_id = trait_id(ui, "_Magnification");
         let old = ui.number(world, mag_id);
         let by = if zoom_in { factor } else { 1.0 / factor };
-        let new = (old * by).clamp(WORLD_MIN_ZOOM, WORLD_MAX_ZOOM);
+        let new = if local {
+            (old * by).clamp(world::local_map::MIN_ZOOM, world::local_map::MAX_ZOOM)
+        } else {
+            (old * by).clamp(WORLD_MIN_ZOOM, WORLD_MAX_ZOOM)
+        };
         let (ww, wh) = (ui.number(window, t::WIDTH), ui.number(window, t::HEIGHT));
         let old_width = ui.number(world, t::WIDTH);
         let mut centre = (
             ww / 2.0 - ui.number(world, t::X),
             wh / 2.0 - ui.number(world, t::Y),
         );
-        set_marker_sizes(ui, world, new);
+        if local {
+            let [d, q, a] = world::local_map::marker_sizes(new);
+            ui.set_number(world, t::USER0, d);
+            ui.set_number(world, t::USER0 + 1, q);
+            ui.set_number(world, t::USER0 + 2, a);
+        } else {
+            set_marker_sizes(ui, world, new);
+        }
         if old_width > 0.0 {
             let k = ui.number(world, t::FILEWIDTH) * new / old_width;
             centre = (centre.0 * k, centre.1 * k);
@@ -904,6 +1125,51 @@ impl DataMenu {
         let (w, h) = (ui.number(bx, t::WIDTH), ui.number(bx, t::HEIGHT));
         ui.set_number(bx, t::X, lx - w / 2.0);
         ui.set_number(bx, t::Y, ly - h / 2.0);
+        // The local map (`00799dc0` on tab 0): its door markers (id 26),
+        // the nearest within half the box's height: its `_LocationName` the
+        // box's `_Title`, `_selected` on it; `UIPipBoyHighlight` when it
+        // changes.
+        // Translated from 00799dc0 (decompiled, FalloutNV.exe 1.4.0.525)
+        if self.tab == 0 {
+            let (bsx, bsy) = ui.screen_position(bx);
+            let centre = (bsx + w / 2.0, bsy + h / 2.0);
+            let mut best = f32::MAX;
+            let mut found = None;
+            for &m in &self.local_markers.clone() {
+                if ui.number(m, t::ID) as i32 != MARKER_ID {
+                    continue;
+                }
+                let (mx, my) = ui.screen_position(m);
+                let (mw, mh) = (ui.number(m, t::WIDTH), ui.number(m, t::HEIGHT));
+                let d = ((mx + mw / 2.0 - centre.0).powi(2) + (my + mh / 2.0 - centre.1).powi(2))
+                    .sqrt();
+                if d < best && d < h / 2.0 {
+                    best = d;
+                    found = Some(m);
+                }
+            }
+            let selected = trait_id(ui, "_selected");
+            let title_id = trait_id(ui, "_Title");
+            let name_id = trait_id(ui, "_LocationName");
+            if found != self.local_marker {
+                if let Some(old) = self.local_marker {
+                    if ui.is_under(old, ui.screen) {
+                        ui.set_number(old, selected, 0.0);
+                    }
+                }
+                self.local_marker = found;
+                let title = match found {
+                    Some(m) => {
+                        ui.set_number(m, selected, 1.0);
+                        out.push(Action::Sound("UIPipBoyHighlight".into()));
+                        ui.string(m, name_id).unwrap_or_default()
+                    }
+                    None => String::new(),
+                };
+                ui.set_string(bx, title_id, &title);
+            }
+            return out;
+        }
         if self.tab != 1 {
             return out;
         }

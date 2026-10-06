@@ -177,6 +177,47 @@ pub struct WorldMapLine {
     pub quest: Vec<[f32; 2]>,
 }
 
+/// DATA › Local Map (`world::local_map`): the grid of tile pictures made so
+/// far (each with its 17 × 17 corners' fog of war, rows northward), and the
+/// markers, as places 0..1 on the map.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LocalMapLine {
+    /// Changes when the map is made again (a new place): the map is
+    /// zoomed and centred anew.
+    pub key: u64,
+    /// Tiles a side and a tile's size on the map (1024 outdoors, 2048
+    /// indoors, `0079ffb0`).
+    pub grids: i32,
+    pub tile_px: f32,
+    pub tiles: Vec<LocalTile>,
+    /// All the tiles drawn: the map is shown (`0079d410`).
+    pub done: bool,
+    /// The player: place and the arrow's `rotateangle`.
+    pub player: Option<([f32; 2], f32)>,
+    pub doors: Vec<LocalDoor>,
+    pub quests: Vec<[f32; 2]>,
+    pub custom: Option<[f32; 2]>,
+}
+
+/// One tile's picture on the local map.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LocalTile {
+    pub gx: i32,
+    pub gy: i32,
+    /// The picture's name for the drawing (made by the caller).
+    pub picture: String,
+    /// The 17 × 17 corners' alpha (`seen / 4`), row by row northward.
+    pub fog: Vec<f32>,
+}
+
+/// A door's marker on the local map.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LocalDoor {
+    pub at: [f32; 2],
+    pub name: String,
+    /// 0..255 (the fog of war at the door).
+    pub alpha: f32,
+}
 /// A radio station's row (`0079bea0`): the station's reference, its name,
 /// whether it's in range now (else its text at alpha 128) and whether it's
 /// the one the radio plays (`_selected`: the filled square).
@@ -239,6 +280,8 @@ pub struct PipboyInput {
     pub world_map: Option<WorldMapLine>,
     /// DATA › Radio's rows (`world::radio::Radio::rows`).
     pub stations: Vec<StationLine>,
+    /// DATA › Local Map, when the caller has made it.
+    pub local_map: Option<LocalMapLine>,
     /// The items on the hot keys 1 to 8 (carried ones).
     pub hotkeys: [Option<u32>; 8],
     /// A note's sound playing (the caller's).

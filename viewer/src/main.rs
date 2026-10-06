@@ -26,6 +26,7 @@ mod grass;
 mod hiteffects;
 mod hud;
 mod lighting;
+mod local_map;
 mod lockpick;
 mod lod;
 mod lod_objects;
@@ -276,7 +277,11 @@ fn main() {
         .add_plugins(trees::TreePlugin)
         .add_plugins(water::WaterPlugin)
         .add_plugins(particles::ParticlesPlugin)
-        .add_plugins((music::MusicPlugin, radio::RadioPlugin))
+        .add_plugins((
+            music::MusicPlugin,
+            radio::RadioPlugin,
+            local_map::LocalMapPlugin,
+        ))
         .add_plugins(hiteffects::HitEffectsPlugin)
         .add_plugins(explosives::ExplosivesPlugin)
         .add_plugins(clutter::ClutterPlugin)
@@ -1010,7 +1015,7 @@ struct Grading {
 struct PendingScene(Option<ViewerScene>);
 
 #[derive(Component)]
-struct FlyCamera {
+pub(crate) struct FlyCamera {
     yaw: f32,
     pitch: f32,
     /// Meters per second.
@@ -2364,6 +2369,7 @@ fn spawn_scene(
         window.title = format!("nv-rs viewer - {}", scene.cell);
     }
     spawner.spawn(&scene);
+    local_map::capture_interior(&mut spawner.commands, &scene);
 
     let eye = Vec3::from(space::point(scene.start.eye));
     let yaw = space::heading_to_yaw(scene.start.heading);
