@@ -457,6 +457,16 @@ pub(crate) fn fight(
         }
     };
     walker.targets.add(target);
+    // Whoever hurt them meanwhile and is now another target
+    // (`world::combat_ai::attacked_by`: friends and allies aren't).
+    for attacker in state.hit_targets.remove(&me).unwrap_or_default() {
+        if !state.dead.contains(&attacker) && walker.targets.add(attacker) {
+            println!(
+                "{:.1} s: {me} also takes on {attacker} (hurt by them).",
+                c.now
+            );
+        }
+    }
     let d = distance(walker.position, goal);
     if fight
         .memory
@@ -471,6 +481,7 @@ pub(crate) fn fight(
             Some(next) => turn_to(state, walker, next, c.now),
             None => {
                 state.combat.remove(&me);
+                state.hit_targets.remove(&me);
                 end_fight(walker, c.now);
             }
         }
