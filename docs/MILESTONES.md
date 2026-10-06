@@ -113,6 +113,13 @@ constructors are now identified; runtime configuration and original comparison
 remain unverified. Do not repeat the established
 package-look lock or tester activation fixes.
 
+Pip-Boy input batch (`claude/m1-pipboy`): the mouse now drives the
+Pip-Boy (screen picking, rows, tabs, model buttons, world-map markers,
+wheel, drags) through the interface, F1-F3 and Tab release work, and the
+arm's field-of-view scale is fixed. Traced and unit-tested, not compared
+with the original game; gaps in [PIPBOY.md](PIPBOY.md). **Next action:**
+live comparison of the mouse paths in the original game.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,
