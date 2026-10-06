@@ -557,7 +557,13 @@ fn sync_nav(
     }
     for d in shut {
         if let Some(door) = doors.doors.get(&d.0) {
+            let before = mesh.door_triangles.len();
             mesh.add_closed_door(d, &door.boxes);
+            println!(
+                "Door {d} ({}) is closed: {} navmesh triangles marked under it.",
+                door.name,
+                mesh.door_triangles.len() - before
+            );
         }
     }
 }
@@ -1666,6 +1672,10 @@ fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool, a
         go_through(order, state, walker);
         return;
     }
+    // A place beyond the attached navmesh: the long way ([`long_walk`]).
+    if beyond_attached(ctx.mesh, to) {
+        return;
+    }
     // The travel's path request, to the path manager ([`ask_path`]).
     let path_target = target_ref.and_then(|t| state.place(order, t)).map(|p| p.2);
     walker.path_target = path_target;
@@ -1784,6 +1794,10 @@ fn follow_target(ctx: &mut Ctx, walker: &mut Walker, moves: &Moves, ask: &mut As
         return;
     }
     walker.path_target = Some(at);
+    // Beyond the attached navmesh: the long way ([`long_walk`]).
+    if beyond_attached(ctx.mesh, to) {
+        return;
+    }
     let then = Pending {
         id: 0,
         radius,
@@ -3210,6 +3224,17 @@ impl PathQueue {
         }
         out
     }
+}
+
+/// Whether a place lies beyond the attached navmesh: no triangle holds it
+/// and no open edge is near enough for a ray-cast way to it
+/// (`world::ai::offmesh`). Such a goal is the navmesh info search's
+/// (`long_walk`, `006c94c0`), not a detailed path's.
+fn beyond_attached(mesh: &NavMesh, to: [f32; 3]) -> bool {
+    mesh.find_triangle(to).is_none()
+        && mesh
+            .edge_spots(to, world::ai::offmesh::FIND_CLOSEST_EDGES_RADIUS)
+            .is_empty()
 }
 
 /// What asking the path manager needs this frame: the queue and the
