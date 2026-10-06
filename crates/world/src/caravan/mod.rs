@@ -23,6 +23,7 @@ use esm::{FormId, FourCC, LoadOrder};
 use crate::scripting::GameState;
 
 pub mod ai;
+pub mod bet;
 
 pub const ACE: i32 = 1;
 pub const JACK: i32 = 12;

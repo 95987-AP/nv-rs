@@ -1141,6 +1141,20 @@ pub fn run_scripts(
                 waiting.push(crate::menus::Menu::Teammate(who));
                 None
             }
+            Event::Caravan {
+                npc,
+                deck,
+                difficulty,
+                share,
+            } => {
+                waiting.push(crate::menus::Menu::Caravan {
+                    npc,
+                    deck,
+                    difficulty,
+                    share,
+                });
+                None
+            }
             // `ShowSleepWaitMenu` (its refusals already given): the game's
             // sleep/wait menu (`game_menus::sleepwait`).
             Event::SleepWaitMenu { sleep } => {

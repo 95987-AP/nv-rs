@@ -1108,6 +1108,16 @@ pub fn play(
             Event::TeammateContainer(m) => {
                 format!("trading things with {}", describe_id(order, *m))
             }
+            Event::Caravan {
+                npc,
+                deck,
+                difficulty,
+                share,
+            } => format!(
+                "Caravan against {} ({}, difficulty {difficulty}, betting {share})",
+                describe_id(order, *npc),
+                describe_id(order, *deck)
+            ),
             Event::RepairServices(m) => {
                 format!("{}'s repair services", describe_id(order, *m))
             }

@@ -1080,6 +1080,15 @@ pub enum Event {
     /// `OpenTeammateContainer`: trading things with a companion (the
     /// container menu's mode 3).
     TeammateContainer(FormId),
+    /// `ShowCaravanMenu`: a game of Caravan against this person with their
+    /// deck, the AI's difficulty and the share of their funds they bet
+    /// (`world::caravan`).
+    Caravan {
+        npc: FormId,
+        deck: FormId,
+        difficulty: i32,
+        share: f32,
+    },
     /// Someone died (killed by `by`).
     Died {
         who: FormId,
@@ -3253,6 +3262,35 @@ impl<'a> Runner<'a> {
             "ShowBarterMenu" => events.push(Event::Barter(target?)),
             // `005d5200`: on a person or creature only (vtable +0x100), the
             // merchants' repair menu for them (`00704690` → `007b7570`).
+            // `005cf250` → `00741060` (`CaravanMenu::Create`): on someone
+            // other than the player; with fewer than 30 cards the player's
+            // told so (`sCardCountText`) instead.
+            "ShowCaravanMenu" => {
+                let npc = target?;
+                let deck = arg(0).form();
+                if npc == PLAYER_REF || deck.0 == 0 {
+                    return Some(0.0);
+                }
+                let c = &self.state.caravan;
+                if c.inactive.len() + c.active.len() < crate::caravan::MIN_DECK {
+                    let text = crate::scripting::game_setting_text(self.order, "sCardCountText")
+                        .unwrap_or_else(|| {
+                            "You must have at least 30 cards to play Caravan.".into()
+                        });
+                    events.push(Event::Message {
+                        title: None,
+                        text,
+                        buttons: Vec::new(),
+                    });
+                } else {
+                    events.push(Event::Caravan {
+                        npc,
+                        deck,
+                        difficulty: arg(1).number() as i32,
+                        share: arg(2).number() as f32,
+                    });
+                }
+            }
             "ShowRepairMenu" => {
                 let vendor = target?;
                 if crate::script_functions::is_actor(self.order, vendor) {
@@ -4016,6 +4054,7 @@ pub const HANDLED: &[&str] = &[
     "GetContainer",
     "SetItemValue",
     "AddCardToPlayer",
+    "ShowCaravanMenu",
     "ForceActiveQuest",
     "SetEnemy",
     "SetAlly",

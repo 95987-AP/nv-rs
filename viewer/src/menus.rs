@@ -45,6 +45,14 @@ pub enum Menu {
     /// A companion's wheel of orders (their reference: the player using a
     /// teammate).
     CompanionWheel(FormId),
+    /// A game of Caravan (`ShowCaravanMenu`): the opponent, their deck, the
+    /// AI's difficulty, the share of their funds they bet.
+    Caravan {
+        npc: FormId,
+        deck: FormId,
+        difficulty: i32,
+        share: f32,
+    },
     /// A computer terminal used (`world::terminal`): its record and the
     /// placed terminal.
     Terminal(FormId, FormId),
@@ -210,6 +218,18 @@ fn open(
         | Menu::Character(CharacterMenu::Special { .. })
         | Menu::SleepWait { .. } => {
             println!("That menu can't be opened: the game's menus aren't available.");
+            return None;
+        }
+        // The Caravan table isn't drawn yet (`world::caravan` has the game).
+        Menu::Caravan {
+            npc,
+            deck,
+            difficulty,
+            share,
+        } => {
+            println!(
+                "Caravan against {npc} with deck {deck} (difficulty {difficulty}, betting {share}): the table isn't drawn yet."
+            );
             return None;
         }
         // A terminal the player gets into (`game_menus::hacking::use_terminal`
