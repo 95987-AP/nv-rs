@@ -202,6 +202,13 @@ impl WorldGrid {
         self.cells.get(&square).copied()
     }
 
+    /// The worldspace's persistent objects standing in a grid square.
+    pub fn persistent_in(&self, square: (i32, i32)) -> &[FormId] {
+        self.persistent_by_square
+            .get(&square)
+            .map_or(&[], Vec::as_slice)
+    }
+
     /// Loads one grid square: its cell's objects plus the persistent ones
     /// standing in it. `None` when the worldspace has no cell there.
     pub fn load_square(&self, order: &LoadOrder, square: (i32, i32)) -> Result<Option<LoadedCell>> {

@@ -60,6 +60,7 @@ pub mod particles;
 pub mod perks;
 mod placement;
 pub mod quest;
+pub mod ref_scripts;
 pub mod region;
 pub mod reputation;
 mod rotation;

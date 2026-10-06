@@ -1226,8 +1226,38 @@ impl Interactive {
 /// base has a script (people, activators, triggers, doors…), with trigger
 /// volumes; items lying around; containers.
 pub fn interactive_references(order: &LoadOrder, cell: FormId) -> Vec<Interactive> {
+    interactive_from(order, order.references_in_cell(cell))
+}
+
+/// [`interactive_references`] for one exterior grid square: its cell's
+/// objects, then the worldspace's persistent objects standing in it (the
+/// game assigns those to the grid cell they stand in,
+/// `TESWorldSpace::AssignPersistentRefsToCell` (Xbox PDB)). Their order
+/// within the square is not traced.
+pub fn interactive_in_square(
+    order: &LoadOrder,
+    grid: &crate::WorldGrid,
+    square: (i32, i32),
+) -> Vec<Interactive> {
+    let Some(cell) = grid.cell_at(square) else {
+        return Vec::new();
+    };
+    let persistent = grid
+        .persistent_in(square)
+        .iter()
+        .filter_map(|&id| order.get(id));
+    interactive_from(
+        order,
+        order.references_in_cell(cell).into_iter().chain(persistent),
+    )
+}
+
+fn interactive_from<'a>(
+    order: &LoadOrder,
+    references: impl IntoIterator<Item = esm::RecordRef<'a>>,
+) -> Vec<Interactive> {
     let mut out = Vec::new();
-    for rr in order.references_in_cell(cell) {
+    for rr in references {
         if rr.entry.header.is_deleted() {
             continue;
         }
@@ -2144,8 +2174,28 @@ pub struct Runner<'a> {
     pub owner: Option<FormId>,
     /// `GetSecondsPassed`.
     pub seconds_passed: f32,
+    /// A command that may change the loaded references ran (the script
+    /// runner's flag +0xa1, set before a command whose table entry has
+    /// flag 0x100: `Activate`, `MoveTo`, `ForceFlee`, `ForceTakeCover`,
+    /// `ExitGame`, `MoveToFade`; `005e1550`). `Script::Run` returns it and
+    /// the reference-script pass stops on it ([`crate::ref_scripts`]).
+    /// Each nested `Script::Run` has its own runner in the game
+    /// (`005e2590`); here nested runs share this flag (unresolved).
+    pub references_changed: bool,
     depth: u8,
 }
+
+/// The script functions whose table entry has flag 0x100 (byte +0x25),
+/// which make the script runner report a possible change to the loaded
+/// references (`005e1550` sets runner+0xa1).
+const CHANGES_REFERENCES: &[&str] = &[
+    "Activate",
+    "MoveToMarker",
+    "ForceFlee",
+    "ForceTakeCover",
+    "ExitGame",
+    "MoveToMarkerWithFade",
+];
 
 impl<'a> Runner<'a> {
     pub fn new(order: &'a LoadOrder, scripts: &'a ScriptCache, state: &'a mut GameState) -> Self {
@@ -2156,6 +2206,7 @@ impl<'a> Runner<'a> {
             this: None,
             owner: None,
             seconds_passed: 0.0,
+            references_changed: false,
             depth: 0,
         }
     }
@@ -2409,6 +2460,73 @@ impl<'a> Runner<'a> {
             }
         });
         self.state.action_ref = saved;
+    }
+
+    /// One run of a reference's object script in game mode, as
+    /// `TESObjectREFR::RunScript` (`00565870`) runs it through `Script::Run`
+    /// (`005ac1e0`): its `GameMode` blocks and the blocks of the events
+    /// flagged in its event list since its last run, in the script's
+    /// order; the flags are then cleared (`005a8ea0`, after the run in
+    /// `005e0d20`). `events` are (block kind, who it was flagged for:
+    /// `None` for an event without one, as `OnLoad`); a block naming
+    /// someone runs only if its event was flagged for them, one naming no
+    /// one if it was flagged at all (`005a8e20` flags both). `action` is
+    /// the action reference meanwhile (`IsActionRef`). Returns whether a
+    /// command that may change the loaded references ran
+    /// ([`Self::references_changed`]).
+    pub fn run_reference_script(
+        &mut self,
+        reference: FormId,
+        events: &[(&str, Option<FormId>)],
+        action: Option<FormId>,
+    ) -> bool {
+        let order = self.order;
+        let Some(script) = script_of(order, reference).and_then(|s| self.scripts.script(order, s))
+        else {
+            return false;
+        };
+        let names = |b: &script::Block, who: Option<FormId>| match b.args.first() {
+            None => true,
+            Some(Arg::Word(w)) => {
+                let id = if w.eq_ignore_ascii_case("player") || w.eq_ignore_ascii_case("playerref")
+                {
+                    Some(PLAYER_REF)
+                } else {
+                    order.form_by_editor_id(w)
+                };
+                id.is_some() && id == who
+            }
+            Some(_) => false,
+        };
+        let blocks: Vec<&script::Block> = script
+            .blocks
+            .iter()
+            .filter(|b| {
+                b.kind == "gamemode"
+                    || events
+                        .iter()
+                        .any(|&(kind, who)| kind == b.kind && names(b, who))
+            })
+            .collect();
+        if blocks.is_empty() {
+            return false;
+        }
+        let before = std::mem::take(&mut self.references_changed);
+        let saved = self.state.action_ref;
+        if action.is_some() {
+            self.state.action_ref = action;
+        }
+        self.with(Some(reference), Some(reference), |runner, locals| {
+            for block in blocks {
+                if interp::run(&block.body, locals, runner) != Flow::Done {
+                    break;
+                }
+            }
+        });
+        self.state.action_ref = saved;
+        let changed = self.references_changed;
+        self.references_changed = before || changed;
+        changed
     }
 
     /// `attacker` hits `target` (a person, a creature or an object) with
@@ -3361,6 +3479,9 @@ impl<'a> Runner<'a> {
 impl Host for Runner<'_> {
     fn call(&mut self, call: &Call, on: Option<u32>, locals: &mut Locals) -> Option<f64> {
         let sig = script::functions::FUNCTIONS.get(usize::from(call.function))?;
+        if CHANGES_REFERENCES.contains(&sig.name) {
+            self.references_changed = true;
+        }
         let target = on.map(FormId).or(self.this);
         // `ShowMessage`'s values after the message aren't in its table
         // entry (the compiler stores them its own way): numbers.
