@@ -35,12 +35,19 @@ OPTIONS:
                             flies, keeping the exact eye position given)
     --fps                   print the frame rate every two seconds
     --talk                  start talking to the nearest person once loaded
+    --choose N,N,...        with --talk or a script's talking: pick these
+                            replies in order (as the number keys would),
+                            for playing a conversation through unattended
     --stage QUEST STAGE     set a quest's stage once loaded, as a script
                             would (VCG01 0 starts Doc Mitchell's intro)
     --new-game              start the game: the opening quest (VCG00) from
                             its first stage (movie playback is not yet
                             implemented); scripts take you to Doc's house
                             (the CELL can then be left out)
+    --character FILE        start as a ready-made test character: a file
+                            of the game's script lines (editor IDs) run
+                            on the new game before its first frame, plus
+                            `level N` (see characters/README.md)
     --weapon ID             start with this weapon (editor ID or form ID)
                             equipped and 50 rounds for it; screenshots
                             then show it in your hands
@@ -84,11 +91,16 @@ OPTIONS:
     --open-menu MENU[:ID]   for testing: once loaded, open one of the game's
                             menus as the game would: container:REF (a
                             container or a body), barter:REF (a merchant),
+                            recipes:CATEGORY (the recipe menu, e.g.
+                            recipes:CampfireRecipes),
                             quantity:N (how many, up to N), levelup (the
                             player goes up a level; levelup:perks also
                             gives the points and goes on to the perks),
                             wait or sleep (the sleep/wait menu; wait:N or
                             sleep:N also chooses N hours and presses Wait)
+    --use REF               for testing: once loaded, press E on this
+                            object (editor ID or form ID), as if the
+                            player's crosshair were on it
     --menu-pointer X,Y      for testing: put the menus' pointer at this
                             pixel (screenshots have no mouse)
 
@@ -163,8 +175,12 @@ pub struct Args {
     pub fps: bool,
     /// Talk to the nearest person once loaded.
     pub talk: bool,
+    /// `--choose`: the replies to pick, in order, as number keys would.
+    pub choose: Vec<usize>,
     /// A quest stage to set once loaded: the quest's editor ID and stage.
     pub stage: Option<(String, u16)>,
+    /// A ready-made test character to start as (`world::character`).
+    pub character: Option<PathBuf>,
     /// A weapon to start with, equipped.
     pub weapon: Option<String>,
     /// Script lines to run once loaded, as console commands.
@@ -190,6 +206,8 @@ pub struct Args {
     pub lockpick: Option<String>,
     /// `--open-menu`: a game menu to open once loaded (`name[:id]`).
     pub open_menu: Option<String>,
+    /// `--use`: an object to use (E) once loaded.
+    pub use_on: Option<String>,
     /// `--menu-pointer`: the menus' pointer at this pixel.
     pub menu_pointer: Option<(f32, f32)>,
 }
@@ -239,9 +257,11 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut walk = false;
     let mut fps = false;
     let mut talk = false;
+    let mut choose = Vec::new();
     let mut stage = None;
     let mut new_game = false;
     let mut weapon = None;
+    let mut character = None;
     let mut run = Vec::new();
     let mut run_at = Vec::new();
     let mut say = Vec::new();
@@ -253,6 +273,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut pipboy = None;
     let mut lockpick = None;
     let mut open_menu = None;
+    let mut use_on = None;
     let mut menu_pointer = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -288,6 +309,16 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             "--walk" => walk = true,
             "--fps" => fps = true,
             "--talk" => talk = true,
+            "--choose" => {
+                let v = value("--choose")?;
+                choose = v
+                    .split(',')
+                    .map(|n| n.trim().parse::<usize>().ok().filter(|n| *n >= 1))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| {
+                        format!("--choose expects reply numbers like 1,2,1, got '{v}'")
+                    })?;
+            }
             "--stage" => {
                 let quest = value("--stage")?;
                 let n = value("--stage")?;
@@ -298,6 +329,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             }
             "--new-game" => new_game = true,
             "--weapon" => weapon = Some(value("--weapon")?),
+            "--character" => character = Some(value("--character")?.into()),
             "--run" => run.push(value("--run")?),
             "--run-at" => {
                 let v = value("--run-at")?;
@@ -322,6 +354,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
                 pipboy = Some(v);
             }
             "--open-menu" => open_menu = Some(value("--open-menu")?),
+            "--use" => use_on = Some(value("--use")?),
             "--menu-pointer" => {
                 let v = value("--menu-pointer")?;
                 let p: Vec<f32> = v.split(',').filter_map(|n| n.trim().parse().ok()).collect();
@@ -375,7 +408,9 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             walk,
             fps,
             talk,
+            choose,
             stage,
+            character,
             weapon,
             run,
             run_at,
@@ -388,6 +423,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             pipboy,
             lockpick,
             open_menu,
+            use_on,
             menu_pointer,
         })),
         [] | [_] => Err("expected the Data folder and a cell".into()),
@@ -429,6 +465,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(frozen.freeze_ai);
+        let character = parse(&strings(&["Data", "Cell", "--character", "c.txt"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(character.character, Some(PathBuf::from("c.txt")));
+        assert_eq!(frozen.character, None);
     }
 
     #[test]
@@ -570,6 +611,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(args.open_menu.as_deref(), Some("container:Box"));
+        let args = parse(&strings(&["Data", "Cell", "--use", "TerminalRef"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(args.use_on.as_deref(), Some("TerminalRef"));
+        assert!(parse(&strings(&["Data", "Cell", "--use"])).is_err());
         let args = parse(&strings(&["Data", "Cell", "--menu-pointer", "10,20.5"]))
             .unwrap()
             .unwrap();

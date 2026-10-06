@@ -68,6 +68,72 @@ fn ghosts_have_no_reaction_to_hits() {
 }
 
 #[test]
+fn essential_people_go_down_instead_of_dying_and_get_up() {
+    let (_data, order) = order("more-flags");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let who = FormId(PERSON_REF);
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.SetActorRefEssential 1",
+    );
+    // A blow far past their health: down, not dead.
+    let dead = world::combat::hurt(&order, &mut state, who, 100000.0, PLAYER_REF);
+    assert!(!dead);
+    assert!(!state.dead.contains(&who));
+    assert!(state.more.down.contains_key(&who));
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "PersonRef.GetKnockedState"),
+        2.0
+    );
+    // Down, they take no more harm while essential.
+    assert!(!world::combat::hurt(
+        &order, &mut state, who, 100000.0, PLAYER_REF
+    ));
+    // Down, their health is already restored (`008a0960`); the exe's 10 s
+    // (`fEssentialDeathTime`) pass and they get up with all of it.
+    let full = world::combat::max_health(&order, &state, who).unwrap();
+    assert_eq!(world::combat::health(&order, &state, who), Some(full));
+    assert_eq!(world::combat::essential_down_time(&order), 10.0);
+    world::combat::advance_down(&order, &mut state, 9.9);
+    assert!(state.more.down.contains_key(&who));
+    world::combat::advance_down(&order, &mut state, 0.2);
+    assert!(state.more.down.is_empty());
+    assert_eq!(world::combat::health(&order, &state, who), Some(full));
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "PersonRef.GetKnockedState"),
+        0.0
+    );
+    // Down again; a script takes the flag off: the next blow kills.
+    world::combat::hurt(&order, &mut state, who, 100000.0, PLAYER_REF);
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.SetActorRefEssential 0",
+    );
+    assert!(world::combat::hurt(
+        &order, &mut state, who, 100000.0, PLAYER_REF
+    ));
+    assert!(state.dead.contains(&who));
+    assert!(state.more.down.is_empty());
+}
+
+#[test]
+fn teammates_follow_only_their_own_packages_without_guesses() {
+    // The contributor's untraced follow rule is behind `world::guesses`,
+    // off here (`contrib_guesses.rs` checks it on).
+    let (_data, order) = order("more-flags");
+    let mut state = new_game(&order);
+    let who = FormId(PERSON_REF);
+    state.teammates.insert(who);
+    assert!(world::ai::current_package(&order, &state, who)
+        .is_none_or(|p| p.kind != world::ai::kinds::FOLLOW));
+}
+
+#[test]
 fn alpha_alert_essential_and_subtitles() {
     let (_data, order) = order("more-flags");
     let scripts = ScriptCache::default();
@@ -685,4 +751,798 @@ fn fights_ranks_and_effect_seconds() {
         ("Infantry".to_string(), "Neutral".to_string())
     );
     assert!(state.unhandled.is_empty(), "{:?}", state.unhandled);
+}
+
+#[test]
+fn the_pipboy_radio_and_its_stations() {
+    let (_data, order) = order("more-radio");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let radio = |state: &GameState| state.more.radio.clone();
+    // Tuning while off does nothing; on with a station tunes to it.
+    run(&order, &scripts, &mut state, "PipboyRadio Tune RadioRef");
+    assert!(!radio(&state).on);
+    run(&order, &scripts, &mut state, "PipboyRadio on RadioRef");
+    assert!(radio(&state).on);
+    assert_eq!(radio(&state).tuned, Some(FormId(RADIO_REF)));
+    // Dead Money's words: `Tune` with a capital (compared without case).
+    run(&order, &scripts, &mut state, "PipboyRadio Tune TalkerRef");
+    assert_eq!(radio(&state).tuned, Some(FormId(TALKER_REF)));
+    // Something that can't be a station switches the radio off.
+    run(&order, &scripts, &mut state, "PipboyRadio tune BarrelRef");
+    assert!(!radio(&state).on);
+    assert_eq!(radio(&state).tuned, None);
+    // A number starting with 1 is on; off forgets the station.
+    run(&order, &scripts, &mut state, "PipboyRadio 1 RadioRef");
+    assert_eq!(radio(&state).tuned, Some(FormId(RADIO_REF)));
+    run(&order, &scripts, &mut state, "PipBoyRadioOff");
+    assert_eq!((radio(&state).on, radio(&state).tuned), (false, None));
+
+    // A station's conversation: the topic given, or the default one;
+    // not a station: nothing.
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "RadioRef.StartRadioConversation TestRadioTopic\nTalkerRef.StartRadioConversation\n\
+         BarrelRef.StartRadioConversation TestRadioTopic",
+    );
+    let c = radio(&state).conversations;
+    assert_eq!(c.get(&FormId(RADIO_REF)), Some(&Some(FormId(RADIO_TOPIC))));
+    assert_eq!(c.get(&FormId(TALKER_REF)), Some(&None));
+    assert!(!c.contains_key(&FormId(BARREL_REF)));
+
+    // A person plays a station and stops; 2 and things that aren't
+    // people do nothing.
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.SetNPCRadio 1 RadioRef\nBarrelRef.SetNPCRadio 1 RadioRef\n\
+         HeroRef.SetNPCRadio 1 RadioRef\nHeroRef.SetNPCRadio 2 RadioRef",
+    );
+    let n = radio(&state).npc_radio;
+    assert_eq!(n.get(&FormId(PERSON_REF)), Some(&FormId(RADIO_REF)));
+    assert_eq!(n.get(&FormId(HERO_REF)), Some(&FormId(RADIO_REF)));
+    assert!(!n.contains_key(&FormId(BARREL_REF)));
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "HeroRef.SetNPCRadio 0 RadioRef",
+    );
+    assert!(!radio(&state).npc_radio.contains_key(&FormId(HERO_REF)));
+
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "ForceRadioStationUpdate\nResetPipboyManager\nPipboyRadio enable TalkerRef",
+    );
+    assert!(radio(&state).pipboy_reset);
+
+    // Kept in a save.
+    let saved = world::save::save(&state, None);
+    let (back, _) = world::save::load(&saved).unwrap();
+    assert_eq!(back.more.radio, state.more.radio);
+    assert_eq!(back.more.radio.tuned, Some(FormId(TALKER_REF)));
+}
+
+#[test]
+fn objects_animations_playing() {
+    let (_data, order) = order("more-anim");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let q = |state: &mut GameState, e: &str| ask(&order, &scripts, state, e);
+    // Before the viewer reports anything, nothing has 3D: nothing plays.
+    assert_eq!(q(&mut state, "BarrelRef.IsAnimPlaying"), 0.0);
+    more::report_sequences(
+        &mut state,
+        [
+            (FormId(BARREL_REF), vec!["SpecialIdle".to_string()]),
+            (FormId(RADIO_REF), vec!["Forward".to_string()]),
+            (FormId(CRATE_REF), Vec::new()),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    assert_eq!(q(&mut state, "BarrelRef.IsAnimPlaying"), 1.0);
+    assert_eq!(q(&mut state, "BarrelRef.IsAnimPlaying Forward"), 0.0);
+    // Group names compare without case (Dead Money writes `Forward`).
+    assert_eq!(q(&mut state, "RadioRef.IsAnimPlaying forward"), 1.0);
+    assert_eq!(q(&mut state, "RadioRef.IsAnimPlaying Backward"), 0.0);
+    assert_eq!(q(&mut state, "CrateRef.IsAnimPlaying"), 0.0);
+    // People's animation data isn't carried out: asked about a group the
+    // script stops; asked about any, a person on their feet is playing
+    // their idle (one who is down isn't: `essential_people_go_down…`).
+    assert_eq!(q(&mut state, "PersonRef.IsAnimPlaying Forward"), STOPPED);
+    // Asked about any: untraced, only with `world::guesses` on
+    // (`contrib_guesses.rs`); off, the script stops.
+    assert_eq!(q(&mut state, "PersonRef.IsAnimPlaying"), STOPPED);
+    // The viewer stops reporting a one-shot group once it has ended
+    // (`preview::cell::sequence_playing`): it reads 0 from then on.
+    more::report_sequences(
+        &mut state,
+        [(FormId(RADIO_REF), Vec::new())].into_iter().collect(),
+    );
+    assert_eq!(q(&mut state, "RadioRef.IsAnimPlaying Forward"), 0.0);
+    assert_eq!(q(&mut state, "RadioRef.IsAnimPlaying"), 0.0);
+}
+
+/// A camera and collision for `GetLineOfSight`: boxes for the people and
+/// the barrel, everything in view or nothing, and every ray stopped at
+/// the same distance (or none).
+struct TestSight {
+    in_view: bool,
+    hit: Option<f32>,
+}
+
+impl world::sight::Sight for TestSight {
+    fn bound(&self, r: FormId) -> Option<([f32; 3], [f32; 3])> {
+        let at = match r.0 {
+            PERSON_REF => [0.0, 0.0, 0.0],
+            HERO_REF => [0.0, 200.0, 0.0],
+            BARREL_REF => [100.0, 0.0, 0.0],
+            _ => return None,
+        };
+        Some((
+            [at[0] - 20.0, at[1] - 20.0, at[2]],
+            [at[0] + 20.0, at[1] + 20.0, at[2] + 120.0],
+        ))
+    }
+    fn camera(&self) -> Option<[f32; 3]> {
+        Some([0.0, 100.0, 120.0])
+    }
+    fn in_view(&self, _lo: [f32; 3], _hi: [f32; 3]) -> bool {
+        self.in_view
+    }
+    fn ray(&self, _from: [f32; 3], _to: [f32; 3]) -> Option<f32> {
+        self.hit
+    }
+}
+
+fn ask_seeing(
+    order: &LoadOrder,
+    scripts: &ScriptCache,
+    state: &mut GameState,
+    sight: &TestSight,
+    expr: &str,
+) -> f32 {
+    state.globals.insert(FormId(VALUE), STOPPED);
+    Runner::new(order, scripts, state)
+        .with_sight(sight)
+        .run_source(&format!("set TestValue to {expr}"), None, None);
+    state.globals[&FormId(VALUE)]
+}
+
+#[test]
+fn line_of_sight() {
+    let (_data, order) = order("more-sight");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let clear = TestSight {
+        in_view: true,
+        hit: None,
+    };
+    let walled = TestSight {
+        in_view: true,
+        hit: Some(10.0),
+    };
+    let q =
+        |state: &mut GameState, s: &TestSight, e: &str| ask_seeing(&order, &scripts, state, s, e);
+    // The player: in view and a ray gets through.
+    assert_eq!(q(&mut state, &clear, "Player.GetLineOfSight HeroRef"), 1.0);
+    // Out of view: no, however clear.
+    let away = TestSight {
+        in_view: false,
+        hit: None,
+    };
+    assert_eq!(q(&mut state, &away, "Player.GetLOS HeroRef"), 0.0);
+    // A ray stopped where it reaches the hero's box hit the hero (its
+    // 0.75 ray from (0, 100, 120) to (0, 200, 90) enters the box 83.5
+    // units along); stopped well short, a wall.
+    let at_box = TestSight {
+        in_view: true,
+        hit: Some(84.0),
+    };
+    assert_eq!(q(&mut state, &at_box, "Player.GetLOS HeroRef"), 1.0);
+    let short = TestSight {
+        in_view: true,
+        hit: Some(50.0),
+    };
+    assert_eq!(q(&mut state, &short, "Player.GetLOS HeroRef"), 0.0);
+    // Walled off, the player's own detection data decides.
+    assert_eq!(q(&mut state, &walled, "Player.GetLOS HeroRef"), 0.0);
+    more::report_detection_sight(&mut state, PLAYER_REF, FormId(HERO_REF), true);
+    assert_eq!(q(&mut state, &walled, "Player.GetLOS HeroRef"), 1.0);
+    // No 3D: not seen.
+    assert_eq!(q(&mut state, &clear, "Player.GetLOS DogRef"), 0.0);
+
+    // Someone else: their last detection run's line of sight.
+    assert_eq!(q(&mut state, &clear, "HeroRef.GetLOS PersonRef"), 0.0);
+    more::report_detection_sight(&mut state, FormId(HERO_REF), FormId(PERSON_REF), true);
+    assert_eq!(q(&mut state, &clear, "HeroRef.GetLOS PersonRef"), 1.0);
+    // The caller must be an actor.
+    assert_eq!(q(&mut state, &clear, "BarrelRef.GetLOS Player"), 0.0);
+    // An object target for someone else: no detection entry, so 0.
+    assert_eq!(q(&mut state, &clear, "HeroRef.GetLOS BarrelRef"), 0.0);
+    // Within 2 units of the caller the answer is 1 whatever detection
+    // found (`0088b880` returns early), further it's detection's again.
+    let hero_at = state.place(&order, FormId(HERO_REF)).unwrap().2;
+    let beside = |d: f32| (hero_at.map(|c| c + d / 3f32.sqrt()), 0.0);
+    assert_eq!(q(&mut state, &clear, "PersonRef.GetLOS HeroRef"), 0.0);
+    state.positions.insert(FormId(PERSON_REF), beside(1.0));
+    assert_eq!(q(&mut state, &clear, "PersonRef.GetLOS HeroRef"), 1.0);
+    state.positions.insert(FormId(PERSON_REF), beside(3.0));
+    assert_eq!(q(&mut state, &clear, "PersonRef.GetLOS HeroRef"), 0.0);
+    state.positions.remove(&FormId(PERSON_REF));
+    // The player headless (no camera) isn't carried out.
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "Player.GetLOS HeroRef"),
+        STOPPED
+    );
+    // Headless, someone else's test still answers from detection.
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "HeroRef.GetLOS PersonRef"),
+        1.0
+    );
+}
+
+#[test]
+fn effect_shaders_on_references() {
+    use world::more_functions::shaders;
+    let (_data, order) = order("more-shaders");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    more::report_loaded(
+        &mut state,
+        [PLAYER_REF, FormId(PERSON_REF), FormId(BARREL_REF)]
+            .into_iter()
+            .collect(),
+    );
+    let running = |state: &GameState| -> Vec<(u32, Option<f64>)> {
+        shaders::active(state)
+            .map(|v| {
+                assert_eq!(v.shader, FormId(SHADER));
+                (v.reference.0, v.until)
+            })
+            .collect()
+    };
+    // Until stopped; again, a second one (they stack); for 2 s; with no
+    // 3D, nothing; no reference, the player.
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.PlayMagicShaderVisuals TestShader\nPersonRef.pms TestShader\n\
+         BarrelRef.pms TestShader 2\nHeroRef.pms TestShader\npms TestShader",
+    );
+    let now = state.seconds;
+    assert_eq!(
+        running(&state),
+        vec![
+            (PERSON_REF, None),
+            (PERSON_REF, None),
+            (BARREL_REF, Some(now + 2.0)),
+            (PLAYER_REF.0, None),
+        ]
+    );
+    assert!(state.events.contains(&Event::More(Shown::ShaderVisual {
+        reference: FormId(BARREL_REF),
+        shader: FormId(SHADER),
+        seconds: Some(2.0),
+    })));
+    // Its seconds over, the barrel's ends.
+    state.seconds += 3.0;
+    assert_eq!(running(&state).len(), 3);
+    // Stopping ends every one with that shader on the reference.
+    state.events.clear();
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.StopMagicShaderVisuals TestShader\nHeroRef.sms TestShader",
+    );
+    assert_eq!(running(&state), vec![(PLAYER_REF.0, None)]);
+    assert_eq!(
+        state.events,
+        vec![Event::More(Shown::ShaderVisualStopped {
+            reference: FormId(PERSON_REF),
+            shader: FormId(SHADER),
+        })]
+    );
+}
+
+#[test]
+fn terminals_go_back_only_while_open() {
+    let (_data, order) = order("more-terminal-back");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let back = Event::More(Shown::TerminalBack);
+    // No terminal open: nothing.
+    run(&order, &scripts, &mut state, "ForceTerminalBack");
+    assert!(!state.events.contains(&back));
+    // Another menu open: nothing.
+    state.more.menu_open = Some(1036);
+    run(&order, &scripts, &mut state, "ForceTerminalBack");
+    assert!(!state.events.contains(&back));
+    // The terminal menu: back a screen, once per call.
+    state.more.menu_open = Some(world::terminal::TERMINAL_MENU);
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "ForceTerminalBack\nForceTerminalBack",
+    );
+    assert_eq!(state.events.iter().filter(|e| **e == back).count(), 2);
+}
+
+#[test]
+fn caravan_cards_picked_up() {
+    let (_data, order) = order("more-cards");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let held = |state: &GameState, holder: FormId, item: u32| {
+        state
+            .items
+            .get(&(holder, FormId(item)))
+            .copied()
+            .unwrap_or(0)
+    };
+    // Outside an item's script there's no container.
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "CardRef.GetContainer"),
+        0.0
+    );
+    // The player picks up a card: its `OnAdd` sees the player as the
+    // container, the card joins their cards and leaves the inventory.
+    state.pick_up(&order, FormId(CARD_REF), FormId(CARD), 1);
+    Runner::new(&order, &scripts, &mut state).on_add(FormId(CARD_REF), PLAYER_REF);
+    assert_eq!(state.globals[&FormId(VALUE)], PLAYER_REF.0 as f32);
+    assert!(state.more.cards.0.contains(&FormId(CARD)));
+    assert_eq!(held(&state, PLAYER_REF, CARD), 0);
+    // Not a card: it isn't added to the cards, but `RemoveMe` still takes
+    // it out.
+    state.pick_up(&order, FormId(CARD_CUP_REF), FormId(CARD_CUP), 1);
+    Runner::new(&order, &scripts, &mut state).on_add(FormId(CARD_CUP_REF), PLAYER_REF);
+    assert!(!state.more.cards.0.contains(&FormId(CARD_CUP)));
+    assert_eq!(held(&state, PLAYER_REF, CARD_CUP), 0);
+    // Into another container: the script returns before anything.
+    state.items.insert((FormId(CRATE_REF), FormId(CARD_CUP)), 1);
+    Runner::new(&order, &scripts, &mut state).on_add(FormId(CARD_CUP_REF), FormId(CRATE_REF));
+    assert_eq!(state.globals[&FormId(VALUE)], CRATE_REF as f32);
+    assert_eq!(held(&state, FormId(CRATE_REF), CARD_CUP), 1);
+    // `RemoveMe` with a container moves the item there.
+    state.items.insert((PLAYER_REF, FormId(CARD_CUP)), 2);
+    let mut runner = Runner::new(&order, &scripts, &mut state);
+    runner.container = Some(PLAYER_REF);
+    runner.run_source("RemoveMe CrateRef", Some(FormId(CARD_CUP_REF)), None);
+    assert_eq!(held(&state, PLAYER_REF, CARD_CUP), 1);
+    assert_eq!(held(&state, FormId(CRATE_REF), CARD_CUP), 2);
+
+    // The cards are kept in a save.
+    let saved = world::save::save(&state, None);
+    let (back, _) = world::save::load(&saved).unwrap();
+    assert_eq!(back.more.cards, state.more.cards);
+}
+
+#[test]
+fn companions_pushes_dispositions_and_causes_of_death() {
+    let (_data, order) = order("more-actors");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let q = |state: &mut GameState, e: &str| ask(&order, &scripts, state, e);
+    let opened = |state: &GameState, who: u32| {
+        state
+            .events
+            .contains(&Event::More(Shown::TeammateContainer { who: FormId(who) }))
+    };
+
+    // A companion's things open; someone else's only when forced, and
+    // never a barrel's.
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.OpenTeammateContainer",
+    );
+    assert!(!opened(&state, PERSON_REF));
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.SetPlayerTeammate 1",
+    );
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.OpenTeammateContainer",
+    );
+    assert!(opened(&state, PERSON_REF));
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "DogRef.OpenTeammateContainer 1",
+    );
+    assert!(opened(&state, DOG_REF));
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "BarrelRef.OpenTeammateContainer 1",
+    );
+    assert!(!opened(&state, BARREL_REF));
+
+    // A push: only someone with 3D loaded, at the force from their
+    // Agility and the number.
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "HeroRef.PushActorAway PersonRef 5",
+    );
+    let pushed = |state: &GameState| {
+        state
+            .events
+            .iter()
+            .filter(|e| matches!(e, Event::More(Shown::PushedAway { .. })))
+            .count()
+    };
+    assert_eq!(pushed(&state), 0);
+    more::report_loaded(&mut state, [FormId(PERSON_REF)].into_iter().collect());
+    let agility = q(&mut state, "PersonRef.GetActorValue Agility");
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "HeroRef.PushActorAway PersonRef 5",
+    );
+    assert!(state.events.contains(&Event::More(Shown::PushedAway {
+        who: FormId(PERSON_REF),
+        from: FormId(HERO_REF),
+        force: more::actors::push_force(&order, f64::from(agility), 5),
+    })));
+    // Agility 5, 5: (1 − 0.008 × 50) × (5 × 10 + 50).
+    assert!((more::actors::push_force(&order, 5.0, 5) - 60.0).abs() < 1e-4);
+    // Not an actor: nothing pushed (the game only reports it).
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "HeroRef.PushActorAway BarrelRef 5",
+    );
+    assert_eq!(pushed(&state), 1);
+
+    // A disposition toward the player moves to the number, within 0–100;
+    // toward anyone else nothing is kept.
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.SetDisposition player 100",
+    );
+    assert_eq!(
+        more::actors::disposition(&state, FormId(PERSON_REF), PLAYER_REF),
+        100
+    );
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.SetDisposition player 40",
+    );
+    assert_eq!(
+        more::actors::disposition(&state, FormId(PERSON_REF), PLAYER_REF),
+        40
+    );
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.SetDisposition player 250",
+    );
+    assert_eq!(
+        more::actors::disposition(&state, FormId(PERSON_REF), PLAYER_REF),
+        100
+    );
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.SetDisposition player -5",
+    );
+    assert_eq!(
+        more::actors::disposition(&state, FormId(PERSON_REF), PLAYER_REF),
+        0
+    );
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.SetDisposition DogRef 80",
+    );
+    assert_eq!(state.more.dispositions.0.len(), 1);
+
+    // Causes of death: none kept is −1; fists kill hand to hand; `Kill`
+    // with a limb keeps the cause given.
+    assert_eq!(q(&mut state, "DogRef.GetCauseofDeath"), -1.0);
+    for _ in 0..1000 {
+        if state.dead.contains(&FormId(DOG_REF)) {
+            break;
+        }
+        Runner::new(&order, &scripts, &mut state).hit(PLAYER_REF, FormId(DOG_REF), None);
+    }
+    assert!(state.dead.contains(&FormId(DOG_REF)));
+    assert_eq!(q(&mut state, "DogRef.GetCauseofDeath"), 3.0);
+    run(&order, &scripts, &mut state, "PersonRef.Kill player");
+    assert_eq!(q(&mut state, "PersonRef.GetCauseofDeath"), -1.0);
+    run(&order, &scripts, &mut state, "HeroRef.Kill player 0 0");
+    assert_eq!(q(&mut state, "HeroRef.GetCauseofDeath"), 0.0);
+    assert_eq!(q(&mut state, "BarrelRef.GetCauseofDeath"), -1.0);
+
+    // Both are kept in a save.
+    let saved = world::save::save(&state, None);
+    let (back, _) = world::save::load(&saved).unwrap();
+    assert_eq!(back.more.dispositions, state.more.dispositions);
+    assert_eq!(back.more.cause_of_death, state.more.cause_of_death);
+}
+
+#[test]
+fn dispel_all_spells_leaves_abilities_and_poisons() {
+    let (_data, order) = order("more-dispel");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let on = |state: &GameState, who: u32, source: u32| {
+        state
+            .active_effects
+            .iter()
+            .any(|e| e.target == FormId(who) && e.source == FormId(source))
+    };
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "player.CastImmediateOnSelf TestTick\nplayer.AddSpell TestTickAbility\n\
+         player.CastImmediateOnSelf TestTickPoison\nPersonRef.CastImmediateOnSelf TestTick",
+    );
+    assert!(on(&state, PLAYER_REF.0, TICK));
+    assert!(on(&state, PLAYER_REF.0, TICK_ABILITY));
+    assert!(on(&state, PLAYER_REF.0, TICK_POISON));
+    // Not an actor: nothing, and the script goes on.
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "BarrelRef.DispelAllSpells"),
+        1.0
+    );
+    run(&order, &scripts, &mut state, "player.DispelAllSpells");
+    assert!(!on(&state, PLAYER_REF.0, TICK));
+    assert!(on(&state, PLAYER_REF.0, TICK_ABILITY));
+    assert!(on(&state, PLAYER_REF.0, TICK_POISON));
+    // Only the caller's effects end.
+    assert!(on(&state, PERSON_REF, TICK));
+    assert!(more::actors::dispelled_by_all(&order, FormId(TICK)));
+    assert!(!more::actors::dispelled_by_all(
+        &order,
+        FormId(TICK_ABILITY)
+    ));
+}
+
+#[test]
+fn traps_vats_targets_and_weapons_fired() {
+    let (_data, order) = order("more-traps");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let targetable =
+        |state: &GameState, r: u32| more::traps::vats_targetable(&order, state, FormId(r));
+
+    // The barrel is destructible, its base not targetable: SetVATSTarget
+    // turns it each way; the same as the base clears the override.
+    assert!(!targetable(&state, BARREL_REF));
+    run(&order, &scripts, &mut state, "BarrelRef.SetVATSTarget 1");
+    assert!(targetable(&state, BARREL_REF));
+    assert!(state.more.vats_overrides.0.contains(&FormId(BARREL_REF)));
+    run(&order, &scripts, &mut state, "BarrelRef.SetVATSTarget 0");
+    assert!(!targetable(&state, BARREL_REF));
+    assert!(state.more.vats_overrides.0.is_empty());
+    // Not destructible: nothing.
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "RadioRef.SetVATSTarget 1"),
+        1.0
+    );
+    assert!(!targetable(&state, RADIO_REF));
+
+    // FireWeapon: a weapon is fired; anything else only reported.
+    run(&order, &scripts, &mut state, "BarrelRef.FireWeapon TestGun");
+    assert!(state.events.contains(&Event::More(Shown::WeaponFired {
+        from: FormId(BARREL_REF),
+        weapon: FormId(GUN),
+    })));
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "BarrelRef.FireWeapon TestTick",
+    );
+    let fired = state
+        .events
+        .iter()
+        .filter(|e| matches!(e, Event::More(Shown::WeaponFired { .. })))
+        .count();
+    assert_eq!(fired, 1);
+
+    // The override is kept in a save.
+    run(&order, &scripts, &mut state, "BarrelRef.SetVATSTarget 1");
+    let saved = world::save::save(&state, None);
+    let (back, _) = world::save::load(&saved).unwrap();
+    assert_eq!(back.more.vats_overrides, state.more.vats_overrides);
+}
+
+#[test]
+fn shots_leave_along_the_objects_facing() {
+    let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-4);
+    let q = std::f32::consts::FRAC_PI_2;
+    // Facing north, east (a quarter turn clockwise), and tipped nose down.
+    let (o, d) = more::traps::shot_from([1.0, 2.0, 3.0], [0.0, 0.0, 0.0], 1.0, None);
+    assert!(close(o, [1.0, 2.0, 3.0]) && close(d, [0.0, 1.0, 0.0]));
+    let (_, d) = more::traps::shot_from([0.0; 3], [0.0, 0.0, q], 1.0, None);
+    assert!(close(d, [1.0, 0.0, 0.0]), "{d:?}");
+    let (_, d) = more::traps::shot_from([0.0; 3], [q, 0.0, 0.0], 1.0, None);
+    assert!(close(d, [0.0, 0.0, -1.0]), "{d:?}");
+    // From a node 10 units ahead in the model, the object turned east.
+    let node = nif::math::Transform {
+        translation: [0.0, 10.0, 0.0],
+        ..nif::math::Transform::IDENTITY
+    };
+    let (o, d) = more::traps::shot_from([0.0; 3], [0.0, 0.0, q], 1.0, Some(node));
+    assert!(
+        close(o, [10.0, 0.0, 0.0]) && close(d, [1.0, 0.0, 0.0]),
+        "{o:?} {d:?}"
+    );
+}
+
+#[test]
+fn facing_up_as_the_viewer_reports_it() {
+    let (_data, order) = order("more-facing");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let q = |state: &mut GameState, e: &str| ask(&order, &scripts, state, e);
+    // No 3D reported: 1; an object: 0.
+    assert_eq!(q(&mut state, "PersonRef.IsFacingUp"), 1.0);
+    assert_eq!(q(&mut state, "BarrelRef.IsFacingUp"), 0.0);
+    more::report_facing_up(
+        &mut state,
+        [(FormId(PERSON_REF), false), (FormId(DOG_REF), true)]
+            .into_iter()
+            .collect(),
+    );
+    assert_eq!(q(&mut state, "PersonRef.IsFacingUp"), 0.0);
+    assert_eq!(q(&mut state, "DogRef.IsFacingUp"), 1.0);
+}
+
+#[test]
+fn recipe_and_casino_menus_open_with_their_data() {
+    use more::menus::{self, CasinoGame};
+    let (_data, order) = order("more-menus");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let has = |state: &GameState, e: Event| state.events.contains(&e);
+
+    // The recipe menu, sold by the player, then by a talking activator's
+    // speaker; an ordinary object sells nothing.
+    run(&order, &scripts, &mut state, "player.ShowRecipeMenu");
+    assert!(has(
+        &state,
+        Event::More(Shown::RecipeMenu {
+            vendor: PLAYER_REF,
+            category: None,
+        })
+    ));
+    assert!(has(&state, Event::Menu(menus::RECIPE_MENU)));
+    state.events.clear();
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "TalkerRef.SetTalkingActivatorActor PersonRef\nTalkerRef.ShowRecipeMenu",
+    );
+    assert!(has(
+        &state,
+        Event::More(Shown::RecipeMenu {
+            vendor: FormId(PERSON_REF),
+            category: None,
+        })
+    ));
+    state.events.clear();
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "BarrelRef.ShowRecipeMenu"),
+        1.0
+    );
+    assert!(!has(&state, Event::Menu(menus::RECIPE_MENU)));
+
+    // A casino game with its casino and numbers; without a casino, nothing.
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "ShowSlotMachineMenuParams TestCasino 1 25 0",
+    );
+    assert!(has(
+        &state,
+        Event::More(Shown::CasinoMenu {
+            game: CasinoGame::SlotMachine,
+            casino: FormId(CASINO),
+            numbers: [1, 25, 0],
+        })
+    ));
+    assert!(has(&state, Event::Menu(1080)));
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "ShowBlackJackMenuParams TestCasino 1 200 0",
+    );
+    assert!(has(&state, Event::Menu(1081)));
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "ShowRouletteMenuParams TestCasino 1 100 0",
+    );
+    assert!(has(&state, Event::Menu(1082)));
+    state.events.clear();
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "ShowRouletteMenuParams TestGun 1 100 0",
+    );
+    assert!(state.events.is_empty());
+}
+
+#[test]
+fn say_to_done_runs_the_blocks_for_the_topic_said() {
+    let (_data, order) = order("more-saytodone");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    state.globals.insert(FormId(VALUE), 0.0);
+    // The line of `TestRadioTopic` is said: only its block runs.
+    Runner::new(&order, &scripts, &mut state).say_to_done(FormId(SAYER_REF), FormId(RADIO_TOPIC));
+    assert_eq!(state.globals[&FormId(VALUE)], 1.0);
+    Runner::new(&order, &scripts, &mut state).say_to_done(FormId(SAYER_REF), FormId(RADIO_TOPIC));
+    assert_eq!(state.globals[&FormId(VALUE)], 2.0);
+    // Another topic: its own block.
+    Runner::new(&order, &scripts, &mut state).say_to_done(FormId(SAYER_REF), FormId(TICK));
+    assert_eq!(state.globals[&FormId(VALUE)], 100.0);
+    // Someone without such blocks: nothing.
+    Runner::new(&order, &scripts, &mut state).say_to_done(FormId(PERSON_REF), FormId(RADIO_TOPIC));
+    assert_eq!(state.globals[&FormId(VALUE)], 100.0);
+}
+
+#[test]
+fn a_teammate_told_to_wait_stays_and_one_with_nothing_to_do_follows() {
+    use world::ai::{kinds, teammate_follows, Package};
+    let package = |kind: u8| Package {
+        form_id: FormId(0x0100_0001),
+        editor_id: None,
+        kind,
+        flags: 0,
+        location: None,
+        schedule: Default::default(),
+        conditions: Vec::new(),
+        target: None,
+        topic: None,
+        actions: Default::default(),
+        data: Default::default(),
+    };
+    // Nothing, or a package that only fills time: they come along.
+    assert!(teammate_follows(None));
+    for kind in [kinds::SANDBOX, kinds::WANDER, kinds::PATROL, kinds::FIND] {
+        assert!(teammate_follows(Some(&package(kind))), "kind {kind}");
+    }
+    // The wait order is a guard package: they stay. So do a travel, a
+    // follow and the rest, which are the game's own.
+    for kind in [kinds::GUARD, kinds::TRAVEL, kinds::FOLLOW, kinds::DIALOGUE] {
+        assert!(!teammate_follows(Some(&package(kind))), "kind {kind}");
+    }
 }

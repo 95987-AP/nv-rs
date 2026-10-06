@@ -32,7 +32,7 @@ pub struct PlacedRef(pub u32);
 /// greeting), and whether it's a conversation (`StartConversation`) or
 /// just a line said (`SayTo`).
 #[derive(Resource, Default)]
-pub struct ScriptedTalk(pub Option<(FormId, Option<FormId>, bool)>);
+pub struct ScriptedTalk(pub Option<(FormId, Option<FormId>, bool, bool)>);
 
 /// Notices on screen, each with the time it appeared.
 #[derive(Resource, Default)]
@@ -90,6 +90,9 @@ pub struct CellScripts {
     /// The game's reference-script pass: attached cells, pending events,
     /// trigger occupancy.
     scheduler: world::ref_scripts::RefScripts,
+    /// The player's place (worldspace, else interior) when teammates were
+    /// last brought along ([`bring_teammates`]).
+    space: Option<FormId>,
 }
 
 /// World-space bounds of rendered placed objects in the loaded cell(s).
@@ -164,6 +167,40 @@ pub struct Activatable(pub Option<(FormId, String)>);
 /// E was pressed on [`Activatable`]'s object.
 #[derive(Resource, Default)]
 pub struct ActivateRequest(pub Option<FormId>);
+
+/// `--use`: an object to press E on once the player is in the place, for
+/// testing (an editor ID or form ID).
+#[derive(Resource, Default)]
+pub struct StartUse(pub Option<String>);
+
+/// Presses E on the `--use` object, as if the crosshair were on it.
+pub fn start_use(
+    game: Res<GameFiles>,
+    mut start: ResMut<StartUse>,
+    player: Res<crate::walk::Player>,
+    mut request: ResMut<ActivateRequest>,
+) {
+    if !player.ready || start.0.is_none() {
+        return;
+    }
+    let Some(asked) = start.0.take() else {
+        return;
+    };
+    let order = &game.0.order;
+    let form = order.form_by_editor_id(&asked).or_else(|| {
+        u32::from_str_radix(asked.trim_start_matches("0x"), 16)
+            .ok()
+            .map(FormId)
+            .filter(|f| order.get(*f).is_some())
+    });
+    match form {
+        Some(f) => {
+            println!("--use: using {asked}.");
+            request.0 = Some(f);
+        }
+        None => println!("--use: no object called '{asked}'."),
+    }
+}
 
 /// Why something locked doesn't open now.
 pub enum Locked {
@@ -260,6 +297,31 @@ pub fn door_opens(
         .events
         .retain(|e| !matches!(e, Event::Activate { what, .. } if *what == door));
     opened
+}
+
+/// The player's teammates come with them through a door or a move to
+/// another place: they're where the player is (and walk to their follow
+/// distance there). Those still in the same world stay where they are.
+/// [G] Not traced (Dead Money contributor, 2026-10-06): the game moves its
+/// followers (`ExtraFollower`, `iNumberActorsAllowedToFollowPlayer`)
+/// by rules not read yet. No base-game acceptance route has a teammate.
+fn bring_teammates(order: &esm::LoadOrder, state: &mut world::scripting::GameState) {
+    let (Some(at), Some(cell)) = (state.player_position, state.player_cell) else {
+        return;
+    };
+    let space = state.player_world.unwrap_or(cell);
+    for t in state.teammates.clone() {
+        if state.dead.contains(&t) || state.more.down.contains_key(&t) {
+            continue;
+        }
+        if state.place(order, t).is_some_and(|p| p.0 == space) {
+            continue;
+        }
+        state.spaces.insert(t, (space, cell));
+        state.positions.insert(t, (at, 0.0));
+        state.evaluate.insert(t);
+        println!("{t} comes along.");
+    }
 }
 
 /// The attached cells (in the game's pass order) and how to read one's
@@ -376,6 +438,9 @@ fn use_object(
         // Someone else's: stealing (`world::crime`).
         let owner = world::crime::owner_of(order, state, r.reference);
         state.pick_up(order, r.reference, r.base, r.count);
+        // Its script's `OnAdd` blocks (Caravan cards join the player's
+        // cards and leave the inventory).
+        Runner::new(order, cache, state).on_add(r.reference, PLAYER_REF);
         if let Some(owner) = owner.filter(|_| !world::crime::may_take(order, state, owner)) {
             if world::crime::steal(order, state, r.reference, owner) {
                 println!("Seen stealing {}.", counted(r.base, r.count));
@@ -432,8 +497,10 @@ fn run_cell_scripts(
     cell_scripts: &mut CellScripts,
     people: &[(FormId, [f32; 3])],
     seconds: f32,
+    sight: Option<&dyn world::sight::Sight>,
 ) {
     let mut runner = Runner::new(order, cache, state);
+    runner.sight = sight;
     runner.seconds_passed = seconds;
     cell_scripts.scheduler.frame(&mut runner, people);
 }
@@ -920,6 +987,18 @@ pub struct HereNow<'w> {
     later: ResMut<'w, LaterCommands>,
 }
 
+/// The start-up state and requests `run_scripts` works with.
+type Starting<'w> = (
+    ResMut<'w, StartStage>,
+    Res<'w, crate::walk::Player>,
+    ResMut<'w, crate::PendingScene>,
+    ResMut<'w, crate::exterior::PendingExterior>,
+    (
+        ResMut<'w, crate::combat::ObjectShots>,
+        ResMut<'w, crate::swaps::TextureSwaps>,
+    ),
+);
+
 /// Runs the scripts for this frame and carries out what they asked for.
 #[allow(clippy::too_many_arguments)]
 pub fn run_scripts(
@@ -932,15 +1011,16 @@ pub fn run_scripts(
     conversation: Res<Conversation>,
     mut talk: ResMut<ScriptedTalk>,
     mut notices: ResMut<Notices>,
-    (mut start_stage, player, mut pending, mut pending_exterior): (
-        ResMut<StartStage>,
-        Res<crate::walk::Player>,
-        ResMut<crate::PendingScene>,
-        ResMut<crate::exterior::PendingExterior>,
-    ),
+    (
+        mut start_stage,
+        player,
+        mut pending,
+        mut pending_exterior,
+        (mut object_shots, mut texture_swaps),
+    ): Starting,
     mut start_commands: ResMut<StartCommands>,
     here_now: HereNow,
-    cameras: Query<(&Transform, &FlyCamera)>,
+    cameras: Query<(&Transform, &FlyCamera, Option<&Projection>)>,
     mut placed: Query<(&PlacedRef, &mut Visibility)>,
     mut text: Query<NoticePanel, (With<NoticeText>, Without<PlacedRef>)>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -1014,7 +1094,7 @@ pub fn run_scripts(
     let state = &mut state.0;
     let (eye, dir, heading) = cameras
         .single()
-        .map(|(t, input)| {
+        .map(|(t, input, _)| {
             let f = t.forward().as_vec3();
             (
                 game_point(t.translation),
@@ -1027,10 +1107,34 @@ pub fn run_scripts(
             )
         })
         .unwrap_or_default();
+    // The camera's up and view angle, for `GetLineOfSight`.
+    let (up, tan_half_fov, aspect) = cameras
+        .single()
+        .map(|(t, _, projection)| {
+            let u = t.up().as_vec3();
+            let (fov, aspect) = match projection {
+                Some(Projection::Perspective(p)) => (p.fov, p.aspect_ratio),
+                _ => (
+                    cellview::vertical_fov(cellview::GAME_FOV_DEGREES),
+                    16.0 / 9.0,
+                ),
+            };
+            ([u.x, -u.z, u.y], (fov * 0.5).tan(), aspect)
+        })
+        .unwrap_or(([0.0, 0.0, 1.0], 1.0, 1.0));
     // Animation and V.A.T.S. can move the view independently of the body.
     // Quest positions, triggers and saves must follow the collision capsule.
     let feet = player.position_for_view(eye);
     state.player_position = Some(feet);
+    // What has 3D now (`PlayMagicShaderVisuals` needs it): the rendered
+    // placed objects, the people about and the player.
+    let mut loaded: std::collections::HashSet<FormId> = object_bounds
+        .as_deref()
+        .map(|b| b.0.keys().map(|&r| FormId(r)).collect())
+        .unwrap_or_default();
+    loaded.insert(PLAYER_REF);
+    loaded.extend(talkers.0.iter().map(|t| t.reference));
+    world::more_functions::report_loaded(state, loaded);
     match &exterior {
         Some(e) => {
             state.player_world = Some(e.grid.world.form_id);
@@ -1063,6 +1167,13 @@ pub fn run_scripts(
         feet,
     );
     let cells: Vec<FormId> = attached.iter().map(|(c, _)| *c).collect();
+    let space = state.player_world.or(state.player_cell);
+    if space != cell_scripts.space {
+        cell_scripts.space = space;
+        if world::guesses::enabled() {
+            bring_teammates(order, state);
+        }
+    }
     refresh_cell_scripts(
         order,
         &scripts.0,
@@ -1087,7 +1198,21 @@ pub fn run_scripts(
     let dt = time.delta_secs();
     if conversation.0.as_ref().is_none_or(|t| t.is_line_only()) && !waiting.is_open() {
         let warner = state.living.trespass.as_ref().map(|w| w.warner);
-        Runner::new(order, &scripts.0, state).update(dt);
+        let mut people: Vec<(FormId, [f32; 3])> = vec![(PLAYER_REF, feet)];
+        people.extend(talkers.0.iter().map(|t| (t.reference, t.position)));
+        let sight = crate::sight::ViewerSight {
+            collision: &collision.0,
+            bounds: object_bounds.as_deref(),
+            people: &people,
+            eye,
+            forward: dir,
+            up,
+            tan_half_fov,
+            aspect,
+        };
+        Runner::new(order, &scripts.0, state)
+            .with_sight(&sight)
+            .update(dt);
         // Someone coming to warn the trespassing player off
         // (`world::living::trespass`).
         let now_warner = state.living.trespass.as_ref().map(|w| w.warner);
@@ -1101,9 +1226,15 @@ pub fn run_scripts(
             }
         }
         if player.ready {
-            let mut people: Vec<(FormId, [f32; 3])> = vec![(PLAYER_REF, feet)];
-            people.extend(talkers.0.iter().map(|t| (t.reference, t.position)));
-            run_cell_scripts(order, &scripts.0, state, &mut cell_scripts, &people, dt);
+            run_cell_scripts(
+                order,
+                &scripts.0,
+                state,
+                &mut cell_scripts,
+                &people,
+                dt,
+                Some(&sight),
+            );
         }
         // The sleep/wait menu open: the scripts' `MenuMode 1012` blocks
         // run (`PlayerBedSCRIPT` notes `IsPCSleeping` there).
@@ -1243,6 +1374,8 @@ pub fn run_scripts(
             } else {
                 format!("{} was killed by {}.", name(who), name(by))
             }),
+            Event::KnockedOut { who } => Some(format!("{} is down.", name(who))),
+            Event::GotUp { who } => Some(format!("{} gets up.", name(who))),
             Event::Journal { quest, text } => Some(format!("{}: {text}", name(quest))),
             Event::Objective {
                 text, completed, ..
@@ -1264,7 +1397,10 @@ pub fn run_scripts(
                 } else if (to == PLAYER_REF || to.0 == 0) && talk.0.is_none() {
                     // `Say` speaks to no one in particular (`to` 0): the
                     // player hears it as a line said to them.
-                    talk.0 = Some((speaker, topic, conversation));
+                    // `SayTo` (a line to the player, not `Say`'s to no
+                    // one): its `SayToDone` blocks run when it's said.
+                    let say_to = !conversation && to == PLAYER_REF;
+                    talk.0 = Some((speaker, topic, conversation, say_to));
                 }
                 None
             }
@@ -1319,10 +1455,7 @@ pub fn run_scripts(
                 node,
                 texture,
             } => {
-                println!(
-                    "A script gives {}'s {node} the texture {texture} (not shown here).",
-                    name(what)
-                );
+                texture_swaps.0.push((what, node, texture));
                 None
             }
             Event::Enable(r, on) => {
@@ -1477,6 +1610,18 @@ pub fn run_scripts(
                             Some(Locked::Says(why)) => Some(why),
                         }
                     }
+                    // A talking activator with a voice (Elijah's hologram)
+                    // starts a conversation, as the player's own E would.
+                    Some(k)
+                        if k.as_bytes() == b"TACT"
+                            && base.is_some_and(|b| {
+                                world::dialogue::Speaker::load(order, what, b)
+                                    .is_some_and(|s| s.voice.is_some())
+                            }) =>
+                    {
+                        talk.0 = Some((what, None, true, false));
+                        None
+                    }
                     _ => None,
                 }
             }
@@ -1498,6 +1643,37 @@ pub fn run_scripts(
                     // Everything runs at the multiplier's speed.
                     world::more_functions::Shown::TimeMultiplier(m) => {
                         virtual_time.set_relative_speed(m.max(0.0));
+                    }
+                    // `OpenTeammateContainer`: the container menu on the
+                    // companion's things, titled with their name. Its
+                    // companion mode (3) is drawn as a container's (mode 1)
+                    // here.
+                    world::more_functions::Shown::TeammateContainer { who } => {
+                        let title = name(world::scripting::base_of(order, who).unwrap_or(who));
+                        waiting.push(crate::menus::Menu::Container(who, title));
+                    }
+                    // `PushActorAway`: knocking someone down alive (a
+                    // ragdoll that gets up again) isn't drawn yet; only the
+                    // dead go limp here (`ActorRig::go_limp`).
+                    world::more_functions::Shown::PushedAway { .. } => {}
+                    // `ShowRecipeMenu`: the recipe menu on the category
+                    // (`game_menus::recipe`).
+                    // [G] The menu's listing order, skill rule and click to
+                    // make aren't traced (`RecipeMenu::DoClick` is `007274b0`,
+                    // not read yet), so a script opens it only with
+                    // `world::guesses` on; `--open-menu recipes:` always does.
+                    world::more_functions::Shown::RecipeMenu { category, .. } => {
+                        if world::guesses::enabled() {
+                            waiting.push(crate::menus::Menu::Recipes(category));
+                        } else {
+                            println!(
+                                "ShowRecipeMenu: the recipe menu isn't traced yet (NV_GUESSES=1 opens it)."
+                            );
+                        }
+                    }
+                    // `FireWeapon`: shot in `combat::object_shots`.
+                    world::more_functions::Shown::WeaponFired { from, weapon } => {
+                        object_shots.0.push((from, weapon));
                     }
                     _ => {}
                 }
@@ -1521,7 +1697,7 @@ pub fn run_scripts(
         let result = player_idle
             .snapshot(
                 &seats,
-                cameras.single().map_or(0.0, |(_, input)| input.pitch),
+                cameras.single().map_or(0.0, |(_, input, _)| input.pitch),
             )
             .and_then(|camera| save_camera(file, state, place, camera));
         match result {
@@ -1580,7 +1756,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(TestLoadResult(result));
         world.insert_resource(Conversation::test_active());
-        world.insert_resource(ScriptedTalk(Some((FormId(10), None, true))));
+        world.insert_resource(ScriptedTalk(Some((FormId(10), None, true, false))));
         let mut lines = crate::chatter::Lines::default();
         lines.say(
             FormId(11),
@@ -2006,7 +2182,7 @@ mod tests {
         let people = [(PLAYER_REF, [1888.0, 1835.0, 7360.0])];
         // Enter before the quest permits the instruction, then load a save
         // at stage55 in that same volume. Old occupancy must not suppress it.
-        run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016);
+        run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016, None);
         assert!(!cells
             .scheduler
             .inside(FormId(testdata::functions::ids::VIGOR_TRIGGER_REF))
@@ -2016,7 +2192,7 @@ mod tests {
         loaded.stages.insert(FormId(VIGOR_QUEST), 55);
         restore_script_state(&mut state, &mut cells, loaded);
         attach_test_cell(&order, &cache, &mut state, &mut cells, HOUSE);
-        run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016);
+        run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016, None);
         assert_eq!(state.stages.get(&FormId(VIGOR_QUEST)), Some(&60));
     }
 
@@ -2057,6 +2233,7 @@ mod tests {
             &mut cell_scripts,
             &[(PLAYER_REF, [1888.0, 1835.0, 7360.0])],
             1.0 / 60.0,
+            None,
         );
         assert_eq!(state.stages.get(&FormId(VIGOR_QUEST)), Some(&60));
         assert!(!state.objectives.contains_key(&(FormId(VIGOR_QUEST), 30)));

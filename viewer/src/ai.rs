@@ -738,6 +738,10 @@ pub fn move_actors(
     let attached: HashSet<(i32, i32)> = key.1.iter().flatten().copied().collect();
     let now = time.elapsed_secs();
     let dt = time.delta_secs();
+    // Essential people who went down count their time to get up.
+    if !frozen {
+        world::combat::advance_down(order, state, dt);
+    }
     let game_hour = state.global(order, "GameHour").unwrap_or(12.0);
     let player_velocity = match (state.player_position, last.player) {
         (Some(p), Some(q)) if dt > 0.0 => [0, 1, 2].map(|k| (p[k] - q[k]) / dt),
@@ -976,6 +980,31 @@ pub fn move_actors(
         }
         // The dead go limp (their skeleton's ragdoll, thrown by the killing
         // blow) and do nothing more; without a ragdoll they tip over.
+        // Essential people brought to 0 health lie limp for a time (the dead
+        // do, for good), then get up where they lay.
+        if state.more.down.contains_key(&me) {
+            if !walker.fallen {
+                fall(
+                    walker,
+                    &mut life,
+                    &mut rig,
+                    &mut transform,
+                    state,
+                    order,
+                    &collision,
+                    now,
+                );
+                end_chat(&mut chats, me);
+            }
+            continue;
+        }
+        if walker.fallen && !state.dead.contains(&me) {
+            walker.fallen = false;
+            rig.ragdoll = None;
+            rig.still = false;
+            walker.clear_path();
+            place(walker, &mut transform, state, &mut talkers);
+        }
         if state.dead.contains(&me) {
             if !walker.fallen {
                 fall(
@@ -2237,7 +2266,7 @@ fn dialogue_frame(
                     return;
                 }
                 println!("{:.1} s: {me} starts talking to the player.", ctx.now);
-                talk.0 = Some((me, topic, true));
+                talk.0 = Some((me, topic, true, false));
             } else {
                 start_chat(ctx, walker, chats, target, topic, false);
             }
@@ -2368,7 +2397,7 @@ fn talk_frame(
             walker.clear_path();
             walker.talk_to = None;
             println!("{:.1} s: {me} starts talking to the player.", ctx.now);
-            talk.0 = Some((me, topic, true));
+            talk.0 = Some((me, topic, true, false));
         }
         return;
     }

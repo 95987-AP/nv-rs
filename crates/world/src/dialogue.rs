@@ -22,6 +22,7 @@ const TCFU: FourCC = FourCC::new(b"TCFU");
 const NAME: FourCC = FourCC::new(b"NAME");
 const RNAM: FourCC = FourCC::new(b"RNAM");
 const QSTI: FourCC = FourCC::new(b"QSTI");
+const INFC: FourCC = FourCC::new(b"INFC");
 const PNAM: FourCC = FourCC::new(b"PNAM");
 const KNAM: FourCC = FourCC::new(b"KNAM");
 const TDUM: FourCC = FourCC::new(b"TDUM");
@@ -694,6 +695,7 @@ pub fn lines_for(order: &LoadOrder, base: FormId, voice: Option<FormId>) -> Vec<
 }
 
 const VTCK: FourCC = FourCC::new(b"VTCK");
+const VNAM: FourCC = FourCC::new(b"VNAM");
 const RNAM_RACE: FourCC = FourCC::new(b"RNAM");
 const ACBS: FourCC = FourCC::new(b"ACBS");
 const SNAM: FourCC = FourCC::new(b"SNAM");
@@ -733,7 +735,13 @@ impl Speaker {
             reference,
             base,
             name: record.full_name(),
-            voice: form(VTCK),
+            // A talking activator's voice type is its VNAM (form type
+            // 0x16 in 00616fa0 → 009185e0).
+            voice: form(VTCK).or_else(|| {
+                (rr.entry.header.kind.as_bytes() == b"TACT")
+                    .then(|| form(VNAM))
+                    .flatten()
+            }),
             race: form(RNAM_RACE),
             female: record
                 .get(ACBS)
@@ -779,6 +787,33 @@ pub fn topic_lines(order: &LoadOrder, topic: FormId) -> Vec<Info> {
             Some((priority(info.quest), info))
         })
         .collect();
+    // The lines the topic is connected to (`INFC`, in the topic record):
+    // the game's topic loader puts them in the topic's list of lines
+    // (`TESTopic::vfunc_8`, `00618aa0`), though they stand under another
+    // topic. Dead Money's Dog says his Gala greeting through one.
+    // [G] that picking a line uses them as it does the topic's own.
+    if let Some(record) = order
+        .get(topic)
+        .and_then(|rr| rr.record().ok().map(|r| (rr, r)))
+    {
+        let (rr, record) = record;
+        for sub in record.get_all(INFC).filter(|s| s.data.len() >= 4) {
+            let id = global(&rr, &sub.data);
+            if lines.iter().any(|(_, i)| i.form_id == id) {
+                continue;
+            }
+            let Some(line) = order
+                .get(id)
+                .filter(|l| l.entry.header.kind == INFO && !l.entry.header.is_deleted())
+            else {
+                continue;
+            };
+            if let Ok(record) = line.record() {
+                let info = Info::parse(order, &line, &record);
+                lines.push((priority(info.quest), info));
+            }
+        }
+    }
     lines.sort_by_key(|(p, _)| std::cmp::Reverse(*p));
     lines.into_iter().map(|(_, i)| i).collect()
 }
@@ -1072,6 +1107,7 @@ pub fn voice_path(
             .ok()?
             .map(|e| e.to_ascii_lowercase())
     };
+    let voice = line_speaker_voice(order, info).unwrap_or(voice);
     let voice_name = edid(Some(voice))?;
     let (quest, topic) = voice_name_parts(&edid(info.quest)?, &edid(info.topic)?);
     let rr = order.get(info.form_id)?;
@@ -1081,6 +1117,31 @@ pub fn voice_path(
         rr.plugin.name.to_ascii_lowercase(),
         response.number
     ))
+}
+
+/// The voice type of a line's own speaker (`ANAM`, `TESTopicInfo::pSpeaker`
+/// (Xbox PDB), +0x3c here: `00639b40`), when the line names one.
+// Translated from 00616fa0 (decompiled, FalloutNV.exe 1.4.0.525): the voice
+// file's voice type is the line's own speaker's when it has one; only
+// without one does the speaking reference's base give it (an NPC's or
+// creature's voice type, a talking activator's `VNAM` via `009185e0`).
+// Dead Money's narrator (`NVDLC01Narrator`, voice type
+// `MaleAdult01Default`) says intro lines whose speaker is Elijah, so they
+// play from Elijah's voice type folder.
+fn line_speaker_voice(order: &LoadOrder, info: &Info) -> Option<FormId> {
+    let rr = order.get(info.form_id)?;
+    let record = rr.record().ok()?;
+    let speaker = record
+        .get(FourCC::new(b"ANAM"))
+        .filter(|s| s.data.len() >= 4)
+        .map(|s| global(&rr, &s.data))
+        .filter(|id| id.0 != 0)?;
+    let srr = order.get(speaker)?;
+    let srec = srr.record().ok()?;
+    srec.get(VTCK)
+        .filter(|s| s.data.len() >= 4)
+        .map(|s| global(&srr, &s.data))
+        .filter(|id| id.0 != 0)
 }
 
 #[cfg(test)]

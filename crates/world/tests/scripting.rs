@@ -163,6 +163,23 @@ fn the_menu_lists_top_level_and_learned_topics_the_speaker_answers() {
 }
 
 #[test]
+fn a_topic_with_no_lines_says_the_lines_connected_to_it() {
+    let (_data, order) = order("scripting-linked-topic");
+    let state = GameState::new(&order);
+    let doc = Speaker::load(&order, FormId(DOC_REF), FormId(DOC)).unwrap();
+    // The topic has no lines of its own: its connection (`INFC`) names the
+    // secret's, which stands under the secret topic.
+    let own = dialogue::topic_lines(&order, FormId(TOPIC_LINKED));
+    assert_eq!(own.len(), 1);
+    assert_eq!(own[0].form_id, FormId(SECRET_LINE));
+    assert_eq!(own[0].topic, Some(FormId(TOPIC_SECRET)));
+    let said = dialogue::pick(&order, FormId(TOPIC_LINKED), &doc, &state).unwrap();
+    assert_eq!(said.form_id, FormId(SECRET_LINE));
+    // The secret topic still has its line, once.
+    assert_eq!(dialogue::topic_lines(&order, FormId(TOPIC_SECRET)).len(), 1);
+}
+
+#[test]
 fn waiting_moves_the_clock_unless_enemies_are_near() {
     let (_data, order) = order("scripting-wait");
     let mut state = GameState::new(&order);

@@ -64,7 +64,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::asset::{load_internal_asset, weak_handle, RenderAssetUsages};
-use bevy::audio::AudioSource;
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::prelude::*;
 use bevy::render::camera::RenderTarget;
@@ -856,7 +855,6 @@ pub struct Around<'w> {
     conversation: Res<'w, crate::dialogue::Conversation>,
     requests: ResMut<'w, SoundRequests>,
     messages: ResMut<'w, crate::hud::HudMessages>,
-    oggs: ResMut<'w, Assets<AudioSource>>,
     wavs: ResMut<'w, Assets<PcmSound>>,
     markers: Res<'w, crate::map::MapMarkers>,
     asks: ResMut<'w, crate::game_menus::asks::PipboyAsks>,
@@ -1007,7 +1005,6 @@ fn pipboy_keys(
         mut messages,
         markers,
         mut asks,
-        mut oggs,
         mut wavs,
         collision,
         ..
@@ -1490,13 +1487,7 @@ fn pipboy_keys(
                 }
                 let total_ms =
                     pieces.iter().map(|p| p.2).sum::<f32>() + (pieces.len() as f32 - 1.0) * 500.0;
-                let entity = play_piece(
-                    &mut commands,
-                    &mut oggs,
-                    &mut wavs,
-                    &pieces[0].0,
-                    pieces[0].1,
-                );
+                let entity = play_piece(&mut commands, &mut wavs, &pieces[0].0, pieces[0].1);
                 println!(
                     "Note {}: {} piece(s), {:.1} s.",
                     FormId(form),
@@ -1627,22 +1618,17 @@ fn note_pieces(
 /// Starts a piece of a note's audio playing.
 fn play_piece(
     commands: &mut Commands,
-    oggs: &mut Assets<AudioSource>,
     wavs: &mut Assets<PcmSound>,
     bytes: &[u8],
     ogg: bool,
 ) -> Option<Entity> {
-    if ogg {
-        let handle = oggs.add(AudioSource {
-            bytes: Arc::from(bytes.to_vec().into_boxed_slice()),
-        });
-        return Some(
-            commands
-                .spawn((AudioPlayer::new(handle), PlaybackSettings::DESPAWN))
-                .id(),
-        );
-    }
-    let pcm = cellview::sound::read_wav(bytes).ok()?;
+    // Ogg pieces decode through the viewer's own sample sources, as every
+    // other sound does (`crate::sounds::read_sound`).
+    let pcm = if ogg {
+        crate::sounds::decode_ogg(bytes).ok()?
+    } else {
+        cellview::sound::read_wav(bytes).ok()?
+    };
     let handle = wavs.add(crate::sounds::pcm_sound(pcm));
     Some(
         commands
@@ -1658,7 +1644,6 @@ fn play_piece(
 fn advance_note(
     commands: &mut Commands,
     pipboy: &mut Pipboy,
-    oggs: &mut Assets<AudioSource>,
     wavs: &mut Assets<PcmSound>,
     now: f32,
 ) -> Option<ui::pipboy::NoteAudio> {
@@ -1680,7 +1665,7 @@ fn advance_note(
         if (now - from) * 1000.0 > 500.0 {
             p.index += 1;
             let (bytes, ogg, _) = &p.pieces[p.index];
-            p.entity = play_piece(commands, oggs, wavs, bytes, *ogg);
+            p.entity = play_piece(commands, wavs, bytes, *ogg);
             p.piece_started = now;
             p.gap_from = None;
         }
@@ -1941,7 +1926,6 @@ fn update_pipboy(
         mut state,
         mut menus,
         mut player,
-        mut oggs,
         mut wavs,
         markers,
         mut messages,
@@ -2054,7 +2038,7 @@ fn update_pipboy(
         }
     }
     // A note's audio going on.
-    let note_audio = advance_note(&mut commands, pipboy, &mut oggs, &mut wavs, now);
+    let note_audio = advance_note(&mut commands, pipboy, &mut wavs, now);
 
     let Some(b) = pipboy.built.as_mut() else {
         return;
@@ -2066,15 +2050,8 @@ fn update_pipboy(
             .form_by_editor_id("UIPipBoyHumLP")
             .and_then(|id| world::sound::Sound::load(order, id))
         {
-            pipboy.hum = crate::sounds::play(
-                &mut commands,
-                &game.0,
-                &mut oggs,
-                &mut wavs,
-                &s,
-                state.0.dice,
-                true,
-            );
+            pipboy.hum =
+                crate::sounds::play(&mut commands, &game.0, &mut wavs, &s, state.0.dice, true);
         }
     }
 

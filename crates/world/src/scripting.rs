@@ -951,6 +951,15 @@ pub enum Event {
         who: FormId,
         by: FormId,
     },
+    /// Someone essential was brought to 0 health: they go down instead of
+    /// dying (`world::combat::hurt`).
+    KnockedOut {
+        who: FormId,
+    },
+    /// Someone who was down gets up (`world::combat::advance_down`).
+    GotUp {
+        who: FormId,
+    },
     /// `PlayGroup`: an animation group (by the game's name: `Forward`,
     /// `Open`, `SpecialIdle`…) to play on a person or an object's model,
     /// with the script's flags (`005c0df0`: not 0 blends it in over flags ×
@@ -1788,7 +1797,16 @@ impl Facts<'_> {
             }
             // True of a new game, where nobody wins at the casinos or has
             // a reputation yet (hardcore: `world::living`).
-            "HasBeenEaten" | "GetCasinoWinningsLevel" | "GetKnockedState" => 0.0,
+            "HasBeenEaten" | "GetCasinoWinningsLevel" => 0.0,
+            // Knock state 2 (as `PushActorAway` leaves it) for someone
+            // essential brought down.
+            "GetKnockedState" => {
+                if s.more.down.contains_key(&on?) {
+                    2.0
+                } else {
+                    0.0
+                }
+            }
             // The process's flag (`00915d40`; nobody without one: 0).
             "IsWeaponOut" => flag(s.weapon_out.contains(&on?)),
             // Reputations (`world::reputation`); a type or axis out of
@@ -2277,6 +2295,13 @@ pub struct Runner<'a> {
     /// Each nested `Script::Run` has its own runner in the game
     /// (`005e2590`); here nested runs share this flag (unresolved).
     pub references_changed: bool,
+    /// The viewer's camera and collision, for `GetLineOfSight`
+    /// ([`crate::sight`]); none headless.
+    pub sight: Option<&'a dyn crate::sight::Sight>,
+    /// The container an inventory item's script runs in (the game's
+    /// containing object: `GetContainer`, `RemoveMe`), during
+    /// [`Runner::on_add`].
+    pub container: Option<FormId>,
     depth: u8,
 }
 
@@ -2302,8 +2327,16 @@ impl<'a> Runner<'a> {
             owner: None,
             seconds_passed: 0.0,
             references_changed: false,
+            sight: None,
+            container: None,
             depth: 0,
         }
+    }
+
+    /// With the viewer's camera and collision for `GetLineOfSight`.
+    pub fn with_sight(mut self, sight: &'a dyn crate::sight::Sight) -> Self {
+        self.sight = Some(sight);
+        self
     }
 
     fn facts(&self) -> Facts<'_> {
@@ -2512,6 +2545,51 @@ impl<'a> Runner<'a> {
         let saved = self.state.action_ref.replace(who);
         self.run_blocks(reference, Some(reference), kind, names_who);
         self.state.action_ref = saved;
+    }
+
+    /// An item that was a placed reference went into `container` (the
+    /// player picked it up): its script's `OnAdd` blocks run, those naming
+    /// no container or this one, with the reference as the item and
+    /// `container` as its containing object. The action reference is left
+    /// as it is. Items arriving other ways (from containers, `AddItem`)
+    /// aren't run here: what the game gives their scripts as the item
+    /// isn't traced.
+    pub fn on_add(&mut self, reference: FormId, container: FormId) {
+        let order = self.order;
+        let names = |b: &script::Block| match b.args.first() {
+            None => true,
+            Some(Arg::Word(w)) => {
+                let id = if w.eq_ignore_ascii_case("player") || w.eq_ignore_ascii_case("playerref")
+                {
+                    Some(PLAYER_REF)
+                } else {
+                    order.form_by_editor_id(w)
+                };
+                id == Some(container)
+            }
+            Some(_) => false,
+        };
+        let saved = self.container.replace(container);
+        self.run_blocks(reference, Some(reference), "onadd", names);
+        self.container = saved;
+    }
+
+    /// `speaker` finished saying a line of `topic` it was told to say with
+    /// `SayTo`: its script's `SayToDone` blocks (block type 7, the block
+    /// table's entry at `0118e408`) run, those naming no topic or this one.
+    /// The game raises it when the line is done: the Xbox prototype names
+    /// the callback `TESObjectREFR::SayToCallBack` (Xbox PDB); its PC
+    /// address and exact timing aren't pinned yet (the scripts that use it
+    /// chain the next line from here, as Dead Money's narrator does; the
+    /// base game has over a hundred `SayToDone` blocks).
+    pub fn say_to_done(&mut self, speaker: FormId, topic: FormId) {
+        let order = self.order;
+        let names = |b: &script::Block| match b.args.first() {
+            None => true,
+            Some(Arg::Word(w)) => order.form_by_editor_id(w) == Some(topic),
+            Some(_) => false,
+        };
+        self.run_blocks(speaker, Some(speaker), "saytodone", names);
     }
 
     /// Several events at once, in one run of the reference's script (as
@@ -2799,6 +2877,9 @@ impl<'a> Runner<'a> {
             self.state
                 .killing_blow_limb
                 .insert(target, part.map_or(-1, i32::from));
+            // How they died (`GetCauseofDeath`), by what struck.
+            let cause = crate::more_functions::actors::cause_of(order, weapon);
+            crate::more_functions::actors::record_cause(self.state, target, cause);
             if person
                 && !was_hostile
                 && (attacker == PLAYER_REF || self.state.teammates.contains(&attacker))
@@ -3216,6 +3297,13 @@ impl<'a> Runner<'a> {
             "KillActor" => {
                 let who = target?;
                 let by = args.first().map_or(who, Value::form);
+                // With a limb (`005be2a0` → `008b51b0`), the cause given (or
+                // −1) is kept as the cause of death.
+                let limb = args.get(1).map_or(-1, |v| v.number() as i32);
+                if limb != -1 {
+                    let cause = args.get(2).map_or(-1, |v| v.number() as i32);
+                    crate::more_functions::actors::record_cause(self.state, who, cause);
+                }
                 let full = crate::combat::max_health(self.order, self.state, who).unwrap_or(1.0);
                 // `KillActor` (`005be2a0`) kills through the actor's death
                 // routine (`0089d900`), the one a fatal hit takes, so its
@@ -4004,6 +4092,17 @@ pub const HANDLED: &[&str] = &[
     "StopQuest",
     "GetHitLocation",
     "GetKillingBlowLimb",
+    // V.A.T.S. (`world::vats::function_value`).
+    "GetVATSMode",
+    "GetVATSValue",
+    "GetVATSRightAreaFree",
+    "GetVATSLeftAreaFree",
+    "GetVATSBackAreaFree",
+    "GetVATSFrontAreaFree",
+    "GetVATSRightTargetVisible",
+    "GetVATSLeftTargetVisible",
+    "GetVATSBackTargetVisible",
+    "GetVATSFrontTargetVisible",
 ];
 
 #[cfg(test)]

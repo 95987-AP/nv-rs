@@ -61,6 +61,7 @@ enum Command {
     Ai(String, Option<(String, u16)>),
     /// What a merchant sells, and the prices.
     Barter(String),
+    Craft(Option<String>),
     /// What V.A.T.S. offers a new character against someone: target,
     /// weapon, distance.
     Vats(String, Option<String>, Option<f32>),
@@ -253,6 +254,10 @@ fn parse_command(command: &str, rest: &[String]) -> Result<Command, CliError> {
         "barter" => {
             expect_args(command, rest, 1, 0)?;
             (Command::Barter(rest[0].clone()), 1)
+        }
+        "craft" => {
+            expect_args(command, rest, 0, 1)?;
+            return Ok(Command::Craft(rest.first().cloned()));
         }
         "vats" => {
             expect_args(command, rest, 1, 2)?;
@@ -646,6 +651,7 @@ fn execute(
             stage.as_ref().map(|(q, s)| (q.as_str(), *s)),
         ),
         Command::Barter(target) => crate::play_cmd::barter(out, order, &target),
+        Command::Craft(category) => crate::play_cmd::craft(out, order, category.as_deref()),
         Command::Vats(target, weapon, distance) => {
             crate::vats_cmd::vats(out, order, &target, weapon.as_deref(), distance)
         }
@@ -664,6 +670,8 @@ fn execute(
             seconds,
             stage.as_ref().map(|(q, s)| (q.as_str(), *s)),
             options.limit.unwrap_or(40),
+            options.character.as_deref(),
+            options.cell.as_deref(),
         ),
         Command::Actor(target) => actor(out, order, &target),
         Command::Dialogue(target) => dialogue(out, order, &target),

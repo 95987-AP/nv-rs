@@ -946,6 +946,57 @@ pub fn perks(out: &mut impl Write, order: &LoadOrder, entry: Option<u8>) -> Resu
     Ok(())
 }
 
+/// `craft`: the recipe menu's list for a category as a new character sees it
+/// (`world::crafting`): known recipes (those whose conditions pass), each with
+/// its skill, ingredients and outputs.
+pub fn craft(
+    out: &mut impl Write,
+    order: &LoadOrder,
+    category: Option<&str>,
+) -> Result<(), CliError> {
+    let category = match category {
+        Some(c) => Some(crate::records::find_record(order, c)?.form_id),
+        None => None,
+    };
+    let state = GameState::new(order);
+    let offers = world::crafting::offers(order, &state, category);
+    let name = |f: esm::FormId| {
+        world::items::item_info(order, f).map_or_else(|| describe_id(order, f), |i| i.name)
+    };
+    let list = |items: &[(esm::FormId, i32)]| {
+        items
+            .iter()
+            .map(|&(f, n)| format!("{n} {}", name(f)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    writeln!(
+        out,
+        "{} recipes on offer to a new character (hidden ones wait for their notes)",
+        offers.len()
+    )?;
+    for o in &offers {
+        let r = &o.recipe;
+        let skill = r.skill.map_or(String::from("no skill"), |av| {
+            format!(
+                "{} {}",
+                world::chargen::actor_value_name(order, av),
+                r.level
+            )
+        });
+        writeln!(
+            out,
+            "  {:<38} {} / {} ({skill}): {} -> {}",
+            r.name,
+            world::crafting::category_name(order, r.category),
+            world::crafting::category_name(order, r.sub_category),
+            list(&r.ingredients),
+            list(&r.outputs)
+        )?;
+    }
+    Ok(())
+}
+
 /// `barter`: what a merchant sells (their own things and their merchant
 /// container's, stocked as a new game would, those their services cover)
 /// and the prices a new character sees in the barter menu
@@ -1019,10 +1070,36 @@ pub fn play(
     seconds: f32,
     stage: Option<(&str, u16)>,
     show: usize,
+    character: Option<&std::path::Path>,
+    cell: Option<&str>,
 ) -> Result<(), CliError> {
     let started = Instant::now();
     let scripts = ScriptCache::default();
     let mut state = GameState::new(order);
+    if let Some(cell) = cell {
+        let id = order
+            .form_by_editor_id(cell)
+            .ok_or_else(|| CliError::NotFound(format!("no cell '{cell}'")))?;
+        state.player_cell = Some(id);
+        state.player_world = None;
+        writeln!(out, "The player is in {cell}.")?;
+    }
+    if let Some(path) = character {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| CliError::Usage(format!("can't read {}: {e}", path.display())))?;
+        let problems = world::character::apply(order, &scripts, &mut state, &text);
+        writeln!(
+            out,
+            "Character {}: {} problem(s)",
+            path.display(),
+            problems.len()
+        )?;
+        for p in problems {
+            writeln!(out, "  line {}: {} ({})", p.line, p.text, p.why)?;
+        }
+        // What it set up happened before; only what follows is news.
+        state.events.clear();
+    }
     writeln!(
         out,
         "A new game: {} quests running, {} globals",
@@ -1105,6 +1182,8 @@ pub fn play(
             ),
             Event::CharacterMenu(m) => format!("character menu opened: {m:?}"),
             Event::Barter(m) => format!("trading with {}", describe_id(order, *m)),
+            Event::KnockedOut { who } => format!("{} is down", describe_id(order, *who)),
+            Event::GotUp { who } => format!("{} gets up", describe_id(order, *who)),
             Event::Died { who, by } => format!(
                 "{} killed by {}",
                 describe_id(order, *who),

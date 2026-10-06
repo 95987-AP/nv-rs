@@ -14,9 +14,7 @@
 //! view held on the speaker's head meanwhile ([`focus_camera`],
 //! `world::dialogue_view`).
 
-use std::sync::Arc;
-
-use bevy::audio::{AudioPlayer, AudioSource};
+use bevy::audio::AudioPlayer;
 use bevy::prelude::*;
 use bevy::render::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::render::mesh::VertexAttributeValues;
@@ -60,7 +58,7 @@ pub struct DialogueState(pub GameState);
 
 /// `--talk`: start talking to the nearest person once loaded.
 #[derive(Resource, Default)]
-pub struct AutoTalk(pub bool);
+pub struct AutoTalk(pub bool, pub std::collections::VecDeque<usize>);
 
 /// `--say`: for testing, topics to choose when the menu offers some, in
 /// order: each the first offered whose text contains it (ignoring case).
@@ -143,6 +141,7 @@ impl Conversation {
                 skipped_at: None,
                 choices: None,
                 line_only: true,
+                say_to: None,
                 shown_line: None,
                 shown_topics: false,
                 zoom: MenuZoom::opening(),
@@ -168,6 +167,9 @@ pub struct Talk {
     /// Only a line said (`SayTo`): no dialogue menu, no choices after it,
     /// and the player and the game carry on meanwhile.
     line_only: bool,
+    /// Said with `SayTo`, of this topic: the speaker's `SayToDone` blocks
+    /// run once it's said.
+    say_to: Option<FormId>,
     /// What the game's dialogue menu shows now (`game_menus::dialog`): the
     /// line and response, or the topics.
     shown_line: Option<(FormId, usize)>,
@@ -259,7 +261,7 @@ fn ray_person(eye: [f32; 3], dir: [f32; 3], feet: [f32; 3]) -> Option<f32> {
 /// Plays a response's voice, if its file is found.
 fn play_voice(
     commands: &mut Commands,
-    audio: &mut Assets<AudioSource>,
+    audio: &mut Assets<crate::sounds::PcmSound>,
     game: &cellview::Game,
     talk: &Talk,
 ) -> Option<Entity> {
@@ -267,17 +269,12 @@ fn play_voice(
     let voice = talk.speaker.voice?;
     let path = dialogue::voice_path(&game.order, &talk.info, response, voice)?;
     let bytes = game.assets.read(&path).ok()??;
-    let source = audio.add(AudioSource {
-        bytes: Arc::from(bytes.into_boxed_slice()),
-    });
+
+    let source = crate::sounds::voice_handle(&path, &bytes, audio)?;
     // With a lip sync file beside it, the voice waits out its lead-in and
     // the speaker's face says it (`faces`).
     let (settings, voice) = crate::faces::voice_playback(game, &path, talk.speaker.reference);
-    Some(
-        commands
-            .spawn((AudioPlayer::new(source), settings, voice))
-            .id(),
-    )
+    Some(commands.spawn((AudioPlayer(source), settings, voice)).id())
 }
 
 /// How long a response stays up without a voice file:
@@ -395,8 +392,8 @@ pub fn talk(
     ): TalkExtras<'_, '_>,
     mut conversation: ResMut<Conversation>,
     mut player: ResMut<Player>,
-    mut audio: ResMut<Assets<AudioSource>>,
-    voices: Query<(), With<AudioPlayer>>,
+    mut audio: ResMut<Assets<crate::sounds::PcmSound>>,
+    voices: Query<(), With<AudioPlayer<crate::sounds::PcmSound>>>,
     cameras: Query<&Transform, With<FlyCamera>>,
     mut prompt: Query<&mut Text, (With<Prompt>, Without<DialogueText>)>,
     mut panel: Query<(&mut Text, &mut Visibility), With<DialogueText>>,
@@ -538,10 +535,17 @@ pub fn talk(
                             return;
                         }
                         dialogue::AfterLine::Close => {
+                            let (speaker, said) = (talk.speaker.reference, talk.say_to);
                             if let Some(s) = screen.as_deref_mut() {
                                 crate::game_menus::dialog::end(s);
                             }
                             end(&mut commands, &mut conversation.0, &mut player, &mut panel);
+                            // `SayTo`'s line is said: the speaker's
+                            // `SayToDone` blocks (which may start the next).
+                            if let Some(topic) = said {
+                                Runner::new(order, &scripts.0, &mut state.0)
+                                    .say_to_done(speaker, topic);
+                            }
                             return;
                         }
                     }
@@ -562,6 +566,8 @@ pub fn talk(
             ];
             let picked = match answer {
                 Some(ui::menus::dialog::Answer::Topic(i)) => Some(i),
+                // `--choose`: the next reply on the list.
+                _ if !auto_talk.1.is_empty() => auto_talk.1.pop_front().map(|n| n - 1),
                 _ if screen.is_some() => None,
                 _ => digits.iter().position(|k| keys.just_pressed(*k)),
             };
@@ -688,14 +694,24 @@ pub fn talk(
     });
     // A script asked someone to talk to the player (`SayTo`,
     // `StartConversation`): they start, about the topic given.
-    if let Some((speaker, topic, menu)) = scripted.0.take() {
+    if let Some((speaker, topic, menu, say_to)) = scripted.0.take() {
         let found = talkers
             .0
             .iter()
             .find(|t| t.reference == speaker)
+            .copied()
+            // A talking activator isn't an actor: its own base and place.
+            .or_else(|| {
+                let base = world::scripting::base_of(order, speaker)?;
+                (order.get(base)?.entry.header.kind.as_bytes() == b"TACT").then_some(Talker {
+                    reference: speaker,
+                    base,
+                    position: [0.0; 3],
+                })
+            })
             .and_then(|t| {
                 let name = order.get(t.base)?.record().ok()?.full_name()?;
-                Some((*t, name))
+                Some((t, name))
             });
         match found {
             Some((talker, name)) => {
@@ -711,6 +727,7 @@ pub fn talk(
                     menu,
                 ) {
                     let mut talk = talk;
+                    talk.say_to = say_to.then_some(topic);
                     talk.voice = play_voice(&mut commands, &mut audio, &game.0, &talk);
                     if menu {
                         player.ready = false;
@@ -869,6 +886,7 @@ fn start_talk(
         skipped_at: None,
         choices: None,
         line_only: !menu,
+        say_to: None,
         shown_line: None,
         shown_topics: false,
         zoom: MenuZoom::opening(),

@@ -17,9 +17,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bevy::audio::{
-    AddAudioSource, AudioPlayer, AudioSource, Decodable, PlaybackSettings, Source, Volume,
-};
+use bevy::audio::{AddAudioSource, AudioPlayer, Decodable, PlaybackSettings, Source};
 use bevy::prelude::*;
 use cellview::music::{MusicLibrary, Next, TrackStream};
 use esm::FormId;
@@ -193,7 +191,6 @@ fn play_sound(
     commands: &mut Commands,
     game: &cellview::Game,
     tracks: &mut Assets<MusicTrack>,
-    oggs: &mut Assets<AudioSource>,
     id: FormId,
     pick: u64,
     loudness: f32,
@@ -209,17 +206,7 @@ fn play_sound(
         return;
     };
     println!("Music: the sound {name} ({path}).");
-    if path.ends_with(".ogg") {
-        let handle = oggs.add(AudioSource {
-            bytes: Arc::from(bytes.into_boxed_slice()),
-        });
-        commands.spawn((
-            AudioPlayer::new(handle),
-            PlaybackSettings::DESPAWN.with_volume(Volume::Linear(loudness)),
-        ));
-        return;
-    }
-    match cellview::sound::read_wav(&bytes) {
+    match crate::sounds::read_sound(&path, &bytes) {
         Ok(pcm) => {
             let samples = pcm
                 .samples
@@ -251,7 +238,6 @@ pub fn play_music(
     mut music: ResMut<Music>,
     mut requests: ResMut<MusicRequests>,
     mut tracks: ResMut<Assets<MusicTrack>>,
-    mut oggs: ResMut<Assets<AudioSource>>,
 ) {
     let shared = Arc::clone(&game.0);
     let game: &cellview::Game = &shared;
@@ -335,7 +321,6 @@ pub fn play_music(
                 &mut commands,
                 game,
                 &mut tracks,
-                &mut oggs,
                 s,
                 state.dice.wrapping_add(i as u64),
                 loudness,

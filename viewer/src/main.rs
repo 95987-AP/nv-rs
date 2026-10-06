@@ -42,8 +42,10 @@ mod player_idle;
 mod report;
 mod scope;
 mod scripts;
+mod sight;
 mod sitting;
 mod sounds;
+mod swaps;
 mod terrain;
 mod trees;
 mod vats;
@@ -108,6 +110,12 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // `NV_GUESSES=1`: untraced behaviour marked [G] runs too
+    // (`world::guesses`; the Dead Money contributor's follower rules).
+    if std::env::var("NV_GUESSES").is_ok_and(|v| v == "1") {
+        world::guesses::set(true);
+        println!("NV_GUESSES=1: untraced [G] behaviour is on.");
+    }
     let data = match cellview::find_data_folder(&args.data) {
         Ok(data) => data,
         Err(e) => {
@@ -162,6 +170,30 @@ fn main() {
     }
     // Walking, except for screenshots, which keep the exact eye given.
     let player = walk::Player::new(args.screenshot.is_none() || args.walk);
+    // A ready-made test character, set up before the first frame.
+    let mut state = world::dialogue::GameState::new(&game.order);
+    if let Some(path) = &args.character {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let scripts = world::scripting::ScriptCache::default();
+                let problems = world::character::apply(&game.order, &scripts, &mut state, &text);
+                println!(
+                    "Character {}: {} problem(s).",
+                    path.display(),
+                    problems.len()
+                );
+                for p in problems {
+                    println!("  line {}: {} ({})", p.line, p.text, p.why);
+                }
+                // What it set up isn't news to show on screen.
+                state.events.clear();
+            }
+            Err(e) => {
+                eprintln!("error: can't read {}: {e}", path.display());
+                std::process::exit(1);
+            }
+        }
+    }
     App::new()
         .insert_resource(ClearColor(Color::BLACK))
         // Lit surfaces do their own lighting (see `lighting`); nothing else
@@ -177,9 +209,7 @@ fn main() {
             on: args.fps,
             ..default()
         })
-        .insert_resource(dialogue::DialogueState(world::dialogue::GameState::new(
-            &game.order,
-        )))
+        .insert_resource(dialogue::DialogueState(state))
         .insert_resource(sitting::Seats::new(&game.order))
         .init_resource::<sitting::PlayerSeat>()
         .insert_resource(faces::Faces::new(&game))
@@ -199,6 +229,8 @@ fn main() {
         .init_resource::<scripts::Here>()
         .init_resource::<scripts::ScriptedTalk>()
         .init_resource::<scripts::Notices>()
+        .init_resource::<combat::ObjectShots>()
+        .init_resource::<swaps::TextureSwaps>()
         .insert_resource(scripts::StartStage(args.stage.clone()))
         .insert_resource(scripts::StartCommands(args.run.clone()))
         .insert_resource(scripts::LaterCommands {
@@ -250,7 +282,10 @@ fn main() {
         .init_resource::<dialogue::TalkTarget>()
         .init_resource::<dialogue::Conversation>()
         .init_resource::<dialogue::DialogueView>()
-        .insert_resource(dialogue::AutoTalk(args.talk))
+        .insert_resource(dialogue::AutoTalk(
+            args.talk,
+            args.choose.iter().copied().collect(),
+        ))
         .insert_resource(player)
         .insert_resource(walk::CellCollision(physics::Collider::new()))
         .insert_resource(walk::Doors(Vec::new()))
@@ -264,13 +299,23 @@ fn main() {
             wait: args.wait,
             waited: 0.0,
         })
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(window),
-            ..default()
-        }))
+        .add_plugins({
+            let plugins = DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(window),
+                ..default()
+            });
+            // Drawing on its own thread (Bevy's default) or in step with
+            // the game's frame (`NV_SYNC_RENDER`, a debugging aid).
+            if std::env::var_os("NV_SYNC_RENDER").is_some() {
+                plugins.disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>()
+            } else {
+                plugins
+            }
+        })
         .insert_resource(hud::ShowHud(args.hud))
         .insert_resource(ai::FrozenAi(args.freeze_ai))
         .insert_resource(game_menus::StartMenu(args.open_menu.clone()))
+        .insert_resource(scripts::StartUse(args.use_on.clone()))
         .insert_resource(game_menus::FixedPointer(args.menu_pointer))
         .add_plugins((GradePlugin, GameLightingPlugin, TerrainPlugin, LodPlugin))
         // After the default plugins: they load shaders.
@@ -351,6 +396,9 @@ fn main() {
                     // Apply queued camera tracks before aiming/interactions.
                     player_idle::animate,
                     combat::player_attack,
+                    combat::object_shots,
+                    actors::report_facing_up,
+                    swaps::swap_textures,
                     combat::show_dropped_weapons,
                     scope::update_scope,
                     viewmodel::update_view_model,
@@ -360,7 +408,13 @@ fn main() {
                     .chain(),
                 (dialogue::talk, chatter::say_lines).chain(),
                 // The scripts, then E on doors, then the doors' swings.
-                (scripts::run_scripts, walk::doors, doors::update_doors).chain(),
+                (
+                    scripts::start_use,
+                    scripts::run_scripts,
+                    walk::doors,
+                    doors::update_doors,
+                )
+                    .chain(),
                 walk::toggle_walking,
                 adjust_exposure,
                 // The cell's grade, then the screen effects scripts applied.
@@ -463,8 +517,16 @@ fn move_pieces(
     door_poses: Res<doors::DoorPoses>,
     mut pieces: Query<(&mut Moving, &scripts::PlacedRef, &mut Transform)>,
     mut materials: ResMut<Assets<GameLitMaterial>>,
+    mut dialogue: ResMut<crate::dialogue::DialogueState>,
 ) {
     let seconds = time.elapsed_secs();
+    // The sequences active on each object, for `IsAnimPlaying`: a
+    // script's group (while it plays: a one-shot that has ended stops
+    // counting, though its last pose is held), a door's `Open` or
+    // `Close`, or the ones its model plays from the start (those holding a
+    // frame aren't counted: a guess).
+    let mut active: std::collections::HashMap<esm::FormId, Vec<String>> =
+        std::collections::HashMap::new();
     for (mut piece, placed, mut transform) in &mut pieces {
         let group = groups
             .0
@@ -476,6 +538,42 @@ fn move_pieces(
             .door
             .filter(|_| group.is_none())
             .and_then(|d| door_poses.0.get(&d).copied());
+        let names = active.entry(esm::FormId(placed.0)).or_default();
+        let mut add = |name: &str| {
+            if !names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+                names.push(name.to_string());
+            }
+        };
+        let motion = &piece.motion.motion;
+        // A one-shot that has reached its end no longer counts as playing
+        // (its pose is held, but `IsAnimPlaying` reads 0).
+        let named = |name: &str| {
+            motion
+                .all
+                .iter()
+                .find(|s| s.name.eq_ignore_ascii_case(name))
+        };
+        match (group, door_pose) {
+            (Some((name, since)), _) if named(name).is_some() => {
+                if named(name).is_some_and(|s| preview::cell::sequence_playing(s, since)) {
+                    add(name)
+                }
+            }
+            (None, Some((opening, since))) => {
+                let name = if opening { "Open" } else { "Close" };
+                // A door model without that sequence still counts as it did.
+                if named(name).is_none_or(|s| preview::cell::sequence_playing(s, since)) {
+                    add(name)
+                }
+            }
+            _ => {
+                for p in motion.sequences.iter().filter(|p| p.runs) {
+                    if preview::cell::sequence_playing(&p.sequence, seconds) {
+                        add(&p.sequence.name);
+                    }
+                }
+            }
+        }
         let now = match door_pose {
             Some((opening, at)) => cellview::piece_in_sequence(
                 &piece.motion,
@@ -507,6 +605,7 @@ fn move_pieces(
         }
         piece.shown = shown;
     }
+    world::more_functions::report_sequences(&mut dialogue.0, active);
 }
 
 /// A piece that turns to face the camera (`cellview::MeshData::billboard`):
@@ -589,6 +688,31 @@ fn open_place(
     name: &str,
     at: Option<args::Stance>,
 ) -> Result<(Option<ViewerScene>, Option<ExteriorStart>), String> {
+    // A placed reference by editor ID (a marker, say): start standing
+    // where it stands, facing its way, in its cell or worldspace.
+    let placed = game
+        .order
+        .form_by_editor_id(name)
+        .filter(|&r| {
+            game.order.get(r).is_some_and(|rr| {
+                matches!(rr.entry.header.kind.as_bytes(), b"REFR" | b"ACHR" | b"ACRE")
+            })
+        })
+        .and_then(|r| world::scripting::whereabouts(&game.order, r));
+    if let (Some(w), None) = (placed, at) {
+        let stance = args::Stance {
+            feet: w.position,
+            heading: w.heading.to_degrees(),
+            pitch: 0.0,
+        };
+        let space = game
+            .order
+            .get(w.world.unwrap_or(w.cell))
+            .and_then(|r| r.editor_id().ok().flatten())
+            .ok_or_else(|| format!("{name}'s cell has no editor ID to open"))?;
+        println!("Starting at {name} in {space}.");
+        return open_place(game, &space, Some(stance));
+    }
     let heading = at.map_or(0.0, |a| a.heading.to_radians());
     // A worldspace by name: start where --at says, else in the middle of
     // square 0,0.
@@ -1521,6 +1645,7 @@ impl Spawner<'_, '_> {
                 transform,
                 SceneEntity,
                 scripts::PlacedRef(draw.reference),
+                swaps::PieceName(scene.meshes[draw.mesh].shape_name.clone()),
             ));
             // A glow that follows a region's weather (`emittance`).
             if let Some(link) = scene.meshes[draw.mesh].material.emittance {

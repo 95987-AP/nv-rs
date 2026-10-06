@@ -39,7 +39,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use bevy::audio::{AudioSinkPlayback, AudioSource, Volume};
+use bevy::audio::{AudioSinkPlayback, Volume};
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::mouse::AccumulatedMouseMotion;
@@ -620,7 +620,6 @@ pub struct LockpickAssets<'w> {
     meshes: ResMut<'w, Assets<Mesh>>,
     lit: ResMut<'w, Assets<GameLitMaterial>>,
     tiles: ResMut<'w, Assets<TileMaterial>>,
-    oggs: ResMut<'w, Assets<AudioSource>>,
     wavs: ResMut<'w, Assets<PcmSound>>,
     device: Option<Res<'w, RenderDevice>>,
 }
@@ -882,7 +881,6 @@ fn show_lockpicking(
                 tension.playing = crate::sounds::play(
                     &mut commands,
                     &game.0,
-                    &mut assets.oggs,
                     &mut assets.wavs,
                     &s,
                     state.0.dice,

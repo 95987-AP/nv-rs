@@ -22,7 +22,7 @@ history is retained separately; do not publish its build outputs.
 | M2: Core gameplay loop | Sunny's tutorial and a representative Goodsprings quest branch through their own scripts: movement, weapons/reloads, damage/death, AI, dialogue, loot, trade and progression. Save/reload at intermediate stages. Verify melee and V.A.T.S.; track other weapon classes explicitly. | Partial implementation reported; acceptance pending. |
 | M3: Base-game systems and campaign | Coverage matrix for quests, actor/creature types, weapon classes, effects, factions/crime, companions, travel and menus. Representative routes and ultimately campaign completion, with evidence and regression tests for blockers. | Inventory and acceptance routes needed. |
 | M4: Stability and performance | Recorded routes and extended play without crashes or lost state. Measure frame times, memory, loading and streaming stalls on target hardware. Publish traces/settings and agreed budgets; remove measured stalls without changing behavior. | Not measured here; instrument earlier when it helps M1/M2. |
-| M5: DLC and mods | Official DLC progression and reproducible plugin/archive/loose-file, script and content-extension cases; document interfaces and exclusions. | Load-order infrastructure exists; broad compatibility unverified. |
+| M5: DLC and mods | Official DLC progression and reproducible plugin/archive/loose-file, script and content-extension cases; document interfaces and exclusions. | Load-order infrastructure exists; broad compatibility unverified. DLC track started by the maintainer alongside M1 (2026-10-05): Dead Money research pass in [DEAD_MONEY.md](DEAD_MONEY.md); next action: run its data pass. |
 | M6: VR | Shared simulation with action inputs, independent aim and multiple views. Headset-tested tracking, controllers, menus, combat, comfort and frame budget. | Architecture documented; headset validation pending. |
 
 Preserve save correctness, mod semantics and VR boundaries throughout; order
@@ -437,6 +437,42 @@ tumbleweed, contact sounds logged. Not compared with the original;
 Havok's solver, deactivation and constraints aren't reproduced. Evidence
 and gaps: [PHYSICS.md](PHYSICS.md). **Next action:** record a bottle shot
 and a Z-grab carry in the original game and compare.
+
+## Contributor merge: Playcon Dead Money (`claude/contrib-playcon`, 2026-10-06)
+
+The outside contributor's branches (remote `playcon`, based on old main
+`647af94`) were merged in stack order with their history kept; triage
+table, conflicts and guesses in [CONTRIB_PLAYCON.md](CONTRIB_PLAYCON.md).
+Taken: the Dead Money stack (`dlc-dead-money` … `dm-casino-character`:
+radio script state, LOS/IsAnimPlaying, shaders, terminal back, caravan
+cards, companion/actor functions, dispel, traps, VATS conditions, recipe
+and casino menus' script side, `--character`, intro slideshow and
+`SayToDone`, talking activators, `--choose`, crafting, test characters),
+`teammate-wait`, `viewer-use-flag`, `dialogue-info-links` (`INFC`),
+`dm-coverage`, `dm-handoff`, `script-transpiler` (`scriptgen`), and from
+the face branches `RACE_SEX_MENU.md` and the `SI.CTL` FaceGen controls.
+Dropped as duplicates of our traced work: player sitting, Pip-Boy voice
+notes, `bring_in_enabled`, per-cell script refresh and its grid-lag fix,
+`package-end-action`, `brought-in-talkers`, the look-IK/eyes branches,
+`research-tools`, `focused-edison`, `fit_to_race`; dropped as unsafe: the
+shared texture/material caches. Their radio module stays isolated from
+the Pip-Boy (the radio agent's branch owns that); `sounds::play` no longer
+takes Bevy's Ogg assets (Ogg is decoded in the viewer), which that branch
+will need to follow. Guesses traced here: essential knock-down
+(`0089d900`, 10 s, full restore) and a line's voice type (`00616fa0`,
+`INFO` `ANAM`). Still untraced and behind `world::guesses`
+(`NV_GUESSES=1`, off on base-game routes): teammate follow at 200 and the
+wait rule, teammates coming along, a person's `IsAnimPlaying`, scripts
+opening the recipe menu. Checks: root 1255 passed / 1 failed (the
+worktree-only `repo_hygiene` `.git` pointer), viewer 133 passed, both
+clippy and fmt clean, release viewer built. Live: the Ghost Town Gunfight
+replay reaches `XP +50`; `--new-game` in Doc Mitchell's house runs Doc's
+`VCG01Intro` SayTo lines to stage 10 and the name entry, as the
+integration build does; Dead Money's Villa arrival
+(`DLC01StartMarker --official --character characters\dead-money-villa.txt`)
+reaches Elijah's hologram and his dialogue menu. `INFC`: greetings of nine
+Goodsprings NPCs unchanged. **Next action:** trace `RecipeMenu` (`007274b0`)
+and the follower rules so the Dead Money routes run without guesses.
 
 ## Deferred
 

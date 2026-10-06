@@ -11,6 +11,7 @@ pub mod dialog;
 pub mod levelup;
 pub mod message;
 pub mod quantity;
+pub mod recipe;
 pub mod sleepwait;
 pub mod textedit;
 pub mod traits;

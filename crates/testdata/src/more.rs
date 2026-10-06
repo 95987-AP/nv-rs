@@ -63,6 +63,31 @@ pub mod ids {
     pub const TICK_EFFECT: u32 = 0xE14;
     pub const TICK_SCRIPT: u32 = 0xE15;
     pub const ELAPSED: u32 = 0xE16;
+    /// A radio topic (`DIAL`, type 7) for `StartRadioConversation`.
+    pub const RADIO_TOPIC: u32 = 0xE17;
+    /// An effect shader (`EFSH`) for `PlayMagicShaderVisuals`.
+    pub const SHADER: u32 = 0xE18;
+    /// A Caravan card (`CCRD`) and a cup (`MISC`) with the Caravan cards'
+    /// `OnAdd` script (`TestCardScript`), and one of each placed.
+    pub const CARD_SCRIPT: u32 = 0xE19;
+    pub const CARD: u32 = 0xE1A;
+    pub const CARD_CUP: u32 = 0xE1B;
+    pub const CARD_REF: u32 = 0xE3A;
+    pub const CARD_CUP_REF: u32 = 0xE3B;
+    /// `TestTick`'s effect as an ability (`SPEL` type 4) and as a poison
+    /// (5), which `DispelAllSpells` leaves.
+    pub const TICK_ABILITY: u32 = 0xE1C;
+    pub const TICK_POISON: u32 = 0xE1D;
+    /// A weapon (`WEAP`, no data) for `FireWeapon`.
+    pub const GUN: u32 = 0xE1E;
+    /// A casino (`CSNO`, no data) for the casino games' menus.
+    pub const CASINO: u32 = 0xE1F;
+    /// A placed object whose script (`TestSayerScript`) has `SayToDone`
+    /// blocks: `TestRadioTopic` adds 1 to `TestValue`, `TestTick` sets it
+    /// to 100.
+    pub const SAYER_SCRIPT: u32 = 0xE21;
+    pub const SAYER: u32 = 0xE22;
+    pub const SAYER_REF: u32 = 0xE3C;
 }
 
 /// The world, written as `FalloutNV.esm` into a temporary Data folder.
@@ -150,6 +175,60 @@ pub fn more(tag: &str) -> TempData {
         &sub(b"FULL", &zstr("Talker")),
     ));
     plugin.extend(group(*b"TACT", 0, &radio));
+    let mut topic_data = sub(b"FULL", &zstr("Radio topic"));
+    topic_data.extend(sub(b"DATA", &[7, 0]));
+    // Caravan cards: the card script's `OnAdd` (as Dead Money's
+    // `NVDLC01CardAddToPlayerScript`), also noting the container.
+    let mut card_script = sub(b"SCHR", &[0; 20]);
+    card_script.extend(sub(
+        b"SCTX",
+        b"scn TestCardScript\nbegin OnAdd\n\tset TestValue to GetContainer\n\tif GetContainer != player\n\t\treturn\n\telse\n\t\tAddCardToPlayer\n\t\tRemoveMe\n\tendif\nend",
+    ));
+    plugin.extend(group(
+        *b"SCPT",
+        0,
+        &named(b"SCPT", CARD_SCRIPT, "TestCardScript", &card_script),
+    ));
+    let mut sayer_script = sub(b"SCHR", &[0; 20]);
+    sayer_script.extend(sub(
+        b"SCTX",
+        b"scn TestSayerScript\nbegin SayToDone TestRadioTopic\n\tset TestValue to TestValue + 1\nend\nbegin SayToDone TestTick\n\tset TestValue to 100\nend",
+    ));
+    plugin.extend(group(
+        *b"SCPT",
+        0,
+        &named(b"SCPT", SAYER_SCRIPT, "TestSayerScript", &sayer_script),
+    ));
+    let mut sayer = sub(b"FULL", &zstr("Sayer"));
+    sayer.extend(sub(b"SCRI", &SAYER_SCRIPT.to_le_bytes()));
+    sayer.extend(sub(b"DATA", &[0; 8]));
+    plugin.extend(group(
+        *b"MISC",
+        0,
+        &named(b"MISC", SAYER, "TestSayer", &sayer),
+    ));
+    let mut card = sub(b"FULL", &zstr("Ace of Clubs"));
+    card.extend(sub(b"SCRI", &CARD_SCRIPT.to_le_bytes()));
+    card.extend(sub(b"DATA", &1i32.to_le_bytes()));
+    plugin.extend(group(*b"CCRD", 0, &named(b"CCRD", CARD, "TestCard", &card)));
+    let mut card_cup = sub(b"FULL", &zstr("Lucky cup"));
+    card_cup.extend(sub(b"SCRI", &CARD_SCRIPT.to_le_bytes()));
+    card_cup.extend(sub(b"DATA", &[0; 8]));
+    plugin.extend(group(
+        *b"MISC",
+        0,
+        &named(b"MISC", CARD_CUP, "TestCardCup", &card_cup),
+    ));
+    plugin.extend(group(
+        *b"EFSH",
+        0,
+        &named(b"EFSH", SHADER, "TestShader", &sub(b"DATA", &[0; 4])),
+    ));
+    plugin.extend(group(
+        *b"DIAL",
+        0,
+        &named(b"DIAL", RADIO_TOPIC, "TestRadioTopic", &topic_data),
+    ));
 
     let mut cup = sub(b"FULL", &zstr("Cup"));
     let mut v = 1i32.to_le_bytes().to_vec();
@@ -276,10 +355,22 @@ pub fn more(tag: &str) -> TempData {
     efit.extend([0; 4]);
     efit.extend((-1i32).to_le_bytes());
     spell.extend(sub(b"EFIT", &efit));
+    let typed = |kind: u32| {
+        let mut spit = [0u8; 16];
+        spit[..4].copy_from_slice(&kind.to_le_bytes());
+        let mut s = sub(b"SPIT", &spit);
+        s.extend_from_slice(&spell[sub(b"SPIT", &[0; 16]).len()..]);
+        s
+    };
+    let mut spells = named(b"SPEL", TICK, "TestTick", &spell);
+    spells.extend(named(b"SPEL", TICK_ABILITY, "TestTickAbility", &typed(4)));
+    spells.extend(named(b"SPEL", TICK_POISON, "TestTickPoison", &typed(5)));
+    plugin.extend(group(*b"SPEL", 0, &spells));
+    plugin.extend(group(*b"WEAP", 0, &named(b"WEAP", GUN, "TestGun", &[])));
     plugin.extend(group(
-        *b"SPEL",
+        *b"CSNO",
         0,
-        &named(b"SPEL", TICK, "TestTick", &spell),
+        &named(b"CSNO", CASINO, "TestCasino", &[]),
     ));
 
     // The room.
@@ -365,6 +456,33 @@ pub fn more(tag: &str) -> TempData {
         [500.0, 0.0, 0.0],
         [0.0; 3],
         "MarkerRef",
+        &[],
+    ));
+    refs.extend(thing(
+        b"REFR",
+        CARD_REF,
+        CARD,
+        [400.0, 0.0, 0.0],
+        [0.0; 3],
+        "CardRef",
+        &[],
+    ));
+    refs.extend(thing(
+        b"REFR",
+        CARD_CUP_REF,
+        CARD_CUP,
+        [400.0, 100.0, 0.0],
+        [0.0; 3],
+        "CardCupRef",
+        &[],
+    ));
+    refs.extend(thing(
+        b"REFR",
+        SAYER_REF,
+        SAYER,
+        [400.0, 200.0, 0.0],
+        [0.0; 3],
+        "SayerRef",
         &[],
     ));
     let mut xesp = BARREL_REF.to_le_bytes().to_vec();
