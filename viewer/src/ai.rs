@@ -3006,7 +3006,9 @@ mod tests {
         // A package `AddScriptPackage` already began isn't begun again.
         ctx.state.events.clear();
         ctx.state.script_packages.insert(me, FormId(GUARD_POST));
-        ctx.state.package_begun.insert(me, FormId(GUARD_POST));
+        ctx.state
+            .package_begun
+            .insert(me, (FormId(GUARD_POST), false));
         rethink(&mut ctx, &mut walker, &mut life, true);
         assert_eq!(walker.package, Some(FormId(GUARD_POST)));
         assert!(package_events(ctx.state).is_empty());

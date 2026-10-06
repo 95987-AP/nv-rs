@@ -302,9 +302,11 @@ pub struct GameState {
     /// their own.
     pub script_packages: HashMap<FormId, FormId>,
     /// The package whose begin action was last requested for each person
-    /// (`world::ai::actions::begin`): a package `AddScriptPackage` already
-    /// began doesn't begin again when the AI takes it up. Not saved.
-    pub package_begun: HashMap<FormId, FormId>,
+    /// (`world::ai::actions::begin`), and whether its end action has been
+    /// since (`world::ai::actions::end`): a package `AddScriptPackage`
+    /// already began doesn't begin again when the AI takes it up, and a
+    /// package ends once per start. Not saved.
+    pub package_begun: HashMap<FormId, (FormId, bool)>,
     /// People whose packages are to be looked at again at once: scripts
     /// asked (`EvaluatePackage`, `ResetAI`) or changed them
     /// (`AddScriptPackage`, `RemoveScriptPackage`); packages are otherwise
@@ -3322,7 +3324,9 @@ impl<'a> Runner<'a> {
                     package,
                     kind: PackageActionKind::Begin,
                 });
-                self.state.package_begun.insert(who, new_package.form_id);
+                self.state
+                    .package_begun
+                    .insert(who, (new_package.form_id, false));
                 self.state.script_packages.insert(who, new_package.form_id);
                 self.state.evaluate.insert(who);
             }

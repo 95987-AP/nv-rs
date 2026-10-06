@@ -978,6 +978,7 @@ pub fn move_offstage(
                 if let Some(h) = facing.filter(|h| *h != heading) {
                     state.positions.insert(who, (here, h));
                 }
+                travel_done(state, who, &package);
                 return if moved {
                     Offstage::Moved
                 } else {
@@ -992,6 +993,7 @@ pub fn move_offstage(
                 state
                     .positions
                     .insert(who, (w.at, facing.unwrap_or(w.heading)));
+                travel_done(state, who, &package);
                 return Offstage::Arrived;
             }
             state.positions.insert(who, (w.at, w.heading));
@@ -1021,6 +1023,14 @@ pub fn move_offstage(
         moved = true;
     }
     result(moved)
+}
+
+/// A travel package out of sight at its place: its procedures reach
+/// `DONE`, its end action (`0090ad40` → process vfunc +0x5a0), once.
+fn travel_done(state: &mut GameState, who: FormId, package: &Package) {
+    if package.kind == kinds::TRAVEL {
+        actions::end(state, who, package.form_id);
+    }
 }
 
 /// People scripts or doors have taken into a place from elsewhere: those

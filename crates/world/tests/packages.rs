@@ -234,16 +234,49 @@ fn begin_actions_are_asked_once_per_start() {
     assert_eq!(state.events, [begin(WITH_ACTIONS)]);
     actions::begin(&mut state, me, FormId(WITH_ACTIONS), false);
     assert_eq!(state.events.len(), 1);
-    // The end action, asked by the AI.
+    // The end action, asked by the AI: once per start.
+    let end = Event::PackageAction {
+        who: me,
+        package: FormId(WITH_ACTIONS),
+        kind: PackageActionKind::End,
+    };
+    actions::end(&mut state, me, FormId(WITH_ACTIONS));
+    actions::end(&mut state, me, FormId(WITH_ACTIONS));
+    assert_eq!(state.events, [begin(WITH_ACTIONS), end.clone()]);
+    actions::begin(&mut state, me, FormId(WITH_ACTIONS), true);
     actions::end(&mut state, me, FormId(WITH_ACTIONS));
     assert_eq!(
-        state.events.last(),
-        Some(&Event::PackageAction {
-            who: me,
-            package: FormId(WITH_ACTIONS),
-            kind: PackageActionKind::End,
-        })
+        state.events,
+        [begin(WITH_ACTIONS), end.clone(), begin(WITH_ACTIONS), end]
     );
+}
+
+#[test]
+fn a_travel_arriving_out_of_sight_ends_once() {
+    let (_data, order) = order();
+    let mut state = GameState::new(&order);
+    let me = FormId(GUARD_REF);
+    state.script_packages.insert(me, FormId(WITH_ACTIONS));
+    let mut navs = world::ai::NavCache::default();
+    let mut ends = 0;
+    for _ in 0..3 {
+        world::ai::move_offstage(&order, &mut state, me, 2000.0, &mut navs);
+        ends = state
+            .events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Event::PackageAction {
+                        kind: PackageActionKind::End,
+                        ..
+                    }
+                )
+            })
+            .count();
+    }
+    assert_eq!(state.place(&order, me).unwrap().2[0].round(), 800.0);
+    assert_eq!(ends, 1);
 }
 
 #[test]

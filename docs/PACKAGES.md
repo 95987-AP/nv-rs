@@ -32,6 +32,12 @@ compared** (nothing here has been checked against the running game).
   branch) begins with `set VFreeformGoodsprings.TrudyToBar to 1` and ends
   with `RemoveScriptPackage`: the only package action with content among
   these.
+- `VCG02` depends on travel end actions: `VCG02SunnyTravelToWell1` ends
+  with `SetStage VCG02 30`, `VCG02SunnySneakCloserToWell` with `SetStage
+  VCG02 40`; the opening's `VCG01DocMitchellTravelToSkullTestSpot` ends
+  with `DocMitchellREF.Look player`. These now run on arrival (in sight,
+  and out of sight through the low process's travel `0090ad40`).
+  Packages started out of sight don't run their begin actions yet.
 
 ## Traced rules
 

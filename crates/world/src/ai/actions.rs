@@ -129,10 +129,11 @@ impl PackageActions {
 /// so the AI taking it up doesn't begin it again). `restart`: the package
 /// starts over (asked again even if the same).
 pub fn begin(state: &mut GameState, who: FormId, package: FormId, restart: bool) {
-    if package.0 == 0 || (!restart && state.package_begun.get(&who) == Some(&package)) {
+    let same = state.package_begun.get(&who).map(|b| b.0) == Some(package);
+    if package.0 == 0 || (!restart && same) {
         return;
     }
-    state.package_begun.insert(who, package);
+    state.package_begun.insert(who, (package, false));
     state.events.push(Event::PackageAction {
         who,
         package,
@@ -141,11 +142,13 @@ pub fn begin(state: &mut GameState, who: FormId, package: FormId, restart: bool)
 }
 
 /// Asks for a package's end action: its procedures reached `DONE`
-/// (`0091ecf0`). The caller asks once per start (process flag +0x5a8).
+/// (`0091ecf0`; the low process's travel, `0090ad40`). Once per start
+/// (process flag +0x5a8, cleared when a package begins, `0090a1a0`).
 pub fn end(state: &mut GameState, who: FormId, package: FormId) {
-    if package.0 == 0 {
+    if package.0 == 0 || state.package_begun.get(&who) == Some(&(package, true)) {
         return;
     }
+    state.package_begun.insert(who, (package, true));
     state.events.push(Event::PackageAction {
         who,
         package,
