@@ -87,6 +87,28 @@ Settings (exe default → the master's): `fRepairMax` 2, `fRepairMin` 0.5,
   the other gone, "Items Repaired" counted, `UIRepairWeapon`; the menu
   closes when the condition reaches 99% or nothing's left to use.
 
+### Armour wearing (what there is to repair)
+
+- A hit's `fArmorDamage` (Xbox PDB `HitData` +40; `009b5a30`), when the
+  hit does no fatigue damage: `fDamageToArmorPercentage` (0.5) × the damage
+  × the target's resistance share (DR, at most 100, / 100; a companion's ×
+  (1 + 0.05 × the player's Charisma); the ammunition's DR effects; at most
+  `fMaxArmorRating` / 100), plus, after the threshold, the ammunition's
+  damage effects and perk entry 0, 0.5 × min(the threshold, the damage
+  left − the 20% floor). The game's armour has DR 0 (leather armour,
+  reinforced: DT 10, DR 0), so it's the threshold's part that wears it.
+- `0089a760`: above 0, on the player only (the actor's slot 0x360, true
+  for `PlayerCharacter` alone), a hit on the head (part type 1 or 2)
+  wears what's worn on the head (biped slot 0), else the hair slot's;
+  any other hit the upper body's (`0089d8b0`); through `DamageItem`
+  (`00891360`): perk entry 68, the health less it, below 1 nothing left;
+  the player told when it drops below 25% (`sArmorLowCond`, weapons
+  `sWeaponLowCond`, with `WPNBreak`).
+- What armour gives (`008d2110` DT, `008d22b0` DR, each piece once): its
+  figure at its condition, `004be0b0` / `004bdf90`: the record's value
+  truncated × (1 above half, 0.5 + condition at or below, `00646d40`),
+  rounded up; DR's sum at most `fMaxArmorRating`.
+
 ## Here
 
 `world::repair` has the rules: `skill`, `mended` / `mended_condition`,
@@ -109,7 +131,9 @@ Checks: `crates/world/tests/repair.rs` (the formulas, a merchant's list and
 order, a repair paid to the vendor, the Pip-Boy's rules with a repair list
 and Jury Rigging), `world::repair::tests` (an NPC's skill offset),
 `ui::menus::repair_services::tests` (filling, the pointer's stats, clicks),
-`ui::pipboy::repair::tests` (the lines' order, what each does, closing).
+`ui::pipboy::repair::tests` (the lines' order, what each does, closing),
+`armour_wears_and_loses_its_threshold` and `a_hit_wears_the_players_armour`
+(`crates/world/tests/repair.rs`).
 Seen in the viewer at Mick & Ralph's (`--open-menu
 repair:FreesideMickREF`): Repair 75, mending to 85%; a 9mm pistol at 30%
 for 110 caps; clicking it paid 110 caps and left it at 85%, "CANNOT
@@ -123,10 +147,11 @@ it, one spare left.
 
 - The Pip-Boy's scroll knob turning with the repair list, the brackets'
   move onto the item, the mouse on the Pip-Boy's screen.
-- An item's condition is kept per holder and kind, weapons only
-  (`GameState::weapon_health`): a repair mends every one of a kind the
-  player has, where the game mends one, and armour is always whole, so it's
-  never listed.
+- An item's condition is kept per holder and kind (weapons and armour,
+  `GameState::weapon_health`): a repair or wear touches every one of a kind
+  the holder has, where the game's touch one.
+- A weapon breaking at 0% (`sWeaponBreak`, `00891a6a`); fatigue damage (no
+  hit here does any), the shotgun's threshold share per projectile.
 - Weapon mods (a condition mod raising full health, `004bda70(10)`), the
   ammunition's and perk entry 0's part in the damage figure (`006450f0`).
 - The dialogue topic handed back when the merchant's menu closes

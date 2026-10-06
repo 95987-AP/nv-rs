@@ -398,7 +398,7 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
             } else {
                 0
             });
-            line.condition = Some(1.0);
+            line.condition = Some(world::combat::weapon_condition(state, PLAYER_REF, item));
             line.repairable = world::repair::can_repair(order, state, item);
         }
         // Aid's and ammunition's effects text (`00406620`, `00503a70`: the

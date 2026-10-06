@@ -35,9 +35,9 @@
 //! Repair is read as the menus read it (`0066ef20`): the current value,
 //! within 0..100 (`0066f190`), truncated.
 //!
-//! Here an item's condition is kept per holder and kind (weapons only,
-//! `GameState::weapon_health`; armour stays whole), so a repair mends every
-//! one of that kind the holder has, where the game mends one.
+//! Here an item's condition is kept per holder and kind (weapons and
+//! armour, `GameState::weapon_health`), so a repair mends every one of that
+//! kind the holder has, where the game mends one.
 
 use esm::{FormId, FourCC, LoadOrder};
 
@@ -123,6 +123,13 @@ pub fn service_cost(order: &LoadOrder, skill: i32, condition: f32, value: f32) -
     }
 }
 
+/// Whether an item has a condition: weapons and armour.
+pub fn has_condition(order: &LoadOrder, item: FormId) -> bool {
+    order
+        .get(item)
+        .is_some_and(|r| r.entry.header.kind == WEAP || r.entry.header.kind == ARMO)
+}
+
 /// An item's full health (`004873d0`; weapons `004bcf00`, whose mods
 /// aren't kept here): `DATA` i32 at 4 for weapons and armour.
 pub fn max_health(order: &LoadOrder, item: FormId) -> i32 {
@@ -138,8 +145,8 @@ pub fn max_health(order: &LoadOrder, item: FormId) -> i32 {
         .unwrap_or(0)
 }
 
-/// An item's condition in percent (`004bcdb0(…, 1)`): weapons as kept,
-/// armour whole.
+/// An item's condition in percent (`004bcdb0(…, 1)`), as kept (full when
+/// nothing wore it).
 pub fn condition(state: &GameState, holder: FormId, item: FormId) -> f32 {
     crate::combat::weapon_condition(state, holder, item) * 100.0
 }
@@ -358,7 +365,7 @@ pub fn repair_by(
 ) {
     let s = skill(order, state, vendor);
     let target = service_target(order, s);
-    if order.get(item).is_some_and(|r| r.entry.header.kind == WEAP) {
+    if has_condition(order, item) {
         state.weapon_health.insert((PLAYER_REF, item), target);
     }
     pay(order, state, vendor, cost);
@@ -547,10 +554,7 @@ pub fn repair_with(order: &LoadOrder, state: &mut GameState, chosen: FormId, par
             }
         }
     }
-    if order
-        .get(chosen)
-        .is_some_and(|r| r.entry.header.kind == WEAP)
-    {
+    if has_condition(order, chosen) {
         state.weapon_health.insert((PLAYER_REF, chosen), to);
     }
     crate::stats::bump(state, ITEMS_REPAIRED, 1);

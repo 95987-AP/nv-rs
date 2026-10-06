@@ -224,3 +224,103 @@ fn the_pipboys_repair() {
     state.weapon_health.insert((PLAYER_REF, pistol), 1.0);
     assert!(!repair::can_repair(&order, &state, pistol));
 }
+
+/// Armour wears as it takes hits and loses DT with it: a piece's DT at a
+/// condition (`004be0b0`: truncated, × 0.5 + c at or below half, rounded
+/// up, summed over the pieces worn, `008d2110`); a hit's `fArmorDamage`
+/// (`009b5a30`: 0.5 × the DT taken off, at most what's left above the
+/// floor); worn on the head piece for head hits, else the body's
+/// (`0089d8b0`); the player told below 25% (`00891360`).
+#[test]
+fn armour_wears_and_loses_its_threshold() {
+    use world::combat;
+    let (_data, order) = order("repair-armour");
+    let mut state = GameState::new(&order);
+    let (armour, helmet) = (FormId(ARMOR), FormId(HELMET));
+    assert_eq!(combat::armour_figure_at(10.0, 1.0), 10.0);
+    assert_eq!(combat::armour_figure_at(10.0, 0.3), 8.0);
+    assert_eq!(combat::armour_figure_at(10.0, 0.33), 9.0);
+    assert_eq!(combat::armour_figure_at(7.9, 1.0), 7.0);
+
+    give(&order, &mut state, ARMOR, 1);
+    give(&order, &mut state, HELMET, 1);
+    state.equip(&order, PLAYER_REF, armour);
+    state.equip(&order, PLAYER_REF, helmet);
+    let base = combat::worn_damage_threshold(&order, &state, PLAYER_REF);
+    // 30 damage through DT 14: 16 left, the floor 6; the armour takes
+    // 0.5 × min(14, 16 - 6) = 5.
+    let hit = combat::armour_hit(&order, &state, 30.0, None, PLAYER_REF, None);
+    assert!(close(hit.damage, 30.0 - base));
+    assert!(close(
+        hit.armour_damage,
+        0.5 * (base.min(30.0 - base - 6.0))
+    ));
+    // A body hit wears the body armour, a head hit the helmet.
+    combat::wear_armour(&order, &mut state, PLAYER_REF, None, 5.0);
+    assert!(close(
+        combat::weapon_condition(&state, PLAYER_REF, armour),
+        0.95
+    ));
+    combat::wear_armour(&order, &mut state, PLAYER_REF, Some(1), 5.0);
+    assert!(close(
+        combat::weapon_condition(&state, PLAYER_REF, helmet),
+        0.9
+    ));
+    // Only the player's wears.
+    combat::wear_armour(&order, &mut state, FormId(DOC_REF), None, 5.0);
+    assert!(!state.weapon_health.contains_key(&(FormId(DOC_REF), armour)));
+    // At 30% the armour's DT is 8 (ceil(10 × 0.8)).
+    state.weapon_health.insert((PLAYER_REF, armour), 0.3);
+    assert!(close(
+        combat::worn_damage_threshold(&order, &state, PLAYER_REF),
+        base - 10.0 + 8.0
+    ));
+    // Falling below 25% tells the player.
+    state.events.clear();
+    combat::wear_armour(&order, &mut state, PLAYER_REF, None, 6.0);
+    assert!(close(
+        combat::weapon_condition(&state, PLAYER_REF, armour),
+        0.24
+    ));
+    assert!(state.events.iter().any(|e| matches!(e,
+        Event::Message { text, .. } if text == "Your armor condition is dangerously low.")));
+    // Under 1 health left: nothing.
+    combat::wear_armour(&order, &mut state, PLAYER_REF, None, 23.5);
+    assert_eq!(combat::weapon_condition(&state, PLAYER_REF, armour), 0.0);
+    // A merchant mends it now (DT above 0): to 70% at Repair 50.
+    state
+        .items
+        .insert((PLAYER_REF, world::barter::caps(&order)), 1000);
+    let (lines, _) = repair::service_lines(&order, &state, 50);
+    assert!(lines.iter().any(|l| l.item == armour && l.cost > 0));
+    state
+        .actor_values
+        .insert((FormId(DOC_REF), repair::REPAIR), 50.0);
+    repair::repair_by(&order, &mut state, FormId(DOC_REF), armour, 0);
+    assert!(close(
+        combat::weapon_condition(&state, PLAYER_REF, armour),
+        0.7
+    ));
+}
+
+/// A real hit (`Runner::hit_at`): the doctor (Guns 100) shoots the player
+/// in DT 10 armour with the rifle (20): 10 through, the floor 4, the armour
+/// takes 0.5 × min(10, 6) = 3 of its 100 (more on a critical).
+#[test]
+fn a_hit_wears_the_players_armour() {
+    let (_data, order) = order("repair-hit");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    give(&order, &mut state, ARMOR, 1);
+    state.equip(&order, PLAYER_REF, FormId(ARMOR));
+    state.actor_values.insert((FormId(DOC_REF), 41), 100.0);
+    let rifle = world::combat::Weapon::load(&order, FormId(RIFLE)).unwrap();
+    Runner::new(&order, &scripts, &mut state).hit_at(
+        FormId(DOC_REF),
+        PLAYER_REF,
+        Some(&rifle),
+        None,
+    );
+    let c = world::combat::weapon_condition(&state, PLAYER_REF, FormId(ARMOR));
+    assert!(c <= 0.97 + 1e-4, "{c}");
+}

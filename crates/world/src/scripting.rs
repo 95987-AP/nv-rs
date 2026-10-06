@@ -371,8 +371,9 @@ pub struct GameState {
     pub value_damage: HashMap<(FormId, u16), f64>,
     /// Effects working on people (`world::magic`), oldest first.
     pub active_effects: Vec<crate::magic::ActiveEffect>,
-    /// Weapons' condition (0 to 1) where scripts changed it, (holder,
-    /// weapon); others are in full condition.
+    /// Weapons' and armour's condition (0 to 1) where something changed
+    /// it (scripts, wear, repairs), (holder, item); others are in full
+    /// condition.
     pub weapon_health: HashMap<(FormId, FormId), f32>,
     /// Weapons people have dropped, (holder, weapon): a crippled arm or a
     /// critical hit on the weapon (`world::body_parts::hurt_part`). They
@@ -2762,14 +2763,24 @@ impl<'a> Runner<'a> {
                 crate::combat::critical_damage(order, self.state, attacker, weapon, target, damage);
         }
         let ammo = weapon.and_then(|w| w.ammo_in_use(order, self.state, attacker));
-        let after_armour = crate::combat::hit_through_armour(
+        let armoured = crate::combat::armour_hit(
             order,
             self.state,
             damage,
             Some((attacker, weapon_id)),
             target,
             ammo,
-        ) * crate::vats::player_damage_mult(order, self.state, target);
+        );
+        let vats_mult = crate::vats::player_damage_mult(order, self.state, target);
+        let after_armour = armoured.damage * vats_mult;
+        // The player's armour wears (`0089a760`).
+        crate::combat::wear_armour(
+            order,
+            self.state,
+            target,
+            part,
+            armoured.armour_damage * vats_mult,
+        );
         // The part it landed on: limb damage from the damage after armour,
         // and the hit's multiplier (`009b6620`).
         let at = crate::body_parts::part_hit(order, self.state, target, weapon, part, after_armour);

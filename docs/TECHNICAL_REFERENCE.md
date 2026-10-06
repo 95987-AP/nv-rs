@@ -904,8 +904,10 @@ reloading (Rapid Reload, and Agility: reloads take longer below 5 and
 less above), attack speed (Fast Shot, Slayer; attack animations now play
 at each weapon's own rate), carrying (Pack Rat; fast travel is refused
 while over-encumbered unless you have Long Haul), cases and cells coming
-back from shots (Hand Loader, Vigilant Recycler), and weapon wear
-(Built to Destroy; weapons now wear a little with every attack, as in the
+back from shots (Hand Loader, Vigilant Recycler), and weapon and armour
+wear (armour wears as its damage threshold soaks up hits, and gives less
+DT below half condition; "Your armor condition is dangerously low." below
+25%) (Built to Destroy; weapons now wear a little with every attack, as in the
 game). `nvinspect "<Data folder>" perks` lists every perk's entries and
 conditions. Perks whose mechanic isn't here yet (mines, terminal lockouts,
 addiction, Mister Sandman and Cannibal, Meltdown, repairing, knockdowns,

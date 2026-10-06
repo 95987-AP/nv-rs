@@ -1457,6 +1457,11 @@ pub mod quest_ids {
     pub const REPAIR_SETTINGS: u32 = 0xAF7;
     pub const JURY_RIGGING: u32 = 0xAF9;
     pub const REVOLVER: u32 = 0xAFA;
+    /// Armour as the game's (`DATA` value, health, weight; `DNAM` DR 0 and
+    /// DT): `TestArmor` on the upper body (DT 10, health 100, value 100),
+    /// `TestHelmet` on the head (DT 4, health 50).
+    pub const ARMOR: u32 = 0xAFB;
+    pub const HELMET: u32 = 0xAFC;
     /// Settings the perks' rules read (seven forms from here):
     /// `fPackRatThreshold` 2, `fPackRatModifier` 0.5, `fAgilityReloadBase`
     /// 5, `fAgilityReloadModifier` 0.1, `fDamageToWeaponValue` 0.2,
@@ -2005,6 +2010,25 @@ pub fn quests(tag: &str) -> TempData {
     hat.extend(sub(b"SCRI", &SCRIPTED_HAT_SCRIPT.to_le_bytes()));
     hat.extend(sub(b"BMDT", &[0, 4, 0, 0, 0, 0, 0, 0]));
     apparel.extend(record(b"ARMO", SCRIPTED_HAT, &hat));
+    let armour = |id: u32, name: &str, slots: u32, value: i32, health: i32, dt: f32| {
+        let mut d = edid(name);
+        d.extend(sub(b"FULL", &zstr(name)));
+        let mut bmdt = slots.to_le_bytes().to_vec();
+        bmdt.extend([0; 4]);
+        d.extend(sub(b"BMDT", &bmdt));
+        let mut data = value.to_le_bytes().to_vec();
+        data.extend(health.to_le_bytes());
+        data.extend(5.0f32.to_le_bytes());
+        d.extend(sub(b"DATA", &data));
+        let mut dnam = 0i16.to_le_bytes().to_vec();
+        dnam.extend([0; 2]);
+        dnam.extend(dt.to_le_bytes());
+        dnam.extend([0; 4]);
+        d.extend(sub(b"DNAM", &dnam));
+        record(b"ARMO", id, &d)
+    };
+    apparel.extend(armour(ARMOR, "TestArmor", 0x04, 100, 100, 10.0));
+    apparel.extend(armour(HELMET, "TestHelmet", 0x01, 40, 50, 4.0));
     // A trait (DATA: trait, level, ranks, playable, hidden) and a perk.
     let mut perks = Vec::new();
     for (id, name, is_trait) in [(TRAIT, "Test Trait", 1u8), (PERK, "Test Perk", 0)] {

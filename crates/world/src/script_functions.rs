@@ -1149,8 +1149,8 @@ fn carry_out(
             }
             // `005d8e80`: like `AddItem` (a leveled list gives what it
             // picks, a form list each of its items), the items at a health
-            // (0–1). Item condition is kept for weapons only here
-            // (`GameState::weapon_health`); armour stays whole. The flag 1
+            // (0–1). Item condition is kept for weapons and armour
+            // (`GameState::weapon_health`). The flag 1
             // silences the "added" notice (none here).
             "AddItemHealthPercent" => {
                 let holder = target?;
@@ -1180,7 +1180,7 @@ fn carry_out(
                 for (i, n) in added {
                     *runner.state.items.entry((holder, i)).or_insert(0) += n;
                     runner.state.added(order, holder, i, n);
-                    if kind_of(order, i) == Some(WEAP) {
+                    if crate::repair::has_condition(order, i) {
                         runner
                             .state
                             .weapon_health

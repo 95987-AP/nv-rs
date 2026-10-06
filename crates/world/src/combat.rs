@@ -580,6 +580,31 @@ pub fn hit_through_armour(
     target: FormId,
     ammo: Option<FormId>,
 ) -> f32 {
+    armour_hit(order, state, damage, attacker, target, ammo).damage
+}
+
+/// A hit through armour: the damage left, and what it wears off the
+/// target's armour.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ArmourHit {
+    pub damage: f32,
+    /// The hit's `fArmorDamage` (Xbox PDB `HitData`, `009b5a30`):
+    /// `fDamageToArmorPercentage` (0.5) × the damage × the resistance's
+    /// share, plus `fDamageToArmorPercentage` × the threshold taken off (at
+    /// most what's left above the 20% floor); none for a hit doing fatigue
+    /// damage (none here). See [`wear_armour`].
+    pub armour_damage: f32,
+}
+
+/// [`hit_through_armour`] with what the hit wears off the armour.
+pub fn armour_hit(
+    order: &LoadOrder,
+    state: &GameState,
+    damage: f32,
+    attacker: Option<(FormId, Option<FormId>)>,
+    target: FormId,
+    ammo: Option<FormId>,
+) -> ArmourHit {
     let setting = |n: &str, default: f32| game_setting(order, n).unwrap_or(default);
     let effects = ammo.map(|a| ammo_effects(order, a)).unwrap_or_default();
     let least = damage * setting("fMinDamMultiplier", 0.2);
@@ -615,6 +640,8 @@ pub fn hit_through_armour(
             &[Tab::Target(who), held],
         );
     }
+    let wear = setting("fDamageToArmorPercentage", 0.5);
+    let mut armour_damage = wear * damage * resist;
     let after = damage * (1.0 - resist) - threshold.max(0.0);
     let mut after = with_ammo(&effects, 0, after);
     if let Some((who, weapon)) = attacker {
@@ -627,27 +654,72 @@ pub fn hit_through_armour(
             &[perks::weapon_tab(weapon), Tab::Target(target)],
         );
     }
-    after.max(least)
+    armour_damage += wear * threshold.max(0.0).min(after - least);
+    ArmourHit {
+        damage: after.max(least),
+        armour_damage,
+    }
+}
+
+/// A piece of armour's damage threshold or resistance at a condition
+/// 0..1 (`004be0b0`, `004bdf90`): the record's figure truncated, × 1 above
+/// half condition and 0.5 + the condition at or below (`00646360`,
+/// `00646d40`), rounded up (`00476b20`).
+pub fn armour_figure_at(value: f32, condition: f32) -> f32 {
+    let factor = if condition <= 0.5 {
+        1.0 - (0.5 - condition)
+    } else {
+        1.0
+    };
+    (value.trunc() * factor).ceil()
+}
+
+/// What someone's worn armour adds to a figure (`008d2110` the damage
+/// threshold, `008d22b0` the resistance): each piece worn once, its
+/// figure at its condition ([`armour_figure_at`]); `pick` reads the figure
+/// from the record's `DNAM`.
+fn worn_armour_sum(
+    order: &LoadOrder,
+    state: &GameState,
+    who: FormId,
+    pick: &dyn Fn(&[u8]) -> Option<f32>,
+) -> f32 {
+    let mut seen: Vec<FormId> = Vec::new();
+    let mut sum = 0.0;
+    for &item in state.equipped.get(&who).into_iter().flatten() {
+        if seen.contains(&item) {
+            continue;
+        }
+        let Some(rr) = order
+            .get(item)
+            .filter(|r| r.entry.header.kind.as_bytes() == b"ARMO")
+        else {
+            continue;
+        };
+        let Some(v) = rr
+            .record()
+            .ok()
+            .and_then(|r| r.get(DNAM).and_then(|d| pick(&d.data)))
+        else {
+            continue;
+        };
+        seen.push(item);
+        sum += armour_figure_at(v, weapon_condition(state, who, item));
+    }
+    sum
 }
 
 /// Someone's damage resistance: their actor value (18) plus worn armour's
-/// (`ARMO` `DNAM` i16 at 0; how the game sums worn armour into it isn't
-/// traced).
+/// (`ARMO` `DNAM` i16 at 0, each piece at its condition, the sum at most
+/// `fMaxArmorRating`: `008d22b0`).
 pub fn damage_resistance(order: &LoadOrder, state: &GameState, who: FormId) -> f32 {
-    let worn: f32 = state
-        .equipped
-        .get(&who)
-        .into_iter()
-        .flatten()
-        .filter_map(|&item| {
-            let rr = order
-                .get(item)
-                .filter(|r| r.entry.header.kind.as_bytes() == b"ARMO")?;
-            let record = rr.record().ok()?;
-            let d = record.get(DNAM).filter(|s| s.data.len() >= 2)?;
-            Some(f32::from(i16::from_le_bytes([d.data[0], d.data[1]])))
-        })
-        .sum();
+    let mut worn = worn_armour_sum(order, state, who, &|d| {
+        (d.len() >= 2).then(|| f32::from(i16::from_le_bytes([d[0], d[1]])))
+    });
+    let most = game_setting(order, "fMaxArmorRating").unwrap_or(90.0);
+    if most > 0.0 {
+        worn = worn.min(most);
+    }
     worn + Facts {
         order,
         state,
@@ -668,8 +740,9 @@ pub fn sneak_multiplier(order: &LoadOrder, melee: bool) -> f32 {
     }
 }
 
-/// A weapon's condition, 0 to 1: full unless scripts changed it
-/// (`SetWeaponHealthPerc`) or it was worn down ([`damage_weapon`]).
+/// An item's condition, 0 to 1 (weapons and armour): full unless scripts
+/// changed it (`SetWeaponHealthPerc`, `AddItemHealthPercent`), it was worn
+/// down ([`damage_item`]) or repaired (`world::repair`).
 pub fn weapon_condition(state: &GameState, holder: FormId, weapon: FormId) -> f32 {
     state
         .weapon_health
@@ -678,12 +751,9 @@ pub fn weapon_condition(state: &GameState, holder: FormId, weapon: FormId) -> f3
         .unwrap_or(1.0)
 }
 
-/// An item of `holder`'s loses `points` of health (the actor's
-/// `DamageItem`, `00891360`): the holder's perks' "Modify Item Damage"
-/// (entry point 68: Built to Destroy × 1.15, Regular Maintenance × 0.5)
-/// first, then the points come off the item's health (its `DATA` health
-/// at full), never below 0. Weapons only here (the condition kept per
-/// holder and weapon, as a share of the full health).
+/// A weapon of `holder`'s loses `points` of health ([`damage_item`]: the
+/// perks' "Modify Item Damage", entry point 68: Built to Destroy × 1.15,
+/// Regular Maintenance × 0.5).
 pub fn damage_weapon(
     order: &LoadOrder,
     state: &mut GameState,
@@ -691,7 +761,25 @@ pub fn damage_weapon(
     weapon: &Weapon,
     points: f32,
 ) {
-    if points <= 0.0 || weapon.health <= 0 {
+    damage_item(order, state, holder, weapon.form_id, points);
+}
+
+/// An item of `holder`'s (a weapon or armour) loses `points` of health
+/// (`00891360`): nothing for none; the holder's perks' "Modify Item
+/// Damage" (entry point 68) first; then its health less the points, nothing
+/// left below 1; the condition kept as a share of its full health
+/// (`world::repair::max_health`). The player is told when one drops from
+/// 25% or more to below it: `sWeaponLowCond` / `sArmorLowCond`, with
+/// `WPNBreak`.
+pub fn damage_item(
+    order: &LoadOrder,
+    state: &mut GameState,
+    holder: FormId,
+    item: FormId,
+    points: f32,
+) {
+    let full = crate::repair::max_health(order, item) as f32;
+    if points <= 0.0 || full <= 0.0 {
         return;
     }
     let points = perks::apply_for(
@@ -702,9 +790,75 @@ pub fn damage_weapon(
         points,
         &[],
     );
-    let now = weapon_condition(state, holder, weapon.form_id);
-    let after = (now - points / weapon.health as f32).max(0.0);
-    state.weapon_health.insert((holder, weapon.form_id), after);
+    let before = weapon_condition(state, holder, item);
+    let mut health = before * full - points;
+    if health < 1.0 {
+        health = 0.0;
+    }
+    let after = health / full;
+    state.weapon_health.insert((holder, item), after);
+    if holder == PLAYER_REF && (before * 100.0).min(100.0) >= 25.0 && after * 100.0 < 25.0 {
+        let kind = order.get(item).map(|r| r.entry.header.kind);
+        let (setting, default) = if kind == Some(WEAP) {
+            (
+                "sWeaponLowCond",
+                "Your weapon condition is dangerously low.",
+            )
+        } else {
+            ("sArmorLowCond", "Your armor condition is dangerously low.")
+        };
+        let text = crate::scripting::game_setting_text(order, setting)
+            .unwrap_or_else(|| default.to_string());
+        state.events.push(Event::Message {
+            title: None,
+            text,
+            buttons: Vec::new(),
+        });
+        if let Some(sound) = order.form_by_editor_id("WPNBreak") {
+            state.events.push(Event::Sound(sound));
+        }
+    }
+}
+
+/// What a hit on the player wears off their armour (`0089a760`, with the
+/// hit's `fArmorDamage`, Xbox PDB `HitData`): when above 0, a hit on the
+/// head (part 1 or 2) wears what's worn on the head (biped slot 0), else
+/// the hair slot's (1); any other hit what's worn on the upper body (2)
+/// (`0089d8b0`); through [`damage_item`]. Only the player's armour wears
+/// (the actor's slot 0x360).
+pub fn wear_armour(
+    order: &LoadOrder,
+    state: &mut GameState,
+    who: FormId,
+    part: Option<u8>,
+    points: f32,
+) {
+    if who != PLAYER_REF || points <= 0.0 {
+        return;
+    }
+    let head = matches!(part, Some(1) | Some(2));
+    let slots: &[u32] = if head { &[0x1, 0x2] } else { &[0x4] };
+    let worn: Vec<FormId> = state.equipped.get(&who).cloned().unwrap_or_default();
+    let biped = |item: FormId| {
+        order
+            .get(item)
+            .filter(|r| r.entry.header.kind.as_bytes() == b"ARMO")
+            .and_then(|r| r.record().ok())
+            .and_then(|r| {
+                r.get(FourCC::new(b"BMDT"))
+                    .filter(|s| s.data.len() >= 4)
+                    .map(|s| le_u32(&s.data, 0))
+            })
+    };
+    for &slot in slots {
+        if let Some(&item) = worn
+            .iter()
+            .find(|&&i| biped(i).is_some_and(|b| b & slot != 0))
+        {
+            damage_item(order, state, who, item, points);
+            return;
+        }
+    }
 }
 
 /// What an attack wears off the weapon used (`00893a40` as an attack
@@ -1126,22 +1280,10 @@ pub fn damage_threshold(order: &LoadOrder, state: &GameState, who: FormId) -> f3
 }
 
 /// Someone's damage threshold before perks: their actor value plus worn
-/// armour's.
+/// armour's (`ARMO` `DNAM` f32 at 4, each piece at its condition:
+/// `008d2110`).
 pub fn worn_damage_threshold(order: &LoadOrder, state: &GameState, who: FormId) -> f32 {
-    let worn: f32 = state
-        .equipped
-        .get(&who)
-        .into_iter()
-        .flatten()
-        .filter_map(|&item| {
-            let rr = order
-                .get(item)
-                .filter(|r| r.entry.header.kind.as_bytes() == b"ARMO")?;
-            let record = rr.record().ok()?;
-            let d = record.get(DNAM).filter(|s| s.data.len() >= 8)?;
-            Some(le_f32(&d.data, 4))
-        })
-        .sum();
+    let worn = worn_armour_sum(order, state, who, &|d| (d.len() >= 8).then(|| le_f32(d, 4)));
     let facts = Facts {
         order,
         state,
