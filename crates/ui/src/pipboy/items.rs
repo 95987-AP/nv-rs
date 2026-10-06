@@ -44,11 +44,23 @@ pub struct ItemsMenu {
     filled: Option<(usize, bool, Vec<ItemLine>, bool)>,
     /// The last row the pointer was over (`011d9f34`, its
     /// `listindex`): the knob clicks when it changes.
-    hovered: Option<usize>,
+    pub(crate) hovered: Option<usize>,
     /// The keyring is open (the menu's `_KeyringOpen`, `011d9eb8`): the
     /// list shows the keys (`00782810`).
     pub keyring: bool,
+    /// The hot key wheel (`IM_HotKeyWheel`, id 5; `HotKeysWheel` (Xbox
+    /// PDB)), shown while a number key is held, and the hot key it
+    /// highlights (`+0x24` / `+0x28`).
+    wheel: Option<TileId>,
+    pub hotkey: Option<usize>,
 }
+
+/// How many hot keys there are (`006e4ba0`: 8), the controls they are
+/// (0x11 + n: Hotkey1 .. Hotkey8), and the one that isn't a hot key on the
+/// wheel (n 1: the "2" key, the pad's ammunition swap; `00701bd0`,
+/// `007017b0`, `0077da60` all skip it).
+pub const HOTKEYS: usize = 8;
+pub const NOT_A_HOTKEY: usize = 1;
 
 /// The keyring's row's `id` (`00782a90`: a row without an item, `sKeyring`,
 /// last on the Misc tab when keys are carried).
@@ -69,7 +81,7 @@ pub const DROP_ID: i32 = 7;
 pub const FIRST_TAB_ID: i32 = 0x18;
 
 /// An item's row text (`00782850`): "name (count)" for more than one
-/// ("name+ (count)" for a modded weapon, not here yet).
+/// ("name+ (count)" for a modded weapon, not here).
 pub fn row_text(item: &ItemLine) -> String {
     if item.count > 1 {
         format!("{} ({})", item.name, item.count)
@@ -202,6 +214,8 @@ impl ItemsMenu {
             filled: None,
             hovered: None,
             keyring: false,
+            wheel: by_id(ui, menu, 5),
+            hotkey: None,
         };
         if let Some(tl) = m.tabline {
             tabline::set_current(ui, tl, 0);
@@ -468,6 +482,141 @@ impl ItemsMenu {
         }
     }
 
+    /// Whether the hot key wheel shows (`00701740`).
+    pub fn wheel_shown(&self, ui: &mut Ui) -> bool {
+        self.wheel.is_some_and(|w| ui.number(w, t::VISIBLE) != 0.0)
+    }
+
+    /// The wheel's eight places (`007017b0`, `HotKeysWheel::UpdateHotkeyList`
+    /// (Xbox PDB)): each hot key's item's picture, `_HotKeyAssigned`, and its
+    /// name ("%s (%d)" for more than one); the "2" place is the ammunition
+    /// swap's picture and isn't filled.
+    fn fill_wheel(&mut self, ui: &mut Ui, input: &PipboyInput) {
+        let Some(wheel) = self.wheel else {
+            return;
+        };
+        let assigned = trait_id(ui, "_HotKeyAssigned");
+        let icon = trait_id(ui, "_HotKeyIcon");
+        for n in (0..HOTKEYS).filter(|&n| n != NOT_A_HOTKEY) {
+            let Some(place) = ui.find_below(wheel, &format!("HK_Item_{n}")) else {
+                continue;
+            };
+            let item = input.hotkeys[n].and_then(|f| input.items.iter().find(|i| i.form == f));
+            match item {
+                None => {
+                    ui.set_number(place, assigned, 0.0);
+                    ui.set_string(place, t::STRING, "");
+                }
+                Some(item) => {
+                    ui.set_string(place, icon, item.icon.as_deref().unwrap_or(""));
+                    ui.set_number(place, assigned, 1.0);
+                    let text = if item.count < 2 {
+                        item.name.clone()
+                    } else {
+                        format!("{} ({})", item.name, item.count)
+                    };
+                    ui.set_string(place, t::STRING, &text);
+                }
+            }
+        }
+    }
+
+    /// Highlights a hot key on the wheel (`00701e00`): its `_SelectedHotkey`
+    /// and `_SelectedText` (that place's name; none for -1 and the "2").
+    fn highlight_hotkey(&mut self, ui: &mut Ui, n: usize) {
+        let Some(wheel) = self.wheel else {
+            return;
+        };
+        let selected = trait_id(ui, "_SelectedHotkey");
+        let text_id = trait_id(ui, "_SelectedText");
+        ui.set_number(wheel, selected, n as f32);
+        let text = if n == NOT_A_HOTKEY {
+            String::new()
+        } else {
+            ui.find_below(wheel, &format!("HK_Item_{n}"))
+                .and_then(|p| ui.string(p, t::STRING))
+                .unwrap_or_default()
+        };
+        ui.set_string(wheel, text_id, &text);
+        self.hotkey = Some(n);
+    }
+
+    /// The number keys held, every frame (`00781ba0` with a keyboard): the
+    /// first hot key whose key is down (or held) that isn't the "2" shows
+    /// the wheel (filled, `007017b0`) and highlights it; with none down the
+    /// wheel hides. Not while the keyring is open. `down[n]` is hot key n's
+    /// key held now.
+    // Translated from 00781ba0 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn hotkey_keys(&mut self, ui: &mut Ui, down: [bool; HOTKEYS], input: &PipboyInput) {
+        let Some(wheel) = self.wheel else {
+            return;
+        };
+        let mut found = false;
+        if !self.keyring {
+            for (n, &d) in down.iter().enumerate() {
+                if d && n != NOT_A_HOTKEY {
+                    if !self.wheel_shown(ui) {
+                        self.fill_wheel(ui, input);
+                        ui.set_number(wheel, t::VISIBLE, 1.0);
+                        // The item's picture gives way to the wheel (a
+                        // tile of the menu's hidden here, back below; read
+                        // as `IM_ItemIcon`).
+                        if let Some(icon) = self.icon {
+                            ui.set_number(icon, t::VISIBLE, 0.0);
+                        }
+                    }
+                    self.highlight_hotkey(ui, n);
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if !found && self.wheel_shown(ui) {
+            ui.set_number(wheel, t::VISIBLE, 0.0);
+            self.hotkey = None;
+            // An item chosen: its picture back.
+            if let (Some(icon), Some(_)) = (self.icon, self.list.selected) {
+                ui.set_number(icon, t::VISIBLE, 1.0);
+            }
+        }
+    }
+
+    /// A row clicked with the wheel up (`00780140` case 0x1d with a
+    /// keyboard): a broken item can't go on a hot key
+    /// (`sCantHotkeyBrokenItem`), nor one that can't be equipped or used,
+    /// or ammunition (`sCantHotkeyItem`); else it goes on the highlighted
+    /// one (`007019e0`), and the wheel shows it.
+    fn assign_hotkey(&mut self, ui: &mut Ui, item: &ItemLine, input: &PipboyInput) -> Vec<Action> {
+        let refuse = |name: &str| {
+            vec![
+                Action::Notice(text(ui, name)),
+                Action::Sound("UIVATSInsufficientAP".into()),
+            ]
+        };
+        if item.condition == Some(0.0) {
+            return refuse("sCantHotkeyBrokenItem");
+        }
+        if !item.usable || item.tab == ItemTab::Ammo {
+            return refuse("sCantHotkeyItem");
+        }
+        let Some(slot) = self.hotkey.filter(|&n| n != NOT_A_HOTKEY) else {
+            return Vec::new();
+        };
+        let mut after = input.clone();
+        for h in after.hotkeys.iter_mut() {
+            if *h == Some(item.form) {
+                *h = None;
+            }
+        }
+        after.hotkeys[slot] = Some(item.form);
+        self.fill_wheel(ui, &after);
+        self.highlight_hotkey(ui, slot);
+        vec![Action::SetHotkey {
+            slot,
+            item: item.form,
+        }]
+    }
+
     /// Shows a tab (0 Weapons .. 4 Ammo).
     pub fn show_tab(&mut self, ui: &mut Ui, tab: usize, input: &PipboyInput) {
         // Another tab closes the keyring (`00780140` cases 0x18 .. 0x1c).
@@ -519,6 +668,12 @@ impl ItemsMenu {
                     .is_some_and(|i| self.shown.get(i) == Some(&0)) =>
             {
                 self.set_keyring(ui, true, input);
+            }
+            Key::Activate if self.wheel_shown(ui) => {
+                let items = self.tab_items(input);
+                if let Some(item) = self.list.selected.and_then(|i| items.get(i)).cloned() {
+                    out.extend(self.assign_hotkey(ui, &item, input));
+                }
             }
             Key::Activate => {
                 let items = self.tab_items(input);
@@ -581,6 +736,15 @@ impl ItemsMenu {
             }
             KEYRING_ID if !self.keyring => self.set_keyring(ui, true, input),
             CANCEL_ID if self.keyring => self.set_keyring(ui, false, input),
+            ROW_ID if self.wheel_shown(ui) => {
+                let items = self.tab_items(input);
+                let index = tile
+                    .and_then(|t| self.list.index_of(t))
+                    .or(self.list.selected);
+                if let Some(item) = index.and_then(|i| items.get(i)).cloned() {
+                    out.extend(self.assign_hotkey(ui, &item, input));
+                }
+            }
             ROW_ID => {
                 let items = self.tab_items(input);
                 let index = tile.and_then(|t| self.list.index_of(t));
@@ -650,7 +814,7 @@ impl ItemsMenu {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn item(name: &str, tab: ItemTab) -> ItemLine {

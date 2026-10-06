@@ -198,6 +198,9 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
     ("sRepairItem", "Repair"),
     ("sRepairServicesTitle", "Repair Services"),
     ("sRepairSkill", "Repair Skill"),
+    // The Pip-Boy's hot keys (read from the settings `00781ba0` loads).
+    ("sCantHotkeyItem", "You cannot hotkey that item."),
+    ("sCantHotkeyBrokenItem", "You cannot hotkey broken items."),
     ("sReset", "Reset"),
     ("sReturn", "Return"),
     ("sSave", "Save"),

@@ -529,8 +529,8 @@ fn face_camera(
 }
 
 #[derive(Resource)]
-struct Settings {
-    brightness: f32,
+pub(crate) struct Settings {
+    pub(crate) brightness: f32,
     /// `--cloud-time`: the clouds held at this many seconds of drift.
     cloud_time: Option<f32>,
     /// The textures' anisotropic filtering, from the INI

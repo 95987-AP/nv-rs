@@ -59,7 +59,7 @@ pub struct StatsMenu {
     filled: Option<ListSources>,
     /// Per page, the last row the pointer was over (`007dfd20`'s
     /// `011dad60` .. `011dad70`).
-    hovered: [Option<usize>; 5],
+    pub(crate) hovered: [Option<usize>; 5],
     /// Healing mode (`+0x2a0`, `StatsMenu::ToggleHealingMode` (Xbox PDB)
     /// `007e0230`) and the limb it aims at (the body part controller,
     /// `007db1c0` / `007dbfa0`; by `LIMB_IDS`' order).
@@ -612,6 +612,18 @@ const LIMB_CONDITION_AVS: [u16; 6] = [25, 26, 27, 28, 29, 30];
 
 /// The limb a Status-page tile is (`007db630` against the controller's
 /// tiles): a limb picture's `id`, the face (24, part of the head).
+/// The body part controller's tiles for a limb (its picture; the head's
+/// face too), which blink while healing mode aims at it (`007dbfe0`).
+pub fn limb_tiles(ui: &Ui, menu: TileId, part: usize) -> Vec<TileId> {
+    let mut ids = vec![LIMB_IDS[part].0];
+    if part == 0 {
+        ids.push(24);
+    }
+    ids.into_iter()
+        .filter_map(|id| by_id(ui, menu, id))
+        .collect()
+}
+
 fn limb_of(ui: &mut Ui, tile: TileId) -> Option<usize> {
     let id = ui.number(tile, t::ID) as i32;
     if id == 24 {

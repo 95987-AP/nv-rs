@@ -382,6 +382,9 @@ pub struct GameState {
     /// Weapons' condition (0 to 1) where scripts changed it, (holder,
     /// weapon); others are in full condition.
     pub weapon_health: HashMap<(FormId, FormId), f32>,
+    /// The player's hot keys 1 to 8 (`InventoryChanges::SetHotKeyItem`
+    /// (Xbox PDB), `004bf800`): the item on each.
+    pub hotkeys: [Option<FormId>; 8],
     /// Weapons people have dropped, (holder, weapon): a crippled arm or a
     /// critical hit on the weapon (`world::body_parts::hurt_part`). They
     /// don't fight with them again.

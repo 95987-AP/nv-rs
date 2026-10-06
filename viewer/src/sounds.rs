@@ -66,6 +66,15 @@ impl Decodable for PcmSound {
     }
 }
 
+/// A decoded WAV file as a sound to play.
+pub(crate) fn pcm_sound(pcm: cellview::sound::Pcm) -> PcmSound {
+    PcmSound {
+        channels: pcm.channels,
+        rate: pcm.rate,
+        samples: Arc::from(pcm.samples.into_boxed_slice()),
+    }
+}
+
 /// Sounds to play once (sound records), queued by doors and scripts.
 #[derive(Resource, Default)]
 pub struct SoundRequests(pub Vec<FormId>);

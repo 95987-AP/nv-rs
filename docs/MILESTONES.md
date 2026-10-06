@@ -59,7 +59,8 @@ original game**.
   matching; needs an original-game check), long outdoor NPC paths (agent
   on `claude/m2-long-paths`), NPC aim far too accurate (agent on
   `claude/m2-npc-aim`), eyes not moving (FaceGen eye update untraced),
-  explosion visuals, Pip-Boy map quest markers.
+  explosion visuals, Pip-Boy local-map quest markers (world map done on
+  `claude/m2-pipboy-complete`).
 **Next action:** review and merge the `claude/m*-*` PRs into `main`, then
 play the Goodsprings route in the play copy and file F12 reports.
 
@@ -189,6 +190,16 @@ input. Each verified live in the viewer; none compared with the original
 game. Gaps (Repair/Mod menus, hot keys, local map, radio, the light):
 [PIPBOY.md](PIPBOY.md). **Next action:** compare these paths in the
 original game, then the Repair menu.
+
+Pip-Boy completion batch, 2026-10-06 (`claude/m2-pipboy-complete`): hot
+keys (wheel, assignment, use with the Pip-Boy away), notes by kind (text,
+image, audio with its countdown), world-map quest target markers, the
+aimed limb's blink, knobs and rad needle turning, the Pip-Boy light
+lighting the place, dropped items resting on the floor and taken back
+with E. Verified live in the viewer (except the blink and needle, tested
+only); none compared with the original game. Repair/Mod belong to another
+contributor's branch. Still missing: the start menu on Escape, the radio,
+the local map. **Next action:** the start menu (`007cb7d0`, `007cc6e0`).
 
 Dialogue batch, 2026-10-06 (`claude/m1-dialogue`): Doc's farewell at the
 front door could not be left because line follow-ups (`TCFU`) were not

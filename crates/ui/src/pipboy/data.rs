@@ -95,7 +95,7 @@ pub struct DataMenu {
     filled_map: Option<Option<super::WorldMapLine>>,
     filled_lists: Option<(Vec<QuestLine>, Vec<super::NoteLine>, Vec<String>)>,
     /// The last row the pointer was over (`011da400`).
-    hovered: Option<usize>,
+    pub(crate) hovered: Option<usize>,
     /// The game's cursor is hidden (its alpha 0) while it's over the map:
     /// the highlight box follows it instead (`0079a130`).
     pub cursor_hidden: bool,
@@ -105,6 +105,8 @@ pub struct DataMenu {
     /// 0x1a): a release after the map moved is a drag, not a click on a
     /// marker.
     pressed_at: Option<(f32, f32)>,
+    /// The note shown and marked (`+0x90`), whose audio plays.
+    pub playing: Option<u32>,
 }
 
 /// The list rows' `id`s the click and mouse-over handlers look for
@@ -125,6 +127,8 @@ pub const LOCAL_MAP_ID: i32 = 2;
 pub const MARKER_ID: i32 = 26;
 /// The player's own marker's `id` (`0079f360`: 0x1c).
 pub const CUSTOM_MARKER_ID: i32 = 0x1c;
+/// A quest marker's `id` (`0079e0a0`: 0x1b).
+pub const QUEST_MARKER_ID: i32 = 0x1b;
 /// The part of the map clip window the cursor is "on the map" in
 /// (`0079a130`: 0 .. `01074f68` 850 across, 0 .. `010301a8` 500
 /// down).
@@ -182,6 +186,7 @@ impl DataMenu {
             hovered: None,
             cursor_hidden: false,
             pressed_at: None,
+            playing: None,
         };
         d.set_tab(ui, 1);
         Ok(d)
@@ -318,6 +323,30 @@ impl DataMenu {
                 self.markers_extra.push(tile);
             }
         }
+        // The active quest's targets (`0079e0a0`, `MapMenu::AddQuestMarkers`
+        // (Xbox PDB), with `bShowQuestMarkers`): a `WorldMapQuestMarker
+        // Template` each, `glow_hud_compass_objective_marker.dds`, `id` 0x1b,
+        // its brightness the map's.
+        // Translated from 0079e0a0 (decompiled, FalloutNV.exe 1.4.0.525)
+        for at in &map.quest {
+            if let Some(tile) = ui.instantiate(self.menu, world, "WorldMapQuestMarkerTemplate") {
+                ui.set_number(tile, x_id, at[0]);
+                ui.set_number(tile, y_id, at[1]);
+                ui.set_string(tile, t::FILENAME, "glow_hud_compass_objective_marker.dds");
+                ui.set_number(tile, t::ID, QUEST_MARKER_ID as f32);
+                ui.set_number(tile, t::BRIGHTNESS, 0.0);
+                ui.add_action(
+                    tile,
+                    t::BRIGHTNESS,
+                    crate::names::op::COPY,
+                    crate::tile::Operand::Link {
+                        tile: world,
+                        trait_id: t::BRIGHTNESS,
+                    },
+                );
+                self.markers_extra.push(tile);
+            }
+        }
         if let Some(cursor) = self.cursor {
             match map.player {
                 Some((at, _heading)) => {
@@ -398,6 +427,7 @@ impl DataMenu {
         ui.refresh();
         if new != old {
             out.push(Action::Sound("UIPipBoyScroll".into()));
+            out.push(Action::ScrollKnob { down: zoom_in });
         }
         out
     }
@@ -457,16 +487,121 @@ impl DataMenu {
                 }
             }
             3 => {
-                ui.set_number(rect, item_type, 1.0);
-                if let (Some(n), Some(text)) = (
-                    self.notes.selected.and_then(|i| input.notes.get(i)),
-                    ui.find_below(rect, "MM_DataText"),
-                ) {
-                    ui.set_string(text, t::STRING, &n.text);
+                if let Some(n) = self
+                    .notes
+                    .selected
+                    .and_then(|i| input.notes.get(i))
+                    .cloned()
+                {
+                    self.show_note(ui, rect, &n, input);
+                } else {
+                    ui.set_number(rect, item_type, 0.0);
                 }
             }
             _ => ui.set_number(rect, item_type, 0.0),
         }
+    }
+
+    /// A note in the data rectangle by its kind (`007993d0`): a sound or
+    /// voice note's audio meter (`_ItemType` 3; "--:--:- remaining" and the
+    /// meter at 0 when nothing plays), a text note's text (1; its scrollbar
+    /// as many steps of `_ScrollDelta` as the text runs past the box, plus
+    /// one, at the top), a picture note's picture (2, `XNAM`).
+    // Translated from 007993d0 (decompiled, FalloutNV.exe 1.4.0.525)
+    fn show_note(&mut self, ui: &mut Ui, rect: TileId, n: &super::NoteLine, input: &PipboyInput) {
+        let item_type = trait_id(ui, "_ItemType");
+        match n.kind {
+            0 | 3 => {
+                ui.set_number(rect, item_type, 3.0);
+                if input.note_audio.is_none() {
+                    let info = trait_id(ui, "_ItemStringInfo");
+                    let s = format!("--:--:- {}", text(ui, "sRemaining"));
+                    ui.set_string(rect, info, &s);
+                    let done = trait_id(ui, "_AudioFileCompletion");
+                    ui.set_number(rect, done, 0.0);
+                }
+            }
+            2 => {
+                if let Some(image) = ui.find_below(rect, "MM_DataImage") {
+                    ui.set_string(image, t::FILENAME, n.image.as_deref().unwrap_or(""));
+                }
+                ui.set_number(rect, item_type, 2.0);
+            }
+            _ => {
+                ui.set_number(rect, item_type, 1.0);
+                let text_tile = ui.find_below(rect, "MM_DataText");
+                if let Some(text_tile) = text_tile {
+                    ui.set_string(text_tile, t::STRING, &n.text);
+                }
+                if let (Some(text_tile), Some(bar), Some(area)) = (
+                    text_tile,
+                    ui.find_below(rect, "MM_TextScrollbar"),
+                    ui.find_below(rect, "MM_DataTextRect"),
+                ) {
+                    ui.refresh();
+                    let delta_id = trait_id(ui, "_ScrollDelta");
+                    let delta = ui.number(bar, delta_id).max(1.0);
+                    let over =
+                        (ui.number(text_tile, t::HEIGHT) - ui.number(area, t::HEIGHT)).max(0.0);
+                    let items = trait_id(ui, "_number_of_items");
+                    ui.set_number(bar, items, (over / delta).ceil() + 1.0);
+                    let current = trait_id(ui, "_current_value");
+                    ui.set_number(bar, current, 0.0);
+                    let poke = trait_id(ui, "_SetInCode");
+                    ui.set_number(bar, poke, 1.0);
+                }
+            }
+        }
+    }
+
+    /// A note's audio playing, every frame (`0079a660`): the time since it
+    /// began as "%02d:%02d:%01d remaining" (minutes, seconds, tenths) and
+    /// the meter's share; when it has all played "00:00:0 remaining", the
+    /// meter full, `user0` 0, the note no longer marked playing.
+    // Translated from 0079a660 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn note_audio(&mut self, ui: &mut Ui, audio: Option<super::NoteAudio>) {
+        let (Some(a), Some(rect)) = (audio, self.data_rect) else {
+            return;
+        };
+        if self.playing != Some(a.note) {
+            return;
+        }
+        let info = trait_id(ui, "_ItemStringInfo");
+        let completion = trait_id(ui, "_AudioFileCompletion");
+        let remaining = text(ui, "sRemaining");
+        if a.done {
+            ui.set_string(rect, info, &format!("00:00:0 {remaining}"));
+            ui.set_number(rect, completion, 1.0);
+            ui.set_number(rect, t::USER0, 0.0);
+            self.mark_playing(ui, None);
+            return;
+        }
+        let ms = a.elapsed_ms.min(a.total_ms).max(0.0) as i32;
+        let s = format!(
+            "{:02}:{:02}:{:01} {remaining}",
+            ms / 60000,
+            (ms % 60000) / 1000,
+            (ms % 1000) / 100
+        );
+        ui.set_string(rect, info, &s);
+        if a.total_ms > 0.0 {
+            ui.set_number(rect, completion, a.elapsed_ms.min(a.total_ms) / a.total_ms);
+        }
+    }
+
+    /// Marks a note's row as the one playing (`_selected`, the playing
+    /// mark `011da348`), the others not.
+    fn mark_playing(&mut self, ui: &mut Ui, note: Option<u32>) {
+        let selected = trait_id(ui, "_selected");
+        let notes = self
+            .filled_lists
+            .as_ref()
+            .map(|l| l.1.clone())
+            .unwrap_or_default();
+        for (row, n) in self.notes.rows.clone().into_iter().zip(&notes) {
+            ui.set_number(row, selected, if Some(n.form) == note { 1.0 } else { 0.0 });
+        }
+        self.playing = note;
     }
 
     /// The chosen marker's name in the highlight box (its `_Title`).
@@ -547,6 +682,7 @@ impl DataMenu {
                         out.push(Action::ActiveQuest(q.form));
                     }
                 }
+                3 => out.extend(self.click(ui, NOTE_ROW_ID, None, input)),
                 _ => {}
             },
             _ => {}
@@ -593,6 +729,44 @@ impl DataMenu {
                     if !q.completed {
                         out.push(Action::ActiveQuest(q.form));
                     }
+                }
+            }
+            // A note (`00796fd0` case 0x18): clicked again it's let go (an
+            // audio one stops); else shown and marked, `user0` 1, and a
+            // sound or voice note starts playing (`UIPipBoyHolotapeStart`).
+            // Translated from 00796fd0 (decompiled, FalloutNV.exe 1.4.0.525)
+            NOTE_ROW_ID => {
+                let index = tile
+                    .and_then(|t| self.notes.index_of(t))
+                    .or(self.notes.selected);
+                let Some(n) = index.and_then(|i| input.notes.get(i)).cloned() else {
+                    return out;
+                };
+                let audio = matches!(n.kind, 0 | 3);
+                let same = self.playing == Some(n.form);
+                let was_playing = input.note_audio.is_some();
+                if was_playing {
+                    out.push(Action::StopNote);
+                }
+                let rect = self.data_rect;
+                if !same || (audio && !was_playing) {
+                    if let Some(i) = index {
+                        self.notes.choose(ui, Some(i));
+                    }
+                    if let Some(rect) = rect {
+                        self.show_note(ui, rect, &n, input);
+                        ui.set_number(rect, t::USER0, 1.0);
+                    }
+                    self.mark_playing(ui, Some(n.form));
+                } else {
+                    if let Some(rect) = rect {
+                        ui.set_number(rect, t::USER0, 0.0);
+                    }
+                    self.mark_playing(ui, None);
+                }
+                if audio && (!same || !was_playing) && self.playing == Some(n.form) {
+                    out.push(Action::PlayNote(n.form));
+                    out.push(Action::Sound("UIPipBoyHolotapeStart".into()));
                 }
             }
             WORLD_MAP_ID if self.tab == 1 => {
@@ -754,7 +928,12 @@ mod tests {
         <_scroll_delta>0</_scroll_delta><_highlight_y>-1</_highlight_y><_selected_height>0</_selected_height>
         <image name="lb_scrollbar"><_number_of_items>1</_number_of_items><_current_value>0</_current_value></image>
       </hotrect>
+      <hotrect name="notes"><id>8</id><x>0</x><y>100</y><width>300</width><height>400</height>
+        <_scroll_delta>0</_scroll_delta><_highlight_y>-1</_highlight_y><_selected_height>0</_selected_height>
+        <image name="lb_scrollbar"><_number_of_items>1</_number_of_items><_current_value>0</_current_value></image>
+      </hotrect>
       <rect name="data"><id>13</id>
+        <text name="MM_DataText"></text><image name="MM_DataImage"></image>
         <hotrect name="objectives"><id>15</id><x>0</x><y>0</y><width>300</width><height>400</height>
           <_scroll_delta>0</_scroll_delta><_highlight_y>-1</_highlight_y><_selected_height>0</_selected_height>
           <image name="lb_scrollbar"><_number_of_items>1</_number_of_items><_current_value>0</_current_value></image>
@@ -784,6 +963,7 @@ mod tests {
                 player: Some(([0.5, 0.5], 90.0)),
                 corners: [[0.0, 1.0], [1.0, 0.0]],
                 custom: None,
+                quest: Vec::new(),
             }),
             quests: vec![QuestLine {
                 form: 0x700,
@@ -799,6 +979,86 @@ mod tests {
     fn load(ui: &mut Ui) -> DataMenu {
         let mut read = |p: &str| (p == crate::pipboy::DATA_FILE).then(|| MENU.as_bytes().to_vec());
         DataMenu::load(ui, &mut read).unwrap()
+    }
+
+    /// `00796fd0` case 0x18, `007993d0`, `0079a660`: a text note shows its
+    /// text, a picture note its picture; a voice note clicked plays
+    /// (`UIPipBoyHolotapeStart`), marked and `user0` 1, its meter at
+    /// "--:--:- remaining" until it plays, then the time since it began,
+    /// "00:00:0 remaining" and full when done; clicked while playing it
+    /// stops.
+    #[test]
+    fn notes_show_by_kind_and_play() {
+        let mut ui = crate::pipboy::tests::ui();
+        let mut d = load(&mut ui);
+        let mut input = input();
+        let note = |form: u32, name: &str, kind: u8| crate::pipboy::NoteLine {
+            form,
+            name: name.into(),
+            text: "text".into(),
+            kind,
+            image: (kind == 2).then(|| "Architecture\\Urban\\MetroMap.dds".into()),
+        };
+        input.notes = vec![
+            note(0x301, "Audio Log", 3),
+            note(0x302, "Bunker", 1),
+            note(0x303, "Metro Map", 2),
+        ];
+        d.fill(&mut ui, &input);
+        d.show_tab(&mut ui, 3, &input);
+        ui.refresh();
+        let rect = by_id(&ui, d.menu, 13).unwrap();
+        let item_type = ui.names.lookup("_ItemType").unwrap();
+        let info = ui.names.lookup("_ItemStringInfo").unwrap();
+        // The first, the audio log, chosen: its meter.
+        assert_eq!(ui.number(rect, item_type), 3.0);
+        assert_eq!(ui.string(rect, info).unwrap(), "--:--:- remaining");
+        let out = d.click(&mut ui, NOTE_ROW_ID, Some(d.notes.rows[0]), &input);
+        assert_eq!(
+            out,
+            [
+                Action::PlayNote(0x301),
+                Action::Sound("UIPipBoyHolotapeStart".into())
+            ]
+        );
+        assert_eq!(ui.number(rect, t::USER0), 1.0);
+        let selected = ui.names.lookup("_selected").unwrap();
+        assert_eq!(ui.number(d.notes.rows[0], selected), 1.0);
+        let audio = |elapsed_ms: f32, done: bool| crate::pipboy::NoteAudio {
+            note: 0x301,
+            elapsed_ms,
+            total_ms: 90_000.0,
+            done,
+        };
+        d.note_audio(&mut ui, Some(audio(65_432.0, false)));
+        assert_eq!(ui.string(rect, info).unwrap(), "01:05:4 remaining");
+        let completion = ui.names.lookup("_AudioFileCompletion").unwrap();
+        assert!((ui.number(rect, completion) - 65_432.0 / 90_000.0).abs() < 1e-5);
+        // Clicked again while it plays: it stops.
+        input.note_audio = Some(audio(70_000.0, false));
+        let out = d.click(&mut ui, NOTE_ROW_ID, Some(d.notes.rows[0]), &input);
+        assert_eq!(out, [Action::StopNote]);
+        assert_eq!(d.playing, None);
+        // Played again to its end.
+        input.note_audio = None;
+        d.click(&mut ui, NOTE_ROW_ID, Some(d.notes.rows[0]), &input);
+        d.note_audio(&mut ui, Some(audio(90_000.0, true)));
+        assert_eq!(ui.string(rect, info).unwrap(), "00:00:0 remaining");
+        assert_eq!(ui.number(rect, completion), 1.0);
+        assert_eq!(ui.number(rect, t::USER0), 0.0);
+        // The text note and the picture.
+        let out = d.click(&mut ui, NOTE_ROW_ID, Some(d.notes.rows[1]), &input);
+        assert!(out.is_empty());
+        assert_eq!(ui.number(rect, item_type), 1.0);
+        let text = ui.find_below(rect, "MM_DataText").unwrap();
+        assert_eq!(ui.string(text, t::STRING).unwrap(), "text");
+        d.click(&mut ui, NOTE_ROW_ID, Some(d.notes.rows[2]), &input);
+        assert_eq!(ui.number(rect, item_type), 2.0);
+        let image = ui.find_below(rect, "MM_DataImage").unwrap();
+        assert_eq!(
+            ui.string(image, t::FILENAME).unwrap(),
+            "Architecture\\Urban\\MetroMap.dds"
+        );
     }
 
     #[test]
@@ -868,7 +1128,13 @@ mod tests {
         };
         assert_eq!(middle(&mut ui), (0.5, 0.5));
         let out = d.key(&mut ui, Key::PageDown, &input());
-        assert_eq!(out, [Action::Sound("UIPipBoyScroll".into())]);
+        assert_eq!(
+            out,
+            [
+                Action::Sound("UIPipBoyScroll".into()),
+                Action::ScrollKnob { down: true }
+            ]
+        );
         let mag = ui.names.lookup("_Magnification").unwrap();
         assert!((ui.number(world, mag) - 1.2).abs() < 1e-6);
         assert_eq!(ui.number(world, t::WIDTH), 1200.0);

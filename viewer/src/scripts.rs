@@ -1095,8 +1095,18 @@ pub fn run_scripts(
         let refused = state.sitters.get(&PLAYER_REF).is_some_and(|s| {
             world::furniture::player_activation_blocked(s.state) || s.playing.is_some()
         });
+        // Items the player dropped (made references) are taken as placed
+        // items are (the hook the Pip-Boy's Drop needs; `pipboy`).
+        let dropped = state
+            .place(order, PLAYER_REF)
+            .map(|(space, ..)| world::more_functions::placed::dropped_items(order, state, space))
+            .unwrap_or_default();
         if let Some(r) = activate_request.0.take().filter(|_| !refused) {
-            let object = cell_scripts.refs.iter().find(|o| o.reference == r);
+            let object = cell_scripts
+                .refs
+                .iter()
+                .chain(&dropped)
+                .find(|o| o.reference == r);
             match object.and_then(|o| use_object(order, &scripts.0, state, o)) {
                 Some(Used::Notice(n)) => announce(n, &mut notices),
                 Some(Used::Container(c, name)) => {
@@ -1121,19 +1131,31 @@ pub fn run_scripts(
                         println!("Pick-up sound: {}", record_name(order, s));
                         sound_requests.0.push(s);
                     }
+                    if dropped.iter().any(|d| d.reference == o.reference) {
+                        world::more_functions::placed::taken(state, o.reference);
+                    }
                 }
             }
         }
     }
+    let dropped = state
+        .place(order, PLAYER_REF)
+        .map(|(space, ..)| world::more_functions::placed::dropped_items(order, state, space))
+        .unwrap_or_default();
     // Scripts can turn the crosshair's roll-over text (and with it using
     // things) off (`DisablePlayerControls`).
     let rollover = !state.controls_off[world::scripting::controls::ROLLOVER];
     activatable.0 = if conversation.0.is_none() && rollover {
+        let refs: std::borrow::Cow<[world::scripting::Interactive]> = if dropped.is_empty() {
+            std::borrow::Cow::Borrowed(&cell_scripts.refs)
+        } else {
+            std::borrow::Cow::Owned([cell_scripts.refs.as_slice(), &dropped].concat())
+        };
         object_in_view(
             &scripts.0,
             order,
             state,
-            &cell_scripts.refs,
+            &refs,
             object_bounds.as_deref().unwrap_or(&ObjectBounds::default()),
             &collision.0,
             (eye, dir),
