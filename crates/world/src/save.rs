@@ -326,6 +326,10 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
             line(format!("equipped {} {}", id(*who), id(*item)));
         }
     }
+    let ammo_loaded: BTreeMap<_, _> = state.ammo_loaded.iter().collect();
+    for (who, ammo) in ammo_loaded {
+        line(format!("ammoloaded {} {}", id(*who), id(*ammo)));
+    }
     let value_damage: BTreeMap<_, _> = state.value_damage.iter().collect();
     for ((who, av), d) in value_damage {
         line(format!("valuedamage {} {av} {d}", id(*who)));
@@ -632,6 +636,9 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                     .insert((form(1)?, form(2)?), num(3)? as i8);
             }
             "equipped" => state.equipped.entry(form(1)?).or_default().push(form(2)?),
+            "ammoloaded" => {
+                state.ammo_loaded.insert(form(1)?, form(2)?);
+            }
             "valuedamage" => {
                 state
                     .value_damage
