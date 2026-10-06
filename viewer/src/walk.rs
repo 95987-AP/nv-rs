@@ -33,8 +33,13 @@ pub struct Player {
     start: [f32; 3],
     /// False while the ground under the player is still loading (outdoors).
     pub ready: bool,
-    /// Dropped from the free camera (F): the landing does no damage.
+    /// Dropped from the free camera (`): the landing does no damage.
     from_camera: bool,
+    /// The mover's flags from the keys this frame (`0093e860`: forward,
+    /// back, left, right, running) and the speed they move the player at,
+    /// for the third-person body's animations (`player_body`).
+    pub moving: world::animation::MoveFlags,
+    pub speed: f32,
 }
 
 impl Player {
@@ -45,6 +50,8 @@ impl Player {
             start: [0.0; 3],
             ready: true,
             from_camera: false,
+            moving: world::animation::MoveFlags::default(),
+            speed: 0.0,
         }
     }
 
@@ -70,13 +77,15 @@ impl Player {
     }
 }
 
-/// F switches between walking and flying.
+/// The console key (`) switches between walking and flying (the free
+/// camera is the viewer's; the game's is the console's `tfc`). F is the
+/// game's view key (`player_camera`).
 pub fn toggle_walking(
     keys: Res<ButtonInput<KeyCode>>,
     mut player: ResMut<Player>,
     cameras: Query<&Transform, With<FlyCamera>>,
 ) {
-    if !keys.just_pressed(KeyCode::KeyF) {
+    if !keys.just_pressed(KeyCode::Backquote) {
         return;
     }
     player.walking = !player.walking;
@@ -220,6 +229,15 @@ pub fn walk(
         if sneak {
             flags |= m::SNEAKING;
         }
+        player.moving = world::animation::MoveFlags {
+            forward: flags & m::FORWARD != 0,
+            backward: flags & m::BACK != 0,
+            left: flags & m::LEFT != 0,
+            right: flags & m::RIGHT != 0,
+            running: state.0.player_running,
+            ..Default::default()
+        };
+        player.speed = if len > 0.0 { speed } else { 0.0 };
         world::more_functions::report(
             &mut state.0,
             world::dialogue::PLAYER_REF,

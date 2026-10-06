@@ -284,6 +284,7 @@ pub fn update_view_model(
     mut view: ResMut<ViewModel>,
     mut attack: ResMut<crate::combat::PlayerAttack>,
     mut spawner: Spawner,
+    third_person: Res<crate::player_camera::PlayerView>,
     cameras: Query<&Transform, With<FlyCamera>>,
     first_person: Query<Entity, With<FirstPersonCamera>>,
     mut first_person_projection: Query<&mut Projection, With<FirstPersonCamera>>,
@@ -428,6 +429,9 @@ pub fn update_view_model(
         && !state.dead.contains(&PLAYER_REF)
         // A V.A.T.S. camera shot has the view.
         && !vats.shot_view()
+        // The third-person body shows instead (`00951a10` hides one of
+        // the two).
+        && !third_person.camera.actually_third
         // Holstered, nothing shows (`009466d0`): only drawn, or while
         // drawing or putting away.
         && (attack.out || readying.is_some());

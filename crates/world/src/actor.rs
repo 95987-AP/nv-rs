@@ -587,7 +587,49 @@ fn first_actor(order: &LoadOrder, id: FormId, depth: u8) -> Option<(RecordRef<'_
     (kind == NPC_ || kind == CREA).then_some((rr, record))
 }
 
+/// The player as seen in third person: assembled as people are
+/// ([`actor_look`]) from the player's record (`PLAYER_BASE`: race, face,
+/// hair, eyes, head parts, height), but with the sex the game has
+/// (`SexChange`, the face menu), the clothes and armour the player wears
+/// (`worn`, in order) instead of the record's inventory, and the weapon in
+/// hand (`weapon`), if any.
+pub fn player_look(
+    order: &LoadOrder,
+    female: bool,
+    worn: &[FormId],
+    weapon: Option<FormId>,
+) -> Option<ActorLook> {
+    let rr = order.get(crate::dialogue::PLAYER_BASE)?;
+    let record = rr.record().ok()?;
+    npc_look_dressed(
+        order,
+        &rr,
+        &record,
+        Some(Dressing {
+            female,
+            worn,
+            weapon,
+        }),
+    )
+}
+
+/// What the game state says the player is and wears ([`player_look`]).
+struct Dressing<'a> {
+    female: bool,
+    worn: &'a [FormId],
+    weapon: Option<FormId>,
+}
+
 fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<ActorLook> {
+    npc_look_dressed(order, rr, record, None)
+}
+
+fn npc_look_dressed(
+    order: &LoadOrder,
+    rr: &RecordRef<'_>,
+    record: &Record,
+    dressing: Option<Dressing>,
+) -> Option<ActorLook> {
     let base = rr.form_id;
     let traits = template_for(order, rr, record, USE_TRAITS, 0);
     let (trr, traits_record) = match &traits {
@@ -606,10 +648,15 @@ fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<Ac
         .or_else(|| zstring(record, MODL))
         .unwrap_or_else(|| "Characters\\_Male\\Skeleton.NIF".into());
 
-    let female = traits_record
-        .get(ACBS)
-        .filter(|s| s.data.len() >= 4)
-        .is_some_and(|s| le_u32(&s.data, 0) & FEMALE != 0);
+    let female = dressing.as_ref().map_or_else(
+        || {
+            traits_record
+                .get(ACBS)
+                .filter(|s| s.data.len() >= 4)
+                .is_some_and(|s| le_u32(&s.data, 0) & FEMALE != 0)
+        },
+        |d| d.female,
+    );
     let race = form(trr, traits_record, RNAM).and_then(|id| Race::load(order, id));
     let hair_tint = traits_record
         .get(HCLR)
@@ -621,7 +668,10 @@ fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<Ac
     let mut parts = Vec::new();
     // The NPC's body tint, for the skin pieces of everything below the head.
     let body_tint = body_tint_path(order, trr.form_id, female);
-    let carried = inventory_items(order, irr, inventory_record);
+    let carried = match &dressing {
+        Some(d) => d.worn.iter().map(|&w| (w, 1)).collect(),
+        None => inventory_items(order, irr, inventory_record),
+    };
     for &(item, _) in &carried {
         let Some(armor) = Armor::load(order, item) else {
             continue;
@@ -748,7 +798,11 @@ fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<Ac
     }
     // The weapon they fight with ([`best_weapon`]), at the right hand's
     // `Weapon` node.
-    let weapon = best_weapon(order, &carried).and_then(|item| held_weapon(order, &skeleton, item));
+    let weapon = match &dressing {
+        Some(d) => d.weapon,
+        None => best_weapon(order, &carried),
+    }
+    .and_then(|item| held_weapon(order, &skeleton, item));
     if let Some((model, _)) = &weapon {
         parts.push(ActorPart {
             model: model.clone(),

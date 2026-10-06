@@ -82,8 +82,10 @@ exit back to the marker).
 
 ## Gaps (not implemented, not substituted)
 
-- No third-person camera or player body in the viewer: during the entry
-  and exit the view stays at eye height over the moving player.
+- The third-person camera and player body now exist (branch
+  `claude/m2-third-person`, [CAMERA.md](CAMERA.md)): the temporary view
+  is the camera's (`world::player_camera`), the body plays the entry,
+  seated loop and exit. Not compared with the original's framing.
 - Movement keys while seated: no handler traced; the player is held on the
   seat. The HUD mode switch `00771700` (11 seated, 10 in transition, 2 on
   release), holstering (`0093a5f0`, `008a6840`), the knock state and the

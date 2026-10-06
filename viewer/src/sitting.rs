@@ -490,12 +490,9 @@ fn seat_at_once(
 #[derive(Resource, Default)]
 pub struct PlayerSeat {
     /// Furniture the player activated this frame (`scripts::use_object`).
+    /// (The temporary third-person view is the camera's,
+    /// `player_camera::PlayerView`.)
     pub activated: Option<FormId>,
-    /// The temporary third-person view (`TempThirdPerson`). The viewer has
-    /// no third-person camera or player body: while it's on, the view stays
-    /// at eye height over the player as the entry or exit moves them. That
-    /// presentation is not the original's (left out, not substituted).
-    pub view: furniture::TempThirdPerson,
     /// The heading last given to the camera, so looking around while
     /// seated isn't undone.
     applied_heading: Option<f32>,
@@ -558,7 +555,7 @@ fn player_activates(
     game: &cellview::Game,
     state: &mut GameState,
     seats: &mut Seats,
-    seat: &mut PlayerSeat,
+    (seat, view): (&mut PlayerSeat, &mut crate::player_camera::PlayerView),
     furniture_ref: FormId,
     (feet, heading): ([f32; 3], f32),
 ) {
@@ -583,7 +580,7 @@ fn player_activates(
     };
     match furniture::activate(current, marker) {
         furniture::Activation::StandUp => {
-            seat.view.begin(false, false);
+            view.force_temp_third();
             seat.loop_asked = false;
             if let Some(s) = state.sitters.get_mut(&PLAYER_REF) {
                 s.stand_up();
@@ -596,7 +593,7 @@ fn player_activates(
         // Beds take the sleep path before this (`scripts::use_object`).
         furniture::Activation::Sleep(_) => {}
         furniture::Activation::Sit(marker) => {
-            seat.view.begin(false, false);
+            view.force_temp_third();
             seat.loop_asked = false;
             let settings = seats.marker_settings(order, marker.number);
             let sitter = Sitter::new(furniture_ref, marker, settings, feet, heading);
@@ -644,9 +641,10 @@ pub fn player_furniture(
         bevy::prelude::Res<crate::dialogue::Conversation>,
         bevy::prelude::Res<crate::menus::Menus>,
     ),
-    (doors, collision): (
+    (doors, collision, mut view): (
         bevy::prelude::Res<crate::walk::Doors>,
         bevy::prelude::Res<crate::walk::CellCollision>,
+        bevy::prelude::ResMut<crate::player_camera::PlayerView>,
     ),
     mut cameras: bevy::prelude::Query<(&mut bevy::prelude::Transform, &mut crate::FlyCamera)>,
 ) {
@@ -664,8 +662,16 @@ pub fn player_furniture(
     let feet = player.character.feet;
     let heading = (-camera.yaw).rem_euclid(std::f32::consts::TAU);
     // E on furniture this frame.
+    let view = &mut *view;
     if let Some(f) = seat.activated.take() {
-        player_activates(game, state, &mut seats, &mut seat, f, (feet, heading));
+        player_activates(
+            game,
+            state,
+            &mut seats,
+            (&mut seat, view),
+            f,
+            (feet, heading),
+        );
     }
     // Seated, E on nothing usable (no door, person or object): the
     // current furniture is activated, so they get up. Only with the
@@ -687,7 +693,14 @@ pub fn player_furniture(
         let door = crate::walk::door_in_view(&doors.0, &collision.0, eye, [f.x, -f.z, f.y]);
         if door.is_none() {
             if let Some(&f) = state.furniture.get(&PLAYER_REF) {
-                player_activates(game, state, &mut seats, &mut seat, f, (feet, heading));
+                player_activates(
+                    game,
+                    state,
+                    &mut seats,
+                    (&mut seat, view),
+                    f,
+                    (feet, heading),
+                );
             }
         }
     }
@@ -724,7 +737,7 @@ pub fn player_furniture(
                     };
                     state.sitters.insert(PLAYER_REF, sitter);
                     seat.applied_heading = None;
-                    seat.view = furniture::TempThirdPerson::default();
+                    view.camera.temp_third = furniture::TempThirdPerson::default();
                     seat.loop_asked = false;
                 }
                 None => state.stand(PLAYER_REF),
@@ -738,7 +751,7 @@ pub fn player_furniture(
     };
     let Some(mut sitter) = state.sitters.remove(&PLAYER_REF) else {
         // Up: the view comes back to first person once nothing plays.
-        seat.view.update(false, false, false);
+        view.update_temp_third(false);
         if seat.first_person_loop.take().is_some() {
             idle.set_seated_loop(game, None);
         }
@@ -752,7 +765,9 @@ pub fn player_furniture(
         furniture::player_approach(&mut sitter);
     }
     let before = sitter.state;
-    let first_person = !seat.view.active;
+    // `IsPC1stPerson` as the first-person view being the one wanted (which
+    // of the camera's flags the condition reads isn't traced).
+    let first_person = view.first_person_wanted();
     let roots = seats.roots(&player_skeleton(order));
     let asks =
         sitter.state == SitState::Normal || (sitter.state.is_settled() && sitter.stand_requested);
@@ -791,7 +806,7 @@ pub fn player_furniture(
     }
     // Getting up: the first-person loop stops as the third-person view
     // takes over.
-    if seat.view.active && seat.first_person_loop.take().is_some() {
+    if view.camera.temp_third.active && seat.first_person_loop.take().is_some() {
         idle.set_seated_loop(game, None);
     }
     // The body where the procedure has it; the camera turned with it when
@@ -806,7 +821,7 @@ pub fn player_furniture(
     transform.rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
     let [x, y, z] = sitter.position;
     transform.translation = Vec3::from(cellview::space::point([x, y, z + cellview::EYE_HEIGHT]));
-    let switch_back = seat.view.update(sitter.playing.is_some(), false, false);
+    let switch_back = view.update_temp_third(sitter.playing.is_some());
     match step {
         Step::Released | Step::Failed => {
             if step == Step::Failed {
@@ -826,7 +841,7 @@ pub fn player_furniture(
             if switch_back {
                 seat.loop_asked = false;
             }
-            if !seat.loop_asked && !seat.view.active && sitter.state.is_settled() {
+            if !seat.loop_asked && view.first_person_wanted() && sitter.state.is_settled() {
                 seat.loop_asked = true;
                 let seed = state.roll();
                 let found = pick_player_idle(
