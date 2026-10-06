@@ -1463,6 +1463,7 @@ mod tests {
                 check: None,
                 choices: vec![],
                 add_topics: vec![],
+                follow_ups: vec![],
                 begin_script: Some("SetStage TestQuest 10".into()),
                 end_script: Some("SetStage TestQuest 20".into()),
             },

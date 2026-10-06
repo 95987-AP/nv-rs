@@ -18,6 +18,7 @@ const TRDT: FourCC = FourCC::new(b"TRDT");
 const NAM1: FourCC = FourCC::new(b"NAM1");
 const CTDA: FourCC = FourCC::new(b"CTDA");
 const TCLT: FourCC = FourCC::new(b"TCLT");
+const TCFU: FourCC = FourCC::new(b"TCFU");
 const NAME: FourCC = FourCC::new(b"NAME");
 const RNAM: FourCC = FourCC::new(b"RNAM");
 const QSTI: FourCC = FourCC::new(b"QSTI");
@@ -163,6 +164,12 @@ pub struct Info {
     /// player can ask about (`NAME`).
     pub choices: Vec<FormId>,
     pub add_topics: Vec<FormId>,
+    /// Lines the speaker goes straight on to after this one, without the
+    /// player choosing (`TCFU`, read into the line's conversation data by
+    /// `0061dbd0`; the first that can be said is chosen by `0061af30`, see
+    /// [`follow_up`]). Doc Mitchell's farewell at his door is a chain of
+    /// them ending in the Goodbye line that lets the player leave.
+    pub follow_ups: Vec<FormId>,
     /// Result scripts (`SCTX`): run as the line starts, and after it's
     /// said (the second, after the `NEXT` marker).
     pub begin_script: Option<String>,
@@ -174,6 +181,33 @@ pub const GOODBYE: u8 = 0x01;
 /// `DATA` flag: said only once a game (Doc Mitchell's "You're awake. How
 /// about that." has it, and the intro asks for the topic again later).
 pub const SAY_ONCE: u8 = 0x04;
+/// `DATA` flag 0x02: one of a run of lines picked among at random
+/// (`00619410`; `0061a7d0` and `0061af30` gather consecutive available
+/// lines with it and choose one, see [`choose`]).
+pub const RANDOM: u8 = 0x02;
+/// `DATA` flag 0x08 (the GECK calls it "Run Immediately"; the name isn't
+/// in the executable): the dialogue menu neither runs this line's second
+/// result script nor looks for its follow-ups (`00579200`, tested by
+/// `00762ff0` and the menu's close `00762160`). Where such a line's second
+/// script runs instead is not traced.
+pub const RUN_IMMEDIATELY: u8 = 0x08;
+/// `DATA` flag 0x20: the last line of a random run (`0061aed0`).
+pub const RANDOM_END: u8 = 0x20;
+/// `DATA` flag 0x40 (the GECK's "Run for Rumors", name unverified): the
+/// menu doesn't run this line's first result script (`0083ebb0` tests
+/// `INFO+0x25 & 0x40` before running script 0).
+pub const NO_BEGIN_SCRIPT_IN_MENU: u8 = 0x40;
+/// `DATA` byte 3 flags (`INFO+0x26`): lines for a listener of low or high
+/// Intelligence only (`0061e720`: 0x10 → class 1, else 0x20 → class 3,
+/// else 2; `0061e600` drops class 3 when the listener's Intelligence is at
+/// most `iDialogueDummySpeakThisIntOrBelow` (`011d0dc8`), class 1 when
+/// above).
+pub const LOW_INTELLIGENCE: u8 = 0x10;
+pub const HIGH_INTELLIGENCE: u8 = 0x20;
+
+/// The hard-coded `GOODBYE` topic (default topic kind 1, index 2:
+/// `0061a2d0(1, 2)`).
+pub const GOODBYE_TOPIC: FormId = crate::social::topics::GOODBYE;
 
 fn global(rr: &RecordRef<'_>, data: &[u8]) -> FormId {
     rr.plugin.to_global(FormId(le_u32(data, 0)))
@@ -493,6 +527,7 @@ impl Info {
         let mut conditions = Vec::new();
         let mut choices = Vec::new();
         let mut add_topics = Vec::new();
+        let mut follow_ups = Vec::new();
         let mut scripts: [Option<String>; 2] = [None, None];
         let mut after_next = false;
         for sub in &record.subrecords {
@@ -520,6 +555,7 @@ impl Info {
                 }
                 k if k == CTDA => conditions.extend(read_condition(rr, &sub.data)),
                 k if k == TCLT && sub.data.len() >= 4 => choices.push(global(rr, &sub.data)),
+                k if k == TCFU && sub.data.len() >= 4 => follow_ups.push(global(rr, &sub.data)),
                 k if k == NAME && sub.data.len() >= 4 => add_topics.push(global(rr, &sub.data)),
                 _ => {}
             }
@@ -549,6 +585,7 @@ impl Info {
             check: form(KNAM),
             choices,
             add_topics,
+            follow_ups,
             begin_script: scripts[0].take(),
             end_script: scripts[1].take(),
         }
@@ -696,6 +733,11 @@ pub fn topic_lines(order: &LoadOrder, topic: FormId) -> Vec<Info> {
 /// player with one of ED-E's beeps, a line with no conditions of its own
 /// in `vDialogueEDE`, whose conditions name ED-E), its own conditions
 /// pass, and it isn't a "say once" line already said.
+///
+/// A run of lines flagged random is chosen among ([`choose`], with the
+/// state's current dice value; callers that want a fresh draw roll the
+/// dice first). Lines for the other end of the Intelligence scale than the
+/// player's are left out ([`LOW_INTELLIGENCE`]).
 pub fn pick(
     order: &LoadOrder,
     topic: FormId,
@@ -708,12 +750,7 @@ pub fn pick(
         speaker: Some(speaker),
     };
     let mut quest_ok: std::collections::HashMap<FormId, bool> = Default::default();
-    topic_lines(order, topic).into_iter().find(|info| {
-        if info.responses.is_empty()
-            || (info.flags & SAY_ONCE != 0 && state.said.contains(&info.form_id))
-        {
-            return false;
-        }
+    let available = topic_lines(order, topic).into_iter().filter(|info| {
         if let Some(q) = info.quest {
             let ok = *quest_ok.entry(q).or_insert_with(|| {
                 state.running.contains(&q)
@@ -727,8 +764,222 @@ pub fn pick(
                 return false;
             }
         }
-        passes(order, info, speaker, state)
-    })
+        line_available(order, info, speaker, PLAYER_REF, state)
+    });
+    choose(available, state.dice)
+}
+
+/// Whether a line itself can be said by `speaker` to `listener` now
+/// (`0061e600`, read): it has something to say (an nv-rs rule: a line
+/// without responses isn't picked), it isn't a "say once" line already
+/// said, it suits the listener's Intelligence, and its conditions pass.
+/// "Say once a day" (`DATA` byte 3 flag 0x01, a per-speaker list read by
+/// `00935a40`) is not carried out: when that list is cleared isn't
+/// traced.
+pub fn line_available(
+    order: &LoadOrder,
+    info: &Info,
+    speaker: &Speaker,
+    listener: FormId,
+    state: &GameState,
+) -> bool {
+    if info.responses.is_empty()
+        || (info.flags & SAY_ONCE != 0 && state.said.contains(&info.form_id))
+    {
+        return false;
+    }
+    let facts = crate::scripting::Facts {
+        order,
+        state,
+        speaker: Some(speaker),
+    };
+    if !suits_intelligence(order, &facts, info, listener) {
+        return false;
+    }
+    facts.conditions_pass(&info.conditions, speaker.reference, listener)
+}
+
+/// Translated from 0061e600 (decompiled, FalloutNV.exe 1.4.0.525): the
+/// Intelligence class of a line (`0061e720`) against the listener's
+/// Intelligence (actor value 9) and `iDialogueDummySpeakThisIntOrBelow`
+/// (exe 4, `011d0dc8`; the data sets 3). A listener whose Intelligence
+/// isn't known here passes (unresolved: the game always has one).
+fn suits_intelligence(
+    order: &LoadOrder,
+    facts: &crate::scripting::Facts<'_>,
+    info: &Info,
+    listener: FormId,
+) -> bool {
+    let class = if info.flags2 & LOW_INTELLIGENCE != 0 {
+        1
+    } else if info.flags2 & HIGH_INTELLIGENCE != 0 {
+        3
+    } else {
+        2
+    };
+    if class == 2 {
+        return true;
+    }
+    let Some(intelligence) = facts.current_actor_value(listener, 9) else {
+        return true;
+    };
+    let most =
+        crate::scripting::game_setting(order, "iDialogueDummySpeakThisIntOrBelow").unwrap_or(4.0);
+    // The game compares the whole value (vfunc +8 gives an int).
+    if intelligence.trunc() <= f64::from(most).trunc() {
+        class != 3
+    } else {
+        class != 1
+    }
+}
+
+/// Translated from 0061a7d0 / 0061af30 (decompiled, FalloutNV.exe
+/// 1.4.0.525): the line said out of those that can be, in order. The
+/// first one is said unless it's flagged [`RANDOM`]; consecutive random
+/// lines are gathered (up to and including one flagged [`RANDOM_END`], or
+/// until a line that isn't random) and one of them is chosen with `roll`
+/// (`rand() % count`).
+pub fn choose(available: impl IntoIterator<Item = Info>, roll: u64) -> Option<Info> {
+    let mut randoms: Vec<Info> = Vec::new();
+    for info in available {
+        let last = info.flags & RANDOM_END != 0;
+        if info.flags & RANDOM == 0 {
+            if randoms.is_empty() {
+                return Some(info);
+            }
+            break;
+        }
+        randoms.push(info);
+        if last {
+            break;
+        }
+    }
+    if randoms.is_empty() {
+        return None;
+    }
+    let i = (roll % randoms.len() as u64) as usize;
+    Some(randoms.swap_remove(i))
+}
+
+/// The line a speaker goes straight on to after `info` (translated from
+/// 0061af30, decompiled, FalloutNV.exe 1.4.0.525; the Xbox prototype calls
+/// it `TESTopic::GetMatchingFollowUpInfo` (Xbox PDB)): of the line's
+/// follow-ups (`TCFU`) in order, those whose quest is running and whose
+/// quest conditions and own conditions pass (as [`line_available`]),
+/// chosen as [`choose`] says with the state's dice value.
+pub fn follow_up(
+    order: &LoadOrder,
+    info: &Info,
+    speaker: &Speaker,
+    state: &GameState,
+) -> Option<Info> {
+    let facts = crate::scripting::Facts {
+        order,
+        state,
+        speaker: Some(speaker),
+    };
+    let available = info.follow_ups.iter().filter_map(|&id| {
+        let rr = order.get(id)?;
+        if rr.entry.header.is_deleted() {
+            return None;
+        }
+        let next = Info::load(order, id)?;
+        // `0061af30`: the line's quest (`INFO+0x48`) must be set and
+        // running (`00455620`), and its conditions pass.
+        let quest = next.quest?;
+        if !state.running.contains(&quest)
+            || !facts.conditions_pass(
+                &crate::quest::quest_conditions(order, quest),
+                speaker.reference,
+                PLAYER_REF,
+            )
+        {
+            return None;
+        }
+        line_available(order, &next, speaker, PLAYER_REF, state).then_some(next)
+    });
+    choose(available, state.dice)
+}
+
+/// How the dialogue menu ends a conversation after a line (the menu's
+/// `+0x2c`, set as each line starts by `00762860`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    /// Topics follow.
+    Continue,
+    /// The line answers the `GOODBYE` topic (`+0x2c` 1): follow-ups are
+    /// still looked for, then the menu closes.
+    GoodbyeTopic,
+    /// The line is flagged [`GOODBYE`] (`+0x2c` 2): no follow-ups; the
+    /// menu closes and its second result script runs as it does
+    /// (`00762160`).
+    GoodbyeLine,
+}
+
+/// Translated from 00762860 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn ending(info: &Info) -> Ending {
+    if info.flags & GOODBYE != 0 {
+        Ending::GoodbyeLine
+    } else if info.topic == Some(GOODBYE_TOPIC) {
+        Ending::GoodbyeTopic
+    } else {
+        Ending::Continue
+    }
+}
+
+/// Whether the dialogue menu runs a line's second result script once it's
+/// said (`00762ff0`, `00762160`: not for [`RUN_IMMEDIATELY`] lines).
+pub fn menu_runs_end_script(info: &Info) -> bool {
+    info.flags & RUN_IMMEDIATELY == 0
+}
+
+/// Whether the dialogue menu runs a line's first result script as it
+/// starts (`0083ebb0`: not for [`NO_BEGIN_SCRIPT_IN_MENU`] lines).
+pub fn menu_runs_begin_script(info: &Info) -> bool {
+    info.flags & NO_BEGIN_SCRIPT_IN_MENU == 0
+}
+
+/// What the dialogue menu does once a line has been said and its second
+/// result script has run.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AfterLine {
+    /// The speaker goes straight on with this line.
+    FollowUp(Box<Info>),
+    /// The player chooses among these.
+    Topics(Vec<Choice>),
+    /// The menu closes.
+    Close,
+}
+
+/// Translated from 00762ff0 (decompiled, FalloutNV.exe 1.4.0.525), the
+/// part after a line's last response: unless the line is a Goodbye line
+/// or [`RUN_IMMEDIATELY`], its follow-up ([`follow_up`]) is said next;
+/// otherwise a line answering `GOODBYE` closes the menu, else the topics
+/// (`0083ec30`, here [`next_choices`]) are offered, and with none the menu
+/// closes (`+0x2c` 3, "Invalid choice list encountered").
+pub fn after_line(
+    order: &LoadOrder,
+    info: &Info,
+    top_level: &[Topic],
+    opening: &[FormId],
+    speaker: &Speaker,
+    state: &GameState,
+) -> AfterLine {
+    let ending = ending(info);
+    if ending != Ending::GoodbyeLine && menu_runs_end_script(info) {
+        if let Some(next) = follow_up(order, info, speaker, state) {
+            return AfterLine::FollowUp(Box::new(next));
+        }
+    }
+    if ending != Ending::Continue {
+        return AfterLine::Close;
+    }
+    let list = next_choices(order, info, top_level, opening, speaker, state);
+    if list.is_empty() {
+        AfterLine::Close
+    } else {
+        AfterLine::Topics(list)
+    }
 }
 
 /// The quest and topic parts of a voice file's name: whole when together
@@ -820,6 +1071,7 @@ mod tests {
             check: None,
             choices: Vec::new(),
             add_topics: Vec::new(),
+            follow_ups: Vec::new(),
             begin_script: None,
             end_script: None,
         }
