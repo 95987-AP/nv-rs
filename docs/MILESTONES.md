@@ -309,6 +309,17 @@ units (was 10/10). Generated regressions pass; not compared with the
 original. Evidence and gaps: [NPC_COMBAT.md](NPC_COMBAT.md). **Next
 action:** record ganger hit rates at range in the original game.
 
+NPC hits batch (`claude/m2-npc-hits`, 2026-10-06): people's shots passed
+through the Powder Gangers because the gangers, enabled by script after
+their squares loaded, dropped out of the place's people at the next square
+change (shots only test those bodies). Fixed; Ghost Town Gunfight passed 3
+of 3 acceptance runs (people-at-people shots under 400 units: 0 of 95 hit
+before, 27 of 57 after), `doc` and `vcg02` pass. Line of fire traced
+(`009a6e90` ray pick, `bTargetBlocked` → planner `ACQUIRE_LINE_OF_SIGHT`,
+not done). Not compared with the original. Evidence:
+[NPC_COMBAT.md](NPC_COMBAT.md). **Next action:** trace the combat
+planner's blocked-target actions.
+
 M2 blocker batch (`claude/m2-long-paths`, 2026-10-06): long outdoor
 walks. The game's high-level route over the navmesh info map (`NAVI`,
 `NavMeshInfoSearch` (Xbox PDB) `006b8c50`/`006b8490`), the detailed path

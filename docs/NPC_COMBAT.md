@@ -410,3 +410,76 @@ route file, fix 4. **Not compared** with the original game.
 - "Already a target" is the current target or one queued from hits (the
   viewer's full `Targets` list isn't visible to the world crate).
 - Commanding actor = the player's teammates.
+
+## Shots passing through Powder Gangers (batch `claude/m2-npc-hits`)
+
+2026-10-06. Ghost Town Gunfight stopped completing: people's shots at the
+gangers at close range almost all missed (replay of `b1d2b95`: 86 missed
+shots to 3 hits under 400 units, counted as below; Easy Pete missed a ganger 75 units away with a
+5.57° cone again and again).
+
+### Cause (found by logging the ray against the target's capsules)
+
+Not the pose, placement, heading, scale or aim: the straight ray passed
+2–7 units from the target's pelvis and spine bodies. The targets were
+missing from the viewer's list of the place's people (`Talkers`), which is
+all `combat::first_met_past` tests. The gangers come in through
+`GoodspringsPowderGangMarker.Enable` (`bring_in_enabled`), which added
+them to the list but didn't record them as brought in after loading
+(`BroughtIn`); the next change of loaded squares rebuilt the list from the
+squares (`exterior::stream_squares`, which left them out while disabled)
+and dropped them. Every one of 77 logged close misses was at someone not
+in the list. Fixed: `bring_in_enabled` records them (`BroughtIn::remember`);
+regression `people_enabled_after_loading_stay_when_squares_change`.
+
+### What the game does (traced, for comparison)
+
+- The line of fire (`009d0a30` → `009a6e90`) is a ray pick on the
+  projectile layer 6 (`004a39f0(6)`, pick data → `009c0d80`), from the
+  shooter's point `009a82b0` (`009a8050`'s feet + 0.75 × height, moved out
+  to the shooter's edge along its heading). A ray meets the living
+  bodies' capsules exactly, as the viewer's `RagdollRig::ray_hit` does; the
+  skeleton's capsules (`meshes\characters\_male\skeleton.nif`, radius =
+  radius 1 = radius 2) are thin: pelvis (on `Bip01 NonAccum`) 3.1, spine
+  6.9 / 9.2 / 10.2, head 7.7, upper arms 1.9, forearms 1.6, thighs 5.6.
+- Blocked line of fire: `009d0a30` doesn't fire and sets the combat
+  state's `bTargetBlocked` (+0x72, `CombatState`, Xbox PDB; `0097cd10`
+  via `00586150` = controller +0x9c, Xbox +0xac `pCombatState`). Its only
+  reader, `00997cf0`, re-plans (`0097f200`) when the target is in 360° line
+  of sight, not blocked, and the plan holds action 0x18
+  `COMBAT_ACTION_ACQUIRE_LINE_OF_SIGHT` (table `011a4280`). So moving to a
+  clear line is the planner's (not traced; the viewer holds fire and moves
+  only by the engage procedure's band and strafe timers).
+
+### Gunfight re-runs (private outputs `nv-re\work\npchits-2026-10-06`)
+
+Route `vms16` of `scripts/acceptance.ps1` (Trudy's help, 330 s). Shots
+by people at people (not the player), counted per shot (a shot with any
+pellet striking counts as a hit), by the distance logged:
+
+| Run | < 100 | 100–200 | 200–400 | ≥ 400 | XP +50 |
+| --- | --- | --- | --- | --- | --- |
+| Before (`b1d2b95` replay) | – | 0 / 23 | 3 / 63 | 12 / 482 | no |
+| Before (`3fe4ba4`, logged) | 0 / 12 | 0 / 50 | 0 / 33 | 37 / 503 | no |
+| After, run 1 | 1 / 0 | 1 / 2 | 9 / 7 | 21 / 37 | yes |
+| After, run 2 | 1 / 0 | 7 / 12 | 2 / 4 | 14 / 36 | yes |
+| After, run 3 | 1 / 0 | 3 / 2 | 2 / 3 | 17 / 34 | yes |
+
+(hits / misses). Three runs out of three pass; `doc` and `vcg02` pass.
+Pellets striking someone other than the target: 1, 4 and 4 a run (the
+gangers hit each other or Easy Pete now and then; one ganger was killed
+by another in run 3); "holds fire" with the player in the way 0, 2, 0
+(7 in the `b1d2b95` replay, when the gangers outlived everyone). From the
+first shot to stage 100 took 36–52 s, so nobody stands shooting for long.
+**Not compared** with the original game.
+
+### Not done
+
+- The planner's reaction to a blocked line (`ACQUIRE_LINE_OF_SIGHT`,
+  `IGNORE_BLOCKED_TARGET`) and the line-of-fire origin's move to the
+  shooter's edge (`009a82b0`).
+- A ganger staggered low by a leg-hit reaction (`1stPHitLegLeft`,
+  `1stPMT_HitLegLeft.kf`) is still aimed at half his standing height
+  (`009a8460` lowers the point only when dead, knocked out or paralysed),
+  so close shots pass over him; whether the game's controller height
+  follows the animation isn't traced.
