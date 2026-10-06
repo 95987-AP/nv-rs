@@ -91,8 +91,14 @@ compare them frame by frame. All 8,692 intro frames match in Y, U and V;
 stage 90, so the burial stages (and `TriggerScreenSplatter`) never run.
 Audio (`bink::AudioDecoder`, `nvinspect <movie.bik> audio`) matches the
 DLL's `BinkGetTrackData` output in length and within one step on all
-27.8 million samples. Evidence: [MOVIES.md](MOVIES.md). **Next action:** the
-`PlayBink` handler's presentation in Ghidra, then viewer playback.
+27.8 million samples. Colour conversion matches the DLL's 32-bit output on
+all frames. `PlayBink`'s four flags (interruptible, mute, pause music,
+letterbox) and the game's tiles, filtering and placement were read from the
+exe; the viewer now plays the intro on `--new-game` (`viewer/src/movie.rs`)
+with the game's clock stopped and input withheld, and the game continues
+into Doc's wake-up afterwards (full 290 s run). The command tables were
+confirmed at 40-byte entries. Evidence: [MOVIES.md](MOVIES.md). **Next
+action:** crafting (`ShowRecipeMenu`, M2's campfire tutorial).
 
 Outstanding M1 gates:
 - Exact opening camera transition replay and Doc/player assistance timing.
@@ -100,10 +106,9 @@ Outstanding M1 gates:
   ([OPENING_LOOK_IK.md](OPENING_LOOK_IK.md)).
 - Original face editor instead of auto-accept
   ([FACE_CREATION.md](FACE_CREATION.md)).
-- Opening movie playback ([MOVIES.md](MOVIES.md)): video decoding is
-  bit-exact with the game's `binkw32.dll` on all 8,692 frames of
-  `FNVIntro.bik`, audio within one step on every sample (99.98% exact);
-  `PlayBink` presentation and viewer playback remain.
+- Opening movie playback ([MOVIES.md](MOVIES.md)): done in the viewer
+  with the game's presentation; remaining differences (filtering in linear
+  light, the handler's sound fade) are listed there.
 - In-progress animation save restoration, full character-creation route,
   exit to Goodsprings and save/restart/reload acceptance.
 - SPECIAL's remaining visual/input fidelity and progression comparison

@@ -848,6 +848,8 @@ pub struct HereNow<'w> {
     virtual_time: ResMut<'w, Time<Virtual>>,
     /// The game's own menus open (their classes), for `MenuMode` blocks.
     menu_draw: Res<'w, crate::game_menus::MenuDraw>,
+    /// Movies scripts asked for (`PlayBink`).
+    movies: ResMut<'w, crate::movie::Movies>,
     player_idle: ResMut<'w, crate::player_idle::PlayerIdle>,
     seats: Res<'w, crate::sitting::Seats>,
     object_bounds: Option<Res<'w, ObjectBounds>>,
@@ -894,6 +896,7 @@ pub fn run_scripts(
         mut lockpicking,
         mut virtual_time,
         menu_draw,
+        mut movies,
         mut player_idle,
         seats,
         object_bounds,
@@ -1275,9 +1278,10 @@ pub fn run_scripts(
                 );
                 None
             }
-            // Not played yet: said, so it's clear what scripts did.
-            Event::Video(file) => {
-                println!("A script plays the video {file} (Bink videos aren't played here).");
+            // Played by `movie::start_movies`, before anything else moves.
+            Event::Video(video) => {
+                println!("A script plays the movie {}.", video.file);
+                movies.queue.push_back(video);
                 None
             }
             // Played by `music::play_music`.

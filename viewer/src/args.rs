@@ -38,9 +38,12 @@ OPTIONS:
     --stage QUEST STAGE     set a quest's stage once loaded, as a script
                             would (VCG01 0 starts Doc Mitchell's intro)
     --new-game              start the game: the opening quest (VCG00) from
-                            its first stage (movie playback is not yet
-                            implemented); scripts take you to Doc's house
-                            (the CELL can then be left out)
+                            its first stage, which plays the intro movie;
+                            scripts take you to Doc's house (the CELL can
+                            then be left out)
+    --movies, --no-movies   play the movies scripts ask for (PlayBink), or
+                            skip them; by default they play, except when
+                            taking a screenshot
     --weapon ID             start with this weapon (editor ID or form ID)
                             equipped and 50 rounds for it; screenshots
                             then show it in your hands
@@ -171,6 +174,8 @@ pub struct Args {
     pub open_menu: Option<String>,
     /// `--menu-pointer`: the menus' pointer at this pixel.
     pub menu_pointer: Option<(f32, f32)>,
+    /// Play the movies scripts ask for (`PlayBink`).
+    pub movies: bool,
 }
 
 /// Where to stand, in the game's terms: feet position in game units, and
@@ -231,6 +236,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut lockpick = None;
     let mut open_menu = None;
     let mut menu_pointer = None;
+    let mut movies = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let mut value = |flag: &str| {
@@ -278,6 +284,8 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             "--run" => run.push(value("--run")?),
             "--weather-region" => weather_region = Some(value("--weather-region")?),
             "--no-hud" => hud = false,
+            "--movies" => movies = Some(true),
+            "--no-movies" => movies = Some(false),
             "--freeze-ai" => freeze_ai = true,
             "--lockpick" => lockpick = Some(value("--lockpick")?),
             "--pipboy" => {
@@ -330,6 +338,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             positional.push(NEW_GAME_CELL.to_string());
         }
     }
+    let movies = movies.unwrap_or(screenshot.is_none());
     match positional.as_slice() {
         [data, cell] => Ok(Some(Args {
             data: data.into(),
@@ -354,6 +363,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             lockpick,
             open_menu,
             menu_pointer,
+            movies,
         })),
         [] | [_] => Err("expected the Data folder and a cell".into()),
         [_, _, extra, ..] => Err(format!("unexpected argument '{extra}'")),
@@ -363,6 +373,15 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn movies_play_unless_skipped_or_taking_a_screenshot() {
+        let p = |a: &[&str]| parse(&strings(a)).unwrap().unwrap().movies;
+        assert!(p(&["Data", "Cell"]));
+        assert!(!p(&["Data", "Cell", "--no-movies"]));
+        assert!(!p(&["Data", "Cell", "--screenshot", "a.png"]));
+        assert!(p(&["Data", "Cell", "--screenshot", "a.png", "--movies"]));
+    }
 
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| s.to_string()).collect()

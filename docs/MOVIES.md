@@ -129,10 +129,87 @@ established yet (Direct3D 9 lowers it to 24 bits unless the device is created
 with `D3DCREATE_FPU_PRESERVE`, and Bink may decode on its own thread).
 Decoding the whole track takes 0.6 s.
 
+## How the game shows a movie
+
+From `FalloutNV.exe` 1.4.0.525 (Ghidra; addresses in that build) and the
+Xbox 360 prototype's symbols where marked (Xbox PDB).
+
+**`PlayBink`** (opcode 0x1114, handler `005d15d0`; the script table entry
+confirmed with `NvLabelCommandTables`, stride 40) takes a string and four
+optional integers with no names in the PC program. Their effects, from the
+handler and the movie player it calls:
+
+| Argument | Default | Effect | Evidence |
+| --- | --- | --- | --- |
+| 1 | 0 | The movie can be interrupted | Passed down to the per-frame continue check (`00867440`, the player's vtable `01082564` + 0x40), which ends the movie on control 5 or 28 only when it is set (or when a player flag at +0x20 is). |
+| 2 | 1 | Game sound muted | Brackets the movie with the player's +0x4/+0x8 (`008671a0`, `00867220`: the sound system's pause and resume); the handler also fades or pauses sounds around the call. |
+| 3 | 1 | Game music paused | +0xc/+0x10 (`00867270`, `00867280`). |
+| 4 | 1 | Letterboxed | Picks the fit below; also skips a viewport change when clear. |
+
+The Xbox symbols name the handler's locals `iinterruptable`,
+`imuteGameAudio`, `ipauseGameMusic` and `iletterBoxed` (Xbox PDB); the
+order above is the PC handler's (`005accb0` fills them in that order). The
+opening calls `PlayBink "FNVIntro.bik" 1 1 0 1`: skippable, game sound
+muted, music not paused, letterboxed. The PC build has no
+`bAllowBinkSkipping` setting (the Xbox build's `General` setting).
+
+**Playback loop.** The command does not return until the movie ends: the
+player (`00ec2320`, then `00ec0e00`) opens the file from `Data\Video\`
+(`00ec0ac0`, `BinkOpen`), and loops (`00ec1060`): when `BinkWait` says the
+next frame is due, `BinkDoFrame`, copy, `BinkNextFrame`; then draw and
+`Present`. It logs "Bink playback: Skipped frame #%i" when Bink skips one.
+The loop ends after the frame counter reaches the frame count, or when the
+continue check fails. An optional timeout (the player's float at +0x28)
+makes the movie interruptible after that many seconds.
+
+**Picture.** The frame goes through `BinkCopyToBufferRect` with surface type
+3 into 256x256 `X8R8G8B8` textures (`00ebf8e0`, `00ec14d0`); an edge tile is
+rounded up to a power of two (`00ebfc80`) and its spare texels stay black,
+so the intro's bottom row of tiles holds 208 movie rows in 256. Each frame:
+`Clear` to opaque black, then each tile as a quad of pre-transformed
+vertices (`00ec0280`, FVF `XYZRHW|TEX1`, texture coordinates 0 to 1) with
+linear min/mag/mip filtering and clamped addressing (`00ec0460`), alpha
+blending, depth test and depth writes off (`00ebff30`).
+
+Placement (`00ec2aa0`, `00ec2b20`, `00ec2bb0`): letterboxed, the scale is
+screen width / movie width, x the screen's x offset, y (screen height -
+movie height * scale) / 2; otherwise the scale is screen height / movie
+height, x centres it and y is 0.
+
+**Colours.** `binkw32.dll`'s 32-bit blitter: see `crates/bink/src/color.rs`.
+`Decoder::to_bgrx` matches the DLL on all 8,692 frames of the intro
+(`nvinspect FNVIntro.bik frames OUT bgrx` against `nv-bink --surface 3`).
+
+**Sound.** The game imports `BinkOpenDirectSound` and `BinkSetSoundSystem`
+but not `BinkSetVolume`, so movie sound plays at Bink's default loudness.
+
+## The viewer
+
+`viewer/src/movie.rs` plays `PlayBink` movies: the game's clock stops and
+input is withheld while the movie has the screen; tiles, filtering,
+placement and colours as above, drawn by a 2D camera over everything
+(order 100); sound from `bink::AudioDecoder` at full loudness; the game's
+sounds and music paused when the movie asks; control 5 (E) or 28 (Esc) ends
+an interruptible movie. `--no-movies` skips them; screenshots skip them
+unless `--movies` is given.
+
+Checked 2026-10-06: `--new-game --movies --screenshot movie84.png --wait
+84` at 1920x1080 shows frame 2478. Compared with a model of the game's
+drawing of the DLL's frame 2478 (256 tiles, bilinear in stored bytes, D3D9
+pixel centres; `compare_screen.py` in the private tree): 81.5% of colour
+values identical, 99.3% within 2 levels, mean difference 0.22, largest 35,
+about +0.2 brighter on average. The difference comes from filtering: the
+viewer interpolates between texels in linear light (sRGB textures), the
+game in stored bytes, which differs most across sharp edges.
+
 ## Not done yet
 
-- How the game shows the movie: the `PlayBink` arguments (`1 1 0 1`), the
-  YUV-to-RGB conversion and scaling, whether and how it can be skipped,
-  sound volume, and what the game does when it ends. These need the
-  `PlayBink` handler in `FalloutNV.exe`.
-- The viewer does not play movies yet; `--new-game` still starts after it.
+- Filtering in stored bytes (a custom sprite material) would remove the
+  remaining difference above; cosmetic, deferred.
+- The handler's sound fade around the call (`005d1720` with 6000, and
+  `00ad7230`), and the viewport change when not letterboxed (a global at
+  `011f9426`), are not reproduced.
+- What sets the player's +0x20 flag (interrupt even when the script says
+  not) is not traced.
+- Which x87 precision the game's thread decodes audio at is not
+  established (see the audio table).

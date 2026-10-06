@@ -21,6 +21,7 @@ nif = { path = "../crates/nif" }
 preview = { path = "../crates/preview" }
 assets = { path = "../crates/assets" }
 ui = { path = "../crates/ui" }
+bink = { path = "../crates/bink" }
 speedtree = { path = "../crates/speedtree" }
 
 [dev-dependencies]

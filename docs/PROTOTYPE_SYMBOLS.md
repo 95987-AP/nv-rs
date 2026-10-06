@@ -209,6 +209,11 @@ is unmeasured.
    confidence. Keep a tier only if 2 or fewer rows are wrong, and record the
    counts.
 3. **Types.**
+   - Without Ghidra: [research/pdb](../research/pdb/README.md) repacks the
+     PDB so that `llvm-pdbutil dump -types|-symbols|-publics` can read it
+     (it refuses the original's 1024-byte pages). The symbol dump also has
+     parameter and local names, for example the four `PlayBink` integers
+     ([MOVIES.md](MOVIES.md)).
    - Drag the needed Xbox classes into a project data type archive, then
      apply it to the PC program.
    - PDB structures carry explicit field offsets, and pointers and `long` are
