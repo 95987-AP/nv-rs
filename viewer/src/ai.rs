@@ -149,6 +149,9 @@ pub struct Walker {
     /// (above −20) since that last dropped (`fighting::detect`).
     pub(crate) detect_at: f32,
     pub(crate) noticed: crate::fighting::Noticed,
+    /// Their combat targets and what their detection runs found of each
+    /// (`fighting::Targets`).
+    pub(crate) targets: crate::fighting::Targets,
     /// Running from someone (`fighting::flee`).
     pub(crate) fleeing: Option<FormId>,
     /// Fallen (dead).
@@ -218,7 +221,13 @@ impl Walker {
         )
     }
 
-    fn at(reference: FormId, position: [f32; 3], heading: f32, scale: f32, female: bool) -> Walker {
+    pub(crate) fn at(
+        reference: FormId,
+        position: [f32; 3],
+        heading: f32,
+        scale: f32,
+        female: bool,
+    ) -> Walker {
         Walker {
             reference,
             position,
@@ -251,6 +260,7 @@ impl Walker {
             fight: None,
             detect_at: 0.0,
             noticed: Default::default(),
+            targets: Default::default(),
             fleeing: None,
             fallen: false,
             paused: false,
@@ -407,6 +417,7 @@ pub struct Around<'w> {
     chats: ResMut<'w, Chats>,
     starts: ResMut<'w, Starts>,
     talk: ResMut<'w, crate::scripts::ScriptedTalk>,
+    shots: ResMut<'w, crate::fighting::NpcShots>,
 }
 
 /// The game settings fights ask for, looked up once
@@ -466,6 +477,7 @@ pub fn move_actors(
         mut chats,
         mut starts,
         mut talk,
+        mut shots,
     } = around;
     let order = &game.0.order;
     let state = &mut state.0;
@@ -740,6 +752,11 @@ pub fn move_actors(
         // A fight over (its target dead, or a script's `StopCombat`): back
         // to their package; the next fight starts afresh
         // (`world::npc_combat`).
+        // A target killed: the next of their targets, if any is left
+        // (`fighting::next_target`).
+        if !state.combat.contains_key(&me) {
+            crate::fighting::target_killed(order, state, walker, &others, now);
+        }
         if !state.combat.contains_key(&me) {
             world::npc_combat::combat_over(state, me);
             if walker.fight.is_some() {
@@ -814,6 +831,7 @@ pub fn move_actors(
                 mesh: &nav.mesh,
                 sounds: &mut sounds,
                 hits: &mut hits,
+                shots: &mut shots,
                 others: &others,
                 moves: &moves.settings,
                 now,

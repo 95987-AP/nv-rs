@@ -205,6 +205,7 @@ fn main() {
         .init_resource::<scripts::CellScripts>()
         .init_resource::<ai::CellNav>()
         .init_resource::<ai::CombatSettings>()
+        .init_resource::<fighting::NpcShots>()
         .init_resource::<ai::Moved>()
         .init_resource::<BroughtIn>()
         .init_resource::<ai::Chats>()
@@ -364,6 +365,8 @@ fn main() {
                     (bring_in_enabled, bring_in_people).chain(),
                     bring_in_made,
                     ai::move_actors,
+                    // People's shots fly once everyone has moved.
+                    fighting::resolve_shots.after(ai::move_actors),
                     scripts::save_and_load,
                     report::report_key,
                     sounds::play_sounds,

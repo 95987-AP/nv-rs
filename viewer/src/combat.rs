@@ -47,7 +47,7 @@ use crate::walk::{game_point, CellCollision, Player};
 use crate::{FlyCamera, GameFiles};
 
 /// How far a shot can reach when nothing else says (units).
-const SHOT_RANGE: f32 = 10_000.0;
+pub(crate) const SHOT_RANGE: f32 = 10_000.0;
 
 /// The player's attacking: when the next one can come, rounds left in the
 /// clip (`None`: a full one), and a reload under way.
@@ -180,9 +180,39 @@ pub(crate) fn first_met(
     melee: bool,
     now: f32,
 ) -> Met {
+    first_met_past(
+        order,
+        state,
+        caches,
+        (talkers, cell_scripts, collision, rigs),
+        (eye, dir),
+        reach,
+        (melee, None),
+        now,
+    )
+}
+
+/// [`first_met`], passing by `skip` (someone's own shot leaving their
+/// body).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn first_met_past(
+    order: &esm::LoadOrder,
+    state: &world::scripting::GameState,
+    caches: &mut PlayerAttack,
+    (talkers, cell_scripts, collision, rigs): (
+        &Talkers,
+        &CellScripts,
+        &CellCollision,
+        &Query<(&Walker, &ActorRig)>,
+    ),
+    (eye, dir): ([f32; 3], [f32; 3]),
+    reach: f32,
+    (melee, skip): (bool, Option<FormId>),
+    now: f32,
+) -> Met {
     let mut best: Option<(f32, FormId, Option<u8>)> = None;
     for t in &talkers.0 {
-        if state.dead.contains(&t.reference) {
+        if state.dead.contains(&t.reference) || Some(t.reference) == skip {
             continue;
         }
         // Shots pass a ghost by (`SetGhost`: the projectiles' target
@@ -216,7 +246,12 @@ pub(crate) fn first_met(
         .filter(|r| meetable(order, state, r))
     {
         if let Some(d) = r.ray_hit(eye, dir) {
-            if d <= reach && best.is_none_or(|(bd, _, _)| d < bd) {
+            // A person's shot leaving from inside an object's bounds (Easy
+            // Pete on his porch) isn't stopped by them: the bounds stand in
+            // for the object's collision here, and the shooter stands in
+            // that space.
+            let inside = skip.is_some() && d < 1.0;
+            if !inside && d <= reach && best.is_none_or(|(bd, _, _)| d < bd) {
                 best = Some((d, r.reference, None));
             }
         }
@@ -364,7 +399,7 @@ pub fn setup_hud(mut commands: Commands) {
 
 /// A body's half width and height from its base record's bounds (people
 /// without bounds: 25 and 130).
-fn body(order: &esm::LoadOrder, base: FormId) -> (f32, f32) {
+pub(crate) fn body(order: &esm::LoadOrder, base: FormId) -> (f32, f32) {
     order
         .get(base)
         .and_then(|r| r.record().ok())
@@ -383,7 +418,13 @@ fn body(order: &esm::LoadOrder, base: FormId) -> (f32, f32) {
 
 /// Where a ray from the eye meets an upright cylinder around someone's
 /// feet, if it does.
-fn ray_body(eye: [f32; 3], dir: [f32; 3], feet: [f32; 3], radius: f32, height: f32) -> Option<f32> {
+pub(crate) fn ray_body(
+    eye: [f32; 3],
+    dir: [f32; 3],
+    feet: [f32; 3],
+    radius: f32,
+    height: f32,
+) -> Option<f32> {
     let (ox, oy) = (eye[0] - feet[0], eye[1] - feet[1]);
     let a = dir[0] * dir[0] + dir[1] * dir[1];
     let b = 2.0 * (ox * dir[0] + oy * dir[1]);

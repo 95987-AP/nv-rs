@@ -27,9 +27,29 @@
 //! from the threat until they no longer notice it; paths toward a moving
 //! target are made again every half second. Not done: crouching, dodging,
 //! cover, blocking (no block animations are played, so the block score is 0
-//! as for those without one), suppressive fire, spread (every shot hits),
-//! the hit landing at the attack animation's hit key, the reload and equip
-//! animations (the reload only waits its time).
+//! as for those without one), suppressive fire, the hit landing at the
+//! attack animation's hit key, the reload and equip animations (the reload
+//! only waits its time).
+//!
+//! Shots (`world::npc_aim`, [`resolve_shots`]): each is aimed at the
+//! middle of the target's height from 0.75 of the shooter's (the fire
+//! node's own place, posed by the animation, isn't used), turned at random
+//! within the weapon's cone plus the shooter's gun wobble × 15°
+//! (`fNPCMaxGunWobbleAngle`; walking, running and aiming down the sights
+//! past 512 × the weapon's sight usage count), and flies as a ray to the
+//! first body (its skeleton's capsules; the player's bounds), scripted
+//! object or wall within the projectile's range: shots miss and hit
+//! bystanders. Someone other than their targets first on the straight
+//! line holds the shot (`009a6e90`). Missiles that fly in the game are
+//! rays here too.
+//!
+//! Their targets (`Targets`): everyone they start a fight with or notice
+//! rising while fighting and would attack; when the target dies or is
+//! given up, the best of the rest (`world::npc_aim::best_target`) is
+//! fought next, as the combat group's target choice does. The group's
+//! shared targets and detection, and the re-choice whenever the combat
+//! planner plans anew (its timer isn't traced), aren't modelled: each
+//! fighter keeps its own.
 //!
 //! People choose what they fight with (`world::npc_combat`): when the fight
 //! starts and every 5 s, the best weapon of each kind they carry with
@@ -43,8 +63,9 @@
 //! fire (`explosives` works out the arc); the grenade procedure's own
 //! timing (`009cafe0`) isn't traced further.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+use bevy::prelude::{Local, Query, Res, ResMut, Resource, Time};
 use esm::{FormId, LoadOrder};
 use world::ai::NavMesh;
 use world::combat::Weapon;
@@ -55,6 +76,7 @@ use world::combat_ai::{
 use world::dialogue::PLAYER_REF;
 use world::scripting::{Facts, GameState, Runner, ScriptCache};
 
+use crate::actors::ActorRig;
 use crate::ai::{distance, step, Walker};
 
 /// How often a path toward a moving target is made again, seconds (not
@@ -280,10 +302,16 @@ pub(crate) fn detect(n: &Noticing, state: &mut GameState, walker: &mut Walker, o
     let noticed_min = s("fSneakNoticedMin", -20.0);
     let in_combat = state.combat.contains_key(&me);
     let mut start = None;
+    // The view cone: `fDetectionViewCone` (190°) across (`0088c570`).
+    let half_cone = s("fDetectionViewCone", 190.0).to_radians() * 0.5;
     for &(r, v, sight, at) in &values {
         if r == PLAYER_REF {
             walker.detected_player = v;
         }
+        let (yaw, _) = offsets(walker.position, walker.heading, at);
+        walker
+            .targets
+            .saw(r, v, sight, sight && yaw.abs() <= half_cone, n.now);
         let noticed = v as f32 > noticed_min;
         let rising = noticed && walker.noticed.insert(r);
         if !noticed {
@@ -300,14 +328,23 @@ pub(crate) fn detect(n: &Noticing, state: &mut GameState, walker: &mut Walker, o
                 f.memory.saw(n.now, at);
             }
         }
-        if in_combat || start.is_some() {
-            continue;
-        }
+        // Everyone rising whom they'd attack becomes one of their targets,
+        // in a fight too (`008ff350` queues a start of combat for each,
+        // `009031b0`); the first starts the fight.
+        let fighting = in_combat || start.is_some();
         if rising && combat_ai::starts_combat(order, state, me, r, v, &s) {
-            start = Some(r);
+            if walker.targets.add(r) && fighting {
+                println!("{:.1} s: {me} also takes on {r} (detection {v}).", n.now);
+            }
+            if !fighting {
+                start = Some(r);
+            }
             continue;
         }
-        if rising && walker.fleeing.is_none() && combat_ai::flees_on_sight(order, state, me, r, &s)
+        if !fighting
+            && rising
+            && walker.fleeing.is_none()
+            && combat_ai::flees_on_sight(order, state, me, r, &s)
         {
             println!("{:.1} s: {me} runs from {r}.", n.now);
             walker.fleeing = Some(r);
@@ -315,8 +352,15 @@ pub(crate) fn detect(n: &Noticing, state: &mut GameState, walker: &mut Walker, o
         }
         if v > 0 {
             let value_of = |x: FormId| values.iter().find(|e| e.0 == x).map(|e| e.1);
-            if let Some(enemy) = combat_ai::assists_against(order, state, me, r, v, value_of) {
+            // Only out of a fight: whether `008ff350`'s help check runs for
+            // someone already fighting isn't traced (and the player's
+            // "fight" here is only whoever hurt them last).
+            let helping = (!fighting)
+                .then(|| combat_ai::assists_against(order, state, me, r, v, value_of))
+                .flatten();
+            if let Some(enemy) = helping {
                 println!("{:.1} s: {me} helps {r} against {enemy}.", n.now);
+                walker.targets.add(enemy);
                 start = Some(enemy);
             }
         }
@@ -341,6 +385,8 @@ pub(crate) struct FightCtx<'a> {
     pub sounds: &'a mut crate::sounds::SoundRequests,
     /// Hits made, for their sounds and effects (`hiteffects`).
     pub hits: &'a mut crate::hiteffects::HitReports,
+    /// Shots fired, for [`resolve_shots`].
+    pub shots: &'a mut NpcShots,
     pub others: &'a [Seen],
     /// Turning settings (`world::movement`).
     pub moves: &'a world::movement::MoveSettings,
@@ -410,14 +456,24 @@ pub(crate) fn fight(
             Fight::new(target, c.now, goal)
         }
     };
+    walker.targets.add(target);
     let d = distance(walker.position, goal);
     if fight
         .memory
         .gives_up(c.now, d, state.dead.contains(&target), &s)
     {
         println!("{:.1} s: {me} gives up on {target}.", c.now);
-        state.combat.remove(&me);
-        end_fight(walker, c.now);
+        // The target dropped (`00987220`), the next is chosen
+        // (`0097f4d0`).
+        walker.fight = Some(fight);
+        walker.targets.remove(target);
+        match next_target(order, state, walker, c.others, c.now) {
+            Some(next) => turn_to(state, walker, next, c.now),
+            None => {
+                state.combat.remove(&me);
+                end_fight(walker, c.now);
+            }
+        }
         return FightFrame::default();
     }
     // What they fight with (`world::npc_combat`: at the fight's start and
@@ -463,9 +519,157 @@ pub(crate) fn fight(
 /// A fight over: back to their packages at once.
 pub(crate) fn end_fight(walker: &mut Walker, now: f32) {
     walker.fight = None;
+    walker.targets.list.clear();
     walker.path.clear();
     walker.next = 0;
     walker.forget_package(now);
+}
+
+/// What a fighter's detection runs last found of someone.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Known {
+    value: i32,
+    sight: bool,
+    in_view: bool,
+    /// When their value was last above 0.
+    detected_at: f32,
+}
+
+/// A fighter's combat targets (standing in for its combat group's:
+/// `CombatGroup::TargetArray`, Xbox PDB), and what its detection runs
+/// found of everyone.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Targets {
+    list: Vec<FormId>,
+    known: HashMap<FormId, Known>,
+}
+
+impl Targets {
+    /// One more target; whether it's new.
+    fn add(&mut self, who: FormId) -> bool {
+        let new = !self.list.contains(&who);
+        if new {
+            self.list.push(who);
+        }
+        new
+    }
+
+    fn remove(&mut self, who: FormId) {
+        self.list.retain(|t| *t != who);
+    }
+
+    /// A detection run's value for `who`.
+    fn saw(&mut self, who: FormId, value: i32, sight: bool, in_view: bool, now: f32) {
+        let before = self
+            .known
+            .get(&who)
+            .map_or(f32::NEG_INFINITY, |k| k.detected_at);
+        self.known.insert(
+            who,
+            Known {
+                value,
+                sight,
+                in_view,
+                detected_at: if value > 0 { now } else { before },
+            },
+        );
+    }
+}
+
+/// Whether someone fights in melee, as the target choice compares them
+/// (`009a9630`: no weapon, or a melee one; the combat plan's melee actions
+/// aren't looked at).
+fn fights_in_melee(order: &LoadOrder, state: &GameState, who: FormId) -> bool {
+    world::combat::weapon_in_hand(order, state, who).is_none_or(|w| w.is_melee())
+}
+
+/// The best of a fighter's live targets to fight next
+/// (`world::npc_aim::best_target`), within its combat style's targeting
+/// field of view.
+pub(crate) fn next_target(
+    order: &LoadOrder,
+    state: &GameState,
+    walker: &Walker,
+    others: &[Seen],
+    now: f32,
+) -> Option<FormId> {
+    let me = walker.reference;
+    let current = state.combat.get(&me).copied();
+    let melee = fights_in_melee(order, state, me);
+    let style = walker.kit.as_ref().map(|k| &k.style);
+    let candidates: Vec<world::npc_aim::TargetCandidate> = walker
+        .targets
+        .list
+        .iter()
+        .copied()
+        .filter(|t| *t != me && !state.dead.contains(t))
+        .filter_map(|t| {
+            let at = others
+                .iter()
+                .find(|o| o.reference == t)
+                .map(|o| o.position)
+                .or_else(|| position_of(order, state, t))?;
+            let (yaw, _) = offsets(walker.position, walker.heading, at);
+            if style.is_some_and(|s| !combat_ai::within_targeting_fov(s, yaw)) {
+                return None;
+            }
+            let known = walker.targets.known.get(&t);
+            let d = distance(walker.position, at);
+            let is_current = current == Some(t);
+            Some(world::npc_aim::TargetCandidate {
+                reference: t,
+                detection: known.map_or(i32::MIN, |k| k.value),
+                in_view: known.is_some_and(|k| k.in_view),
+                in_sight: known.is_some_and(|k| k.sight),
+                current: is_current,
+                seen_recently: is_current
+                    && walker
+                        .fight
+                        .as_ref()
+                        .is_some_and(|f| f.memory.target == t && f.memory.unseen_for(now) < 2.0),
+                same_kind: melee == fights_in_melee(order, state, t),
+                distance_sq: d * d,
+                down: state.unconscious.contains(&t),
+                attacked_by_others: false,
+                last_detected: known.map_or(f32::NEG_INFINITY, |k| k.detected_at),
+            })
+        })
+        .collect();
+    world::npc_aim::best_target(&candidates)
+}
+
+/// The fighter takes on `next`: a new fight against it, the fight going on.
+fn turn_to(state: &mut GameState, walker: &mut Walker, next: FormId, now: f32) {
+    println!("{now:.1} s: {} turns to {next}.", walker.reference);
+    state.combat.insert(walker.reference, next);
+    walker.fight = None;
+    walker.path.clear();
+    walker.next = 0;
+}
+
+/// After their target was killed (which ends their fight, `world::combat::
+/// hurt`), the next of their targets, if one is left (`0097f4d0`:
+/// `CombatController::SetTarget(CombatGroup::GetBestTarget)`, Xbox PDB);
+/// a fight a script stopped isn't taken up again.
+pub(crate) fn target_killed(
+    order: &LoadOrder,
+    state: &mut GameState,
+    walker: &mut Walker,
+    others: &[Seen],
+    now: f32,
+) {
+    let Some(dead) = walker
+        .fight
+        .as_ref()
+        .map(|f| f.memory.target)
+        .filter(|t| state.dead.contains(t))
+    else {
+        return;
+    };
+    walker.targets.remove(dead);
+    if let Some(next) = next_target(order, state, walker, others, now) {
+        turn_to(state, walker, next, now);
+    }
 }
 
 /// Sets a path to `to` (over the navmesh, else `straight` allowing a
@@ -704,22 +908,17 @@ fn ranged(
         if let Some(sound) = w.sound {
             c.sounds.0.push(sound);
         }
-        let dealt = Runner::new(order, c.scripts, state).hit(walker.reference, target, Some(w));
-        if let Some(dmg) = dealt {
-            report_hit(
-                c,
-                state,
-                walker.reference,
-                (target, goal),
-                Some(w.form_id),
-                dmg,
-            );
-            let left = world::combat::health(order, state, target).unwrap_or(0.0);
-            println!(
-                "{now:.1} s: {} shoots {target} from {d:.0} units for {dmg:.1} ({left:.1} left).",
-                walker.reference
-            );
-        }
+        // The shot flies once everyone has moved ([`resolve_shots`]).
+        c.shots.0.push(NpcShot {
+            shooter: walker.reference,
+            target,
+            weapon: w.clone(),
+            gait: if walking {
+                fight.moving.map(|m| m.gait)
+            } else {
+                None
+            },
+        });
     }
     FightFrame {
         gait: walking.then(|| fight.moving.map_or(Gait::FastWalk, |m| m.gait)),
@@ -931,6 +1130,275 @@ pub(crate) fn flee(
     step(walker, kit.run, dt)
 }
 
+/// A shot someone fired this frame: at whom, with what, and how they were
+/// moving (for the wobble).
+#[derive(Debug, Clone)]
+pub(crate) struct NpcShot {
+    shooter: FormId,
+    target: FormId,
+    weapon: Weapon,
+    gait: Option<Gait>,
+}
+
+/// The shots fired this frame, flown by [`resolve_shots`].
+#[derive(Resource, Default)]
+pub struct NpcShots(Vec<NpcShot>);
+
+/// The player's base record (`NPC_` 00000007), for their bounds.
+const PLAYER_BASE: FormId = FormId(7);
+
+/// Feet and height (the base's bounds × scale, `world::npc_aim::
+/// actor_height`; else the viewer's body default) of someone on screen or
+/// the player.
+fn body_of(
+    order: &LoadOrder,
+    state: &GameState,
+    rigs: &Query<(&Walker, &ActorRig)>,
+    talkers: &crate::dialogue::Talkers,
+    who: FormId,
+) -> Option<([f32; 3], f32)> {
+    let (feet, scale, base) = if who == PLAYER_REF {
+        (state.player_position?, 1.0, PLAYER_BASE)
+    } else {
+        let (w, _) = rigs.iter().find(|(w, _)| w.reference == who)?;
+        let base = talkers
+            .0
+            .iter()
+            .find(|t| t.reference == who)
+            .map(|t| t.base)
+            .or_else(|| world::scripting::base_of(order, who))?;
+        (w.position, w.scale, base)
+    };
+    let height = world::npc_aim::actor_height(order, base, scale)
+        .unwrap_or_else(|| crate::combat::body(order, base).1 * scale);
+    Some((feet, height))
+}
+
+/// What a person's shot along `dir` from `origin` meets first within
+/// `reach` (`combat::first_met_past`, passing by the shooter), the player
+/// by their bounds included: who or what, how far, the body part; and the
+/// world's collision met, if any.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn met_first(
+    order: &LoadOrder,
+    state: &GameState,
+    caches: &mut crate::combat::PlayerAttack,
+    around: (
+        &crate::dialogue::Talkers,
+        &crate::scripts::CellScripts,
+        &crate::walk::CellCollision,
+        &Query<(&Walker, &ActorRig)>,
+    ),
+    (origin, dir, reach): ([f32; 3], [f32; 3], f32),
+    shooter: FormId,
+    now: f32,
+) -> (Option<(f32, FormId, Option<u8>)>, Option<(f32, u32)>) {
+    let collision = around.2;
+    let met = crate::combat::first_met_past(
+        order,
+        state,
+        caches,
+        around,
+        (origin, dir),
+        reach,
+        (false, Some(shooter)),
+        now,
+    );
+    let wall = collision.0.raycast(origin, dir, reach);
+    let player = (shooter != PLAYER_REF && !state.dead.contains(&PLAYER_REF))
+        .then_some(state.player_position)
+        .flatten()
+        .and_then(|p| {
+            let (radius, tall) = crate::combat::body(order, PLAYER_BASE);
+            crate::combat::ray_body(origin, dir, p, radius, tall)
+        })
+        .filter(|d| *d <= reach && wall.is_none_or(|(w, _)| w >= d - 5.0));
+    let first = match (&met, player) {
+        (
+            crate::combat::Met::Thing {
+                distance: d,
+                reference,
+                part,
+            },
+            p,
+        ) if p.is_none_or(|p| *d <= p) => Some((*d, *reference, *part)),
+        (_, Some(p)) => Some((p, PLAYER_REF, None)),
+        _ => None,
+    };
+    (first, wall)
+}
+
+/// Flies the shots people fired this frame (`world::npc_aim`; see the
+/// module notes): each pellet from 0.75 of the shooter's height toward the
+/// middle of the target's, turned within the cone, to the first body,
+/// scripted object or wall within the projectile's range; the player is
+/// met by their bounds. Whoever is struck takes the pellet's share of the
+/// damage on the part struck.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resolve_shots(
+    time: Res<Time>,
+    game: Res<crate::GameFiles>,
+    mut dialogue: ResMut<crate::dialogue::DialogueState>,
+    mut caches: ResMut<crate::combat::PlayerAttack>,
+    world: (
+        Res<crate::dialogue::Talkers>,
+        Res<crate::scripts::CellScripts>,
+        Res<crate::walk::CellCollision>,
+        Res<crate::scripts::Scripts>,
+    ),
+    settings: Res<crate::ai::CombatSettings>,
+    mut hits: ResMut<crate::hiteffects::HitReports>,
+    mut shots: ResMut<NpcShots>,
+    mut vats_settings: Local<Option<world::vats::Settings>>,
+    rigs: Query<(&Walker, &ActorRig)>,
+) {
+    if shots.0.is_empty() {
+        return;
+    }
+    let (talkers, cell_scripts, collision, scripts) = world;
+    let order = &game.0.order;
+    let state = &mut dialogue.0;
+    let now = time.elapsed_secs();
+    let s = |n: &str, d: f32| settings.0.get(order, n, d);
+    let vs = vats_settings.get_or_insert_with(|| world::vats::Settings::load(order));
+    for shot in std::mem::take(&mut shots.0) {
+        let me = shot.shooter;
+        let w = &shot.weapon;
+        let Some((from, my_height)) = body_of(order, state, &rigs, &talkers, me) else {
+            continue;
+        };
+        let Some((feet, height)) = body_of(order, state, &rigs, &talkers, shot.target) else {
+            continue;
+        };
+        let origin = [
+            from[0],
+            from[1],
+            from[2] + world::npc_aim::fire_height(my_height),
+        ];
+        let down = state.unconscious.contains(&shot.target);
+        let aim = [
+            feet[0],
+            feet[1],
+            feet[2]
+                + world::npc_aim::aim_height(height, world::npc_aim::SEGMENT_MIDDLE, down, false),
+        ];
+        // Aiming down the sights past the weapon's distance; walking or
+        // running as they moved.
+        let aiming = world::npc_aim::uses_iron_sights(
+            distance(from, aim),
+            world::npc_aim::sight_usage(order, w.form_id),
+            w.is_melee(),
+            &s,
+        );
+        let stance = world::vats::Stance {
+            sneaking: false,
+            swimming: false,
+            walking: matches!(shot.gait, Some(Gait::Walk | Gait::FastWalk)),
+            running: shot.gait == Some(Gait::Run),
+            aiming,
+        };
+        let wobble = world::vats::wobble(order, state, vs, me, Some(w), stance);
+        let ammo = w.ammo_in_use(order, state, me);
+        let (count, weapon_cone) = w.shot(order, ammo);
+        let cone = world::npc_aim::npc_cone(weapon_cone, wobble, vs.npc_max_gun_wobble);
+        let reach = w.range(order).unwrap_or(crate::combat::SHOT_RANGE);
+        let mut pellet = w.clone();
+        pellet.damage /= count.max(1) as f32;
+        let (heading, pitch) = world::npc_aim::heading_pitch(origin, aim);
+        // The line of fire (`009d0a30` → `009a6e90`): someone other than
+        // the target or another of the shooter's targets first on the line
+        // to the aim point holds the shot.
+        let mine = |who: FormId| {
+            who == shot.target
+                || rigs
+                    .iter()
+                    .find(|(w, _)| w.reference == me)
+                    .is_some_and(|(w, _)| w.targets.list.contains(&who))
+        };
+        let straight = world::npc_aim::direction(heading, pitch);
+        let (first, _) = met_first(
+            order,
+            state,
+            &mut caches,
+            (&talkers, &cell_scripts, &collision, &rigs),
+            (origin, straight, reach),
+            me,
+            now,
+        );
+        if let Some((_, friend, _)) =
+            first
+                .filter(|(_, who, _)| !mine(*who))
+                .filter(|(_, who, _)| {
+                    *who == PLAYER_REF || talkers.0.iter().any(|t| t.reference == *who)
+                })
+        {
+            println!(
+                "{now:.1} s: {me} holds fire at {}: {friend} is in the way.",
+                shot.target
+            );
+            continue;
+        }
+        let mut struck_any = false;
+        let mut walled = None;
+        for _ in 0..count.max(1) {
+            let unit = |v: u64| (v % 1_000_000) as f32 / 1_000_000.0;
+            let (u_r, u_turn) = (unit(state.roll()), unit(state.roll()));
+            let (h, p) = world::npc_aim::deviate(heading, pitch, cone, u_r, u_turn);
+            let dir = world::npc_aim::direction(h, p);
+            let (victim, wall) = met_first(
+                order,
+                state,
+                &mut caches,
+                (&talkers, &cell_scripts, &collision, &rigs),
+                (origin, dir, reach),
+                me,
+                now,
+            );
+            let Some((d, victim, part)) = victim else {
+                if let Some(at) = wall {
+                    walled = Some(at.0);
+                    hits.shot_on_world(&collision.0, (origin, dir), at, me, w.form_id);
+                }
+                continue;
+            };
+            let Some(hit) =
+                Runner::new(order, &scripts.0, state).hit_at(me, victim, Some(&pellet), part)
+            else {
+                continue;
+            };
+            struck_any = true;
+            hits.0.push(crate::hiteffects::HitReport {
+                attacker: me,
+                target: Some(victim),
+                weapon: Some(w.form_id),
+                point: [0, 1, 2].map(|k| origin[k] + dir[k] * d),
+                havok: None,
+                damage: hit.dealt,
+                killed: state.dead.contains(&victim),
+            });
+            let left = world::combat::health(order, state, victim).unwrap_or(0.0);
+            let aside = if victim == shot.target {
+                String::new()
+            } else {
+                format!(" (aiming at {})", shot.target)
+            };
+            println!(
+                "{now:.1} s: {me} shoots {victim} from {d:.0} units for {:.1} ({left:.1} left){aside}.",
+                hit.dealt
+            );
+        }
+        if !struck_any {
+            println!(
+                "{now:.1} s: {me} misses {} from {:.0} units (cone {:.2}°{}).",
+                shot.target,
+                distance(from, feet),
+                cone.to_degrees(),
+                walled.map_or(String::new(), |d| format!(", into the world at {d:.0}"))
+            );
+        }
+    }
+}
+
 /// Who's been noticed, kept per actor (see `detect`).
 pub(crate) type Noticed = HashSet<FormId>;
 
@@ -951,6 +1419,109 @@ mod tests {
         let (yaw, pitch) = offsets([0.0; 3], FRAC_PI_2, [100.0, 1.0, 100.0]);
         assert!(yaw < 0.0 && yaw > -0.02, "{yaw}");
         assert!((pitch - std::f32::consts::FRAC_PI_4).abs() < 1e-3);
+    }
+
+    /// Someone at the origin facing north, and two people they fight: one
+    /// 500 units east, one 3000 north.
+    fn fighter() -> (Walker, Vec<Seen>) {
+        let mut w = Walker::at(FormId(0x100), [0.0; 3], 0.0, 1.0, false);
+        let seen = |r: u32, p: [f32; 3]| Seen {
+            reference: FormId(r),
+            position: p,
+            moving: false,
+            running: false,
+            attacking: false,
+            radius: combat_ai::PERSON_RADIUS,
+        };
+        let others = vec![
+            seen(0x200, [500.0, 0.0, 0.0]),
+            seen(0x300, [0.0, 3000.0, 0.0]),
+        ];
+        w.targets.add(FormId(0x200));
+        w.targets.add(FormId(0x300));
+        (w, others)
+    }
+
+    #[test]
+    fn targets_remember_when_they_were_last_detected() {
+        let mut t = Targets::default();
+        assert!(t.add(FormId(1)));
+        assert!(!t.add(FormId(1)));
+        t.saw(FormId(1), 30, true, true, 2.0);
+        t.saw(FormId(1), -10, false, false, 5.0);
+        let k = t.known[&FormId(1)];
+        assert_eq!((k.value, k.sight, k.detected_at), (-10, false, 2.0));
+        t.remove(FormId(1));
+        assert!(t.list.is_empty());
+    }
+
+    #[test]
+    fn the_next_target_is_the_best_detected_one_left() {
+        let data = testdata::ai::world("next-target");
+        let game = cellview::Game::open(
+            data.path(),
+            &cellview::Options {
+                official: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let order = &game.order;
+        let mut state = GameState::default();
+        let (mut w, others) = fighter();
+        // Both detected and in sight; the near one also in view: it's
+        // chosen (1000 + 100 + 940 against 100 + 0).
+        w.targets.saw(FormId(0x200), 40, true, true, 1.0);
+        w.targets.saw(FormId(0x300), 40, true, false, 1.0);
+        assert_eq!(
+            next_target(order, &state, &w, &others, 2.0),
+            Some(FormId(0x200))
+        );
+        // Undetected, the near one gives way to the detected far one.
+        w.targets.saw(FormId(0x200), -30, false, false, 3.0);
+        assert_eq!(
+            next_target(order, &state, &w, &others, 3.0),
+            Some(FormId(0x300))
+        );
+        // The dead aren't chosen; none left, none chosen.
+        state.dead.insert(FormId(0x300));
+        assert_eq!(
+            next_target(order, &state, &w, &others, 3.0),
+            Some(FormId(0x200))
+        );
+        state.dead.insert(FormId(0x200));
+        assert_eq!(next_target(order, &state, &w, &others, 3.0), None);
+    }
+
+    #[test]
+    fn a_killed_targets_killer_takes_on_the_next() {
+        let data = testdata::ai::world("target-killed");
+        let game = cellview::Game::open(
+            data.path(),
+            &cellview::Options {
+                official: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let order = &game.order;
+        let mut state = GameState::default();
+        let (mut w, others) = fighter();
+        w.targets.saw(FormId(0x200), 40, true, true, 1.0);
+        w.targets.saw(FormId(0x300), 40, true, true, 1.0);
+        // Fighting the near one, which dies (`world::combat::hurt` ends
+        // the fight).
+        w.fight = Some(Fight::new(FormId(0x200), 0.0, [500.0, 0.0, 0.0]));
+        state.dead.insert(FormId(0x200));
+        target_killed(order, &mut state, &mut w, &others, 4.0);
+        assert_eq!(state.combat.get(&FormId(0x100)), Some(&FormId(0x300)));
+        assert!(w.fight.is_none());
+        assert_eq!(w.targets.list, vec![FormId(0x300)]);
+        // A fight a script stopped (the target alive) isn't taken up.
+        state.combat.clear();
+        w.fight = Some(Fight::new(FormId(0x300), 4.0, [0.0, 3000.0, 0.0]));
+        target_killed(order, &mut state, &mut w, &others, 5.0);
+        assert!(state.combat.is_empty());
     }
 
     #[test]

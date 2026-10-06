@@ -60,6 +60,7 @@ pub mod modifier;
 pub mod more_functions;
 pub mod movement;
 pub mod music;
+pub mod npc_aim;
 pub mod npc_combat;
 pub mod particles;
 pub mod perks;

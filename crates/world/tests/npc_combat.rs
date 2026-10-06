@@ -84,7 +84,7 @@ fn the_guard_fights_with_the_best_weapon_that_reaches() {
 #[test]
 fn a_gunman_fights_with_the_gun_and_rounds_his_leveled_list_gives() {
     // Ghost Town Gunfight: the Powder Gangers carry their guns only
-    // through `WithAmmoNV…Loot` lists (e.g. `GSPGAAM2`'s
+    // through `WithAmmoNVâ€¦Loot` lists (e.g. `GSPGAAM2`'s
     // `WithAmmoNVSingleShotgunLoot`). Untouched (never stocked), the
     // fight must still see the gun and its rounds, not leave them fists.
     let (_data, order) = order("npcc-leveled");
@@ -125,7 +125,7 @@ fn guns_need_their_ammunition_and_far_targets_keep_the_best_gun() {
     // The rifle, set aside, would need to be within 3000.
     assert_eq!(a.recheck_range, 3000.0);
     // At 3050 only the pistol (3072) reaches; the rifle (3000) is set
-    // aside, its score ÷ 10000.
+    // aside, its score Ã· 10000.
     let a = npc_combat::arsenal(&order, &state, guard, &style, Some(3050.0), &s);
     assert_eq!(a.weapons[kind::RANGED], Some(FormId(PISTOL)));
     // A broken pistol (condition 0) isn't rated at all: the rifle, the

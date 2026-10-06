@@ -7,9 +7,9 @@ use crate::{f32s, group, placed, record, sub, zstr, TempData};
 /// Form IDs in the [`fighting`] world.
 pub mod ids {
     /// The default combat style at the engine's own form (attack 40, block
-    /// 30, hold 0.5–1.5 s: `DefaultCombatstyle`'s values).
+    /// 30, hold 0.5â€“1.5 s: `DefaultCombatstyle`'s values).
     pub const DEFAULT_STYLE: u32 = 0x3D;
-    /// The gecko's style: attack 60, block 40, hold 0.1–0.35 s, range
+    /// The gecko's style: attack 60, block 40, hold 0.1â€“0.35 s, range
     /// multipliers 0.5 / 2, semi-auto delay multipliers 1 / 2.
     pub const GECKO_STYLE: u32 = 0xB00;
     /// The same range multipliers in a record of form version 11 (read as
@@ -19,9 +19,9 @@ pub mod ids {
     /// lobber, so gravity 1 whatever the record says).
     pub const BULLET: u32 = 0xB02;
     pub const GRENADE: u32 = 0xB03;
-    /// A pistol (256–768, 3.125 attacks a second, semi-auto delay 0–0.3 s,
+    /// A pistol (256â€“768, 3.125 attacks a second, semi-auto delay 0â€“0.3 s,
     /// the bullet), a submachine gun (automatic, 11 a second), a machete
-    /// (reach 0.5, Melee Weapons) and a launcher (range fixed, 0–2000, the
+    /// (reach 0.5, Melee Weapons) and a launcher (range fixed, 0â€“2000, the
     /// grenade).
     pub const PISTOL: u32 = 0xB04;
     pub const SMG: u32 = 0xB05;
@@ -60,7 +60,7 @@ pub mod ids {
     pub const SPAWN_LIST: u32 = 0xB18;
     pub const SETTINGS: u32 = 0xB20;
     /// A round (`AMMO`), a rifle that takes it (clip 5, 16 damage, 1.25
-    /// attacks a second, reload 2 s, 0–3000 units) and a stick of dynamite
+    /// attacks a second, reload 2 s, 0â€“3000 units) and a stick of dynamite
     /// (a grenade: animation 10, "NPCs use ammo", the grenade projectile).
     pub const ROUND: u32 = 0xB30;
     pub const RIFLE: u32 = 0xB31;
@@ -70,7 +70,7 @@ pub mod ids {
     pub const FIGHT_GLOBAL: u32 = 0xB33;
     pub const RAIDER_SCRIPT: u32 = 0xB34;
     /// A leveled item list giving the rifle and 10 rounds together ("use
-    /// all", as the game's `WithAmmoNV…Loot` lists), and a gunman
+    /// all", as the game's `WithAmmoNVâ€¦Loot` lists), and a gunman
     /// (`GSPGAAM`-like: raiders' faction) carrying only that list, placed
     /// at 0,-600.
     pub const RIFLE_WITH_AMMO: u32 = 0xB35;
@@ -138,11 +138,11 @@ pub fn fighting(tag: &str) -> TempData {
     let mut s = edid("TestOldStyle");
     s.extend(style(60, 40, (0.1, 0.35), (0.5, 2.0), (1.0, 2.0)));
     let mut old = record(b"CSTY", OLD_STYLE, &s);
-    // The record header's form version (bytes 20–21).
+    // The record header's form version (bytes 20â€“21).
     old[20..22].copy_from_slice(&11u16.to_le_bytes());
     styles.extend(old);
 
-    // Projectiles: DATA flags u16, type u16, gravity, speed, range, …
+    // Projectiles: DATA flags u16, type u16, gravity, speed, range, â€¦
     let projectile = |id: u32, name: &str, flags: u16, kind: u16, gravity: f32, speed: f32| {
         let mut d = edid(name);
         let mut data = flags.to_le_bytes().to_vec();
