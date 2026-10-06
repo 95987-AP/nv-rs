@@ -639,3 +639,98 @@ pub fn repair_services_menu() -> String {
         ),
     )
 }
+
+/// A stand-in for `caravan_menu.xml` and its four prefabs: the screens'
+/// rects (0–3), the displays (a rect with `_Value`, a title and a value
+/// text), the buttons (a hotrect with a text child), the scrollbar, the
+/// track value rects (shown later), the info rects the code widens.
+pub fn caravan_menu() -> String {
+    let display = |name: &str, id: i32| {
+        format!(
+            "<rect name=\"{name}\"><id>{id}</id><_Value></_Value><string></string>
+               <text name=\"{name}Title\"><font>7</font><string></string></text>
+               <text name=\"{name}Value\"><font>7</font><string><copy src=\"parent()\" trait=\"_Value\"/></string></text>
+             </rect>"
+        )
+    };
+    let button = |name: &str, id: i32| {
+        format!(
+            "<hotrect name=\"{name}\"><id>{id}</id><target>&true;</target><string></string><_PCButtonText></_PCButtonText>
+               <text name=\"{name}Text\"><font>7</font><string><copy src=\"parent()\" trait=\"string\"/></string></text>
+             </hotrect>"
+        )
+    };
+    let text = |name: &str, id: i32| {
+        format!("<text name=\"{name}\"><id>{id}</id><font>7</font><string></string></text>")
+    };
+    let tracks: String = (23..29)
+        .map(|i| display(&format!("CGM_Track{i}"), i))
+        .collect();
+    format!(
+        "<menu name=\"CaravanMenu\"><class>&CaravanMenu;</class>
+           <rect name=\"NOGLOW_BRANCH\">
+             <rect name=\"CBM_MainRect\"><id>0</id><width>1000</width>
+               <rect name=\"CBM_InfoRect\"><width>300</width>
+                 {}{}{}{}{}
+                 <text name=\"CBM_NPCBetValue\"><x>20</x><string></string></text>
+               </rect>
+               {}{}{}{}
+             </rect>
+             <rect name=\"CDM_MainRect\"><id>1</id><width>1000</width>
+               {}{}{}{}{}{}{}{}{}{}
+               <hotrect name=\"CDM_Scrollbar\"><id>15</id><user0>0</user0><_current_value>12</_current_value></hotrect>
+             </rect>
+             <rect name=\"CDG_MainRect\"><id>2</id><width>1600</width>
+               <rect name=\"CGM_InfoRect\"><x>1300</x><width>300</width>{}{}{}{}{}{}</rect>
+               {}{}{}{}
+               <rect name=\"CGM_PlayerTrackRect\"><visible>&false;</visible>{tracks}</rect>
+               <rect name=\"CGM_NPCTrackRect\"><visible>&false;</visible></rect>
+               {}{}
+             </rect>
+             <rect name=\"CDR_MainRect\"><id>3</id><width>1000</width>
+               <rect name=\"CRM_InfoRect\"><width>300</width>{}{}{}{}{}{}{}{}{}</rect>
+             </rect>
+           </rect>
+         </menu>",
+        display("CBM_NPCBetDisplay", 4),
+        display("CBM_PlayerBetDisplay", 5),
+        display("CBM_TotalFundsDisplay", 6),
+        text("CBM_PlayerBetTitle", 40),
+        text("CBM_TotalFundsTitle", 41),
+        button("CBM_AutoMatchButton", 37),
+        button("CBM_RaiseButton", 36),
+        button("CBM_AcceptButton", 7),
+        button("CBM_ExitButton", 38),
+        display("CDM_CardsInDeckDisplay", 8),
+        display("CDM_TotalCardsDisplay", 9),
+        button("CDM_CaravanDeckButton", 10),
+        button("CDM_AllCardsButton", 11),
+        button("CDM_AddButton", 12),
+        button("CDM_RemoveButton", 13),
+        button("CDM_PlayButton", 14),
+        button("CDM_NavigateButton", 39),
+        text("CDM_CardsInDeckTitle", 42),
+        text("CDM_TotalCardsTitle", 43),
+        display("CGM_AnteDisplay", 16),
+        display("CGM_NetTotalDisplay", 17),
+        display("CGM_WinLossDisplay", 18),
+        text("CGM_AnteTitle", 44),
+        text("CGM_NetTotalTitle", 45),
+        text("CGM_WinLossTitle", 46),
+        button("CGM_SelectCardButton", 19),
+        button("CGM_DiscardCardButton", 20),
+        button("CGM_DiscardTrackButton", 21),
+        button("CGM_ForfeitGameButton", 22),
+        display("CGM_PlayerCardNum", 29),
+        display("CGM_NPCCardNum", 30),
+        display("CRM_NPCBetDisplay", 31),
+        display("CRM_Losses", 32),
+        display("CRM_WinLoss", 33),
+        display("CRM_LargestWinning", 34),
+        text("CRM_Info", 35),
+        text("CRM_WinningsTitle", 47),
+        text("CRM_LossesTitle", 48),
+        text("CRM_WinLossTitle", 49),
+        text("CRM_BiggestTitle", 50),
+    )
+}

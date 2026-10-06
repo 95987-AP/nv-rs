@@ -5,6 +5,7 @@
 //! `%USERPROFILE%\nv-re\findings\menus.md`.
 
 pub mod barter;
+pub mod caravan;
 pub mod chargen;
 pub mod companion_wheel;
 pub mod computers;

@@ -349,6 +349,23 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
     ("sDayThursday", "Thursday"),
     ("sDayFriday", "Friday"),
     ("sDaySaturday", "Saturday"),
+    // The Caravan menu's code (`0073d850`, `0073ea90`, `00740980`,
+    // `00741060`, `007490e0`; objects `011d2e68`, `011d3d48`,
+    // `011d4b58`, `011d1e6c`, `011d372c`, `011d43b4`, `011d47f8`), and
+    // the game screen's XML.
+    ("sCaravanDeckText", "Caravan Deck"),
+    ("sRSMRandomize", "Randomize"),
+    ("sCaravanYouWinText", "You win!"),
+    ("sCaravanYouLoseText", "You Lose!"),
+    ("sCaravanPressAnyKeyText", "Press Any Button to Continue"),
+    (
+        "sQuitCaravanText",
+        "If you quit now, you will forfeit the money wagered. Are you sure you wish to forfeit this match?",
+    ),
+    ("sCardCountText", "You must have at least 30 cards to play Caravan."),
+    ("sNetTotalText", "Net Total: "),
+    ("sPlaceCardText", "Place Card"),
+    ("sDiscardSelectedText", "Discard Selected"),
 ];
 
 /// A text setting's exe default (see [`EXE_TEXT_SETTINGS`]), name compared

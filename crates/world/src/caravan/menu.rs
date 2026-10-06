@@ -359,6 +359,9 @@ pub struct Menu {
     /// A tutorial being read; the quit box or the "How many?" box up.
     pub tutorial: bool,
     pub prompt: bool,
+    /// The draw piles' counts as the tiles show them (29, 30: set when
+    /// dealt and at the ends of states 11 to 14, `+0xA4` + 4 × side).
+    pub piles: [usize; 2],
     /// The columns launched this update (states 15, 17, 18).
     launched: usize,
 }
@@ -429,6 +432,7 @@ impl Menu {
             arrow: None,
             tutorial: false,
             prompt: false,
+            piles: [0; 2],
             launched: 0,
         };
         let mut fx = Vec::new();
@@ -991,6 +995,7 @@ impl Menu {
     /// deck screen's order) and the opponent's.
     fn deal(&mut self, dice: Dice) {
         let game = Game::new(self.player_deck(), self.npc_deck.clone(), dice);
+        self.piles = [game.player_deck.len(), game.npc_deck.len()];
         self.game = Some(game);
         self.hand_card = 0;
         self.track = 0;
@@ -1085,6 +1090,10 @@ impl Menu {
                 model: row_model,
                 sequence: row_in,
             });
+        }
+        if let Some(g) = &self.game {
+            let pile = if npc { &g.npc_deck } else { &g.player_deck };
+            self.piles[usize::from(npc)] = pile.len();
         }
         if matches!(self.state, state::INTRO_DEAL | state::INTRO_DISCARD) {
             self.setup_end(fx, npc);
