@@ -438,6 +438,21 @@ Havok's solver, deactivation and constraints aren't reproduced. Evidence
 and gaps: [PHYSICS.md](PHYSICS.md). **Next action:** record a bottle shot
 and a Z-grab carry in the original game and compare.
 
+M2 batch (`claude/m2-physics-3`, 2026-10-06): playtest physics fixes.
+Traced and fixed: a loading place's bodies go into Havok asleep
+(`00c674d0`, `00c6b0a0`; Doc Mitchell's clutter, the rail bottle and the
+pickets no longer move on load), statics' bodies are fixed (`005768b0`),
+the wind listener rolls `WIND`-flagged bodies (tumbleweeds; `00c74570`,
+`00c74550`, the NIF body flags read by `00c8ea30`), dog ragdolls keep
+their `bhkRigidBodyT` torso (all 20 joints), one ragdoll's bodies meet by
+the part table (`00c84740`, `00624070`), unskinned biped pieces hang from
+their slot's bone and FaceGen-flagged ones are head parts (`004ac1e0`,
+`01188be8`; Easy Pete's hat). Verified live with screenshots and logs; a
+console-killed Cheyenne still stands in her death pose (the death
+animation through the ragdoll isn't traced). Evidence and gaps:
+[PHYSICS.md](PHYSICS.md). **Next action:** trace how the game drives a
+dying creature's ragdoll with its death animation.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

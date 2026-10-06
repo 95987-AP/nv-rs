@@ -4,9 +4,9 @@ Free rigid bodies (clutter, props, weapons lying about) as the game hands
 them to Havok: read from the models, simulated, pushed by shots, blasts,
 the player and people, carried with the Grab key, sounding when they hit
 something, drawn where they are and kept where they come to rest.
-Branches `claude/m2-physics` and `claude/m2-physics-2`, 2026-10-06.
+Branches `claude/m2-physics`, `claude/m2-physics-2` and `claude/m2-physics-3`, 2026-10-06.
 Private exports (decompiles, logs, frames):
-`%USERPROFILE%\nv-re\work\physics-2026-10-06` and `…\physics2-2026-10-06`.
+`%USERPROFILE%\nv-re\work\physics-2026-10-06`, `…\physics2-2026-10-06` and `…\physics3-2026-10-06`.
 
 Status words: **traced** (read in FalloutNV.exe 1.4.0.525 or the game's
 data), **implemented**, **tested** (generated regressions), **verified
@@ -57,6 +57,11 @@ update, clears the prompt tiles), and activating one returns at once
 | Character contacts | `00c711d0` with `fMoveLimitMass` (95, `011b0128`) | the controller's contact callback treats bodies ≥ 95 apart (keeps the surface velocity only for lighter ones); read as: walkers push only lighter bodies |
 | Saved Havok data | `TESObjectREFR::SaveHavokDataForCollisionObject` / `LoadHavokData…` (Xbox PDB): `00563220`, `00563380` | per body: position and rotation, a flags byte (bit 1 active, bit 2 keyframed), then for an active body its linear and angular velocity; loading sets both and activates it |
 | Moved references | `0083fef0` names `CHANGE_REFR_HAVOK_MOVE` (flag 4) | moved objects are saved where they are |
+| Adding bodies asleep | `bhkWorld` add (`00c6b0a0`), batch add (`00c674d0`), `hkpWorld::addEntity` `00c914d0`, `::addEntityBatch` `00c94bd0` | a loading place's bodies are queued and added in a batch with activation 0 (don't activate); only those with a linear or angular velocity are then woken (`00c9c1d0`). A body added alone is left asleep too when still and not on the biped layer (flag `011b0c44`, 1). Nothing settles placed clutter at load |
+| Statics fixed | `TESObjectREFR::InitHavok` (Xbox PDB, vtable `+0x1c4`), `005768b0` | a reference of base form type 0x20/0x21 (`STAT`, `SCOL`) has its bodies set to motion 5 (fixed) through `00c6a350`, which acts only when the model's `BSXFlags` has bit 1 (Havok) |
+| Wind | `TESObjectCELL::InitHavok` (exterior) `00554010` adds `TESWindListener` (`00554590`; `bhkWindListener`, Xbox PDB) as a world entity listener; `GetRB` `00c9a430`; `SetWind` `00c74550` from `00453550`; `Update` `00c74570` from `00c6ae70` → `00c66e20` | see `physics::wind`: bodies whose `bhkWorldObject` flags have `WIND` (1; the NIF rigid body's last word, read into `+0x10` by `00c8ea30`); speed = `fMaxWind` 250 × the sky's wind (weather `DATA` 0 / 255, faded, `0063c490`), direction = the sky's `+0xd0` (1 rad, set by its constructor `00639d40` only); interiors none. Per body per frame: count 1 + ⌊dt/0.0167⌋, speed random(±w) + w/4 within 0–250 × count, heading dir + random(±π/4) within 0–2π, force (0, speed, 0) turned about z, `applyForce(dt)` after waking |
+| One ragdoll's bodies | `00624070` | the filter's "linked parts" test is "layer 8 or 29"; bodies of one ragdoll (one system group) meet by the part table `01268078` |
+| Biped parts' bones | `004ac1e0` (the biped's slot loop), `004aad00`, tables `01188b74` / `01188be8` | an unskinned part (`004910d0` false) is attached under its slot's bone: head, hair, headband, hat, glasses, nose ring, earrings, mask, choker, mouth → `Bip01 Head`; weapon → `Weapon`; Pip-Boy → `Bip01 L ForeTwist`; backpack → `Bip01 Spine2`; necklace → `Bip01 Neck1`; body, hands and add-ons must be skinned. A model whose flags (`MODD`/`MOSD` bit 0, `TESModel` `+0x14`, `004ae8f0`) mark it FaceGen takes the NPC's face morphs |
 
 Unused finds: `0081f000`/`008d0020` are another knock path (base 1750 or
 the object's `+0x98`, `fProjectileKnockMult…`, `fProjectileCollisionImpulseScale`)
@@ -86,7 +91,7 @@ of the mouse spring is telekinesis (`fMagicTelekinesis…`).
 - `world::GameState::havok_moved` (`havokmove`) and `havok_velocity`
   (`havokvel`) in saves.
 - Viewer `clutter`: bodies registered (at their saved pose and velocity;
-  once the collider has ground under them), settled, moved in
+  once the collider has ground under them; asleep), moved in
   `CellCollision` and drawn; shot pushes and blasts;
   the player and every moving `Walker` push (and `clutter::actor_walks`
   for actor controllers to report their controller); the Grab control
@@ -97,6 +102,26 @@ of the mouse spring is telekinesis (`fMagicTelekinesis…`).
   `scripts`: no prompt on destroyed references; bodies picked where they
   are. `walk`/`hud`: only doors are taken for swinging doors.
   `controls`: the Grab binding.
+
+Batch 3 (`claude/m2-physics-3`):
+
+- Bodies arrive asleep and stay put until something touches them (the
+  invented load-time "settle" wake and `DynamicBody::settle` are gone).
+- `preview::cell`: statics and static collections with Havok-flagged
+  models keep their bodies solid (`fixed_by_game`); `Model::bsx_flags`,
+  `nif::Nif::bsx_flags`.
+- `nif::RigidBodyInfo::body_flags`, `nif::collision::BODY_WIND`;
+  `RigidSetup::wind`; `physics::wind` (translated); viewer `clutter` sets
+  the wind from the weathers' mix once a frame and pushes the wind bodies
+  (`RigidWorld::apply_force`), logging where they are every 5 s.
+- `nif::ragdoll` reads `bhkRigidBodyT` bodies (placed relative to their
+  bone): the dog's pelvis/spine bodies and the eight constraints that
+  join her legs, head and tail to them.
+- `physics::ragdoll`: `BodySetup::layer`/`part`, `parts_meet`, pairs of a
+  ragdoll's own capsules pushed apart (this solver's, frictionless).
+- `world::actor::slot_parent_bone`, `ActorPart::parent_bone`,
+  `Armor::pieces_facegen`; `preview::actor` hangs unskinned armour pieces
+  from the slot's bone (FaceGen ones upright, as head parts).
 
 This solver's own (labelled in code; Havok's solver isn't translated):
 XPBD substeps (8) and passes (4); contact generation (no edge-against-edge
@@ -170,20 +195,54 @@ window only).
 
 Not seen live: people pushing clutter, physics damage (nothing
 destructible was struck hard enough), the grab's contact release.
-Seen, not fixed: bottle 0010A204 tips off the rail while settling (in the
-previous batch's runs too); four burnt fence pickets south of the square
-(001788DA, 001788DB, 001788E6, 001788E9) fall through the ground while
-settling (cause not found; the viewer now waits for ground under a body
-before simulating it, which didn't change them).
+
+Batch 3 runs (`physics3-2026-10-06`, release viewer, installed data):
+
+- **Doc Mitchell's house** (`doc2` before, `doc3`/`doc4` after): before,
+  every body was woken at load and some fell (the prewar hat 114 units
+  off the coat rack, the office fan 78, pork 'n' beans 68, books 10–17)
+  and many kept waking; after, no contact and no "comes to rest" line in
+  10 s, and the hat hangs on the rack (`doc4.png`).
+- **Rail bottles** (`rail2.png`, VCG02 started, marker enabled): all seven
+  stand on the rail after 10 s; none moves (0010A204 no longer tips).
+- **Burnt pickets** (`pickets1.png`): `NVFencePickBurntBroken01` is a
+  `STAT`; its square now has 1 moving body instead of the pickets too,
+  which lie where placed.
+- **Tumbleweeds** (`tumble22.log`, weather `NVWastelandGS`, wind 49): the
+  twelve tumbleweeds roll north-west (heading 1 rad: 00178A80 from
+  (−66018.6, 4770.9) to (−68063.3, 6109.1), 2444 units, direction
+  (−0.84, 0.55)) and stop against what's in their way; one blew onto
+  Easy Pete's porch (`petedead2.png`).
+- **Easy Pete's hat** (`pete1.png` hung from `Bip01 Head` in its own axes:
+  sideways; `pete2.png` as a FaceGen part: on his head); killed
+  (`petedead2.png`) he falls on his back with the hat on.
+- **Cheyenne** (`dog3.png`, `dog4.png`, killed from the console in the
+  saloon): her body stays whole (before, her 3 torso bodies were dropped
+  and 8 of 20 joints with them, so legs, head and tail fell apart from
+  the body: the stretching). She stays standing in her death pose for
+  25 s: nothing tips a four-legged ragdoll with its knees at their
+  limits (see gaps).
+- **Acceptance** (`scripts\acceptance.ps1 -Routes doc,vms16`): doc
+  passed; vms16 failed once (Trudy killed by a ganger, no "XP +50") and
+  passed on the second run.
 
 ## Not compared / gaps
 
 - Nothing compared with the original game: how far bottles fly, how they
   tumble, settle heights, rest times, grab feel, sound choice and volume.
 - Havok's solver, contact manifolds, deactivation and penetration
-  recovery are not reproduced (above). Constraints aren't simulated:
-  joined or constrained bodies stay solid. Inertia under a reference's
+  recovery are not reproduced (above). Clutter constraints aren't
+  simulated: joined or constrained clutter bodies stay solid (ragdolls'
+  joints are, in `physics::ragdoll`). Inertia under a reference's
   scale isn't traced (scaled by s², mass kept).
+- Dying creatures: how the game drives a ragdoll with the death
+  animation (`bhkBlendController`, the blend to dynamic) isn't traced; a
+  console-killed dog stands in her death pose. Ragdoll self-contacts are
+  frictionless positional pushes.
+- The wind listener's call each frame follows `00c6ae70`; the wind
+  direction stays 1 rad (no other writer of the sky's `+0xd0` was found
+  in the sky's code). Which slot of a multi-slot armour holds its model
+  is taken as the lowest (every head slot names the same bone).
 - Grab: actors/ragdolls (the complex spring and helper), letting go when
   standing on the held body, the keep-out near the player, the
   hold-Activate grab, `fGrabMaxWeightRunning`.
