@@ -21,14 +21,12 @@
 //! triangle 0 lists triangle 1 across its third edge, and they share those
 //! two vertices). A path is first tried as a straight line over the
 //! navmesh (`bUseStraightLineCheckFirst`, `006cc5e0` → `006cd1f0`): when
-//! the line stays on it, that's the path. Otherwise it goes from triangle
-//! to triangle (A*, between their middles) and is pulled straight through
-//! the shared edges (the "funnel"); the game's smoothers (`0069f010`,
-//! `PathSmootherPOVSearch` `006ad770`) aren't traced, so that part is a
-//! stand-in for them.
+//! the line stays on it (with room to either side above the land), that's
+//! the path. Otherwise the game's navmesh search ([`navsearch`]) finds the
+//! triangles and its path smoother (`PathSmootherPOVSearch`, `smoother`)
+//! the points, keeping the walker's radius off the corners.
 
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::HashMap;
 
 use esm::{FormId, FourCC, LoadOrder};
 
@@ -42,7 +40,9 @@ pub mod data;
 pub mod flee;
 pub mod guard;
 pub mod navinfo;
+pub mod navsearch;
 pub mod procedures;
+mod smoother;
 
 const PACK: FourCC = FourCC::new(b"PACK");
 const PKDT: FourCC = FourCC::new(b"PKDT");
@@ -373,6 +373,36 @@ pub fn half_bounds_diagonal(order: &LoadOrder, reference: FormId) -> f32 {
             })
         })
         .unwrap_or(0.0)
+}
+
+/// The radius an actor's path requests carry (`006e29f0`: 0.6 × the actor's
+/// width, `008be280` → `00885140`: its bounds' x extent × its scale,
+/// `GetScale` `00567400`). The bounds are the base's `OBND` here, × the
+/// reference's `XSCL`; the game asks the actor's bound vfuncs
+/// (`00933630`/`00933700`), which take the process's own bound first when
+/// it has one (+0x5f0, not traced). No bounds: the request's default, 35.
+pub fn request_radius(order: &LoadOrder, reference: FormId) -> f32 {
+    let scale = order
+        .get(reference)
+        .and_then(|rr| rr.record().ok())
+        .and_then(|r| {
+            r.get(XSCL)
+                .filter(|s| s.data.len() >= 4)
+                .map(|s| le_f32(&s.data, 0))
+        })
+        .unwrap_or(1.0);
+    crate::scripting::base_of(order, reference)
+        .and_then(|b| order.get(b))
+        .and_then(|rr| rr.record().ok())
+        .and_then(|r| {
+            r.get(OBND).filter(|s| s.data.len() >= 12).map(|s| {
+                let v =
+                    |i: usize| f32::from(i16::from_le_bytes([s.data[i * 2], s.data[i * 2 + 1]]));
+                (v(3) - v(0)) * scale * 0.6
+            })
+        })
+        .filter(|r| *r > 0.0)
+        .unwrap_or(crate::movement::REQUEST_RADIUS)
 }
 
 /// Whether someone is at a dialogue package's second location (`PLD2`;
@@ -1197,6 +1227,10 @@ pub fn enabled_since_load(
 /// standing just off its edge).
 pub const OFF_MESH: f32 = 128.0;
 
+/// How many times a path request searches and smooths (request +0xa8, 3
+/// from its constructor `006e2420`).
+const PATH_TRIES: usize = 3;
+
 /// A cell's navmesh: every `NAVM` in it, joined.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NavMesh {
@@ -1211,14 +1245,32 @@ pub struct NavMesh {
     /// first triangle, in order (the navmesh a point is on picks its
     /// navmesh info, [`navinfo`]).
     pub owners: Vec<(FormId, usize)>,
+    /// Obstacles marked on triangles at run time (someone stuck there,
+    /// [`navsearch::NavObstacle`]).
+    pub obstacles: Vec<navsearch::NavObstacle>,
+    /// The terrain's heights (33 × 33, `LAND`) of the exterior squares the
+    /// navmesh is of, by square: the straight-line test asks how high the
+    /// ends stand above the land ([`Self::land_height`]).
+    pub land: HashMap<(i32, i32), Vec<f32>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct NavTriangle {
     pub vertices: [usize; 3],
     /// The triangle across each edge (edge `i` runs from vertex `i` to
     /// vertex `i + 1`).
     pub neighbors: [Option<usize>; 3],
+    /// Its flags as the game holds them: `NVTR`'s flags u16 and cover flags
+    /// u16 read as one u32 (`00692950` reads the 16 bytes straight into the
+    /// triangle; the search tests the u32 at +0xc, `00691140`). Bits used:
+    /// [`navsearch::NO_LARGE_CREATURES`], [`navsearch::PREFERRED`],
+    /// [`navsearch::WATER`], [`navsearch::DOOR`], and
+    /// [`navsearch::OBSTACLE`] set at run time.
+    pub flags: u32,
+    /// Edges whose link to another navmesh is of kind 1 (the `NVEX`
+    /// entry's first u32): the search doesn't cross them (`006a6fa0` tests
+    /// the link record `0068f230` returns).
+    pub closed: u8,
 }
 
 impl NavMesh {
@@ -1313,8 +1365,8 @@ impl NavMesh {
             form: FormId,
             first_vertex: usize,
             first_triangle: usize,
-            raw: Vec<([u16; 3], [u16; 3], u16)>,
-            external: Vec<(FormId, u16)>,
+            raw: Vec<([u16; 3], [u16; 3], u32)>,
+            external: Vec<(u32, FormId, u16)>,
             doors: Vec<(FormId, u16)>,
         }
         let mut mesh = NavMesh::default();
@@ -1334,12 +1386,12 @@ impl NavMesh {
                         .chunks_exact(12)
                         .map(|c| [le_f32(c, 0), le_f32(c, 4), le_f32(c, 8)]),
                 );
-                let raw: Vec<([u16; 3], [u16; 3], u16)> = tr
+                let raw: Vec<([u16; 3], [u16; 3], u32)> = tr
                     .data
                     .chunks_exact(16)
                     .map(|c| {
                         let u = |i: usize| u16::from_le_bytes([c[i], c[i + 1]]);
-                        ([u(0), u(2), u(4)], [u(6), u(8), u(10)], u(12))
+                        ([u(0), u(2), u(4)], [u(6), u(8), u(10)], le_u32(c, 12))
                     })
                     .collect();
                 let external = record
@@ -1349,6 +1401,7 @@ impl NavMesh {
                             .chunks_exact(10)
                             .map(|c| {
                                 (
+                                    le_u32(c, 0),
                                     rr.plugin.to_global(FormId(le_u32(c, 4))),
                                     u16::from_le_bytes([c[8], c[9]]),
                                 )
@@ -1396,6 +1449,7 @@ impl NavMesh {
             for &(v, n, flags) in &p.raw {
                 let vertices = v.map(|v| (p.first_vertex + usize::from(v)).min(vertex_count - 1));
                 let mut neighbors = [None; 3];
+                let mut closed = 0u8;
                 for e in 0..3 {
                     let link = n[e];
                     if link == 0xFFFF {
@@ -1403,10 +1457,15 @@ impl NavMesh {
                     }
                     neighbors[e] = if flags & (1 << e) != 0 {
                         // To another navmesh, if it's loaded.
-                        p.external.get(usize::from(link)).and_then(|(form, t)| {
-                            let (first, count) = *start_of.get(form)?;
-                            (usize::from(*t) < count).then(|| first + usize::from(*t))
-                        })
+                        p.external
+                            .get(usize::from(link))
+                            .and_then(|(kind, form, t)| {
+                                if *kind == 1 {
+                                    closed |= 1 << e;
+                                }
+                                let (first, count) = *start_of.get(form)?;
+                                (usize::from(*t) < count).then(|| first + usize::from(*t))
+                            })
                     } else {
                         (usize::from(link) < triangles)
                             .then(|| p.first_triangle + usize::from(link))
@@ -1415,6 +1474,8 @@ impl NavMesh {
                 mesh.triangles.push(NavTriangle {
                     vertices,
                     neighbors,
+                    flags,
+                    closed,
                 });
             }
             for &(door, t) in &p.doors {
@@ -1492,6 +1553,23 @@ impl NavMesh {
         from: [f32; 3],
         to: [f32; 3],
     ) -> Option<(Vec<[f32; 3]>, Vec<(FormId, [f32; 3])>)> {
+        self.plan(from, to, &navsearch::PathRequest::default())
+    }
+
+    /// A path for a request (`navsearch::PathRequest`: the walker's radius,
+    /// avoid nodes, doors), and the doors it goes through. With no avoid
+    /// nodes a straight line is tried first (`bUseStraightLineCheckFirst`
+    /// 1, `006cc5e0` asks for it only when the request's avoid array is
+    /// empty, → `006cd1f0`); then the navmesh search
+    /// ([`navsearch`], `006cd670`) and the smoothed line through its
+    /// triangles.
+    #[allow(clippy::type_complexity)]
+    pub fn plan(
+        &self,
+        from: [f32; 3],
+        to: [f32; 3],
+        request: &navsearch::PathRequest,
+    ) -> Option<(Vec<[f32; 3]>, Vec<(FormId, [f32; 3])>)> {
         let start = self.triangle_near(from)?;
         let goal = self.triangle_near(to)?;
         let doors_on = |triangles: &[usize]| -> Vec<(FormId, [f32; 3])> {
@@ -1500,34 +1578,159 @@ impl NavMesh {
                 .filter_map(|&t| self.door_portals.get(&t).map(|&d| (d, self.centroid(t))))
                 .collect()
         };
-        // `bUseStraightLineCheckFirst` (1): a straight line that stays on
-        // the navmesh is the path (`006cc5e0` → `006cd1f0`). (The check
-        // there also uses `fPathingLargeActorRadius`, 80, in a way not
-        // traced; the line itself is tested here.) The doors are those of
-        // the triangles it crosses.
-        if let Some(crossed) = self.line_crossing(from, to, start, goal) {
-            return Some((vec![from, to], doors_on(&crossed)));
+        // The straight line: the doors are those of the triangles it
+        // crosses.
+        if request.avoid.is_empty() {
+            if let Some(crossed) = self.line_crossing(from, to, start, goal) {
+                if self.wide_line_clear(from, to, request.radius) {
+                    return Some((vec![from, to], doors_on(&crossed)));
+                }
+            }
         }
-        let corridor = self.corridor(start, goal, &[])?;
-        Some((self.funnel(from, to, &corridor), doors_on(&corridor)))
+        // The smoother walks lines from points on the navmesh; the game's
+        // path locations keep their resolved triangle, here an end off the
+        // navmesh (within `OFF_MESH`) is first taken to the nearest point of
+        // its triangle and walked to from there.
+        let on = |p: [f32; 3], t: usize| {
+            if self.triangle_under(p).is_some() {
+                p
+            } else {
+                let [a, b, c] = [0, 1, 2].map(|i| self.corner(t, i));
+                closest_in_triangle(a, b, c, p)
+            }
+        };
+        let (a, b) = (on(from, start), on(to, goal));
+        // Search and smooth, up to the request's tries (+0xa8: 3 from
+        // `006e2420`, kept within 1..10 by `006cc5e0`): a smoothing that
+        // failed names edges to keep off, and the search goes again.
+        let mut keep_off: Vec<(usize, usize)> = request.avoid_edges.to_vec();
+        let mut last = None;
+        for _ in 0..PATH_TRIES {
+            let request = navsearch::PathRequest {
+                avoid_edges: &keep_off,
+                ..*request
+            };
+            let Some(corridor) = self.corridor(start, goal, &request) else {
+                break;
+            };
+            let (found, points, more) = smoother::smooth(self, a, b, &corridor, &request);
+            last = Some((found, points, corridor));
+            if found {
+                break;
+            }
+            let before = keep_off.len();
+            for e in more {
+                if !keep_off.contains(&e) {
+                    keep_off.push(e);
+                }
+            }
+            if keep_off.len() == before {
+                break;
+            }
+        }
+        let (found, mut points, corridor) = last?;
+        // No smoothed way after the tries: the request fails (`006cc5e0`
+        // returns 1 or 2; its acceptance of a last try ending near the goal,
+        // and a partial path for requests that allow one, +0xa3, aren't
+        // followed). A walk short of the place would end as if there.
+        if !found {
+            return None;
+        }
+        if a != from {
+            points.insert(0, from);
+        }
+        if found && b != to {
+            points.push(to);
+        }
+        Some((points, doors_on(&corridor)))
+    }
+
+    /// The rest of the straight-line test (`006cd1f0`, after the line
+    /// itself): when both ends stand at least 25 above the land under them
+    /// (`TES` land height, `0045cbc0`; indoors there is no land, so always),
+    /// the lines the walker's radius to either side, end to end, must stay
+    /// on the navmesh too (`006d7350` on each). Whether the offset is the
+    /// radius along the unit perpendicular, as here, or scaled by the
+    /// line's length (`0045bb20` on the cross product) isn't certain.
+    // Translated from 006cd1f0 (decompiled, FalloutNV.exe 1.4.0.525).
+    fn wide_line_clear(&self, from: [f32; 3], to: [f32; 3], radius: f32) -> bool {
+        let above = |p: [f32; 3]| self.land_height(p).map_or(true, |h| p[2] >= h + 25.0);
+        if !(above(from) && above(to)) {
+            return true;
+        }
+        let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+        let d = dx.hypot(dy);
+        if d < 1e-4 {
+            return true;
+        }
+        let (px, py) = (dy / d * radius, -dx / d * radius);
+        [1.0f32, -1.0].iter().all(|s| {
+            let a = [from[0] + s * px, from[1] + s * py, from[2]];
+            let b = [to[0] + s * px, to[1] + s * py, to[2]];
+            self.walk_line(a, b, radius).is_some()
+        })
+    }
+
+    /// The land's height under a point, from the squares' `LAND` heights
+    /// (33 × 33 points 128 apart from the square's south-west corner;
+    /// within a square of four points on one of its two halves). `None`
+    /// where no land was
+    /// given (indoors: the game's land height then is its default, below
+    /// everything).
+    pub fn land_height(&self, p: [f32; 3]) -> Option<f32> {
+        const SQUARE: f32 = 4096.0;
+        const STEP: f32 = 128.0;
+        let square = crate::square_of(p);
+        let heights = self.land.get(&square)?;
+        let x = (p[0] - square.0 as f32 * SQUARE) / STEP;
+        let y = (p[1] - square.1 as f32 * SQUARE) / STEP;
+        let (ix, iy) = ((x.floor() as usize).min(31), (y.floor() as usize).min(31));
+        let (fx, fy) = (x - ix as f32, y - iy as f32);
+        let h = |i: usize, j: usize| heights.get(j * 33 + i).copied();
+        let (sw, se, nw, ne) = (
+            h(ix, iy)?,
+            h(ix + 1, iy)?,
+            h(ix, iy + 1)?,
+            h(ix + 1, iy + 1)?,
+        );
+        // The diagonal in a checkerboard, as `land::Land::quarter_mesh`
+        // splits the squares (south-west to north-east where column + row
+        // is even).
+        Some(if (ix + iy) % 2 == 0 {
+            if fx >= fy {
+                sw + (se - sw) * fx + (ne - se) * fy
+            } else {
+                sw + (ne - nw) * fx + (nw - sw) * fy
+            }
+        } else if fx + fy <= 1.0 {
+            sw + (se - sw) * fx + (nw - sw) * fy
+        } else {
+            ne + (nw - ne) * (1.0 - fx) + (se - ne) * (1.0 - fy)
+        })
+    }
+
+    /// Gives the navmesh an exterior square's land heights (`LAND`, 33 × 33).
+    pub fn set_land(&mut self, square: (i32, i32), heights: Vec<f32>) {
+        if heights.len() >= 33 * 33 {
+            self.land.insert(square, heights);
+        }
     }
 
     /// A path keeping away from others in the way (`009e5ae0` makes a new
     /// path request with them as avoid nodes, [`crate::movement::
-    /// AvoidNode`]): triangles whose middle is inside a node cost its cost ×
-    /// as much to cross (how the game's search weighs its avoid nodes isn't
-    /// traced; the straight line isn't tried, since it would go through
-    /// them).
+    /// AvoidNode`], weighed by `navsearch::avoid_cost`); no straight line is
+    /// tried with avoid nodes.
     pub fn path_avoiding(
         &self,
         from: [f32; 3],
         to: [f32; 3],
         avoid: &[crate::movement::AvoidNode],
     ) -> Option<Vec<[f32; 3]>> {
-        let start = self.triangle_near(from)?;
-        let goal = self.triangle_near(to)?;
-        let corridor = self.corridor(start, goal, avoid)?;
-        Some(self.funnel(from, to, &corridor))
+        let request = navsearch::PathRequest {
+            avoid,
+            ..Default::default()
+        };
+        self.plan(from, to, &request).map(|(points, _)| points)
     }
 
     /// Whether the straight line from `from` (on triangle `start`) to `to`
@@ -1570,65 +1773,18 @@ impl NavMesh {
         None
     }
 
-    /// Triangles from `start` to `goal` (A* between their middles), those
-    /// inside avoid nodes costing more.
+    /// The triangles from `start` to `goal` by the game's navmesh search
+    /// ([`navsearch`]); none when it doesn't reach the goal (the game then
+    /// builds a path to the nearest node and retries, `006cc5e0`: not
+    /// followed here).
     fn corridor(
         &self,
         start: usize,
         goal: usize,
-        avoid: &[crate::movement::AvoidNode],
+        request: &navsearch::PathRequest,
     ) -> Option<Vec<usize>> {
-        let weight = |t: usize| {
-            let c = self.centroid(t);
-            avoid
-                .iter()
-                .filter(|n| {
-                    (c[0] - n.position[0]).powi(2) + (c[1] - n.position[1]).powi(2)
-                        <= n.radius * n.radius
-                })
-                .fold(1.0f32, |w, n| w * n.cost.max(1.0))
-        };
-        #[derive(PartialEq)]
-        struct Node(f32, usize);
-        impl Eq for Node {}
-        impl Ord for Node {
-            fn cmp(&self, o: &Self) -> Ordering {
-                o.0.total_cmp(&self.0)
-            }
-        }
-        impl PartialOrd for Node {
-            fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
-                Some(self.cmp(o))
-            }
-        }
-        let goal_at = self.centroid(goal);
-        let mut open = BinaryHeap::new();
-        let mut cost: HashMap<usize, f32> = HashMap::new();
-        let mut came: HashMap<usize, usize> = HashMap::new();
-        cost.insert(start, 0.0);
-        open.push(Node(0.0, start));
-        while let Some(Node(_, t)) = open.pop() {
-            if t == goal {
-                let mut path = vec![goal];
-                let mut at = goal;
-                while let Some(&prev) = came.get(&at) {
-                    path.push(prev);
-                    at = prev;
-                }
-                path.reverse();
-                return Some(path);
-            }
-            let here = self.centroid(t);
-            for n in self.triangles[t].neighbors.into_iter().flatten() {
-                let c = cost[&t] + distance2(here, self.centroid(n)).sqrt() * weight(n);
-                if cost.get(&n).map_or(true, |&old| c < old) {
-                    cost.insert(n, c);
-                    came.insert(n, t);
-                    open.push(Node(c + distance2(self.centroid(n), goal_at).sqrt(), n));
-                }
-            }
-        }
-        None
+        let (found, route) = self.search(start, goal, request);
+        found.then_some(route)
     }
 
     /// The edge two neighbouring triangles share, as (left, right) seen
@@ -1646,78 +1802,13 @@ impl NavMesh {
             cross2(self.corner(a, 0), self.corner(a, 1), self.corner(a, 2)) > 0.0;
         Some(if counterclockwise { (q, p) } else { (p, q) })
     }
-
-    /// The shortest line through the corridor's shared edges (the
-    /// "simple stupid funnel").
-    fn funnel(&self, from: [f32; 3], to: [f32; 3], corridor: &[usize]) -> Vec<[f32; 3]> {
-        let mut portals: Vec<([f32; 3], [f32; 3])> = vec![(from, from)];
-        for w in corridor.windows(2) {
-            if let Some(p) = self.portal(w[0], w[1]) {
-                portals.push(p);
-            }
-        }
-        portals.push((to, to));
-        let mut points = vec![from];
-        let (mut apex, mut left, mut right) = (from, from, from);
-        let (mut left_i, mut right_i) = (0usize, 0usize);
-        let mut i = 1;
-        while i < portals.len() {
-            let (l, r) = portals[i];
-            // The right side moves in (counterclockwise)?
-            if cross2(apex, right, r) >= 0.0 {
-                if same(apex, right) || cross2(apex, left, r) < 0.0 {
-                    right = r;
-                    right_i = i;
-                } else {
-                    // It crossed the left side: that corner is on the path,
-                    // and the funnel starts again from it.
-                    let at = left_i;
-                    push_new(&mut points, left);
-                    apex = left;
-                    right = apex;
-                    left_i = at;
-                    right_i = at;
-                    i = at + 1;
-                    continue;
-                }
-            }
-            // The left side moves in (clockwise)?
-            if cross2(apex, left, l) <= 0.0 {
-                if same(apex, left) || cross2(apex, right, l) > 0.0 {
-                    left = l;
-                    left_i = i;
-                } else {
-                    let at = right_i;
-                    push_new(&mut points, right);
-                    apex = right;
-                    left = apex;
-                    left_i = at;
-                    right_i = at;
-                    i = at + 1;
-                    continue;
-                }
-            }
-            i += 1;
-        }
-        if points.last().map_or(true, |p| !same(*p, to)) {
-            points.push(to);
-        }
-        points
-    }
-}
-
-/// Adds a corner unless it's where the path already is (one vertex can
-/// end several shared edges in a row).
-fn push_new(points: &mut Vec<[f32; 3]>, p: [f32; 3]) {
-    if points.last().map_or(true, |last| !same(*last, p)) {
-        points.push(p);
-    }
 }
 
 fn distance2(a: [f32; 3], b: [f32; 3]) -> f32 {
     (0..3).map(|i| (a[i] - b[i]).powi(2)).sum()
 }
 
+#[cfg(test)]
 fn same(a: [f32; 3], b: [f32; 3]) -> bool {
     distance2(a, b) < 1e-6
 }
@@ -1816,6 +1907,7 @@ mod tests {
         let t = |vertices: [usize; 3], neighbors: [Option<usize>; 3]| NavTriangle {
             vertices,
             neighbors,
+            ..Default::default()
         };
         NavMesh {
             vertices: v,
@@ -1836,19 +1928,27 @@ mod tests {
             // A door across square C's first triangle.
             door_portals: HashMap::from([(4, FormId(0x904))]),
             owners: vec![(FormId(0x901), 0), (FormId(0x902), 4)],
+            obstacles: Vec::new(),
+            land: HashMap::new(),
         }
     }
 
     #[test]
-    fn a_path_turns_the_corner_at_the_inside_corner() {
+    fn a_path_turns_the_corner_round_the_inside_corner() {
         let mesh = corridor_mesh();
         assert_eq!(mesh.triangle_at([20.0, 50.0, 0.0]), Some(1));
         let path = mesh.path([20.0, 50.0, 0.0], [150.0, 280.0, 0.0]).unwrap();
-        // From the start straight to the inside corner (100,100), then on
-        // to the goal.
-        assert_eq!(path.len(), 3, "{path:?}");
-        assert!(same(path[1], [100.0, 100.0, 0.0]), "{path:?}");
-        assert!(same(path[2], [150.0, 280.0, 0.0]));
+        // From the start to the circle of 1.2 × the request's radius (35)
+        // round the inside corner (100,100), round it (the arc longer than
+        // 50, so both tangent points stay), then on to the goal
+        // (`smoother`).
+        assert_eq!(path.len(), 4, "{path:?}");
+        for p in &path[1..3] {
+            let d = (p[0] - 100.0).hypot(p[1] - 100.0);
+            assert!((d - 42.0).abs() < 1e-2, "{path:?}");
+        }
+        assert!(path[1][1] < 100.0 && path[2][0] > 100.0, "{path:?}");
+        assert!(same(path[3], [150.0, 280.0, 0.0]));
         // In a straight line, no corners.
         let straight = mesh.path([150.0, 20.0, 0.0], [150.0, 280.0, 0.0]).unwrap();
         assert_eq!(straight.len(), 2, "{straight:?}");
@@ -1894,6 +1994,7 @@ mod tests {
         let t = |vertices: [usize; 3], neighbors: [Option<usize>; 3]| NavTriangle {
             vertices,
             neighbors,
+            ..Default::default()
         };
         NavMesh {
             vertices,
@@ -1909,6 +2010,8 @@ mod tests {
             ],
             door_portals: HashMap::new(),
             owners: Vec::new(),
+            obstacles: Vec::new(),
+            land: HashMap::new(),
         }
     }
 
@@ -1916,8 +2019,8 @@ mod tests {
     fn a_straight_line_is_tried_first_and_avoid_nodes_cost_more() {
         let mesh = four_squares();
         // The straight line stays on the navmesh: no search.
-        let p = mesh.path([20.0, 30.0, 0.0], [180.0, 170.0, 0.0]).unwrap();
-        assert_eq!(p, vec![[20.0, 30.0, 0.0], [180.0, 170.0, 0.0]]);
+        let p = mesh.path([20.0, 30.0, 0.0], [180.0, 175.0, 0.0]).unwrap();
+        assert_eq!(p, vec![[20.0, 30.0, 0.0], [180.0, 175.0, 0.0]]);
         // Leaving the navmesh: no line.
         assert!(mesh
             .line_crossing([20.0, 30.0, 0.0], [20.0, 300.0, 0.0], 0, 5)
@@ -1925,14 +2028,18 @@ mod tests {
         // A* takes one way round; a costly avoid node on its middle square
         // sends it the other way.
         let (start, goal) = (0, 7);
-        let plain = mesh.corridor(start, goal, &[]).unwrap();
+        let plain = mesh.corridor(start, goal, &Default::default()).unwrap();
         let (busy, other) = if plain.contains(&3) { (3, 4) } else { (4, 3) };
         let node = crate::movement::AvoidNode {
             position: mesh.centroid(busy),
             radius: 10.0,
             cost: 2.0,
         };
-        let round = mesh.corridor(start, goal, &[node]).unwrap();
+        let avoiding = navsearch::PathRequest {
+            avoid: &[node],
+            ..Default::default()
+        };
+        let round = mesh.corridor(start, goal, &avoiding).unwrap();
         assert!(
             round.contains(&other) && !round.contains(&busy),
             "{round:?}"
