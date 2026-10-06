@@ -44,11 +44,12 @@ pub struct ItemsMenu {
     filled: Option<(usize, Vec<ItemLine>)>,
 }
 
-/// An item's row text (`00782850`): "name (count)" for more than one
-/// ("name+ (count)" for a modded weapon, not here yet).
+/// An item's row text (`00782850`): "name (count)" for more than one,
+/// "name+ (count)" when they're a modded weapon.
 pub fn row_text(item: &ItemLine) -> String {
     if item.count > 1 {
-        format!("{} ({})", item.name, item.count)
+        let plus = if item.modded { "+" } else { "" };
+        format!("{}{plus} ({})", item.name, item.count)
     } else {
         item.name.clone()
     }
@@ -458,7 +459,19 @@ mod tests {
             weight_class: None,
             effects: None,
             repairable: false,
+            modded: false,
         }
+    }
+
+    /// `00782850`: the count after more than one; "+" for modded ones.
+    #[test]
+    fn row_texts() {
+        let mut gun = item("9mm Pistol", ItemTab::Weapons);
+        assert_eq!(row_text(&gun), "9mm Pistol");
+        gun.count = 2;
+        assert_eq!(row_text(&gun), "9mm Pistol (2)");
+        gun.modded = true;
+        assert_eq!(row_text(&gun), "9mm Pistol+ (2)");
     }
 
     #[test]

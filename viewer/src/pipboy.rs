@@ -679,6 +679,26 @@ fn pipboy_keys(
                     b.pipboy.repaired(&mut b.ui, input);
                 }
             }
+            // The weapon mod screen (ITEMS' Mod, `00784710`).
+            Action::OpenItemMod(form) => {
+                let input = ui::pipboy::gather::item_mod_input(order, state, FormId(form));
+                if let Some(b) = pipboy.built.as_mut() {
+                    b.pipboy.open_item_mod(&mut b.ui, input);
+                }
+            }
+            // A mod fitted (`007838a0` → `00783af0`): one used up, the
+            // sound, the list again.
+            Action::FitMod { weapon, item } => {
+                let (weapon, item) = (FormId(weapon), FormId(item));
+                if world::weapon_mods::attach(order, state, PLAYER_REF, weapon, item) {
+                    println!("Fitted {item} to {weapon}.");
+                    sound(order, &mut requests, ui::pipboy::item_mod::FIT_SOUND);
+                }
+                let input = ui::pipboy::gather::item_mod_input(order, state, weapon);
+                if let Some(b) = pipboy.built.as_mut() {
+                    b.pipboy.item_modded(&mut b.ui, input);
+                }
+            }
         }
     }
 }

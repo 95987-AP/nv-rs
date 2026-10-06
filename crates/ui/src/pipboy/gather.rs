@@ -311,6 +311,7 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
             weight_class: None,
             effects: None,
             repairable: false,
+            modded: world::weapon_mods::flags(state, PLAYER_REF, item) != 0,
         };
         if kind == WEAP {
             if let Some(w) = world::combat::Weapon::load(order, item) {
@@ -505,6 +506,50 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
         notes,
         world_map: world_map(order, state, at),
         stations: Vec::new(),
+    }
+}
+
+/// The mod screen's contents for a weapon of the player's (`00784710`,
+/// `007840f0`): its name, condition, picture and damage; the mods fitted to
+/// it, then the player's that fit it (`world::weapon_mods::fitting`), each
+/// with its name and description (`DESC`).
+pub fn item_mod_input(
+    order: &LoadOrder,
+    state: &GameState,
+    weapon: FormId,
+) -> super::item_mod::ItemModInput {
+    use super::item_mod::{ItemModInput, ModRow};
+    let condition = world::repair::condition(state, PLAYER_REF, weapon);
+    let row = |m: FormId, fitted: bool| ModRow {
+        form: m.0,
+        name: world::items::item_info(order, m).map_or_else(String::new, |i| i.name),
+        description: record_text(order, m, esm::FourCC::new(b"DESC")).unwrap_or_default(),
+        fitted,
+    };
+    let flags = world::weapon_mods::flags(state, PLAYER_REF, weapon);
+    let mut rows: Vec<ModRow> = world::weapon_mods::slots(order, weapon)
+        .map(|slots| {
+            (0..3)
+                .filter(|&i| flags & (1 << i) != 0)
+                .filter_map(|i| slots[i].item)
+                .map(|m| row(m, true))
+                .collect()
+        })
+        .unwrap_or_default();
+    rows.extend(
+        world::weapon_mods::fitting(order, state, PLAYER_REF, weapon)
+            .into_iter()
+            .map(|m| row(m, false)),
+    );
+    ItemModInput {
+        weapon: weapon.0,
+        name: world::items::item_info(order, weapon).map_or_else(String::new, |i| i.name),
+        condition,
+        icon: record_text(order, weapon, ICON),
+        damage: world::repair::shown_stat(order, state, weapon, condition / 100.0)
+            .and_then(|s| s.value)
+            .unwrap_or(0),
+        rows,
     }
 }
 

@@ -59,11 +59,27 @@ as `weaponmods` lines), `has_effect`, `bonus`, `value_of`, `modded` (what
 most condition), `weight_off` (in `GameState::inventory_weight`),
 `worth_added` (in `barter::item_value`), `attach`, `fitting`; damage in
 `combat::weapon_damage_at`; the V.A.T.S. to-hit in `vats::part_chance`.
-Checks: `crates/world/tests/weapon_mods.rs`, `world::weapon_mods::tests`.
+
+The mod screen (`ItemModMenu`, class 1061, `menus\item_mod_menu.xml`):
+ITEMS' Mod button (id 19, X) on a weapon opens it (`00780140` case 0x13,
+`UIMenuMode`); `ui::pipboy::item_mod` fills it as `00784710` / `007840f0`
+do (the weapon's name, condition and damage; its fitted mods dimmed (alpha
+127, `007836d0`) and first, then the player's that fit; the chosen mod's
+`DESC` on 13), and Enter on a mod not fitted fits it (`007838a0`:
+`UIItemGunsSmallUp`, the list filled again); E leaves. ITEMS' rows read
+"name+ (count)" for a modded stack (`00782850`). The viewer gathers it
+(`ui::pipboy::gather::item_mod_input`) and carries `FitMod` out; seen in
+Doc Mitchell's house: the 9mm pistol's Extended Mags and Scope listed
+("Adds short-range scope."), Enter fitted the mags, which then showed
+dimmed and first.
+
+Checks: `crates/world/tests/weapon_mods.rs`, `world::weapon_mods::tests`,
+`ui::pipboy::items::tests::row_texts`.
 
 ## Not done
 
-- The mod menu (`ItemModMenu`, the Pip-Boy's Mod button) to fit them.
+- The mod screen's hold-to-confirm meter (a controller's), its sort's
+  exact trait (`00783810`), and the weapon taken off while it's modded.
 - Split beam's damage scale, projectile speed, silence, sights, the ammo
   regeneration and equip speed effects; the modded models.
 - Mods are kept per holder and weapon (as its condition is), where the
