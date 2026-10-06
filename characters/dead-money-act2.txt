@@ -1,11 +1,12 @@
-; Dead Money, Act 3 start: the courier arrives in the Sierra Madre casino
-; (MQ03a "Put the Beast Down" begun, as the Lobby's knockout trigger leaves it).
-; Start with:  nv-viewer <Data> NVDLC01Casino --official --character characters/dead-money-casino.txt
-; The Villa character (dead-money-villa.txt) plus the stages the knockout
-; script (NVDLC01CasinoKnockoutTriggerScript) sets when the player wakes up:
-; MQ02 finished, MQ03a stage 5, MQ03a the active quest. Not played to get
-; here: Act 1's collar quests and the Act 2 escorts (Dog, Dean and Christine
-; stay where their own quests put them).
+; Dead Money, Act 2 start: all three recruited, Elijah's Act 2 greeting said,
+; Dog travelling with the courier (MQ02a "Fires in the Sky" begun).
+; Start with:  nv-viewer <Data> DLC01StartMarker --official --character characters/dead-money-act2.txt
+; The Villa character (dead-money-villa.txt) plus what Act 1 and the greeting
+; do: the three finding quests finished by their own stage lines (their
+; result scripts run), the master quest's end, and the result script of
+; Elijah's Act 2 greeting. Dog is hired the way the game does it
+; (NVDLC01HireTriggerREF.Activate) and follows the courier. Not
+; played to get here: the three recruitments themselves (see MQ01a to c).
 ;
 ; Script lines as the game's console runs them, on a new game before its
 ; first frame; editor IDs only. `level N` sets the level directly.
@@ -71,13 +72,24 @@ player.RemoveAllItems NVDLC01PlayerEquipmentContainerRef
 ; fountain's wake-up turns them on anyway.)
 SetInCharGen 0
 
-; The Gala (MQ02 stage 50 moves the three to their places) and the Lobby's
-; knockout trigger when the player wakes up in the casino.
-SetStage NVDLC01MQ02 100
-SetStage NVDLC01MQ03a 5
-ForceActiveQuest NVDLC01MQ03a
-NVDLC01RadioStationElijahREF.SetBroadcastState 1
-NVDLC01RadioStationDogREF.SetBroadcastState 1
-NVDLC01RadioStationDeanREF.SetBroadcastState 1
-NVDLC01RadioStationChristineREF.SetBroadcastState 1
-NVDLC01DeanRef.MoveTo NVDLC01DeanTheaterScaffMarker
+; Act 1: the three found and recruited (each quest's stage 100 runs its own
+; result script; MQ01c's also needs its crew notice shown).
+SetStage NVDLC01MQ01a 100
+SetStage NVDLC01MQ01b 100
+SetStage NVDLC01MQ01c 100
+SetStage NVDLC01MQ01d 100
+
+; The result script of Elijah's Act 2 greeting (his talking activator's topic).
+SetStage NVDLC01MQ02c 10
+SetStage NVDLC01MQ02b 10
+SetStage NVDLC01MQ02a 10
+set NVDLC01ElijahDialogue.bAct2Begin to 1
+ForceActiveQuest NVDLC01MQ02a
+SalidaDoor.Unlock
+PuestaDoor.Unlock
+
+; Elijah's first instructions at the fountain are long past.
+set NVDCL01FountainTriggerRef.bInitialInstructions to 1
+
+; Dog hired, as the game's own hire script does it (he follows the courier).
+NVDLC01HireTriggerREF.Activate NVDLC01DogREF 1
