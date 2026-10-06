@@ -2577,9 +2577,11 @@ impl<'a> Runner<'a> {
     /// `speaker` finished saying a line of `topic` it was told to say with
     /// `SayTo`: its script's `SayToDone` blocks (block type 7, the block
     /// table's entry at `0118e408`) run, those naming no topic or this one.
-    /// The game raises it when the line is done; where exactly isn't
-    /// traced (the scripts that use it chain the next line from here, as
-    /// Dead Money's narrator does).
+    /// The game raises it when the line is done: the Xbox prototype names
+    /// the callback `TESObjectREFR::SayToCallBack` (Xbox PDB); its PC
+    /// address and exact timing aren't pinned yet (the scripts that use it
+    /// chain the next line from here, as Dead Money's narrator does; the
+    /// base game has over a hundred `SayToDone` blocks).
     pub fn say_to_done(&mut self, speaker: FormId, topic: FormId) {
         let order = self.order;
         let names = |b: &script::Block| match b.args.first() {
