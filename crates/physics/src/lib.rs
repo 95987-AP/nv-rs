@@ -676,6 +676,35 @@ pub struct Character {
     /// `00c70550`); taken by whoever applies fall damage.
     pub left_ground_at: f32,
     pub fell: Option<f32>,
+    /// Horizontal velocity, units per second, as [`Character::update_controlled`]
+    /// keeps it from one update to the next.
+    pub horizontal: [f32; 2],
+}
+
+/// The most the on-ground state changes the velocity in one update: 500
+/// Havok units a second (`01013d84`, the movement input's maximum velocity
+/// change, `00cd4800`), in game units.
+pub const GROUND_MAX_VELOCITY_CHANGE: f32 = 500.0 * HAVOK_UNIT;
+/// The in-air state's: 2000 Havok units a second (`01013970`, stored by
+/// its constructor `00cd3f90`).
+pub const AIR_MAX_VELOCITY_CHANGE: f32 = 2000.0 * HAVOK_UNIT;
+
+/// Moves `current` toward `desired` by `gain` of the gap, the gap first
+/// cut to `max_change` long (the controller's movement input, as the
+/// ground and air states use it, `00cd4800` and `00cd3fb0`).
+pub fn blend_velocity(
+    current: [f32; 2],
+    desired: [f32; 2],
+    gain: f32,
+    max_change: f32,
+) -> [f32; 2] {
+    let mut diff = [desired[0] - current[0], desired[1] - current[1]];
+    let len = (diff[0] * diff[0] + diff[1] * diff[1]).sqrt();
+    if len > max_change {
+        let k = max_change / len;
+        diff = [diff[0] * k, diff[1] * k];
+    }
+    [current[0] + gain * diff[0], current[1] + gain * diff[1]]
 }
 
 /// A surface the capsule rests on or is pushed by.
@@ -701,6 +730,57 @@ impl Character {
             ground: feet[2],
             left_ground_at: feet[2],
             fell: None,
+            horizontal: [0.0; 2],
+        }
+    }
+
+    /// One controller update of `dt` seconds wanting to go at `desired`
+    /// (x, y; units per second), as the game's character states set the
+    /// velocity once per update before it's integrated:
+    ///
+    /// - jumping (asked, and standing): upward at `jump_speed`, the
+    ///   horizontal velocity set to the ground's own (still ground: 0) —
+    ///   the jumping state `00cd4280` replaces it, it doesn't keep the
+    ///   run-up;
+    /// - on the ground: the wanted velocity (gain 1, `00cd4800`);
+    /// - in the air: `air_gain` of the way from the current velocity to the
+    ///   wanted one (`00cd3fb0`; `world::locomotion::air_gain`, 0.3).
+    ///
+    /// Whether the in-air state also runs in the update a jump starts
+    /// isn't traced (the jumping state hands over through `00c6cba0`); here
+    /// it doesn't. On slopes the game works the velocity out in the
+    /// ground's plane and Havok's proxy solver slides it; neither is
+    /// modelled (the horizontal velocity is used as it is).
+    pub fn update_controlled(
+        &mut self,
+        collider: &Collider,
+        shape: &CharacterShape,
+        desired: [f32; 2],
+        jump_speed: Option<f32>,
+        air_gain: f32,
+        dt: f32,
+    ) {
+        let jumping = self.on_ground && jump_speed.is_some_and(|s| s > 0.0);
+        if jumping {
+            self.horizontal = [0.0; 2];
+        } else if self.on_ground {
+            self.horizontal =
+                blend_velocity(self.horizontal, desired, 1.0, GROUND_MAX_VELOCITY_CHANGE);
+        } else {
+            self.horizontal =
+                blend_velocity(self.horizontal, desired, air_gain, AIR_MAX_VELOCITY_CHANGE);
+        }
+        let velocity = self.horizontal;
+        let before = self.feet;
+        self.update_with_jump(collider, shape, velocity, jump_speed, dt);
+        // What's kept is the velocity the move ended with (Havok's proxy
+        // leaves the solved velocity in the controller): stopped or slid by
+        // what it ran into.
+        if dt > 0.0 {
+            self.horizontal = [
+                (self.feet[0] - before[0]) / dt.min(0.25),
+                (self.feet[1] - before[1]) / dt.min(0.25),
+            ];
         }
     }
 
@@ -1508,6 +1588,37 @@ mod tests {
         // A jump on flat ground is no fall: measured from where it left
         // the ground, not from the top.
         assert!(p.fell.is_some_and(|f| f.abs() < 0.5), "{:?}", p.fell);
+    }
+
+    #[test]
+    fn a_running_jump_starts_from_standing_and_steers_three_tenths_a_frame() {
+        let c = room();
+        let shape = CharacterShape::PLAYER;
+        let dt = 1.0 / 60.0;
+        let mut p = Character::new([-50.0, 0.0, 0.0]);
+        // Settle, then run east at 308.
+        for _ in 0..30 {
+            p.update_controlled(&c, &shape, [0.0, 0.0], None, 0.3, dt);
+        }
+        p.update_controlled(&c, &shape, [308.0, 0.0], None, 0.3, dt);
+        assert!(p.on_ground && (p.horizontal[0] - 308.0).abs() < 0.5);
+        // The jump's update: the run-up is dropped.
+        let x = p.feet[0];
+        p.update_controlled(&c, &shape, [308.0, 0.0], Some(296.5), 0.3, dt);
+        assert!(!p.on_ground);
+        assert!((p.feet[0] - x).abs() < 1e-3, "{}", p.feet[0] - x);
+        // Then 0.3 of the gap each update: 92.4, then 157.1.
+        p.update_controlled(&c, &shape, [308.0, 0.0], None, 0.3, dt);
+        assert!((p.horizontal[0] - 92.4).abs() < 0.1, "{:?}", p.horizontal);
+        p.update_controlled(&c, &shape, [308.0, 0.0], None, 0.3, dt);
+        assert!((p.horizontal[0] - 157.08).abs() < 0.1, "{:?}", p.horizontal);
+        // Letting go in the air slows it the same way, not at once.
+        p.update_controlled(&c, &shape, [0.0, 0.0], None, 0.3, dt);
+        assert!((p.horizontal[0] - 109.96).abs() < 0.1, "{:?}", p.horizontal);
+        assert_eq!(
+            blend_velocity([0.0, 0.0], [10000.0, 0.0], 1.0, 500.0),
+            [500.0, 0.0]
+        );
     }
 
     #[test]

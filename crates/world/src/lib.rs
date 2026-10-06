@@ -49,6 +49,7 @@ pub mod lip;
 pub mod living;
 pub mod lockpick;
 pub mod locks;
+pub mod locomotion;
 pub mod lod;
 pub mod magic;
 pub mod map;
