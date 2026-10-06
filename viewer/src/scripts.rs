@@ -1558,7 +1558,7 @@ pub fn run_scripts(
         let result = player_idle
             .snapshot(
                 &seats,
-                cameras.single().map_or(0.0, |(_, input)| input.pitch),
+                cameras.single().map_or(0.0, |(_, input, _)| input.pitch),
             )
             .and_then(|camera| save_camera(file, state, place, camera));
         match result {
