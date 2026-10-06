@@ -776,6 +776,46 @@ dialogue that does it), the substation and its terminal, finding two slabs of
 ghost harvester remains for Dog, the electrical box and the elevator for
 Christine, the holograms for Dean, and the Gala Event itself (MQ02).
 
+## The clinic basement and the Auto-Doc wing (MQ01c, stages 20 to 40)
+
+Played at the rules level (`world`, with the real data) and in the viewer (`--use`, see below):
+
+* **The basement terminal** (`NVDLC01ClinicBasementTerminal`, the Clinic Power Status terminal). Its
+  screens follow its own switch (`bSwitchState`): while the power is on it offers "Disengage Main
+  Power"; once off it shows the other status screen. The item's result script disables the clinic's
+  parent group, turns the two shielded speakers off (`bActive` 0), plays the power-off sound and moves
+  MQ01c from "turn off the power" (objective 20) to "find Christine" (objective 30). Checked headlessly:
+  the objective events, the speakers' flags and the screens' conditions all come out as above.
+* **Christine's Auto-Doc** (`NVDLC01ClinicAutoDocChristineRef`). Using it runs a short scene: controls
+  off, the player moved to `NVDLC01ClinicPlayerMarker`, the pod's Forward group played, the pounding
+  object disabled, and Christine given the exit package. In the viewer the pod opens and Christine is
+  standing in it, collar and all.
+* **The collar rule is the game's own and it bites.** The shielded speakers count the player in their
+  radius through `NVDLC01BombCollarQuest.iNumRadii`. A speaker turned off by setting `bActive` to 0
+  (which is all the terminal does) never takes the player out of the count if they were inside the
+  radius at that moment; only destruction or the speaker's own radio switch do. In the real route the
+  player is down in the basement when the speakers go off, so it doesn't matter; with the player
+  already inside the radius the collar kills them a few seconds later, which is what nv-rs showed in a
+  first test run. Also: a speaker's first run after loading sets `bActive` to 1, so turning it off
+  before it has ever run is overwritten; the test marks them initialised first.
+* **Not played by hand**: the terminal's screen in the viewer (no unattended way to pick a terminal
+  item), walking the route between the basement and the wing, and the exit package's finish.
+
+**Found, not fixed: a package's End action.** Christine's exit package
+(`NVDLC01ChristineExitAutoDocPackage`, a Travel package) has an End action, the script
+`StartConversation Player`, which is what makes her talk to the player once she's out. nv-rs reads
+the package's Begin, End and Change actions and dispatches Begin and Change when `AddScriptPackage`
+assigns a package, but nothing runs the End action when a package finishes, so the scene stops with
+Christine standing in the doorway and the player's controls still off (nothing in the data gives them
+back but the conversation and the Auto-Doc timer quest). When the original ends a package isn't traced
+here yet; guessing "when the walk arrives" would be a guess [G]. Also seen: a script's
+`Ref.Activate Player` on a scripted object doesn't run that object's `OnActivate` block here; only E
+does [C: check whether the original runs it].
+
+**Test flag**: `--use REF` presses E on an object once the place is loaded (branch
+`claude/viewer-use-flag`, from main). Used for the scene above, after `--run` lines that set MQ01c's
+stages and the speakers' flags.
+
 ## Open questions
 
 * Which DLCs are installed in the maintainer's Data folder (the data pass's `info`)?
