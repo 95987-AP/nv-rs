@@ -98,8 +98,15 @@ Checks: `crates/world/tests/weapon_mods.rs`, `world::weapon_mods::tests`,
 
 - The mod screen's hold-to-confirm meter (a controller's), its sort's
   exact trait (`00783810`), and the weapon taken off while it's modded.
-- Projectile speed, sights, the ammo regeneration and equip speed
-  effects. Other people's modded weapons
+- Projectile speed (`009bca60`: the projectile's speed × its value) and
+  sights (14, `004ac1e0`, `0095de30`); ammunition regenerating over time
+  (effect 6 adds its value to the weapon's rate, `00709430`, which the
+  HUD's and V.A.T.S.'s ammunition counts, `007721c0`/`007f28d0`, and
+  several reload paths read; the refill itself isn't traced). Effects 5
+  (ammunition per shot, on the Laser RCW's and Recharger Pistol's mods) and
+  7 (equip speed) are never asked about: no call to `004bda70`,
+  `004bcf60` or `004bd8d0` passes them, so in the game those mods change
+  nothing. Other people's modded weapons
   (they're built from their base record, without mods).
 - Mods are kept per holder and weapon (as its condition is), where the
   game splits a modded weapon off its stack.
