@@ -43,7 +43,7 @@ pub const MESSAGE_SECONDS: f32 = 2.0;
 /// draws them all at alpha 0 (every one had alpha 0 in the recorded
 /// frame), so nothing on screen differs until aiming at someone, a quest
 /// update and so on.
-pub const NOT_FOLLOWED: [&str; 14] = [
+pub const NOT_FOLLOWED: [&str; 13] = [
     "EnemyHealth",
     "QuestReminder",
     "Hokeys",
@@ -56,7 +56,6 @@ pub const NOT_FOLLOWED: [&str; 14] = [
     "DDTIconAP",
     "DDTIconEnemy",
     "DDTIconEnemyAP",
-    "AmmoTypeLabel",
     "HardcoreMode",
 ];
 
@@ -166,6 +165,9 @@ pub struct HudTiles {
     pub condition_meter: TileId,
     pub condition_background: TileId,
     pub condition_arrows: Option<TileId>,
+    /// `AmmoTypeLabel` (`HUDMainMenu` +0x15c): the loaded ammunition's
+    /// abbreviation (`AMMO` `QNAM`).
+    pub ammo_type: Option<TileId>,
     pub hit_points: TileId,
     pub hp_bracket: TileId,
     pub hp_meter: TileId,
@@ -475,6 +477,9 @@ pub struct WeaponState {
     /// For weapons that use ammunition: the rounds in the clip, and the
     /// count of their ammunition less the clip (`"%i/%i"`, `007721c0`).
     pub ammo: Option<(i32, i32)>,
+    /// The loaded ammunition's abbreviation (`AMMO` `QNAM`: "HP" for hollow
+    /// points; standard rounds have none), for `AmmoTypeLabel`.
+    pub ammo_abbrev: Option<String>,
     /// Condition, 0 to 1, and as the percentage the blinking reads.
     pub condition: f32,
 }
@@ -520,6 +525,9 @@ pub struct Hud {
     condition_down: bool,
     last_weapon: Option<u32>,
     last_condition: Option<f32>,
+    /// The ammunition label moved the condition pieces 50 left
+    /// (`007721c0`, `011d96b8`).
+    ammo_label_shifted: bool,
     pub queue: VecDeque<Message>,
     message_started: Option<f32>,
     /// Traits moving (`00a07c60`): the messages' and the XP meter's fades.
@@ -636,6 +644,18 @@ impl Hud {
             let bh = ui.number(condition_background, t::HEIGHT);
             ui.set_number(arrows, t::HEIGHT, bh);
             ui.set_number(arrows, t::VISIBLE, 0.0);
+        }
+        // The ammunition type label (`0076bfe0` at `0076f43e`): at the
+        // action points' rect plus the ammunition count's place, 165 to the
+        // left (the double at `01072f00`), shown, at full brightness.
+        let ammo_type = ui.find(menu, "AmmoTypeLabel");
+        if let Some(label) = ammo_type {
+            let x = ui.number(ap, t::X) + ui.number(ammo, t::X) - 165.0;
+            let y = ui.number(ap, t::Y) + ui.number(ammo, t::Y);
+            ui.set_number(label, t::X, x);
+            ui.set_number(label, t::Y, y);
+            bright(ui, label, 0);
+            ui.set_number(label, t::VISIBLE, 1.0);
         }
 
         // Hit points and the compass, bottom left.
@@ -844,6 +864,7 @@ impl Hud {
                 condition_meter,
                 condition_background,
                 condition_arrows,
+                ammo_type,
                 hit_points: hp,
                 hp_bracket,
                 hp_meter,
@@ -889,6 +910,7 @@ impl Hud {
             condition_down: false,
             last_weapon: None,
             last_condition: None,
+            ammo_label_shifted: false,
             queue: VecDeque::new(),
             message_started: None,
             anims: Animations::default(),
@@ -1179,6 +1201,39 @@ impl Hud {
             self.last_condition = None;
             return;
         };
+        // The ammunition's abbreviation (`007721c0`): with ammunition
+        // loaded, the label says it (or nothing) and, while it says
+        // something, the condition pieces sit 50 further left (`0077f890`
+        // moves the HUD's +0x4c, +0x50, +0x54 and +0x180 pieces: +0x50 is
+        // the condition meter, `007748b0`; the others taken as its label,
+        // background and arrows).
+        let shift = |ui: &mut Ui, dx: f32| {
+            for tile in [
+                Some(tiles.condition_label),
+                Some(tiles.condition_meter),
+                Some(tiles.condition_background),
+                tiles.condition_arrows,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let x = ui.number(tile, t::X);
+                ui.set_number(tile, t::X, x + dx);
+            }
+        };
+        if weapon.ammo.is_some() {
+            let abbrev = weapon.ammo_abbrev.as_deref().filter(|a| !a.is_empty());
+            if let Some(label) = tiles.ammo_type {
+                ui.set_string(label, t::STRING, abbrev.unwrap_or(""));
+            }
+            if abbrev.is_some() && !self.ammo_label_shifted {
+                shift(ui, -50.0);
+                self.ammo_label_shifted = true;
+            } else if abbrev.is_none() && self.ammo_label_shifted {
+                shift(ui, 50.0);
+                self.ammo_label_shifted = false;
+            }
+        }
         match weapon.ammo {
             Some((clip, held)) => {
                 ui.set_string(tiles.ammo, t::STRING, &format!("{clip}/{held}"));
@@ -1187,6 +1242,11 @@ impl Hud {
             None => ui.set_number(tiles.ammo, t::VISIBLE, 0.0),
         }
         if self.last_weapon != Some(weapon.id) {
+            // A new weapon: the pieces go back (`007721c0`, `0077f890(50)`).
+            if self.ammo_label_shifted {
+                shift(ui, 50.0);
+                self.ammo_label_shifted = false;
+            }
             for tile in [
                 Some(tiles.condition_label),
                 Some(tiles.condition_meter),
@@ -1458,6 +1518,7 @@ mod tests {
             weapon: Some(WeaponState {
                 id: 1,
                 ammo: Some((2, 8)),
+                ammo_abbrev: None,
                 condition: 11.0 / 60.0,
             }),
             opacity: 1.0,
@@ -1468,6 +1529,19 @@ mod tests {
         hud.update(&mut ui, &input);
         let at = |ui: &mut Ui, tile| ui.screen_position(tile);
         let tl = hud.tiles.clone();
+        // Hollow points ("HP"): the label says so, the condition pieces sit
+        // 50 further left (`007721c0`); standard rounds again: back.
+        let mut hollow = input.clone();
+        if let Some(w) = hollow.weapon.as_mut() {
+            w.ammo_abbrev = Some("HP".into());
+        }
+        hud.update(&mut ui, &hollow);
+        assert_eq!(at(&mut ui, tl.condition_label), (1350.0, 883.0));
+        if let Some(label) = tl.ammo_type {
+            assert_eq!(ui.string(label, t::STRING).as_deref(), Some("HP"));
+            assert_eq!(at(&mut ui, label).1, 883.0);
+        }
+        hud.update(&mut ui, &input);
         assert_eq!(at(&mut ui, tl.hit_points), (40.0, 803.0));
         assert_eq!(at(&mut ui, tl.hp_bracket), (40.0, 803.0));
         assert_eq!(at(&mut ui, tl.hp_meter), (60.0, 844.0));
