@@ -18,8 +18,12 @@
 //! view (a guess). Skeletons without bodies use their record's bounds and
 //! the nearest bone. A person who drops their weapon has its model hidden.
 //!
-//! Not yet: projectiles in flight (the game's bullets are hitscan, others
-//! fly), auto-aim (3° toward a target), scope sway, hits on a held weapon
+//! Grenades and thrown weapons (dynamite) are thrown instead: their
+//! projectiles fly and explode in `explosives`.
+//!
+//! Not yet: other projectiles in flight (the game's bullets are hitscan;
+//! missiles, flames and beams fly), auto-aim (3° toward a target), scope
+//! sway, hits on a held weapon
 //! outside V.A.T.S. (part 14: its collision isn't tested). V.A.T.S. is
 //! `vats`, which shoots through [`first_met`] too.
 
@@ -580,6 +584,17 @@ pub fn player_attack(
     let eye = game_point(camera.translation);
     let f = camera.forward().as_vec3();
     let view = [f.x, -f.z, f.y];
+    // Grenades and thrown weapons leave the hand instead (`explosives`;
+    // `00523150`: animation types 10–13).
+    if let Some(w) = weapon.as_ref().filter(|w| world::explosions::is_thrown(w)) {
+        crate::explosives::throw(crate::explosives::Launch {
+            thrower: PLAYER_REF,
+            weapon: w.clone(),
+            origin: eye,
+            aim: crate::explosives::Aim::Along(view),
+        });
+        return;
+    }
     let melee = weapon.as_ref().is_none_or(|w| w.is_melee());
     // Guns: the projectile's range, a shot's pellets each carrying an even
     // share of the damage, flying within the weapon's cone (`world::combat::
