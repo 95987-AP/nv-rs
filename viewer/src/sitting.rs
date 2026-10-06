@@ -233,6 +233,9 @@ pub struct Life {
     /// Getting up to go elsewhere: the package is looked at again once
     /// they're up.
     pub getting_up: bool,
+    /// Talking to the player: the speaking emotion and the idle requests
+    /// the dialogue menu makes for them ([`dialogue_frame`]).
+    pub talk: world::talk_idles::Talking,
 }
 
 /// What every person's frame needs.
@@ -306,6 +309,8 @@ fn question(
         player: false,
         child: world::idles::is_child(order, walker.reference),
         first_person: false,
+        menu: None,
+        emotion: life.talk.dialogue_emotion(),
     }
 }
 
@@ -356,13 +361,37 @@ fn pick_idle(
     values: (u8, u8, u8),
     seed: u64,
 ) -> Option<Idle> {
+    let about = question(walker, life, order, flags, values);
+    pick_for(
+        order,
+        state,
+        tree,
+        roots,
+        walker.reference,
+        life,
+        about,
+        seed,
+    )
+}
+
+/// The idle the tree gives someone asked as `about`.
+#[allow(clippy::too_many_arguments)]
+fn pick_for(
+    order: &LoadOrder,
+    state: &GameState,
+    tree: &IdleTree,
+    roots: &[FormId],
+    who: FormId,
+    life: &Life,
+    about: IdleQuestion,
+    seed: u64,
+) -> Option<Idle> {
     let facts = Facts {
         order,
         state,
         speaker: None,
     };
-    let about = question(walker, life, order, flags, values);
-    let asker = IdleAsker::new(walker.reference, about, Some(&facts), seed);
+    let asker = IdleAsker::new(who, about, Some(&facts), seed);
     tree.evaluate(roots, &|i| asker.passes(i), &|id| life.idles.is_delayed(id))
         .cloned()
 }
@@ -1000,6 +1029,13 @@ pub fn furniture_frame(
     }
     walker.position = sitter.position;
     walker.heading = sitter.heading;
+    // The heading jumped by the marker's delta or half a turn: the
+    // animations switch in this frame without a blend (`cSkipNextBlend`,
+    // `world::animation::Player::skip_next_blend`), as the body's turn in
+    // the entry, exit and seated loop is meant to line up with it.
+    if std::mem::take(&mut sitter.skip_next_blend) {
+        rig.player.skip_next_blend();
+    }
     match step {
         Step::Released | Step::Failed => {
             if step == Step::Failed {
@@ -1038,6 +1074,8 @@ pub fn furniture_frame(
 /// short isn't traced). At an idle marker, its idles play instead of the
 /// tree's ([`sandbox_frame`]).
 pub fn idles_frame(ctx: &mut Ctx, walker: &Walker, life: &mut Life, rig: &mut ActorRig) {
+    // Leaving the dialogue menu frees the talking idle.
+    free_talk_idle(life, rig);
     // The process does not ask for a free idle while a requested one
     // owns its animation (008dafd0). Its KF, not IdleClock, advances it.
     if rig.scripted_idle.is_some() {
@@ -1063,13 +1101,19 @@ pub fn idles_frame(ctx: &mut Ctx, walker: &Walker, life: &mut Life, rig: &mut Ac
         d.sqrt() <= world::idles::IDLE_ANIMATION_DISTANCE * radius / 64.0
     });
     let at_marker = matches!(life.activity, Some(Activity::IdleMarker { .. }));
+    // A request the tree answers is played by the process at a later
+    // update (`008dab40` queues it, `008dae00` plays it), after the
+    // animation update that clears `cSkipNextBlend`: not in the frame the
+    // furniture procedure swapped the animations without a blend (else
+    // the idle would cut in unblended too).
     let free = near
         && !walking
         && !ctx.fighting
         && !entering
         && !life.getting_up
         && !at_marker
-        && rig.scripted_idle.is_none();
+        && rig.scripted_idle.is_none()
+        && !rig.player.skips_next_blend();
     if life.idles.due(ctx.dt, free) {
         let roots = ctx.seats.roots(&skeleton);
         let seed = ctx.state.roll();
@@ -1125,6 +1169,154 @@ pub fn idles_frame(ctx: &mut Ctx, walker: &Walker, life: &mut Life, rig: &mut Ac
 
 fn sitter_is_none(state: &GameState, me: FormId) -> bool {
     !state.sitters.contains_key(&me)
+}
+
+/// Someone's sit state number (`Actor` vfunc +0x214): their sit
+/// procedure's, else seated (4) when the state has them in furniture.
+fn sit_state(state: &GameState, me: FormId) -> u8 {
+    match state.sitters.get(&me) {
+        Some(s) => s.state.number(),
+        None if state.furniture.contains_key(&me) => SitState::Sitting.number(),
+        None => 0,
+    }
+}
+
+/// The speaker in the dialogue menu, each frame (`world::talk_idles`,
+/// `Actor::UpdateInDialogue`, Xbox PDB, `008a5580`): a newly said
+/// response takes its emotion and asks for its speaker idle or the idle
+/// tree's (the say, `008a20d0`); between responses the tree is asked
+/// again whenever their special idle is done. The tree is asked as in the
+/// menu: `MenuMode 1009`, `GetCurrentAIProcedure` 4 (their dialogue
+/// package), `IsTalking` while the response is said, `GetDialogueEmotion`.
+/// What it gives plays in the special-idle section on its own clock (the
+/// script-idle path, `rig.scripted_idle`). An answer for the base loop
+/// (section 0) isn't played here (how the request path places one isn't
+/// traced). The process plays a taken request at its next update
+/// (`008dae00`); here in the same frame, or later while one is starting.
+#[allow(clippy::too_many_arguments)]
+pub fn dialogue_frame(
+    game: &cellview::Game,
+    state: &mut GameState,
+    seats: &mut Seats,
+    walker: &Walker,
+    life: &mut Life,
+    rig: &mut ActorRig,
+    said: Option<(world::talk_idles::SaidKey, &world::dialogue::Response)>,
+    now: f32,
+) {
+    use world::animation::{section, State};
+    use world::talk_idles::{takes_request, Request};
+    let me = walker.reference;
+    let order = &game.order;
+    let sit = sit_state(state, me);
+    let starting = matches!(
+        rig.player.state(section::SPECIAL_IDLE),
+        Some(State::EaseIn | State::TransDest)
+    );
+    // A taken idle waiting to play.
+    if let Some(id) = life.talk.queued {
+        if play_requested(game, state, seats, life, rig, (me, id), now) {
+            life.talk.queued = None;
+        }
+    }
+    let special_done =
+        rig.player.playing(section::SPECIAL_IDLE).is_none() && life.talk.queued.is_none();
+    let ask = said
+        .and_then(|(key, r)| life.talk.say(key, r))
+        .or_else(|| life.talk.between_says(special_done));
+    let Some(ask) = ask else { return };
+    if !takes_request(sit, special_done, starting, ask) {
+        return;
+    }
+    let idle = match ask.request {
+        Request::Idle(id) => seats.tree.get(id).cloned(),
+        Request::Tree => {
+            let (skeleton, _) = skeleton(life, order, me);
+            let roots = seats.roots(&skeleton);
+            let values = state.sitters.get(&me).map_or((0, 0, 0), |s| s.question());
+            let mut about = question(walker, life, order, (false, false), values);
+            about.procedure = procedures::DIALOGUE;
+            about.menu = Some(world::idles::DIALOG_MENU);
+            // `IsTalking` (`005a1150` → `008a67f0`): actor +0x7d, which
+            // the menu's update sets before the say (`008a5580`), so a
+            // response being said counts from its first frame.
+            about.talking = said.is_some() || state.speaking.contains(&me);
+            let seed = state.roll();
+            pick_for(order, state, &seats.tree, &roots, me, life, about, seed)
+        }
+    };
+    let Some(idle) = idle.filter(|i| i.is_animation() && i.group() != 0) else {
+        return;
+    };
+    life.talk.queued = Some(idle.form_id);
+    if play_requested(game, state, seats, life, rig, (me, idle.form_id), now) {
+        life.talk.queued = None;
+    }
+}
+
+/// Plays a taken idle request in the special-idle section (`008dae00` →
+/// `00497f20` → `00498290`: the old special idle freed, the new one
+/// blended in from the pose, its loops rolled, `005ff770`). False while a
+/// special idle is starting (`00498f80`), to try again. A request for the
+/// idle already playing is dropped (`00498d30`).
+#[allow(clippy::too_many_arguments)]
+fn play_requested(
+    game: &cellview::Game,
+    state: &mut GameState,
+    seats: &mut Seats,
+    life: &mut Life,
+    rig: &mut ActorRig,
+    (me, id): (FormId, FormId),
+    now: f32,
+) -> bool {
+    use world::animation::section;
+    let Some(idle) = seats.tree.get(id).cloned() else {
+        return true;
+    };
+    let Some(seq) = seats.sequence(game, &idle.model) else {
+        return true;
+    };
+    if rig
+        .player
+        .sequence(section::SPECIAL_IDLE)
+        .is_some_and(|s| Arc::ptr_eq(s, &seq))
+    {
+        return true;
+    }
+    let r = state.roll();
+    let count = idle.extra_loops(|lo, hi| lo + (r % (u64::from(hi - lo) + 1)) as u8);
+    let loops = if count == 255 { -1 } else { i32::from(count) };
+    let bones = rig.skeleton.clone();
+    if !rig.player.request_special_idle(&seq, loops, &bones.bones) {
+        return false;
+    }
+    rig.scripted_idle = Some(id);
+    rig.overlay = None;
+    life.idles.played(&idle);
+    println!(
+        "{now:.1} s: {me}: talking idle {} ({})",
+        idle.editor_id,
+        idle.model.rsplit(['\\', '/']).next().unwrap_or_default()
+    );
+    true
+}
+
+/// The dialogue menu closed on someone (`Actor::EndDialogue`, Xbox PDB,
+/// `008b1070`): in sit state 0, 4 or 9 their special idle is to be freed
+/// (process flag 0x800, [`free_talk_idle`]).
+pub fn dialogue_over(state: &GameState, life: &mut Life, me: FormId) {
+    let sit = sit_state(state, me);
+    life.talk.menu_closed(sit);
+}
+
+/// Carries out a pending free of the special idle (`008ba600` flag 0x800:
+/// kept while a special idle is starting, `00498f80`; then `008daf20`,
+/// `00498910(1,0)`: its normal blend out).
+fn free_talk_idle(life: &mut Life, rig: &mut ActorRig) {
+    if life.talk.free_pending && rig.player.free_special_idle() {
+        life.talk.free_pending = false;
+        life.idles.stop();
+    }
 }
 
 /// Plays an idle: a base-loop one (section 0) becomes the standing loop

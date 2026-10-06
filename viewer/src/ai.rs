@@ -584,6 +584,7 @@ pub fn move_actors(
         // `fActorTurnAnimMinTime`).
         rig.turning = turning_of(walker, rig.fighting);
         if Some(me) == ended {
+            crate::sitting::dialogue_over(state, &mut life, me);
             walker.evaluate = true;
             if let Some(s) = walker.social.as_mut() {
                 s.greeted(&moves.social);
@@ -734,6 +735,11 @@ pub fn move_actors(
                     walker.turning = Some(side);
                 }
             }
+            // Their talking idles (`sitting::dialogue_frame`).
+            let said = conversation.0.as_ref().and_then(|t| t.said());
+            crate::sitting::dialogue_frame(
+                &game.0, state, &mut seats, walker, &mut life, &mut rig, said, now,
+            );
             place(walker, &mut transform, state, &mut talkers);
             continue;
         }

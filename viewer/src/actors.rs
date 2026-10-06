@@ -507,6 +507,7 @@ pub fn animate_actors(
     settings: Option<Res<AnimSettings>>,
     conversation: Option<Res<crate::dialogue::Conversation>>,
     menus: Option<Res<crate::menus::Menus>>,
+    drawn: Option<Res<crate::game_menus::MenuDraw>>,
     collision: Option<Res<crate::walk::CellCollision>>,
     look: Option<Res<crate::look::LookSettings>>,
     camera: Query<&GlobalTransform, With<crate::FlyCamera>>,
@@ -522,7 +523,12 @@ pub fn animate_actors(
     let in_dialogue = conversation
         .as_ref()
         .is_some_and(|c| c.0.as_ref().is_some_and(|t| !t.is_line_only()));
-    if menus.as_ref().is_some_and(|m| m.is_open()) {
+    if menu_stops_animation(
+        menus.as_ref().is_some_and(|m| m.is_open()),
+        menus.as_ref().is_some_and(|m| m.only_game_menus()),
+        in_dialogue,
+        drawn.as_ref().map_or(&[][..], |d| &d.1[..]),
+    ) {
         return;
     }
     let speaker = conversation
@@ -578,6 +584,26 @@ pub fn animate_actors(
     }
 }
 
+/// Whether menu mode stops every animation this frame: any menu open
+/// (`menu_open`), except that the dialogue menu updates its speaker each
+/// frame (`00762950` → `Actor::UpdateInDialogue`, Xbox PDB, `008a5580`):
+/// in a conversation with nothing but the game's own menus up
+/// (`only_game_menus`) and all of those the dialogue menu (class 1009,
+/// `open_classes`), the speaker animates (the rest are held `still` by
+/// `ai`). Before, the dialogue menu's own screen counted as a menu here
+/// and froze the speaker too.
+fn menu_stops_animation(
+    menu_open: bool,
+    only_game_menus: bool,
+    in_dialogue: bool,
+    open_classes: &[i32],
+) -> bool {
+    let dialogue_only = in_dialogue
+        && only_game_menus
+        && open_classes.iter().all(|c| *c == ui::menus::dialog::CLASS);
+    menu_open && !dialogue_only
+}
+
 /// The skinned piece entity's components.
 pub fn skinned(
     inverse_bindposes: Handle<SkinnedMeshInverseBindposes>,
@@ -593,6 +619,21 @@ pub fn skinned(
 mod tests {
     use super::*;
     use nif::anim::{Motion, Sequence, Track};
+
+    #[test]
+    fn only_the_dialogue_menu_lets_the_speaker_animate() {
+        let dialog = ui::menus::dialog::CLASS;
+        // Nothing open: everyone animates.
+        assert!(!menu_stops_animation(false, true, false, &[]));
+        // The game's dialogue menu alone, in a conversation: animating.
+        assert!(!menu_stops_animation(true, true, true, &[dialog]));
+        // A game menu on top of it (barter, 1053), or another game menu
+        // without a conversation: stopped.
+        assert!(menu_stops_animation(true, true, true, &[dialog, 1053]));
+        assert!(menu_stops_animation(true, true, false, &[dialog]));
+        // The Pip-Boy or a viewer menu: stopped.
+        assert!(menu_stops_animation(true, false, true, &[dialog]));
+    }
 
     #[test]
     fn restored_requests_wait_for_the_destination_scene() {

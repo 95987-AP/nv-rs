@@ -119,6 +119,9 @@ impl Conversation {
                 emotion_value: 0,
                 number: 0,
                 text: "pending line".into(),
+                use_emotion: false,
+                speaker_idle: None,
+                listener_idle: None,
             }],
             conditions: vec![],
             prompt: None,
@@ -185,6 +188,18 @@ impl Talk {
     /// Who's talking (their reference).
     pub fn speaker(&self) -> FormId {
         self.speaker.reference
+    }
+
+    /// The response being said now, as ((line, response number, when it
+    /// began), response), while it's said (not once the topics are up):
+    /// what the speaker's say (`008a20d0`) hands the animation
+    /// (`sitting::dialogue_frame`).
+    pub fn said(&self) -> Option<((FormId, usize, f32), &world::dialogue::Response)> {
+        if self.choices.is_some() {
+            return None;
+        }
+        let r = self.info.responses.get(self.response)?;
+        Some(((self.info.form_id, self.response, self.since), r))
     }
 }
 
