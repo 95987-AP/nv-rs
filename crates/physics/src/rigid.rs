@@ -1,0 +1,1482 @@
+//! Free rigid bodies: the clutter, weapons and props whose models carry a
+//! moving Havok body (`nif::RigidBodyInfo`, motion systems other than
+//! keyframed and fixed), falling, sliding, tumbling and coming to rest on a
+//! [`Collider`] and on each other, pushed by shots, blasts
+//! ([`crate::impulses`]) and walkers, as the game hands them to Havok.
+//!
+//! Read from the game: each body's mass, inertia tensor, centre of mass,
+//! linear and angular damping, friction, restitution, most linear and
+//! angular speed and its shapes (hulls with their convex radius, boxes,
+//! spheres, capsules) from its model; gravity ([`crate::GRAVITY`], the Havok
+//! world's); the step: the game steps Havok in fixed steps of
+//! `[HAVOK] fMaxTime` (0.016 in `Fallout_default.ini`, exe default 1/60),
+//! up to three a frame, carrying the rest over ([`Clock`], `00c66760` with
+//! `iUpdateType` 0).
+//!
+//! This solver's own (Havok's isn't reproduced, labelled where used): each
+//! step is split into substeps of extended position-based dynamics (as in
+//! [`crate::ragdoll`]); contacts are found between a body's corners (and
+//! sphere and capsule centres) and the other side's faces, and between the
+//! other side's corners and a body's hull, not edge against edge; friction
+//! and restitution combine as the square root of the two sides' product
+//! (Havok's default `hkpMaterial` combination, not traced in the
+//! executable); a surface added without a body's values rubs and bounces
+//! as Havok's default body does (friction 0.5, restitution 0.4,
+//! `hkpRigidBodyCinfo`'s defaults, not traced); bodies fall asleep after a
+//! second nearly still and wake when pushed (Havok's deactivation isn't
+//! traced); walkers push bodies as unstoppable capsules (the character
+//! proxy's own impulse, `hkpCharacterProxy`, isn't traced; the game's proxy
+//! has infinite strength).
+
+use std::collections::HashSet;
+
+use crate::ragdoll::{
+    conjugate, mat_quat, mat_t_vec, mat_vec, quat_mat, quat_mul, rotated, Mat3, Quat,
+};
+use crate::vec::*;
+use crate::{
+    closest_on_triangle, segment_segment_closest, segment_triangle_closest, Collider, Surface,
+    Vec3, GRAVITY, HAVOK_UNIT,
+};
+
+/// `[HAVOK] fMaxTime` as `Fallout_default.ini` sets it (the executable's
+/// default is 1/60).
+pub const STEP: f32 = 0.016;
+/// The most steps one frame takes: 3 (`00c66760`: `(param_2 == 0) * 2 + 1`
+/// with its second argument false in play; 1 otherwise).
+pub const MAX_STEPS: u32 = 3;
+/// Substeps per step, and position passes over the contacts per substep
+/// (choices of this solver, not the game's).
+const SUBSTEPS: usize = 8;
+const ITERATIONS: usize = 4;
+/// What a surface added without its body's values rubs and bounces like:
+/// Havok's default body (`hkpRigidBodyCinfo`: friction 0.5, restitution
+/// 0.4; not traced in the executable). The game's clutter models carry
+/// these same values (`clutter\junk\ssbottle02.nif`).
+pub const DEFAULT_SURFACE: Surface = Surface {
+    friction: 0.5,
+    restitution: 0.4,
+};
+/// Nearly still: slower than this (game units a second, radians a second)
+/// for [`SLEEP_AFTER`] seconds puts a body to sleep (this solver's
+/// thresholds; Havok's deactivation isn't traced).
+const STILL_SPEED: f32 = 2.0;
+const STILL_SPIN: f32 = 0.3;
+const SLEEP_AFTER: f32 = 1.0;
+/// How far a walker reaches past its capsule to push a body (game units):
+/// walkers are kept their radius and the body's shell off it by the
+/// collider, so the push is felt this much further out (this solver's).
+pub const PUSH_SKIN: f32 = 2.0;
+
+/// The game's Havok step clock (`00c66760` with `iUpdateType` 0): the frame
+/// time joins the time left over; it runs as many whole steps of
+/// [`Clock::step`] as it rounds to (at most [`Clock::max_steps`]) and keeps
+/// the rest (which can be negative after rounding up) for the next frame,
+/// never more than one step; less than half a step waits.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Clock {
+    pub step: f32,
+    pub max_steps: u32,
+    /// Time not yet stepped (`012677b0`).
+    left: f32,
+}
+
+impl Default for Clock {
+    fn default() -> Self {
+        Clock::new(STEP)
+    }
+}
+
+impl Clock {
+    pub fn new(step: f32) -> Self {
+        Clock {
+            step,
+            max_steps: MAX_STEPS,
+            left: 0.0,
+        }
+    }
+
+    /// The steps a frame of `frame` seconds takes: how many, and how long
+    /// each is.
+    // Translated from 00c66760 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn advance(&mut self, frame: f32) -> (u32, f32) {
+        // The time multiplier at `011ac3a0` is 1 here (it isn't traced
+        // what changes it).
+        let step = self.step;
+        let t = (self.left + frame).min(166.666_67);
+        if t <= 0.0 {
+            self.left = 0.0;
+            return (0, 0.0);
+        }
+        // The x87's rounding: to the nearest, halves to even.
+        let q = t / step;
+        let mut r = q.round();
+        if (q - q.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
+            r -= q.signum();
+        }
+        let n = (r as u32).min(self.max_steps);
+        if n != 0 {
+            self.left = (t - n as f32 * step).min(step);
+            return (n, step);
+        }
+        if t < step * 0.5 {
+            self.left = t;
+            return (0, 0.0);
+        }
+        self.left = 0.0;
+        (1, t)
+    }
+}
+
+/// One solid piece of a body, in its model's space (game units).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Shape {
+    /// A convex hull: corners, face planes `n·p + d = 0` (`n` out, unit
+    /// length) and Havok's convex radius around it.
+    Hull {
+        vertices: Vec<Vec3>,
+        planes: Vec<[f32; 4]>,
+        shell: f32,
+    },
+    Sphere {
+        center: Vec3,
+        radius: f32,
+    },
+    Capsule {
+        a: Vec3,
+        b: Vec3,
+        radius: f32,
+    },
+    /// Triangles on a moving body: only their corners touch here.
+    Mesh {
+        vertices: Vec<Vec3>,
+        triangles: Vec<[u32; 3]>,
+        shell: f32,
+    },
+}
+
+impl Shape {
+    /// A hull with its planes made unit length.
+    pub fn hull(vertices: Vec<Vec3>, planes: &[[f32; 4]], shell: f32) -> Shape {
+        let planes = planes
+            .iter()
+            .filter_map(|p| {
+                let l = length([p[0], p[1], p[2]]);
+                (l > 1e-9).then(|| [p[0] / l, p[1] / l, p[2] / l, p[3] / l])
+            })
+            .collect();
+        Shape::Hull {
+            vertices,
+            planes,
+            shell,
+        }
+    }
+
+    /// The shape as triangles in its model's space, and how far its
+    /// surface stands out from them: for the collider, which walkers and
+    /// shots meet.
+    pub fn triangles(&self) -> (Vec<Vec3>, Vec<[u32; 3]>, f32) {
+        match self {
+            Shape::Hull {
+                vertices,
+                planes,
+                shell,
+            } => (
+                vertices.clone(),
+                crate::shapes::hull(vertices, planes),
+                *shell,
+            ),
+            Shape::Sphere { center, radius } => {
+                let (v, t) = crate::shapes::sphere(*center, *radius);
+                (v, t, 0.0)
+            }
+            Shape::Capsule { a, b, radius } => {
+                let (v, t) = crate::shapes::capsule(*a, *b, *radius);
+                (v, t, 0.0)
+            }
+            Shape::Mesh {
+                vertices,
+                triangles,
+                shell,
+            } => (vertices.clone(), triangles.clone(), *shell),
+        }
+    }
+
+    /// The farthest the shape's surface reaches from `from`.
+    fn reach(&self, from: Vec3) -> f32 {
+        let far = |v: &[Vec3], extra: f32| {
+            v.iter()
+                .map(|&p| length(sub(p, from)))
+                .fold(0.0f32, f32::max)
+                + extra
+        };
+        match self {
+            Shape::Hull {
+                vertices, shell, ..
+            }
+            | Shape::Mesh {
+                vertices, shell, ..
+            } => far(vertices, *shell),
+            Shape::Sphere { center, radius } => far(&[*center], *radius),
+            Shape::Capsule { a, b, radius } => far(&[*a, *b], *radius),
+        }
+    }
+}
+
+/// A body as its model gives it, in the model's space (game units; a
+/// placed reference's scale already applied to the shapes and the centre).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RigidSetup {
+    /// The placed reference it belongs to: its triangles in the collider
+    /// carry this owner.
+    pub reference: u32,
+    /// Its Havok layer (`nif::collision::layers`).
+    pub layer: u8,
+    pub mass: f32,
+    /// The centre of mass.
+    pub center: Vec3,
+    /// The inertia tensor about the centre (mass × game units²).
+    pub inertia: Mat3,
+    pub linear_damping: f32,
+    pub angular_damping: f32,
+    pub friction: f32,
+    pub restitution: f32,
+    /// Game units a second, radians a second (0: no limit).
+    pub max_linear_speed: f32,
+    pub max_angular_speed: f32,
+    /// Havok's motion system (`nif::RigidBodyInfo::motion`).
+    pub motion: u8,
+    pub shapes: Vec<Shape>,
+}
+
+/// A rotation and a translation: model space to the world.
+pub type Pose = (Mat3, Vec3);
+
+/// A body in the world.
+#[derive(Debug, Clone)]
+pub struct Rigid {
+    pub setup: RigidSetup,
+    /// The inverse inertia in the model's space (zero: it doesn't turn).
+    inverse_inertia: Mat3,
+    inverse_mass: f32,
+    /// The centre of mass in the world, the turn, the velocities.
+    x: Vec3,
+    q: Quat,
+    v: Vec3,
+    w: Vec3,
+    /// Where it was put: the pose its triangles were added to the collider
+    /// at ([`RigidWorld::delta`]).
+    rest: Pose,
+    /// How far its surface reaches from the centre of mass.
+    reach: f32,
+    still: f32,
+    /// At rest: not stepped until something pushes it.
+    pub asleep: bool,
+    /// Moved since it was put (the game's "Havok moved" reference change,
+    /// `CHANGE_REFR_HAVOK_MOVE`, named by `0083fef0`).
+    pub moved: bool,
+}
+
+fn mat_mul(a: &Mat3, b: &Mat3) -> Mat3 {
+    let mut m = [[0.0; 3]; 3];
+    for (i, row) in m.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    m
+}
+
+fn transpose(a: &Mat3) -> Mat3 {
+    let mut m = [[0.0; 3]; 3];
+    for (i, row) in m.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = a[j][i];
+        }
+    }
+    m
+}
+
+/// The inverse of a 3 × 3 matrix (zero when it has none).
+fn invert(m: &Mat3) -> Mat3 {
+    let c =
+        |r1: usize, c1: usize, r2: usize, c2: usize| m[r1][c1] * m[r2][c2] - m[r1][c2] * m[r2][c1];
+    let cof = [
+        [c(1, 1, 2, 2), -c(1, 0, 2, 2), c(1, 0, 2, 1)],
+        [-c(0, 1, 2, 2), c(0, 0, 2, 2), -c(0, 0, 2, 1)],
+        [c(0, 1, 1, 2), -c(0, 0, 1, 2), c(0, 0, 1, 1)],
+    ];
+    let det = m[0][0] * cof[0][0] + m[0][1] * cof[0][1] + m[0][2] * cof[0][2];
+    if det.abs() < 1e-12 {
+        return [[0.0; 3]; 3];
+    }
+    let mut out = [[0.0; 3]; 3];
+    for (i, row) in out.iter_mut().enumerate() {
+        for (j, v) in row.iter_mut().enumerate() {
+            *v = cof[j][i] / det;
+        }
+    }
+    out
+}
+
+impl Rigid {
+    fn new(setup: RigidSetup, pose: Pose) -> Rigid {
+        let dynamic = crate::impulses::moves(setup.motion) && setup.mass > 0.0;
+        let inverse_mass = if dynamic { 1.0 / setup.mass } else { 0.0 };
+        let inverse_inertia = if dynamic {
+            invert(&setup.inertia)
+        } else {
+            [[0.0; 3]; 3]
+        };
+        let reach = setup
+            .shapes
+            .iter()
+            .map(|s| s.reach(setup.center))
+            .fold(0.0f32, f32::max);
+        let (r, t) = pose;
+        Rigid {
+            x: add(mat_vec(&r, setup.center), t),
+            q: mat_quat(&r),
+            v: [0.0; 3],
+            w: [0.0; 3],
+            rest: pose,
+            reach,
+            still: 0.0,
+            asleep: true,
+            moved: false,
+            inverse_inertia,
+            inverse_mass,
+            setup,
+        }
+    }
+
+    /// Model space to the world now.
+    pub fn pose(&self) -> Pose {
+        let r = quat_mat(self.q);
+        (r, sub(self.x, mat_vec(&r, self.setup.center)))
+    }
+
+    /// Where it was put (its triangles' pose in the collider).
+    pub fn rest(&self) -> Pose {
+        self.rest
+    }
+
+    /// The centre of mass in the world.
+    pub fn center(&self) -> Vec3 {
+        self.x
+    }
+
+    pub fn velocity(&self) -> Vec3 {
+        self.v
+    }
+
+    pub fn spin(&self) -> Vec3 {
+        self.w
+    }
+
+    pub fn dynamic(&self) -> bool {
+        self.inverse_mass > 0.0
+    }
+
+    /// The inverse inertia in the world applied to `a`.
+    fn inverse_inertia_world(&self, a: Vec3) -> Vec3 {
+        let r = quat_mat(self.q);
+        mat_vec(&r, mat_vec(&self.inverse_inertia, mat_t_vec(&r, a)))
+    }
+
+    /// How readily it gives at `arm` (from its centre) along `n`.
+    fn give(&self, arm: Vec3, n: Vec3) -> f32 {
+        if self.inverse_mass == 0.0 {
+            return 0.0;
+        }
+        let rn = cross(arm, n);
+        self.inverse_mass + dot(rn, self.inverse_inertia_world(rn))
+    }
+
+    /// Moves it as a positional push `p` at `arm` would.
+    fn shift(&mut self, p: Vec3, arm: Vec3) {
+        if self.inverse_mass == 0.0 {
+            return;
+        }
+        let turn = self.inverse_inertia_world(cross(arm, p));
+        self.x = add(self.x, scale(p, self.inverse_mass));
+        self.q = rotated(self.q, turn);
+    }
+
+    /// Changes its velocities as an impulse `p` (game units) at `arm` would.
+    fn kick(&mut self, p: Vec3, arm: Vec3) {
+        if self.inverse_mass == 0.0 {
+            return;
+        }
+        let turn = self.inverse_inertia_world(cross(arm, p));
+        self.v = add(self.v, scale(p, self.inverse_mass));
+        self.w = add(self.w, turn);
+    }
+
+    fn point_velocity(&self, arm: Vec3) -> Vec3 {
+        add(self.v, cross(self.w, arm))
+    }
+
+    /// Model-space point to the world.
+    fn to_world(&self, p: Vec3) -> Vec3 {
+        let r = quat_mat(self.q);
+        add(self.x, mat_vec(&r, sub(p, self.setup.center)))
+    }
+
+    /// World point to the model's space.
+    fn to_model(&self, p: Vec3) -> Vec3 {
+        let r = quat_mat(self.q);
+        add(self.setup.center, mat_t_vec(&r, sub(p, self.x)))
+    }
+}
+
+/// A walker, as the bodies feel it: an upright capsule from the feet up
+/// `height`, `radius` wide, moving at `velocity`, which nothing stops.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Mover {
+    pub feet: Vec3,
+    pub radius: f32,
+    pub height: f32,
+    pub velocity: Vec3,
+}
+
+impl Mover {
+    fn segment(&self) -> (Vec3, Vec3) {
+        let low = self.feet[2] + self.radius;
+        let high = (self.feet[2] + self.height - self.radius).max(low);
+        (
+            [self.feet[0], self.feet[1], low],
+            [self.feet[0], self.feet[1], high],
+        )
+    }
+}
+
+/// The other side of a contact.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Other {
+    /// The collider (still).
+    World,
+    Body(usize),
+    /// A walker moving at this velocity.
+    Mover(Vec3),
+}
+
+/// A contact found while correcting positions, for the velocity pass.
+#[derive(Debug, Clone, Copy)]
+struct Contact {
+    a: usize,
+    other: Other,
+    /// From each side's centre to the touching point, in the world.
+    arm_a: Vec3,
+    arm_b: Vec3,
+    /// Pushes `a` away from the other side.
+    n: Vec3,
+    /// How much correction it took (mass × distance).
+    lambda: f32,
+    friction: f32,
+    restitution: f32,
+    /// The normal speed of `a` against the other side before the substep.
+    approach: f32,
+}
+
+/// A touching point before it's solved: on `a` (a model-space point of
+/// it), on the other side (a model-space point of the other body, or a
+/// world point), the normal pushing `a` away, and the gap they keep.
+#[derive(Debug, Clone, Copy)]
+struct Touch {
+    on_a: Vec3,
+    on_b: Vec3,
+    n: Vec3,
+    margin: f32,
+    surface: Surface,
+}
+
+/// Free rigid bodies and the walkers that push them.
+#[derive(Debug, Clone, Default)]
+pub struct RigidWorld {
+    pub bodies: Vec<Rigid>,
+    pub clock: Clock,
+    movers: Vec<Mover>,
+}
+
+impl RigidWorld {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a body at `pose`, asleep, and gives its index.
+    pub fn add(&mut self, setup: RigidSetup, pose: Pose) -> usize {
+        self.bodies.push(Rigid::new(setup, pose));
+        self.bodies.len() - 1
+    }
+
+    /// The body of a reference.
+    pub fn find(&self, reference: u32) -> Option<usize> {
+        self.bodies
+            .iter()
+            .position(|b| b.setup.reference == reference)
+    }
+
+    /// Takes a reference's body out, giving it back.
+    pub fn remove(&mut self, reference: u32) -> Option<Rigid> {
+        let i = self.find(reference)?;
+        Some(self.bodies.remove(i))
+    }
+
+    /// Puts a body at a pose, still and asleep (a moved reference coming
+    /// back where it was left).
+    pub fn place(&mut self, body: usize, pose: Pose, moved: bool) {
+        let b = &mut self.bodies[body];
+        let (r, t) = pose;
+        b.x = add(mat_vec(&r, b.setup.center), t);
+        b.q = mat_quat(&r);
+        b.v = [0.0; 3];
+        b.w = [0.0; 3];
+        b.asleep = true;
+        b.moved = moved;
+    }
+
+    /// How a body has moved since it was put: the rotation and translation
+    /// that take its rest pose to where it is (for
+    /// [`Collider::move_owner`] and the drawing).
+    pub fn delta(&self, body: usize) -> Pose {
+        let b = &self.bodies[body];
+        let (r, t) = b.pose();
+        let (r0, t0) = b.rest;
+        let rd = mat_mul(&r, &transpose(&r0));
+        (rd, sub(t, mat_vec(&rd, t0)))
+    }
+
+    /// The walkers this frame.
+    pub fn set_movers(&mut self, movers: Vec<Mover>) {
+        self.movers = movers;
+    }
+
+    fn wake(&mut self, body: usize) {
+        let b = &mut self.bodies[body];
+        if b.dynamic() {
+            b.asleep = false;
+            b.still = 0.0;
+        }
+    }
+
+    /// `hkpRigidBody::applyPointImpulse`: an impulse in Havok units (mass ×
+    /// Havok units a second) at a world point.
+    pub fn apply_point_impulse(&mut self, body: usize, impulse: Vec3, point: Vec3) {
+        self.wake(body);
+        let b = &mut self.bodies[body];
+        let arm = sub(point, b.x);
+        b.kick(scale(impulse, HAVOK_UNIT), arm);
+        b.moved = true;
+    }
+
+    /// `hkpRigidBody::applyLinearImpulse`: through the centre of mass.
+    pub fn apply_linear_impulse(&mut self, body: usize, impulse: Vec3) {
+        self.wake(body);
+        let b = &mut self.bodies[body];
+        b.kick(scale(impulse, HAVOK_UNIT), [0.0; 3]);
+        b.moved = true;
+    }
+
+    /// `hkpRigidBody::applyAngularImpulse`: Havok units (mass × Havok
+    /// units² a second).
+    pub fn apply_angular_impulse(&mut self, body: usize, impulse: Vec3) {
+        self.wake(body);
+        let b = &mut self.bodies[body];
+        if b.inverse_mass == 0.0 {
+            return;
+        }
+        let turn = b.inverse_inertia_world(scale(impulse, HAVOK_UNIT * HAVOK_UNIT));
+        b.w = add(b.w, turn);
+        b.moved = true;
+    }
+
+    /// Whether any body is awake.
+    pub fn awake(&self) -> bool {
+        self.bodies.iter().any(|b| !b.asleep)
+    }
+
+    /// Moves on by a frame of `frame` seconds, in the game's steps
+    /// ([`Clock`]); the steps taken.
+    pub fn update(&mut self, collider: &Collider, frame: f32) -> u32 {
+        let (n, dt) = self.clock.advance(frame);
+        for _ in 0..n {
+            self.step(collider, dt);
+        }
+        n
+    }
+
+    /// One step of `dt` seconds.
+    pub fn step(&mut self, collider: &Collider, dt: f32) {
+        // Walkers wake what they push.
+        for i in 0..self.bodies.len() {
+            if self.bodies[i].asleep && self.bodies[i].dynamic() {
+                let pushed = self.movers.iter().any(|m| {
+                    self.mover_touches(i, m)
+                        .iter()
+                        .any(|t| dot(m.velocity, t.n) > STILL_SPEED)
+                });
+                if pushed {
+                    self.wake(i);
+                }
+            }
+        }
+        if !self.awake() || dt <= 0.0 {
+            return;
+        }
+        // Moving bodies wake the sleeping ones they run into (from the
+        // next step on, a sleeping one holds still like the world).
+        for i in 0..self.bodies.len() {
+            if self.bodies[i].asleep {
+                continue;
+            }
+            for j in 0..self.bodies.len() {
+                if j == i || !self.bodies[j].asleep || !self.bodies[j].dynamic() {
+                    continue;
+                }
+                let gap = length(sub(self.bodies[i].x, self.bodies[j].x));
+                if gap > self.bodies[i].reach + self.bodies[j].reach + 2.0 {
+                    continue;
+                }
+                let speed =
+                    length(self.bodies[i].v) + length(self.bodies[i].w) * self.bodies[i].reach;
+                if speed > STILL_SPEED && !self.body_touches(i, j).is_empty() {
+                    self.wake(j);
+                }
+            }
+        }
+        let owners: HashSet<u32> = self.bodies.iter().map(|b| b.setup.reference).collect();
+        // The triangles each awake body might touch this step: near its
+        // centre, not its own or another body's.
+        let nearby: Vec<Vec<u32>> = (0..self.bodies.len())
+            .map(|i| {
+                let b = &self.bodies[i];
+                if b.asleep {
+                    return Vec::new();
+                }
+                let reach = b.reach + length(b.v) * dt + 8.0;
+                let lo = sub(b.x, [reach; 3]);
+                let hi = add(b.x, [reach; 3]);
+                collider
+                    .near(lo, hi)
+                    .into_iter()
+                    .filter(|&t| !owners.contains(&collider.owner(t)))
+                    .filter(|&t| {
+                        let [p, q, s] = collider.triangle(t);
+                        p[2].max(q[2]).max(s[2]) >= lo[2] && p[2].min(q[2]).min(s[2]) <= hi[2]
+                    })
+                    .collect()
+            })
+            .collect();
+        let h = dt / SUBSTEPS as f32;
+        for _ in 0..SUBSTEPS {
+            self.substep(collider, &nearby, h);
+        }
+        for b in &mut self.bodies {
+            if b.asleep {
+                continue;
+            }
+            let moving = length(b.v) > STILL_SPEED || length(b.w) > STILL_SPIN;
+            b.moved |= moving;
+            b.still = if moving { 0.0 } else { b.still + dt };
+            if b.still > SLEEP_AFTER {
+                b.asleep = true;
+                b.v = [0.0; 3];
+                b.w = [0.0; 3];
+            }
+        }
+    }
+
+    fn substep(&mut self, collider: &Collider, nearby: &[Vec<u32>], h: f32) {
+        let before: Vec<(Vec3, Quat, Vec3, Vec3)> =
+            self.bodies.iter().map(|b| (b.x, b.q, b.v, b.w)).collect();
+        for b in &mut self.bodies {
+            if b.asleep || !b.dynamic() {
+                continue;
+            }
+            b.v[2] -= GRAVITY * h;
+            b.x = add(b.x, scale(b.v, h));
+            b.q = rotated(b.q, scale(b.w, h));
+        }
+        // What touches what, found once, then corrected a few times over
+        // (each correction measured from where the last left the bodies).
+        let mut touches: Vec<(usize, Other, Touch)> = Vec::new();
+        for (i, tris) in nearby.iter().enumerate() {
+            if self.bodies[i].asleep || !self.bodies[i].dynamic() {
+                continue;
+            }
+            for t in self.world_touches(collider, i, tris) {
+                touches.push((i, Other::World, t));
+            }
+            for j in 0..self.bodies.len() {
+                if j == i || (j < i && !self.bodies[j].asleep) {
+                    continue;
+                }
+                let gap = length(sub(self.bodies[i].x, self.bodies[j].x));
+                if gap > self.bodies[i].reach + self.bodies[j].reach + 2.0 {
+                    continue;
+                }
+                let found = self.body_touches(i, j);
+                touches.extend(found.into_iter().map(|t| (i, Other::Body(j), t)));
+            }
+            for m in &self.movers {
+                for t in self.mover_touches(i, m) {
+                    touches.push((i, Other::Mover(m.velocity), t));
+                }
+            }
+        }
+        let mut lambdas = vec![0.0f32; touches.len()];
+        for _ in 0..ITERATIONS {
+            for (k, &(a, other, t)) in touches.iter().enumerate() {
+                lambdas[k] += self.correct(a, other, &t);
+            }
+        }
+        let contacts: Vec<Contact> = touches
+            .iter()
+            .zip(&lambdas)
+            .filter(|(_, &l)| l > 0.0)
+            .map(|(&(a, other, t), &l)| self.contact(a, other, &t, l, &before))
+            .collect();
+        // Velocities from the moves.
+        for (b, (x, q, _, _)) in self.bodies.iter_mut().zip(&before) {
+            if b.asleep || !b.dynamic() {
+                continue;
+            }
+            b.v = scale(sub(b.x, *x), 1.0 / h);
+            let d = quat_mul(b.q, conjugate(*q));
+            let w = scale([d[0], d[1], d[2]], 2.0 / h);
+            b.w = if d[3] < 0.0 { scale(w, -1.0) } else { w };
+        }
+        // Bounce (or stop approaching), with each contact's push summed
+        // over a few passes and never pulling, then friction.
+        let mut pushed = vec![0.0f32; contacts.len()];
+        for _ in 0..ITERATIONS {
+            for (c, p) in contacts.iter().zip(pushed.iter_mut()) {
+                self.normal_pass(c, h, p);
+            }
+        }
+        for c in &contacts {
+            self.friction_pass(c, h);
+        }
+        for b in &mut self.bodies {
+            if b.asleep || !b.dynamic() {
+                continue;
+            }
+            let s = &b.setup;
+            b.v = scale(b.v, (1.0 - s.linear_damping * h).max(0.0));
+            b.w = scale(b.w, (1.0 - s.angular_damping * h).max(0.0));
+            let speed = length(b.v);
+            if s.max_linear_speed > 0.0 && speed > s.max_linear_speed {
+                b.v = scale(b.v, s.max_linear_speed / speed);
+            }
+            let spin = length(b.w);
+            if s.max_angular_speed > 0.0 && spin > s.max_angular_speed {
+                b.w = scale(b.w, s.max_angular_speed / spin);
+            }
+        }
+    }
+
+    /// Both sides' points of a touch in the world, and the arms from their
+    /// centres.
+    fn ends(&self, a: usize, other: Other, t: &Touch) -> (Vec3, Vec3, Vec3, Vec3) {
+        let pa = self.bodies[a].to_world(t.on_a);
+        let pb = match other {
+            Other::Body(j) => self.bodies[j].to_world(t.on_b),
+            _ => t.on_b,
+        };
+        let arm_b = match other {
+            Other::Body(j) => sub(pb, self.bodies[j].x),
+            _ => [0.0; 3],
+        };
+        (pa, pb, sub(pa, self.bodies[a].x), arm_b)
+    }
+
+    /// Corrects one touching point's overlap (position-based): the
+    /// correction it took (mass × distance), 0 when they're apart.
+    fn correct(&mut self, a: usize, other: Other, t: &Touch) -> f32 {
+        let (pa, pb, arm_a, arm_b) = self.ends(a, other, t);
+        let depth = t.margin - dot(sub(pa, pb), t.n);
+        if depth <= 0.0 {
+            return 0.0;
+        }
+        let wb = match other {
+            Other::Body(j) if !self.bodies[j].asleep => self.bodies[j].give(arm_b, t.n),
+            _ => 0.0,
+        };
+        let wa = self.bodies[a].give(arm_a, t.n);
+        if wa + wb <= 0.0 {
+            return 0.0;
+        }
+        let lambda = depth / (wa + wb);
+        self.bodies[a].shift(scale(t.n, lambda), arm_a);
+        if let Other::Body(j) = other {
+            if !self.bodies[j].asleep {
+                self.bodies[j].shift(scale(t.n, -lambda), arm_b);
+            }
+        }
+        lambda
+    }
+
+    /// A corrected touch, for the velocity pass.
+    fn contact(
+        &self,
+        a: usize,
+        other: Other,
+        t: &Touch,
+        lambda: f32,
+        before: &[(Vec3, Quat, Vec3, Vec3)],
+    ) -> Contact {
+        let (_, _, arm_a, arm_b) = self.ends(a, other, t);
+        // How fast they approached each other before the substep.
+        let (_, qa, va, wa_) = before[a];
+        let ra = mat_vec(&quat_mat(qa), mat_t_vec(&quat_mat(self.bodies[a].q), arm_a));
+        let mut rel = add(va, cross(wa_, ra));
+        match other {
+            Other::Body(j) => {
+                let (_, _, vb, wb_) = before[j];
+                rel = sub(rel, add(vb, cross(wb_, arm_b)));
+            }
+            Other::Mover(v) => rel = sub(rel, v),
+            Other::World => {}
+        }
+        let me = &self.bodies[a].setup;
+        Contact {
+            a,
+            other,
+            arm_a,
+            arm_b,
+            n: t.n,
+            lambda,
+            friction: (me.friction * t.surface.friction).max(0.0).sqrt(),
+            restitution: (me.restitution * t.surface.restitution).max(0.0).sqrt(),
+            approach: dot(rel, t.n),
+        }
+    }
+
+    /// The velocity of a contact's first side against the other at the
+    /// touching point, and the other body when it moves.
+    fn relative(&self, c: &Contact) -> (Vec3, Option<usize>) {
+        let mut rel = self.bodies[c.a].point_velocity(c.arm_a);
+        let mut moving = None;
+        match c.other {
+            Other::Body(j) => {
+                rel = sub(rel, self.bodies[j].point_velocity(c.arm_b));
+                if !self.bodies[j].asleep {
+                    moving = Some(j);
+                }
+            }
+            Other::Mover(v) => rel = sub(rel, v),
+            Other::World => {}
+        }
+        (rel, moving)
+    }
+
+    /// Gives a contact an impulse `p` (game units) on its first side, and
+    /// the opposite on a moving other body.
+    fn kick_contact(&mut self, c: &Contact, p: Vec3, other: Option<usize>) {
+        self.bodies[c.a].kick(p, c.arm_a);
+        if let Some(j) = other {
+            self.bodies[j].kick(scale(p, -1.0), c.arm_b);
+        }
+    }
+
+    /// How readily a contact's sides give along `dir`, together.
+    fn contact_give(&self, c: &Contact, dir: Vec3, other: Option<usize>) -> f32 {
+        self.bodies[c.a].give(c.arm_a, dir)
+            + other.map_or(0.0, |j| self.bodies[j].give(c.arm_b, dir))
+    }
+
+    /// One pass of a contact's normal velocity: set to a bounce off a real
+    /// approach (faster than gravity gives in two substeps) by the
+    /// restitution, else to zero, which also takes back speed the overlap
+    /// correction gave (as Müller et al.'s restitution step does); `pushed`
+    /// sums the impulse given so far.
+    fn normal_pass(&mut self, c: &Contact, h: f32, pushed: &mut f32) {
+        let (rel, other) = self.relative(c);
+        let vn = dot(rel, c.n);
+        let target = if c.approach < -2.0 * GRAVITY * h {
+            -c.restitution * c.approach
+        } else {
+            0.0
+        };
+        let w = self.contact_give(c, c.n, other);
+        if w <= 0.0 {
+            return;
+        }
+        let p = (target - vn) / w;
+        *pushed += p;
+        if p != 0.0 {
+            self.kick_contact(c, scale(c.n, p), other);
+        }
+    }
+
+    /// A contact's friction: sliding slowed by friction × the push that
+    /// kept the sides apart, stopped outright when that's enough.
+    fn friction_pass(&mut self, c: &Contact, h: f32) {
+        let (rel, other) = self.relative(c);
+        let vn = dot(rel, c.n);
+        let vt = sub(rel, scale(c.n, vn));
+        let slide = length(vt);
+        if slide < 1e-6 {
+            return;
+        }
+        let dir = scale(vt, -1.0 / slide);
+        let stop = (c.friction * c.lambda / h).min(slide);
+        let w = self.contact_give(c, dir, other);
+        if w > 0.0 {
+            self.kick_contact(c, scale(dir, stop / w), other);
+        }
+    }
+
+    /// Where body `i` touches the collider's triangles `tris`.
+    fn world_touches(&self, collider: &Collider, i: usize, tris: &[u32]) -> Vec<Touch> {
+        let b = &self.bodies[i];
+        let mut out = Vec::new();
+        for &t in tris {
+            let [ta, tb, tc] = collider.triangle(t);
+            let shell = collider.shell(t);
+            let surface = collider.surface(t).unwrap_or(DEFAULT_SURFACE);
+            let mut face = normalize(cross(sub(tb, ta), sub(tc, ta)));
+            if dot(face, sub(b.x, ta)) < 0.0 {
+                face = scale(face, -1.0);
+            }
+            for shape in &b.setup.shapes {
+                let mut point = |p_model: Vec3, radius: f32| {
+                    let p = b.to_world(p_model);
+                    if let Some((on_b, n, margin)) =
+                        point_triangle(p, radius + shell, [ta, tb, tc], face, b.reach)
+                    {
+                        out.push(Touch {
+                            on_a: p_model,
+                            on_b,
+                            n,
+                            margin,
+                            surface,
+                        });
+                    }
+                };
+                match shape {
+                    Shape::Hull {
+                        vertices, shell: s, ..
+                    }
+                    | Shape::Mesh {
+                        vertices, shell: s, ..
+                    } => {
+                        for &v in vertices {
+                            point(v, *s);
+                        }
+                    }
+                    Shape::Sphere { center, radius } => point(*center, *radius),
+                    Shape::Capsule { a, b: e, radius } => {
+                        point(*a, *radius);
+                        point(*e, *radius);
+                        let (pa, pe) = (b.to_world(*a), b.to_world(*e));
+                        let (on_axis, on_tri) = segment_triangle_closest(pa, pe, ta, tb, tc);
+                        let mid_model = b.to_model(on_axis);
+                        if dist2(on_axis, pa) > 1e-4 && dist2(on_axis, pe) > 1e-4 {
+                            let d = length(sub(on_axis, on_tri));
+                            let n = if d > 1e-5 {
+                                scale(sub(on_axis, on_tri), 1.0 / d)
+                            } else {
+                                face
+                            };
+                            if d < radius + shell {
+                                out.push(Touch {
+                                    on_a: mid_model,
+                                    on_b: on_tri,
+                                    n,
+                                    margin: radius + shell,
+                                    surface,
+                                });
+                            }
+                        }
+                    }
+                }
+                // The triangle's corners inside a hull.
+                if let Shape::Hull {
+                    planes, shell: s, ..
+                } = shape
+                {
+                    for corner in [ta, tb, tc] {
+                        if let Some(t) = corner_in_hull(b, corner, planes, s + shell, surface) {
+                            out.push(t);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Where body `i` touches body `j` (`j`'s side as model-space points
+    /// of `j`).
+    fn body_touches(&self, i: usize, j: usize) -> Vec<Touch> {
+        let (a, b) = (&self.bodies[i], &self.bodies[j]);
+        let surface = Surface {
+            friction: b.setup.friction,
+            restitution: b.setup.restitution,
+        };
+        let mut out = Vec::new();
+        for sa in &a.setup.shapes {
+            for sb in &b.setup.shapes {
+                // a's corners and centres against b's hulls, b's against
+                // a's (turned around).
+                for (p, r) in feature_points(sa) {
+                    let world = a.to_world(p);
+                    if let Some(t) = point_in_shape(b, world, sb, r, surface) {
+                        out.push(Touch {
+                            on_a: p,
+                            on_b: b.to_model(t.on_b),
+                            ..t
+                        });
+                    }
+                }
+                for (p, r) in feature_points(sb) {
+                    let world = b.to_world(p);
+                    if let Some(t) = point_in_shape(a, world, sa, r, surface) {
+                        // t: on_b is the point of b (world), n pushes b away
+                        // from a; turn it around for a.
+                        out.push(Touch {
+                            on_a: a.to_model(t.on_b_surface()),
+                            on_b: p,
+                            n: scale(t.n, -1.0),
+                            margin: t.margin,
+                            surface,
+                        });
+                    }
+                }
+                // Round shapes against each other.
+                if let (Some((a0, a1, ra)), Some((b0, b1, rb))) = (round(sa), round(sb)) {
+                    let (wa0, wa1) = (a.to_world(a0), a.to_world(a1));
+                    let (wb0, wb1) = (b.to_world(b0), b.to_world(b1));
+                    let (pa, pb) = segment_segment_closest(wa0, wa1, wb0, wb1);
+                    let d = length(sub(pa, pb));
+                    if d < ra + rb && d > 1e-5 {
+                        out.push(Touch {
+                            on_a: a.to_model(pa),
+                            on_b: b.to_model(pb),
+                            n: scale(sub(pa, pb), 1.0 / d),
+                            margin: ra + rb,
+                            surface,
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Where body `i` touches a walker (the walker's side as world points).
+    fn mover_touches(&self, i: usize, m: &Mover) -> Vec<Touch> {
+        let b = &self.bodies[i];
+        let (s0, s1) = m.segment();
+        let radius = m.radius + PUSH_SKIN;
+        let surface = DEFAULT_SURFACE;
+        // Quick reject.
+        let c = closest_on_segment(b.x, s0, s1);
+        if length(sub(b.x, c)) > b.reach + radius {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for shape in &b.setup.shapes {
+            for (p, r) in feature_points(shape) {
+                let world = b.to_world(p);
+                let on = closest_on_segment(world, s0, s1);
+                let d = length(sub(world, on));
+                if d < r + radius && d > 1e-5 {
+                    out.push(Touch {
+                        on_a: p,
+                        on_b: on,
+                        n: scale(sub(world, on), 1.0 / d),
+                        margin: r + radius,
+                        surface,
+                    });
+                }
+            }
+            if let Shape::Hull { planes, shell, .. } = shape {
+                for k in 0..=4 {
+                    let p = add(s0, scale(sub(s1, s0), k as f32 / 4.0));
+                    if let Some(t) = corner_in_hull(b, p, planes, shell + radius, surface) {
+                        out.push(t);
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+impl Touch {
+    /// For a touch found by [`point_in_shape`]: the point on the shape's
+    /// surface (world) where the outside point is pushed out to.
+    fn on_b_surface(&self) -> Vec3 {
+        // `on_a` holds it there (see `point_in_shape`).
+        self.on_a
+    }
+}
+
+/// The points of a shape that touch others here, with their radius:
+/// corners (with the shell), sphere and capsule centres.
+fn feature_points(shape: &Shape) -> Vec<(Vec3, f32)> {
+    match shape {
+        Shape::Hull {
+            vertices, shell, ..
+        }
+        | Shape::Mesh {
+            vertices, shell, ..
+        } => vertices.iter().map(|&v| (v, *shell)).collect(),
+        Shape::Sphere { center, radius } => vec![(*center, *radius)],
+        Shape::Capsule { a, b, radius } => vec![(*a, *radius), (*b, *radius)],
+    }
+}
+
+/// A sphere or capsule as a segment and a radius.
+fn round(shape: &Shape) -> Option<(Vec3, Vec3, f32)> {
+    match shape {
+        Shape::Sphere { center, radius } => Some((*center, *center, *radius)),
+        Shape::Capsule { a, b, radius } => Some((*a, *b, *radius)),
+        _ => None,
+    }
+}
+
+fn closest_on_segment(p: Vec3, a: Vec3, b: Vec3) -> Vec3 {
+    let ab = sub(b, a);
+    let l = dot(ab, ab);
+    if l < 1e-12 {
+        return a;
+    }
+    add(a, scale(ab, (dot(sub(p, a), ab) / l).clamp(0.0, 1.0)))
+}
+
+/// A point `p` of a body (with `margin`: its radius and the triangle's
+/// shell) against a triangle whose face normal `face` points toward the
+/// body: the point on the triangle side (world), the normal pushing the
+/// body away and the margin, when they overlap. A point that has gone
+/// through the face (up to `deep` behind it) still counts while it's over
+/// the triangle.
+fn point_triangle(
+    p: Vec3,
+    margin: f32,
+    [a, b, c]: [Vec3; 3],
+    face: Vec3,
+    deep: f32,
+) -> Option<(Vec3, Vec3, f32)> {
+    let s = dot(face, sub(p, a));
+    let on_plane = sub(p, scale(face, s));
+    let inside = {
+        let n = face;
+        dot(cross(sub(b, a), sub(on_plane, a)), n) * dot(cross(sub(b, a), sub(c, a)), n) >= 0.0
+            && dot(cross(sub(c, b), sub(on_plane, b)), n) * dot(cross(sub(c, b), sub(a, b)), n)
+                >= 0.0
+            && dot(cross(sub(a, c), sub(on_plane, c)), n) * dot(cross(sub(a, c), sub(b, c)), n)
+                >= 0.0
+    };
+    if inside {
+        return (s < margin && s > -deep).then_some((on_plane, face, margin));
+    }
+    let q = closest_on_triangle(p, a, b, c);
+    let d = length(sub(p, q));
+    (d < margin && d > 1e-5).then(|| (q, scale(sub(p, q), 1.0 / d), margin))
+}
+
+/// A world point `p` inside body `b`'s hull (its planes, in the model's
+/// space) grown by `margin`: pushes the body away from it, along the face
+/// it's least deep behind.
+fn corner_in_hull(
+    b: &Rigid,
+    p: Vec3,
+    planes: &[[f32; 4]],
+    margin: f32,
+    surface: Surface,
+) -> Option<Touch> {
+    if planes.is_empty() {
+        return None;
+    }
+    let local = b.to_model(p);
+    let mut best = (f32::NEG_INFINITY, [0.0; 3]);
+    for pl in planes {
+        let n = [pl[0], pl[1], pl[2]];
+        let sd = dot(n, local) + pl[3];
+        if sd > best.0 {
+            best = (sd, n);
+        }
+    }
+    let (sd, n_local) = best;
+    if sd >= margin {
+        return None;
+    }
+    let r = quat_mat(b.q);
+    let n = mat_vec(&r, n_local);
+    // The hull's surface point under `p`, as a model-space point of the
+    // body.
+    let on_hull = sub(local, scale(n_local, sd));
+    Some(Touch {
+        on_a: on_hull,
+        on_b: p,
+        n: scale(n, -1.0),
+        margin,
+        surface,
+    })
+}
+
+/// A world point `p` with radius `r` against shape `shape` of body `b`:
+/// the touch pushing `p`'s side away from `b` (`n`), with `on_a` holding
+/// the shape's surface point (world) and `on_b` the shape's surface point
+/// too (filled by the caller).
+fn point_in_shape(b: &Rigid, p: Vec3, shape: &Shape, r: f32, surface: Surface) -> Option<Touch> {
+    match shape {
+        Shape::Hull { planes, shell, .. } => {
+            let t = corner_in_hull(b, p, planes, shell + r, surface)?;
+            // corner_in_hull pushes b away from p; for p's side, the other
+            // way, and the surface point in the world.
+            let on_surface = b.to_world(t.on_a);
+            Some(Touch {
+                on_a: on_surface,
+                on_b: on_surface,
+                n: scale(t.n, -1.0),
+                margin: t.margin,
+                surface,
+            })
+        }
+        Shape::Sphere { .. } | Shape::Capsule { .. } => {
+            let (s0, s1, radius) = round(shape)?;
+            let (w0, w1) = (b.to_world(s0), b.to_world(s1));
+            let on = closest_on_segment(p, w0, w1);
+            let d = length(sub(p, on));
+            if d >= radius + r || d < 1e-5 {
+                return None;
+            }
+            Some(Touch {
+                on_a: on,
+                on_b: on,
+                n: scale(sub(p, on), 1.0 / d),
+                margin: radius + r,
+                surface,
+            })
+        }
+        Shape::Mesh { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const I3: Mat3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+    fn floor(at: f32) -> Collider {
+        let mut c = Collider::new();
+        c.add(
+            &[
+                [-1000.0, -1000.0, at],
+                [1000.0, -1000.0, at],
+                [1000.0, 1000.0, at],
+                [-1000.0, 1000.0, at],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        );
+        c
+    }
+
+    /// A box of half sizes `h` centred on its origin, of `mass`.
+    fn crate_(reference: u32, h: Vec3, mass: f32) -> RigidSetup {
+        let corners: Vec<Vec3> = (0..8)
+            .map(|k| {
+                [
+                    if k & 1 == 0 { -h[0] } else { h[0] },
+                    if k & 2 == 0 { -h[1] } else { h[1] },
+                    if k & 4 == 0 { -h[2] } else { h[2] },
+                ]
+            })
+            .collect();
+        let planes = [
+            [1.0, 0.0, 0.0, -h[0]],
+            [-1.0, 0.0, 0.0, -h[0]],
+            [0.0, 1.0, 0.0, -h[1]],
+            [0.0, -1.0, 0.0, -h[1]],
+            [0.0, 0.0, 1.0, -h[2]],
+            [0.0, 0.0, -1.0, -h[2]],
+        ];
+        let k = mass / 3.0;
+        RigidSetup {
+            reference,
+            layer: 4,
+            mass,
+            center: [0.0; 3],
+            inertia: [
+                [k * (h[1] * h[1] + h[2] * h[2]), 0.0, 0.0],
+                [0.0, k * (h[0] * h[0] + h[2] * h[2]), 0.0],
+                [0.0, 0.0, k * (h[0] * h[0] + h[1] * h[1])],
+            ],
+            linear_damping: 0.1,
+            angular_damping: 0.05,
+            friction: 0.5,
+            restitution: 0.4,
+            max_linear_speed: 1068.0 * HAVOK_UNIT,
+            max_angular_speed: 31.57,
+            motion: 4,
+            shapes: vec![Shape::hull(corners, &planes, 0.7)],
+        }
+    }
+
+    #[test]
+    fn the_clock_steps_as_the_game_does() {
+        let mut c = Clock::new(0.016);
+        // A 60 Hz frame: one step, 0.000667 s over.
+        assert_eq!(c.advance(1.0 / 60.0), (1, 0.016));
+        // A long frame: three steps at most, the rest held to one step.
+        let (n, dt) = c.advance(0.2);
+        assert_eq!((n, dt), (3, 0.016));
+        assert!((c.left - 0.016).abs() < 1e-6, "{}", c.left);
+        // Less than half a step waits; half or more takes one of it all.
+        let mut c = Clock::new(0.016);
+        assert_eq!(c.advance(0.005), (0, 0.0));
+        assert_eq!(c.advance(0.002), (0, 0.0));
+        let (n, dt) = c.advance(0.0015);
+        assert_eq!(n, 1);
+        assert!((dt - 0.016).abs() < 1e-6, "{dt}");
+        // Rounding up runs ahead: the rest is negative.
+        let mut c = Clock::new(0.016);
+        assert_eq!(c.advance(0.013).0, 1);
+        assert!(c.left < 0.0);
+    }
+
+    #[test]
+    fn a_box_falls_and_rests_on_the_floor() {
+        let mut w = RigidWorld::new();
+        let i = w.add(crate_(1, [10.0, 10.0, 10.0], 5.0), (I3, [0.0, 0.0, 100.0]));
+        w.wake(i);
+        let c = floor(0.0);
+        for _ in 0..240 {
+            w.update(&c, 1.0 / 60.0);
+        }
+        let (_, t) = w.bodies[i].pose();
+        // Half its size plus its shell above the floor.
+        assert!((t[2] - 10.7).abs() < 0.5, "{t:?}");
+        assert!(t[0].abs() < 1.0 && t[1].abs() < 1.0, "{t:?}");
+        assert!(w.bodies[i].asleep && w.bodies[i].moved);
+    }
+
+    #[test]
+    fn a_shot_knocks_a_bottle_off_a_rail() {
+        // A rail 4 units wide at z 100; a tall thin body standing on it.
+        let mut c = Collider::new();
+        c.add(
+            &[
+                [-200.0, -2.0, 100.0],
+                [200.0, -2.0, 100.0],
+                [200.0, 2.0, 100.0],
+                [-200.0, 2.0, 100.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+        );
+        c.extend(&floor(0.0));
+        let mut w = RigidWorld::new();
+        let i = w.add(crate_(2, [1.5, 1.5, 12.0], 1.0), (I3, [0.0, 0.0, 112.7]));
+        // Asleep where it was put, until pushed.
+        for _ in 0..30 {
+            w.update(&c, 1.0 / 60.0);
+        }
+        assert!(w.bodies[i].asleep);
+        assert_eq!(w.bodies[i].pose().1, [0.0, 0.0, 112.7]);
+        // A shot along +y high up.
+        let j = crate::impulses::projectile_impulse(
+            10.0,
+            [0.0, 1.0, 0.0],
+            10,
+            1.0,
+            &Default::default(),
+        )
+        .unwrap();
+        w.apply_point_impulse(i, j, [0.0, 0.0, 120.0]);
+        assert!(!w.bodies[i].asleep && w.bodies[i].moved);
+        for _ in 0..300 {
+            w.update(&c, 1.0 / 60.0);
+        }
+        let (_, t) = w.bodies[i].pose();
+        // Off the rail, on the ground beyond it.
+        assert!(t[2] < 20.0, "{t:?}");
+        assert!(t[1] > 2.0, "{t:?}");
+    }
+
+    #[test]
+    fn bodies_stack_and_a_walker_pushes_them() {
+        let c = floor(0.0);
+        let mut w = RigidWorld::new();
+        let lower = w.add(crate_(3, [10.0; 3], 10.0), (I3, [0.0, 0.0, 10.7]));
+        let upper = w.add(crate_(4, [10.0; 3], 10.0), (I3, [0.0, 0.0, 40.0]));
+        w.wake(upper);
+        for _ in 0..240 {
+            w.update(&c, 1.0 / 60.0);
+        }
+        let top = w.bodies[upper].pose().1;
+        assert!((top[2] - 32.1).abs() < 1.5, "{top:?}");
+        // A walker coming from the west at 150 units a second pushes the
+        // lower box east.
+        let start = w.bodies[lower].pose().1;
+        for k in 0..60 {
+            let x = -40.0 + 150.0 * k as f32 / 60.0;
+            w.set_movers(vec![Mover {
+                feet: [x, 0.0, 0.0],
+                radius: 20.0,
+                height: 128.0,
+                velocity: [150.0, 0.0, 0.0],
+            }]);
+            w.update(&c, 1.0 / 60.0);
+        }
+        let now = w.bodies[lower].pose().1;
+        assert!(now[0] > start[0] + 20.0, "{start:?} → {now:?}");
+    }
+
+    #[test]
+    fn surfaces_keep_their_bodies_values_through_extend() {
+        let ice = Surface {
+            friction: 0.1,
+            restitution: 0.2,
+        };
+        let mut a = Collider::new();
+        a.add_solid_surface(
+            &[[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            (0.7, 0, 3),
+            Some(ice),
+        );
+        let mut all = floor(0.0);
+        all.extend(&a);
+        let last = all.triangle_count() as u32 - 1;
+        assert_eq!(all.surface(last), Some(ice));
+        assert_eq!(all.surface(0), None);
+        assert_eq!(all.material(last), Some(3));
+    }
+
+    #[test]
+    fn deltas_take_the_rest_pose_to_the_pose_now() {
+        let mut w = RigidWorld::new();
+        let i = w.add(crate_(5, [5.0; 3], 2.0), (I3, [10.0, 20.0, 30.0]));
+        let turned = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        w.place(i, (turned, [0.0, 0.0, 5.0]), true);
+        let (r, t) = w.delta(i);
+        // The rest pose's origin goes to the new one.
+        let moved = add(mat_vec(&r, [10.0, 20.0, 30.0]), t);
+        assert!(length(sub(moved, [0.0, 0.0, 5.0])) < 1e-4, "{moved:?}");
+        assert!(w.bodies[i].moved && w.bodies[i].asleep);
+    }
+
+    #[test]
+    fn impulses_change_velocity_by_mass_in_havok_units() {
+        let mut w = RigidWorld::new();
+        let i = w.add(crate_(6, [5.0; 3], 2.0), (I3, [0.0; 3]));
+        w.apply_linear_impulse(i, [4.0, 0.0, 0.0]);
+        // 4 / 2 Havok units a second, in game units.
+        assert!((w.bodies[i].velocity()[0] - 2.0 * HAVOK_UNIT).abs() < 1e-4);
+        w.apply_angular_impulse(i, [0.0, 0.0, 1.0]);
+        assert!(w.bodies[i].spin()[2] > 0.0);
+        // Fixed bodies don't move.
+        let mut fixed = crate_(7, [5.0; 3], 2.0);
+        fixed.motion = 7;
+        let j = w.add(fixed, (I3, [50.0, 0.0, 0.0]));
+        w.apply_linear_impulse(j, [4.0, 0.0, 0.0]);
+        assert_eq!(w.bodies[j].velocity(), [0.0; 3]);
+        assert!(w.bodies[j].asleep);
+    }
+}
