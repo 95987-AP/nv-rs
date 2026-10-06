@@ -469,11 +469,11 @@ fn the_player_drops_items_in_front() {
     let mut state = new_game(&order);
     state.stock(&order, PLAYER_REF);
     state.items.insert((PLAYER_REF, FormId(CUP)), 5);
-    let r = more::placed::drop_item(&order, &mut state, FormId(CUP), 3).unwrap();
+    let r = more::placed::drop_item(&order, &mut state, FormId(CUP), 3, 0.5).unwrap();
     assert_eq!(state.item_count(&order, PLAYER_REF, FormId(CUP)), 2);
     let made = state.more.placed.refs[&r];
     assert_eq!((made.base, made.count), (FormId(CUP), 3));
-    let heading = state.place(&order, PLAYER_REF).unwrap().3;
+    let heading = 0.5f32;
     let (dx, dy) = (made.position[0], made.position[1] - 100.0);
     assert!((dx * heading.cos() - dy * heading.sin()).abs() < 1e-3);
     assert!((dx.hypot(dy) - more::placed::DROP_DISTANCE).abs() < 50.0);
@@ -481,12 +481,26 @@ fn the_player_drops_items_in_front() {
         .events
         .contains(&Event::More(Shown::Placed { reference: r })));
     // All the rest: none left; nothing more to drop.
-    more::placed::drop_item(&order, &mut state, FormId(CUP), 10).unwrap();
+    more::placed::drop_item(&order, &mut state, FormId(CUP), 10, 0.0).unwrap();
     assert_eq!(state.item_count(&order, PLAYER_REF, FormId(CUP)), 0);
-    assert!(more::placed::drop_item(&order, &mut state, FormId(CUP), 1).is_none());
+    assert!(more::placed::drop_item(&order, &mut state, FormId(CUP), 1, 0.0).is_none());
     let saved = world::save::save(&state, None);
     let (back, _) = world::save::load(&saved).unwrap();
     assert_eq!(back.more.placed.refs, state.more.placed.refs);
+    // Dropped items lie where they fell as things E can take; taken, they
+    // go back into the inventory and the reference is gone.
+    let space = state.place(&order, PLAYER_REF).unwrap().0;
+    let lying = more::placed::dropped_items(&order, &state, space);
+    assert_eq!(lying.len(), 2);
+    let first = lying.iter().find(|i| i.reference == r).unwrap();
+    assert!(first.is_item());
+    assert_eq!((first.base, first.count), (FormId(CUP), 3));
+    state.pick_up(&order, first.reference, first.base, first.count);
+    more::placed::taken(&mut state, first.reference);
+    assert_eq!(state.item_count(&order, PLAYER_REF, FormId(CUP)), 3);
+    assert_eq!(more::placed::dropped_items(&order, &state, space).len(), 1);
+    // Elsewhere: none.
+    assert!(more::placed::dropped_items(&order, &state, FormId(0x1234)).is_empty());
 }
 
 #[test]

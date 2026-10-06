@@ -334,6 +334,11 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     for ((who, weapon), h) in weapon_health {
         line(format!("weaponhealth {} {} {h}", id(*who), id(*weapon)));
     }
+    for (i, item) in state.hotkeys.iter().enumerate() {
+        if let Some(item) = item {
+            line(format!("hotkey {i} {}", id(*item)));
+        }
+    }
     let dropped: BTreeSet<_> = state.dropped.iter().collect();
     for (who, weapon) in dropped {
         line(format!("dropped {} {}", id(*who), id(*weapon)));
@@ -641,6 +646,12 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                 state
                     .weapon_health
                     .insert((form(1)?, form(2)?), num(3)? as f32);
+            }
+            "hotkey" => {
+                let slot = num(1)? as usize;
+                if slot < 8 {
+                    state.hotkeys[slot] = Some(form(2)?);
+                }
             }
             "dropped" => {
                 state.dropped.insert((form(1)?, form(2)?));

@@ -285,14 +285,17 @@ fn drop_radius(order: &LoadOrder, item: FormId) -> f32 {
 /// once; the game also casts the item's shape there and tries ten
 /// headings round the player, turning each drop on from the last, and
 /// lets physics drop it: none of that here (the world has no collision).
-/// Returns the new reference, or none when nothing was carried.
+/// `heading` is the player's facing (radians clockwise from north; the
+/// game state doesn't keep the player's, the view does). Returns the new
+/// reference, or none when nothing was carried.
 pub fn drop_item(
     order: &LoadOrder,
     state: &mut GameState,
     item: FormId,
     count: i32,
+    heading: f32,
 ) -> Option<FormId> {
-    let (space, cell, position, heading) = state.place(order, PLAYER_REF)?;
+    let (space, cell, position, _) = state.place(order, PLAYER_REF)?;
     let moved = {
         state.stock(order, PLAYER_REF);
         let have = state.item_count(order, PLAYER_REF, item);
@@ -332,6 +335,67 @@ pub fn drop_item(
         .events
         .push(Event::More(super::Shown::Placed { reference: id }));
     Some(id)
+}
+
+/// The made item references (dropped items) lying in a place (an interior
+/// cell or a worldspace) and not taken, as things E can take: what the
+/// placed items of a cell give ([`crate::scripting::Interactive`]), with the
+/// base's script, bounds and name.
+pub fn dropped_items(
+    order: &LoadOrder,
+    state: &GameState,
+    space: FormId,
+) -> Vec<crate::scripting::Interactive> {
+    let mut out = Vec::new();
+    for (&reference, m) in &state.more.placed.refs {
+        if m.space != space || state.disabled.get(&reference) == Some(&true) {
+            continue;
+        }
+        let Some(brr) = order.get(m.base) else {
+            continue;
+        };
+        let kind = brr.entry.header.kind;
+        if !crate::scripting::is_item(kind) {
+            continue;
+        }
+        let Ok(record) = brr.record() else { continue };
+        let script = record
+            .get(FourCC::new(b"SCRI"))
+            .filter(|s| s.data.len() >= 4)
+            .map(|s| {
+                brr.plugin.to_global(FormId(u32::from_le_bytes([
+                    s.data[0], s.data[1], s.data[2], s.data[3],
+                ])))
+            });
+        let bounds = record
+            .get(FourCC::new(b"OBND"))
+            .filter(|s| s.data.len() >= 12)
+            .map(|s| {
+                let v =
+                    |i: usize| f32::from(i16::from_le_bytes([s.data[i * 2], s.data[i * 2 + 1]]));
+                ([v(0), v(1), v(2)], [v(3), v(4), v(5)])
+            });
+        out.push(crate::scripting::Interactive {
+            reference,
+            base: m.base,
+            script,
+            count: m.count.max(1),
+            position: m.position,
+            rotation: m.rotation,
+            scale: 1.0,
+            trigger: None,
+            bounds,
+            name: record.full_name(),
+            kind,
+        });
+    }
+    out
+}
+
+/// A made reference taken (picked up): it's gone for good (the game deletes
+/// a dropped item's reference when it's picked up).
+pub fn taken(state: &mut GameState, reference: FormId) {
+    state.more.placed.refs.remove(&reference);
 }
 
 /// Saved lines.
