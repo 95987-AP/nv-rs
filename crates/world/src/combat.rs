@@ -387,7 +387,17 @@ pub fn weapon_damage_at(
         Some(w) if w.animation == 0 => unarmed(),
         Some(w) if matches!(w.animation, 1 | 2 | 13) => av(17).max(0.0),
         Some(_) => 0.0,
-    };
+    } + weapon
+        .and_then(|w| {
+            // A damage mod's value (`004bd8d0` in `00644ce0`).
+            crate::weapon_mods::bonus(
+                order,
+                crate::weapon_mods::flags(state, attacker, w.form_id),
+                w.form_id,
+                crate::weapon_mods::effect::DAMAGE,
+            )
+        })
+        .unwrap_or(0.0);
     let power = if power {
         setting("fDamagePowerAttackBonus", 2.0)
     } else {
@@ -1360,7 +1370,13 @@ pub fn weapon_in_hand(order: &LoadOrder, state: &GameState, who: FormId) -> Opti
             crate::actor::carried_weapon(order, base_of(order, who)?)
         }
     })?;
-    Weapon::load(order, id)
+    // As its mods change it (`world::weapon_mods`).
+    Some(crate::weapon_mods::modded(
+        order,
+        state,
+        who,
+        Weapon::load(order, id)?,
+    ))
 }
 
 /// How far a projectile carries, as the combat AI measures it

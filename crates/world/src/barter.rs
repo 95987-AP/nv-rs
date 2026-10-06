@@ -181,7 +181,7 @@ pub fn base_value(order: &LoadOrder, item: FormId) -> f32 {
 
 /// What an item held is worth (`004bd400`): its value at its condition
 /// (weapons whose condition scripts changed; everything else whole),
-/// rounded to tenths. Weapon mods' values aren't added (mods aren't kept).
+/// and its fitted mods' values (`world::weapon_mods`), rounded to tenths.
 pub fn item_value(order: &LoadOrder, state: &GameState, holder: FormId, item: FormId) -> f32 {
     let condition = match state.weapon_health.get(&(holder, item)) {
         Some(&h) => (h * 100.0).min(100.0),
@@ -194,7 +194,8 @@ pub fn item_value(order: &LoadOrder, state: &GameState, holder: FormId, item: Fo
             }
         }
     };
-    let v = value_at_condition(order, value_now(order, state, item), condition);
+    let v = value_at_condition(order, value_now(order, state, item), condition)
+        + crate::weapon_mods::worth_added(order, state, holder, item);
     round_to(v, 0.1)
 }
 

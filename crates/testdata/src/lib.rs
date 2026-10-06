@@ -1481,6 +1481,13 @@ pub mod quest_ids {
     pub const REGENERATING: u32 = 0xB52;
     pub const REGENERATING_LINE: u32 = 0xB53;
     pub const DEFAULT_OBJECTS: u32 = 0xB54;
+    /// Weapon mods: `TestModGun` (damage 10, clip 8, weight 3, health 100,
+    /// value 100) with three slots: `TestExtMag` (clip +7), `TestBarrel`
+    /// (damage +5) and `TestLightFrame` (weight −1), each worth 20.
+    pub const MOD_GUN: u32 = 0xB5A;
+    pub const EXT_MAG: u32 = 0xB5B;
+    pub const BARREL: u32 = 0xB5C;
+    pub const LIGHT_FRAME: u32 = 0xB5D;
     /// Caravan: `TestCardAce` (hearts ace), `TestCardQueen` (spades queen),
     /// both with `TestCardScript` (the game's `CardAddToPlayerScript`:
     /// `OnAdd`, held by the player, `AddCardToPlayer` and `RemoveMe`), and
@@ -2737,7 +2744,44 @@ End
     let mut weapons = record(b"WEAP", PISTOL, &pistol);
     weapons.extend(record(b"WEAP", RIFLE, &rifle));
     weapons.extend(record(b"WEAP", REVOLVER, &revolver));
+    // A gun with three mod slots (`WMI1`–`WMI3`; `DNAM` effects at 140,
+    // values at 152).
+    let mut mod_gun = edid("TestModGun");
+    mod_gun.extend(sub(b"FULL", &zstr("Mod Gun")));
+    for (sig, item) in [
+        (b"WMI1", EXT_MAG),
+        (b"WMI2", BARREL),
+        (b"WMI3", LIGHT_FRAME),
+    ] {
+        mod_gun.extend(sub(sig, &item.to_le_bytes()));
+    }
+    let mut mod_gun_data = 100i32.to_le_bytes().to_vec();
+    mod_gun_data.extend(100i32.to_le_bytes());
+    mod_gun_data.extend(3.0f32.to_le_bytes());
+    mod_gun_data.extend(10i16.to_le_bytes());
+    mod_gun_data.push(8);
+    mod_gun.extend(sub(b"DATA", &mod_gun_data));
+    let mut mod_dnam = weapon_dnam.clone();
+    mod_dnam[0] = 3;
+    for (i, (effect, value)) in [(2u32, 7.0f32), (1, 5.0), (4, 1.0)].into_iter().enumerate() {
+        mod_dnam[140 + 4 * i..144 + 4 * i].copy_from_slice(&effect.to_le_bytes());
+        mod_dnam[152 + 4 * i..156 + 4 * i].copy_from_slice(&value.to_le_bytes());
+    }
+    mod_gun.extend(sub(b"DNAM", &mod_dnam));
+    weapons.extend(record(b"WEAP", MOD_GUN, &mod_gun));
     plugin.extend(group(*b"WEAP", 0, &weapons));
+    let weapon_mod = |id: u32, name: &str| {
+        let mut d = edid(name);
+        d.extend(sub(b"FULL", &zstr(name)));
+        let mut data = 20i32.to_le_bytes().to_vec();
+        data.extend(0.5f32.to_le_bytes());
+        d.extend(sub(b"DATA", &data));
+        record(b"IMOD", id, &d)
+    };
+    let mut mods = weapon_mod(EXT_MAG, "TestExtMag");
+    mods.extend(weapon_mod(BARREL, "TestBarrel"));
+    mods.extend(weapon_mod(LIGHT_FRAME, "TestLightFrame"));
+    plugin.extend(group(*b"IMOD", 0, &mods));
     plugin.extend(group(*b"CREA", 0, &record(b"CREA", GECKO, &gecko)));
     let mut bodies = record(
         b"BPTD",

@@ -378,6 +378,9 @@ pub struct GameState {
     /// it (scripts, wear, repairs), (holder, item); others are in full
     /// condition.
     pub weapon_health: HashMap<(FormId, FormId), f32>,
+    /// Weapons' fitted mod slots (`ExtraWeaponModFlags`: 1, 2, 4), (holder,
+    /// weapon) (`world::weapon_mods`).
+    pub weapon_mods: HashMap<(FormId, FormId), u8>,
     /// Weapons people have dropped, (holder, weapon): a crippled arm or a
     /// critical hit on the weapon (`world::body_parts::hurt_part`). They
     /// don't fight with them again.
@@ -797,6 +800,10 @@ impl GameState {
                 let is_weapon = order
                     .get(item)
                     .is_some_and(|rr| rr.entry.header.kind == WEAP);
+                // A weight mod's share off (`004be380`).
+                if is_weapon {
+                    weight -= crate::weapon_mods::weight_off(order, self, holder, item);
+                }
                 if is_weapon && weight >= 10.0 {
                     weight *= crate::perks::apply(
                         order,

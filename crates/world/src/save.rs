@@ -392,6 +392,7 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     crate::living::save_lines(state, &mut line);
     crate::more_functions::save_lines(state, &mut line);
     crate::caravan::save_lines(state, &mut line);
+    crate::weapon_mods::save_lines(state, &mut line);
     out
 }
 
@@ -709,6 +710,7 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                 .or_else(|| crate::script_functions::load_line(&mut state, raw))
                 .or_else(|| crate::more_functions::load_line(&mut state, raw))
                 .or_else(|| crate::caravan::load_line(&mut state, raw))
+                .or_else(|| crate::weapon_mods::load_line(&mut state, raw))
             {
                 Some(Ok(())) => {}
                 Some(Err(_)) | None => return Err(bad()),
