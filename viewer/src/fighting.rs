@@ -27,8 +27,14 @@
 //! from the threat until they no longer notice it; paths toward a moving
 //! target are made again every half second. Not done: crouching, dodging,
 //! cover, blocking (no block animations are played, so the block score is 0
-//! as for those without one), suppressive fire, reloads, grenades, spread
-//! (every shot hits), the hit landing at the attack animation's hit key.
+//! as for those without one), suppressive fire, reloads, spread (every shot
+//! hits), the hit landing at the attack animation's hit key, switching to a
+//! grenade (the planner's weapon choice: only the weapon in hand is used).
+//!
+//! Someone holding a grenade or dynamite keeps out of its blast (the band's
+//! minimum is at least its radius) and throws it at the target's pace of
+//! fire (`explosives` works out the arc); the grenade procedure's own
+//! timing (`009cafe0`) isn't traced further.
 
 use std::collections::HashSet;
 
@@ -521,7 +527,22 @@ fn ranged(
     let reach = w
         .projectile
         .and_then(|p| world::combat::projectile_reach(order, p));
-    let band = combat_ai::ranged_band(Some((w, reach)), &kit.style, &s);
+    // A projectile that explodes keeps the thrower out of its blast.
+    let blast = w
+        .projectile
+        .and_then(|p| world::explosions::ProjectileRecord::load(order, p))
+        .filter(|p| p.explodes())
+        .and_then(|p| world::explosions::ExplosionRecord::load(order, p.explosion?))
+        .map(|e| {
+            world::explosions::blast_radius(
+                order,
+                state,
+                Some(walker.reference),
+                Some(w.form_id),
+                &e,
+            )
+        });
+    let band = combat_ai::ranged_band_blast(Some((w, reach)), blast, &kit.style, &s);
     let d = distance(walker.position, goal);
     // A move ends when its path does, a chase within its distance, an
     // approach once the target is in sight again.
@@ -632,7 +653,20 @@ fn ranged(
     let shoots = fight
         .ranged
         .update(now, w, &kit.style, aimed, attack, dice.unit(), &s);
-    if shoots {
+    if shoots && world::explosions::is_thrown(w) {
+        // Grenades and dynamite are thrown at where the target stands
+        // (`explosives`: the arc, `CombatProcedureAttackGrenade`).
+        if let Some(sound) = w.sound {
+            c.sounds.0.push(sound);
+        }
+        let p = walker.position;
+        crate::explosives::throw(crate::explosives::Launch {
+            thrower: walker.reference,
+            weapon: w.clone(),
+            origin: [p[0], p[1], p[2] + crate::explosives::THROW_HEIGHT],
+            aim: crate::explosives::Aim::At(goal),
+        });
+    } else if shoots {
         if let Some(sound) = w.sound {
             c.sounds.0.push(sound);
         }

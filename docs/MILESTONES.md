@@ -153,6 +153,11 @@ traced one-event-per-step occupancy; the pass stops after `Activate`/
 compared with the original. **Next action:** play Goodsprings to VCG02
 stage 20 and compare trigger/`OnLoad` timing with the original.
 
+M2 blocker batch `claude/m2-explosives` (Ghost Town Gunfight dynamite):
+thrown weapons, grenade flight and explosion damage traced and implemented
+with generated regressions; not compared with the original game. Evidence,
+gaps and next action: [EXPLOSIVES.md](EXPLOSIVES.md).
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

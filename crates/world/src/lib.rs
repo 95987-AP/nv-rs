@@ -33,6 +33,7 @@ pub mod detection;
 pub mod dialogue;
 pub mod doors;
 pub mod experience;
+pub mod explosions;
 mod exterior;
 pub mod face;
 pub mod factions;

@@ -14,6 +14,7 @@ mod dialogue;
 mod doors;
 mod effects;
 mod emittance;
+mod explosives;
 mod exterior;
 mod faces;
 mod fighting;
@@ -253,6 +254,7 @@ fn main() {
         .add_plugins(particles::ParticlesPlugin)
         .add_plugins(music::MusicPlugin)
         .add_plugins(hiteffects::HitEffectsPlugin)
+        .add_plugins(explosives::ExplosivesPlugin)
         .add_plugins(lockpick::LockpickPlugin)
         .add_audio_source::<sounds::PcmSound>()
         // The first-person camera runs the image space passes with the

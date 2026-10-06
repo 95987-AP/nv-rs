@@ -2715,6 +2715,93 @@ impl<'a> Runner<'a> {
         })
     }
 
+    /// An explosion made by `source` (with `weapon`, its maker's weapon)
+    /// hurts `target` by `damage` (its damage after falloff,
+    /// `world::explosions`), as `009b5770` builds the hit (flag 0x2000) and
+    /// `0089a760` takes it: the target's `OnHit` / `OnHitWith` blocks, then
+    /// the armour (`009b5a30`), a critical (`009b7060`, adding the weapon's
+    /// critical damage after the armour), no body part (so no multiplier,
+    /// `009b73d0`), the health, `OnDeath`, and the hurt fighting back. The
+    /// limbs the explosion reaches (`009afcc0`, `009b1720`) aren't damaged
+    /// here. What it did, for people and creatures.
+    pub fn explosion_hit(
+        &mut self,
+        source: Option<FormId>,
+        target: FormId,
+        weapon: Option<&crate::combat::Weapon>,
+        damage: f32,
+    ) -> Option<crate::combat::Hit> {
+        let order = self.order;
+        if crate::more_functions::is_ghost(self.state, target) {
+            return None;
+        }
+        let attacker = source.unwrap_or(target);
+        let weapon_id = weapon.map(|w| w.form_id);
+        let names = |b: &script::Block, id: Option<FormId>| match b.args.first() {
+            None => true,
+            Some(Arg::Word(w)) => {
+                let named =
+                    if w.eq_ignore_ascii_case("player") || w.eq_ignore_ascii_case("playerref") {
+                        Some(PLAYER_REF)
+                    } else {
+                        order.form_by_editor_id(w)
+                    };
+                named.is_some() && named == id
+            }
+            Some(_) => false,
+        };
+        let saved = self.state.action_ref.replace(attacker);
+        self.run_blocks(target, Some(target), "onhit", |b| names(b, source));
+        self.run_blocks(target, Some(target), "onhitwith", |b| names(b, weapon_id));
+        self.state.action_ref = saved;
+        let kind = base_of(order, target)
+            .and_then(|b| order.get(b))
+            .map(|r| r.entry.header.kind)?;
+        if kind.as_bytes() != b"NPC_" && kind != CREA {
+            return None;
+        }
+        let mut dealt = crate::combat::hit_through_armour(
+            order,
+            self.state,
+            damage,
+            source.map(|s| (s, weapon_id)),
+            target,
+            None,
+        ) * crate::vats::player_damage_mult(order, self.state, target);
+        let critical = source.is_some_and(|s| {
+            let roll = self.state.roll() % 1000;
+            crate::combat::critical(order, self.state, s, weapon, target, false, roll)
+        });
+        if let (true, Some(s)) = (critical, source) {
+            dealt += crate::combat::critical_damage(order, self.state, s, weapon, target, dealt);
+        }
+        self.state.hit_location.insert(target, -1);
+        let was_hostile = source.is_some_and(|s| self.state.combat.get(&target) == Some(&s));
+        let person = kind.as_bytes() == b"NPC_";
+        let mut fights_back = source.is_some_and(|s| s != target);
+        if source == Some(PLAYER_REF) && person && !was_hostile {
+            fights_back &= crate::crime::assault(order, self.state, target);
+        }
+        if crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker) {
+            self.state.killing_blow_limb.insert(target, -1);
+            if let Some(s) = source.filter(|&s| {
+                person && !was_hostile && (s == PLAYER_REF || self.state.teammates.contains(&s))
+            }) {
+                crate::crime::murder(order, self.state, target, s);
+            }
+            self.run_event(target, "ondeath", attacker);
+        } else if let (true, Some(s)) = (fights_back, source) {
+            self.state.combat.entry(target).or_insert(s);
+        }
+        Some(crate::combat::Hit {
+            dealt,
+            part: None,
+            critical,
+            multiplier: 0.0,
+            hurt: None,
+        })
+    }
+
     /// A menu is open: each running quest's `MenuMode` blocks for it (or
     /// for any menu) run.
     pub fn menu_mode(&mut self, menu: u16) {
