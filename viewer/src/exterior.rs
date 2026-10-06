@@ -260,6 +260,7 @@ pub fn stream_squares(
     mut state: ResMut<crate::dialogue::DialogueState>,
     mut swing_doors: ResMut<crate::doors::SwingDoors>,
     shown: Query<&crate::ai::Walker>,
+    (old_talkers, brought): (Option<Res<crate::dialogue::Talkers>>, Res<crate::BroughtIn>),
 ) {
     let Some(mut exterior) = exterior else {
         return;
@@ -465,6 +466,12 @@ pub fn stream_squares(
                     .0
                     .extend(bounds.iter().map(|b| (b.reference, (b.lo, b.hi))));
             }
+        }
+        // People brought in after their place loaded (`bring_in_people`)
+        // stay, as long as they're on screen.
+        if let Some(old) = &old_talkers {
+            let on_screen: HashSet<esm::FormId> = shown.iter().map(|w| w.reference).collect();
+            talkers = with_brought_in(talkers, &old.0, &brought.people, &on_screen);
         }
         commands.insert_resource(crate::dialogue::Talkers(talkers));
         // The loaded squares' doors that swing (their leaves are put where
@@ -770,6 +777,24 @@ pub fn stream_distant_land(
     }
 }
 
+/// The loaded squares' people to talk to (`squares`), plus those from
+/// the `old` list that were brought in after their place loaded and are
+/// still on screen (they belong to no square).
+fn with_brought_in(
+    mut squares: Vec<crate::dialogue::Talker>,
+    old: &[crate::dialogue::Talker],
+    brought: &HashSet<esm::FormId>,
+    on_screen: &HashSet<esm::FormId>,
+) -> Vec<crate::dialogue::Talker> {
+    let ours: HashSet<esm::FormId> = squares.iter().map(|t| t.reference).collect();
+    squares.extend(old.iter().copied().filter(|t| {
+        brought.contains(&t.reference)
+            && on_screen.contains(&t.reference)
+            && !ours.contains(&t.reference)
+    }));
+    squares
+}
+
 fn load_square(
     game: &Game,
     grid: &WorldGrid,
@@ -833,5 +858,26 @@ mod tests {
         // The triangle rises 100 units over 500 northward.
         assert!((z - 8020.0).abs() < 0.05, "{z}");
         assert_eq!(ground_under(&c, [-100.0, -100.0]), None);
+    }
+
+    #[test]
+    fn people_brought_in_stay_talkers_when_squares_change() {
+        // Ghost Town Gunfight: Ringo (00104C7D) is moved into the
+        // worldspace by a script; after the squares change he must still
+        // be someone to talk to (his after-the-fight dialogue package).
+        use crate::dialogue::Talker;
+        let t = |r: u32| Talker {
+            reference: esm::FormId(r),
+            base: esm::FormId(r + 1),
+            position: [r as f32, 0.0, 0.0],
+        };
+        let set = |rs: &[u32]| rs.iter().map(|&r| esm::FormId(r)).collect::<HashSet<_>>();
+        let squares = vec![t(10), t(20)];
+        let old = [t(10), t(30), t(40), t(50)];
+        // 30 brought in and on screen: kept with its last position; 40
+        // brought in but gone; 50 a square's person whose square left.
+        let out = with_brought_in(squares, &old, &set(&[30, 40]), &set(&[10, 20, 30, 50]));
+        let refs: Vec<u32> = out.iter().map(|t| t.reference.0).collect();
+        assert_eq!(refs, [10, 20, 30]);
     }
 }

@@ -201,6 +201,7 @@ fn main() {
         .init_resource::<ai::CellNav>()
         .init_resource::<ai::CombatSettings>()
         .init_resource::<ai::Moved>()
+        .init_resource::<BroughtIn>()
         .init_resource::<ai::Chats>()
         .init_resource::<ai::Starts>()
         .init_resource::<chatter::Lines>()
@@ -620,6 +621,7 @@ fn bring_in_people(
     player: Res<walk::Player>,
     walkers: Query<&ai::Walker>,
     exterior: Option<Res<exterior::Exterior>>,
+    (mut talkers, mut brought): (Option<ResMut<dialogue::Talkers>>, ResMut<BroughtIn>),
     mut spawner: Spawner,
     mut last: Local<f32>,
 ) {
@@ -666,6 +668,30 @@ fn bring_in_people(
         println!("{r} comes into view");
     }
     spawner.spawn_with(&scene, lighting);
+    // They can be talked to, shot and targeted like the place's own people.
+    if brought.space != Some(space) {
+        *brought = BroughtIn {
+            space: Some(space),
+            people: Default::default(),
+        };
+    }
+    for a in &scene.actors {
+        let talker = dialogue::Talker::from_actor(a);
+        brought.people.insert(talker.reference);
+        if let Some(t) = talkers.as_deref_mut() {
+            t.0.retain(|t| t.reference != talker.reference);
+            t.0.push(talker);
+        }
+    }
+}
+
+/// The people [`bring_in_people`] put on screen in the current place (not
+/// part of a loaded square or cell): outdoors they stay among the talkers
+/// when the loaded squares change (`exterior::stream_squares`).
+#[derive(Resource, Default)]
+pub struct BroughtIn {
+    space: Option<esm::FormId>,
+    pub people: std::collections::HashSet<esm::FormId>,
 }
 
 /// References scripts made (`PlaceAtMe`, `world::more_functions::placed`)
