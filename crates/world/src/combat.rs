@@ -928,10 +928,50 @@ pub fn hurt(
     if state.dead.contains(&who) || amount <= 0.0 {
         return false;
     }
+    // Someone essential who is down takes no more harm (until a script
+    // takes the flag off them: then they can be killed on the ground).
+    // [G] Not traced: whether Actor::Kill ( 089d900) is entered again
+    // for life state 6 (its first test, vtable +0x22c, isn't read). Either
+    // way they get up with full health ( 08a0960).
+    if state.more.down.contains_key(&who) && crate::more_functions::is_essential(order, state, who)
+    {
+        return false;
+    }
     *state.damage.entry(who).or_insert(0.0) += amount;
     state.last_blow.insert(who, (by, amount));
     crate::experience::count_damage(state, who, by, amount);
     if health(order, state, who).is_some_and(|h| h <= 0.0) {
+        // Translated from 0089d900 (decompiled, FalloutNV.exe 1.4.0.525;
+        // `Actor::Kill`): with `bEssentialTakeNoDamage` (INI, default 1,
+        // `00fa8770`) an essential actor (`0087f3d0`) doesn't die. One
+        // already unconscious (life state 3) or restrained (5) is set back
+        // to `fEssentialHealthPercentReGain` of its base health; any other
+        // goes down (life state 6, `ACTOR_LIFE_STATE_ESSENTIAL_DOWN` (Xbox
+        // PDB), `008a1800(6)`) for `fEssentialDeathTime` seconds
+        // (`SetEssentialDownTimer`, process +0xe8) with its health and
+        // conditions restored (`008a0960`).
+        if crate::more_functions::is_essential(order, state, who) {
+            if state.unconscious.contains(&who)
+                || state.set_by_scripts.restrained.contains(&who)
+            {
+                let regain = f64::from(
+                    crate::scripting::game_setting(order, "fEssentialHealthPercentReGain")
+                        .unwrap_or(0.3),
+                );
+                if let Some(base) = base_health(order, state, who) {
+                    let full = max_health(order, state, who).unwrap_or(base);
+                    state.damage.insert(who, (full - regain * base).max(0.0));
+                }
+                return false;
+            }
+            state.more.down.insert(who, essential_down_time(order));
+            restore_after_essential_down(state, who);
+            state.combat.remove(&who);
+            state.combat.retain(|_, target| *target != who);
+            state.events.push(Event::KnockedOut { who });
+            return false;
+        }
+        state.more.down.remove(&who);
         state.dead.insert(who);
         // The dead stop fighting, and nobody fights them any more.
         state.combat.remove(&who);
@@ -961,6 +1001,49 @@ pub fn hurt(
     false
 }
 
+/// How long an essential actor stays down: `fEssentialDeathTime` (the
+/// exe's default 10 s, `00f69130`; no plugin sets it).
+pub fn essential_down_time(order: &LoadOrder) -> f32 {
+    crate::scripting::game_setting(order, "fEssentialDeathTime").unwrap_or(10.0)
+}
+
+/// `008a0960` (`Actor::RestoreFullHealthAndConditions`, Xbox PDB, by
+/// size): health's damage restored (to above 0, so all of it), the same
+/// for actor value 0x16, and the limb conditions (0x19-0x1f) by 1000.
+// Translated from 008a0960 (decompiled, FalloutNV.exe 1.4.0.525). Only
+// health is kept as damage here; the other values aren't damaged by
+// this project's hits.
+fn restore_after_essential_down(state: &mut GameState, who: FormId) {
+    state.damage.remove(&who);
+}
+
+/// Those who are down count their seconds; at 0 they get up
+/// (`Event::GotUp`).
+// Translated from 00888b50 (decompiled, FalloutNV.exe 1.4.0.525): in life
+// state 6 the process's essential-down timer counts down
+// (`ModEssentialDownTimer`, +0xe0) while the actor lies knocked down; at 0
+// or below the life state goes back to alive (`008a1800(0)`) and health
+// and conditions are restored again (`008a0960`).
+pub fn advance_down(_order: &LoadOrder, state: &mut GameState, seconds: f32) {
+    if state.more.down.is_empty() {
+        return;
+    }
+    let mut up = Vec::new();
+    for (who, left) in state.more.down.iter_mut() {
+        *left -= seconds;
+        if *left <= 0.0 {
+            up.push(*who);
+        }
+    }
+    for who in up {
+        state.more.down.remove(&who);
+        if state.dead.contains(&who) {
+            continue;
+        }
+        restore_after_essential_down(state, who);
+        state.events.push(Event::GotUp { who });
+    }
+}
 /// How hard a killing hit throws the body, as a change of speed every body
 /// of its ragdoll takes (game units a second; read from the game's code,
 /// `008ae000`). With a weapon: its kill impulse × 2.5 Havok units a second

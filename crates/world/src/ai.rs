@@ -692,6 +692,44 @@ pub fn packages_of(order: &LoadOrder, base: FormId) -> Vec<FormId> {
 /// first of theirs whose conditions pass (asked about them, with the
 /// player as the target) and whose schedule covers the game's clock.
 pub fn current_package(order: &LoadOrder, state: &GameState, actor: FormId) -> Option<Package> {
+    let chosen = chosen_package(order, state, actor);
+    // [G] The player's teammates follow them when they have nothing to do
+    // (the game's follower behaviour isn't traced: this is a package that
+    // keeps them [`TEAMMATE_DISTANCE`] from the player). Off unless
+    // [`crate::guesses`] is on: the base game's companions follow by their
+    // own packages.
+    if !crate::guesses::enabled() {
+        return chosen;
+    }
+    let idle = !chosen.as_ref().is_some_and(|p| {
+        !matches!(
+            p.kind,
+            kinds::SANDBOX | kinds::WANDER | kinds::GUARD | kinds::PATROL | kinds::FIND
+        )
+    });
+    if idle && state.teammates.contains(&actor) && !state.dead.contains(&actor) {
+        return Some(Package {
+            form_id: FormId(0),
+            editor_id: Some("TeammateFollowsPlayer".into()),
+            kind: kinds::FOLLOW,
+            flags: 0,
+            location: None,
+            schedule: Schedule::default(),
+            conditions: Vec::new(),
+            target: Some((0, crate::dialogue::PLAYER_REF, TEAMMATE_DISTANCE)),
+            topic: None,
+            actions: Default::default(),
+            data: Default::default(),
+        });
+    }
+    chosen
+}
+
+/// How near a teammate keeps to the player ([G] a guess, with
+/// [`crate::guesses`] on).
+pub const TEAMMATE_DISTANCE: i32 = 200;
+
+fn chosen_package(order: &LoadOrder, state: &GameState, actor: FormId) -> Option<Package> {
     // Coming to warn the trespassing player (`world::living::trespass`).
     if let Some(p) = crate::living::trespass::package(state, actor) {
         return Some(p);

@@ -661,6 +661,55 @@ companions came into view, not repeated.
 Not played: fighting the ghost people on the way, the Villa's other
 destinations, and Act 2 itself.
 
+## Act 2 groundwork: sitting, ghost people, followers, and a crash
+
+- **The player sits.** E on a chair (or a script's `Activate` on it with
+  the player) now puts the player in the nearest sit marker of the
+  furniture, facing as the marker does, with a lower eye (0.68 of standing,
+  a guess); W, A, S, D or Space gets them up where they stood. Scripts see
+  it as before (`GetSitting` 3), so Dean's trigger now starts his real
+  greeting: "The Sierra Madre…" (`viewer/src/walk.rs`, `sitting::player_seat`).
+- **Ghost people don't die: they go down.** Their script keeps them
+  essential (`SetActorRefEssential`); a blow that takes an essential
+  person (not the player) to 0 health now leaves them down (`Event::
+  KnockedOut`, `GetKnockedState` 2, `IsAnimPlaying` 0, the body limp as a
+  dead one) and they get up after 12 s with a quarter of their health
+  (`Event::GotUp`). While down and essential they take no harm; once the
+  script strips the flag (its semi-dead state) the next blow kills them.
+  The 12 s and the quarter are guesses: how the game decides isn't traced
+  (`world::combat::hurt`, `advance_down`). In a Villa fight a ghost goes
+  down, gets up, and ghosts attack the player.
+- **Followers follow.** A teammate with nothing else to do (no package, or a
+  sandbox, wander, guard, patrol or find one) keeps within 200 units of the
+  player (a guess, `world::ai::TEAMMATE_DISTANCE`); Dead Money's own
+  follow packages still win. Teammates come along when the player moves to
+  another place (`bring_teammates`).
+- **The intermittent native crash.** It was the graphics running out: every
+  square of a town made its own copy of each texture and one material for
+  each model, so a 3 by 3 or 5 by 5 spread of the Villa's dense squares held
+  thousands of bind groups. Direct3D 12 reports "unable to allocate
+  descriptors"; the Vulkan driver here just lost the device or crashed
+  (sometimes through a wgpu panic, "snatch lock", a symptom). Standing at
+  `NVDLC01PoliceStationBaitREF` crashed 4 of 4 starts and moving there 16 of
+  16; no runs crash now, over about 50. Fixed by keeping what places
+  upload: textures by what they are, materials by what's in them
+  (`TextureCache`, `MaterialCache` in `viewer/src/main.rs`; the Villa's
+  squares made 461 materials and 485 more were reused). The squares now
+  share one list of lights, the nearest to the player's square, since they
+  share materials. The Residential District's smaller load radius isn't
+  needed any more. `NV_LOAD_RADIUS` still sets it; `NV_SYNC_RENDER` draws
+  in step with the frame (no difference found in about 70 runs).
+
+### Act 2 (MQ02a to c)
+
+Started, not finished. Elijah's Act 2 greeting starts the three companion
+quests and their first objectives (Dog to the Salida del Sol substation, Dean
+to the Puesta del Sol rooftop, Christine to the Puesta del Sol switching
+station). Not played: escorting each companion (telling them to wait, the
+dialogue that does it), the substation and its terminal, finding two slabs of
+ghost harvester remains for Dog, the electrical box and the elevator for
+Christine, the holograms for Dean, and the Gala Event itself (MQ02).
+
 ## Open questions
 
 * Which DLCs are installed in the maintainer's Data folder (the data pass's `info`)?

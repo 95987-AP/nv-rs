@@ -110,6 +110,12 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // `NV_GUESSES=1`: untraced behaviour marked [G] runs too
+    // (`world::guesses`; the Dead Money contributor's follower rules).
+    if std::env::var("NV_GUESSES").is_ok_and(|v| v == "1") {
+        world::guesses::set(true);
+        println!("NV_GUESSES=1: untraced [G] behaviour is on.");
+    }
     let data = match cellview::find_data_folder(&args.data) {
         Ok(data) => data,
         Err(e) => {
@@ -293,10 +299,19 @@ fn main() {
             wait: args.wait,
             waited: 0.0,
         })
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(window),
-            ..default()
-        }))
+        .add_plugins({
+            let plugins = DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(window),
+                ..default()
+            });
+            // Drawing on its own thread (Bevy's default) or in step with
+            // the game's frame (`NV_SYNC_RENDER`, a debugging aid).
+            if std::env::var_os("NV_SYNC_RENDER").is_some() {
+                plugins.disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>()
+            } else {
+                plugins
+            }
+        })
         .insert_resource(hud::ShowHud(args.hud))
         .insert_resource(ai::FrozenAi(args.freeze_ai))
         .insert_resource(game_menus::StartMenu(args.open_menu.clone()))

@@ -951,6 +951,15 @@ pub enum Event {
         who: FormId,
         by: FormId,
     },
+    /// Someone essential was brought to 0 health: they go down instead of
+    /// dying (`world::combat::hurt`).
+    KnockedOut {
+        who: FormId,
+    },
+    /// Someone who was down gets up (`world::combat::advance_down`).
+    GotUp {
+        who: FormId,
+    },
     /// `PlayGroup`: an animation group (by the game's name: `Forward`,
     /// `Open`, `SpecialIdle`…) to play on a person or an object's model,
     /// with the script's flags (`005c0df0`: not 0 blends it in over flags ×
@@ -1788,7 +1797,16 @@ impl Facts<'_> {
             }
             // True of a new game, where nobody wins at the casinos or has
             // a reputation yet (hardcore: `world::living`).
-            "HasBeenEaten" | "GetCasinoWinningsLevel" | "GetKnockedState" => 0.0,
+            "HasBeenEaten" | "GetCasinoWinningsLevel" => 0.0,
+            // Knock state 2 (as `PushActorAway` leaves it) for someone
+            // essential brought down.
+            "GetKnockedState" => {
+                if s.more.down.contains_key(&on?) {
+                    2.0
+                } else {
+                    0.0
+                }
+            }
             // The process's flag (`00915d40`; nobody without one: 0).
             "IsWeaponOut" => flag(s.weapon_out.contains(&on?)),
             // Reputations (`world::reputation`); a type or axis out of

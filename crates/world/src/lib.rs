@@ -44,6 +44,7 @@ pub mod factions;
 pub mod functions;
 pub mod furniture;
 pub mod grass;
+pub mod guesses;
 pub mod gun_wobble;
 pub mod head_track;
 pub mod idles;

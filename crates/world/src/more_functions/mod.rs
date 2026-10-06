@@ -166,6 +166,9 @@ pub struct State {
     /// (`SetActorRefEssential`: actor +0x140 bit 31).
     pub essential_bases: HashMap<FormId, bool>,
     pub essential_refs: HashSet<FormId>,
+    /// Essential people brought to 0 health and down for now, with the
+    /// seconds till they get up (`world::combat::hurt`).
+    pub down: HashMap<FormId, f32>,
     /// People whose lines always show subtitles (actor +0x140 bit 30).
     pub always_subtitles: HashSet<FormId>,
     /// Combat styles scripts gave people (`SetCombatStyle`: extra data
@@ -887,8 +890,13 @@ fn read(facts: &Facts, name: &str, on: Option<FormId>, args: &[Value]) -> Option
         // carried out.
         "IsAnimPlaying" => {
             let r = on?;
+            // A person's animation data aren't carried out: one who is down
+            // isn't animating, one on their feet is (their idle).
             if actor(r) {
-                return None;
+                return match arg(0) {
+                    Value::Text(_) => None,
+                    _ => Some(flag(!s.more.down.contains_key(&r) && !s.dead.contains(&r))),
+                };
             }
             let playing = s.more.sequences.get(&r);
             flag(match arg(0) {
