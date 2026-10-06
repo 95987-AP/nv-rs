@@ -349,6 +349,13 @@ pub struct GameState {
     /// (row-major) and position in the world, which they keep when their
     /// place loads again.
     pub havok_moved: HashMap<FormId, ([[f32; 3]; 3], [f32; 3])>,
+    /// Of those, the ones still moving: their linear and angular velocity
+    /// (game units and radians a second). The game saves an active body's
+    /// two velocities after its pose and sets them, waking it, on loading
+    /// (`TESObjectREFR::SaveHavokDataForCollisionObject` (Xbox PDB),
+    /// `00563220`, flag bit 1 and two 12-byte vectors; loaded by
+    /// `00563380`).
+    pub havok_velocity: HashMap<FormId, ([f32; 3], [f32; 3])>,
     /// Which weather it is, what's fading, the climate's pick, scripts'
     /// override, the player's weather region (`world::weather`).
     pub weather: crate::weather::WeatherState,

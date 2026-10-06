@@ -233,6 +233,11 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
             .collect();
         line(format!("havokmove {} {}", id(*r), numbers.join(" ")));
     }
+    let moving: BTreeMap<_, _> = state.havok_velocity.iter().collect();
+    for (r, (v, w)) in moving {
+        let numbers: Vec<String> = v.iter().chain(w.iter()).map(|x| x.to_string()).collect();
+        line(format!("havokvel {} {}", id(*r), numbers.join(" ")));
+    }
     for (word, set) in [
         ("unconscious", &state.unconscious),
         ("marker", &state.map_markers),
@@ -556,6 +561,15 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                     .havok_moved
                     .insert(form(1)?, (turn, [v[9], v[10], v[11]]));
             }
+            "havokvel" => {
+                let mut v = [0.0f32; 6];
+                for (k, x) in v.iter_mut().enumerate() {
+                    *x = num(2 + k)? as f32;
+                }
+                state
+                    .havok_velocity
+                    .insert(form(1)?, ([v[0], v[1], v[2]], [v[3], v[4], v[5]]));
+            }
             "unconscious" => {
                 state.unconscious.insert(form(1)?);
             }
@@ -751,9 +765,15 @@ mod file_tests {
         state
             .havok_moved
             .insert(FormId(0x0010_ABCD), (turn, [-68250.5, 5800.25, 8390.0]));
+        // One still flying when saved keeps its velocities.
+        state.havok_velocity.insert(
+            FormId(0x0010_ABCD),
+            ([120.5, -3.0, 250.0], [0.0, 2.5, -1.0]),
+        );
         let text = save(&state, None);
         let (back, _) = load(&text).unwrap();
         assert_eq!(back.havok_moved, state.havok_moved);
+        assert_eq!(back.havok_velocity, state.havok_velocity);
         assert_eq!(save(&back, None), text);
     }
 

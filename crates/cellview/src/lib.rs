@@ -1046,6 +1046,18 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
         "{} placed objects Havok moves (clutter bodies)",
         bodies.len()
     ));
+    let held: Vec<String> = scene
+        .unsimulated_bodies()
+        .into_iter()
+        .map(|(r, name)| format!("{r} ({name})"))
+        .collect();
+    if !held.is_empty() {
+        notes.push(format!(
+            "{} placed objects with joined or several moving bodies, kept solid (constraints aren't simulated): {}",
+            held.len(),
+            held.join(", ")
+        ));
+    }
 
     ViewerScene {
         cell: cell.info.label(),

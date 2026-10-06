@@ -1545,7 +1545,8 @@ impl CellScene {
 }
 
 /// One piece of a model's collision, placed, into the collider, with its
-/// body's friction and restitution (for rigid bodies resting on it).
+/// body's friction and restitution (for rigid bodies resting on it) and
+/// its Havok layer (which casts meet it, `physics::layers`).
 fn add_part(
     collider: &mut physics::Collider,
     part: &nif::CollisionPart,
@@ -1558,7 +1559,13 @@ fn add_part(
         restitution: part.body.restitution,
     });
     let mut add = |v: &[[f32; 3]], t: &[[u32; 3]]| {
-        collider.add_solid_surface(v, t, (part.shell, owner, part.material), surface);
+        collider.add_layered(
+            v,
+            t,
+            (part.shell, owner, part.material),
+            surface,
+            part.layer,
+        );
     };
     match &part.shape {
         nif::CollisionShape::Triangles {
@@ -1611,10 +1618,15 @@ pub const DONT_HAVOK_SETTLE: u32 = 0x2000_0000;
 /// The one body a model's moving parts belong to (the `bhkRigidBody`
 /// block), when they all belong to one: a model with several moving
 /// bodies (joined by constraints) isn't simulated here and stays solid
-/// where it's placed.
+/// where it's placed. So does a body held by a constraint (a hinge to a
+/// fixed bracket, a chain's links): simulated free it would fall off what
+/// holds it, and constraints aren't simulated here.
 fn moving_body(collision: &[nif::CollisionPart]) -> Option<usize> {
     let mut block = None;
     for p in collision.iter().filter(|p| moving_part(p)) {
+        if p.body.constraints > 0 {
+            return None;
+        }
         match block {
             None => block = Some(p.body.block),
             Some(b) if b != p.body.block => return None,
@@ -1622,6 +1634,33 @@ fn moving_body(collision: &[nif::CollisionPart]) -> Option<usize> {
         }
     }
     block
+}
+
+/// Placed references whose models have moving bodies that aren't
+/// simulated here ([`moving_body`]: several bodies, or constraints): their
+/// editor IDs, for the log.
+impl CellScene {
+    pub fn unsimulated_bodies(&self) -> Vec<(esm::FormId, String)> {
+        let mut out = Vec::new();
+        for instance in &self.instances {
+            let object = &self.cell.objects[instance.object];
+            if instance.part.is_some() || is_opening_door(object) {
+                continue;
+            }
+            let model = &self.models[instance.model];
+            let moving = model.collision.iter().any(moving_part);
+            if moving && moving_body(&model.collision).is_none() {
+                out.push((
+                    object.form_id,
+                    object
+                        .base_editor_id
+                        .clone()
+                        .unwrap_or_else(|| object.base.to_string()),
+                ));
+            }
+        }
+        out
+    }
 }
 
 fn moving_part(p: &nif::CollisionPart) -> bool {

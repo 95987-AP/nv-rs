@@ -17,16 +17,21 @@
 //! step is split into substeps of extended position-based dynamics (as in
 //! [`crate::ragdoll`]); contacts are found between a body's corners (and
 //! sphere and capsule centres) and the other side's faces, and between the
-//! other side's corners and a body's hull, not edge against edge; friction
-//! and restitution combine as the square root of the two sides' product
-//! (Havok's default `hkpMaterial` combination, not traced in the
-//! executable); a surface added without a body's values rubs and bounces
-//! as Havok's default body does (friction 0.5, restitution 0.4,
-//! `hkpRigidBodyCinfo`'s defaults, not traced); bodies fall asleep after a
-//! second nearly still and wake when pushed (Havok's deactivation isn't
-//! traced); walkers push bodies as unstoppable capsules (the character
-//! proxy's own impulse, `hkpCharacterProxy`, isn't traced; the game's proxy
-//! has infinite strength).
+//! other side's corners and a body's hull, not edge against edge; a
+//! surface added without a body's values rubs and bounces as Havok's
+//! default body does (friction 0.5, restitution 0.4, `hkpRigidBodyCinfo`'s
+//! defaults); bodies fall asleep after a second nearly still and wake when
+//! pushed (Havok's deactivation, by its reference distance and frame
+//! counters, isn't translated); walkers push bodies lighter than
+//! `fMoveLimitMass` as unstoppable capsules (the character proxy's own
+//! impulse, `hkpCharacterProxy`, isn't translated; the game's proxy has
+//! infinite strength).
+//!
+//! Traced here: friction and restitution combine as the square root of
+//! the two sides' product, the restitution kept as a byte × 128
+//! ([`combined_friction`], [`combined_restitution`], `00cfd800`); the
+//! mouse spring ([`Spring`], `00cbb1e0`); the saved velocities
+//! ([`RigidWorld::set_velocity`], `00563380`).
 
 use std::collections::HashSet;
 
@@ -74,6 +79,12 @@ const SLEEP_AFTER: f32 = 1.0;
 /// walkers are kept their radius and the body's shell off it by the
 /// collider, so the push is felt this much further out (this solver's).
 pub const PUSH_SKIN: f32 = 2.0;
+/// `[HAVOK] fMoveLimitMass` (95): the character controller's contact
+/// callback (`00c711d0`, the copy at `011b0128`) treats a body at least
+/// this heavy apart from lighter ones (it keeps the contact's surface
+/// velocity only for lighter bodies). Read as: walkers push only bodies
+/// lighter than this (the proxy's handling past that branch isn't traced).
+pub const MOVE_LIMIT_MASS: f32 = 95.0;
 
 /// The game's Havok step clock (`00c66760` with `iUpdateType` 0): the frame
 /// time joins the time left over; it runs as many whole steps of
@@ -467,8 +478,8 @@ impl Mover {
 /// The other side of a contact.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Other {
-    /// The collider (still).
-    World,
+    /// The collider's triangle (still).
+    World(u32),
     Body(usize),
     /// A walker moving at this velocity.
     Mover(Vec3),
@@ -504,12 +515,66 @@ struct Touch {
     surface: Surface,
 }
 
+/// Havok's mouse spring (`hkpMouseSpringAction`, the player's Z-key grab,
+/// `crate::grab`): pulls a point of a body toward a point in the world.
+/// The fields are the action's (Havok's names; `+0x20`…`+0x4c` in the
+/// object `00cbb1e0` reads).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spring {
+    pub body: usize,
+    /// `m_positionInRbLocal`: the held point, in the body's model space.
+    pub local: Vec3,
+    /// `m_mousePositionInWorld` (game units).
+    pub target: Vec3,
+    /// `m_springDamping`, `m_springElasticity`.
+    pub damping: f32,
+    pub elasticity: f32,
+    /// `m_maxRelativeForce`: the most force per unit mass (Havok units a
+    /// second²).
+    pub max_relative_force: f32,
+    /// `m_objectDamping`: the body's velocities are multiplied by this
+    /// every step.
+    pub object_damping: f32,
+}
+
+/// A body coming into contact with something (Havok's "contact point
+/// added", which the game's collision listener `00623cb0` hears for its
+/// impact sounds and physics damage).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContactEvent {
+    pub body: usize,
+    /// The other body, or the collider's triangle it met.
+    pub other_body: Option<usize>,
+    pub triangle: Option<u32>,
+    /// Where (game units).
+    pub point: Vec3,
+    /// How fast they closed along the contact's normal (game units a
+    /// second; Havok's projected velocity × 7).
+    pub speed: f32,
+}
+
+/// What a body touches, for telling new contacts from old: another body,
+/// or the collider's triangles of one owner (0: the place's static ones).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Toucher {
+    Body(usize),
+    World(u32),
+}
+
 /// Free rigid bodies and the walkers that push them.
 #[derive(Debug, Clone, Default)]
 pub struct RigidWorld {
     pub bodies: Vec<Rigid>,
     pub clock: Clock,
     movers: Vec<Mover>,
+    /// The player's grab, if they hold something.
+    pub spring: Option<Spring>,
+    /// Pairs touching at the end of the last step.
+    touching: HashSet<(usize, Toucher)>,
+    /// This step's touching pairs with their fastest closing.
+    this_step: std::collections::HashMap<(usize, Toucher), ContactEvent>,
+    /// Contacts begun since [`RigidWorld::take_contacts`].
+    began: Vec<ContactEvent>,
 }
 
 impl RigidWorld {
@@ -533,7 +598,131 @@ impl RigidWorld {
     /// Takes a reference's body out, giving it back.
     pub fn remove(&mut self, reference: u32) -> Option<Rigid> {
         let i = self.find(reference)?;
-        Some(self.bodies.remove(i))
+        Some(self.remove_at(i))
+    }
+
+    /// Whether walkers push body `i`: it moves and is lighter than
+    /// [`MOVE_LIMIT_MASS`].
+    fn pushable(&self, i: usize) -> bool {
+        let b = &self.bodies[i];
+        b.dynamic() && b.setup.mass < MOVE_LIMIT_MASS
+    }
+
+    /// Sets a body's velocities (game units and radians a second) and
+    /// wakes it: a moving body coming back from a save (`00563380` sets
+    /// both, then activates the body).
+    pub fn set_velocity(&mut self, body: usize, linear: Vec3, angular: Vec3) {
+        let b = &mut self.bodies[body];
+        if !b.dynamic() {
+            return;
+        }
+        b.v = linear;
+        b.w = angular;
+        self.wake(body);
+    }
+
+    /// The contacts begun since the last call (each pair once when it
+    /// starts touching; resting pairs don't repeat).
+    pub fn take_contacts(&mut self) -> Vec<ContactEvent> {
+        std::mem::take(&mut self.began)
+    }
+
+    /// The heaviest other body body `i` touches now (0: none; the world's
+    /// fixed bodies have no mass here, as Havok's fixed bodies report 0).
+    pub fn heaviest_contact(&self, i: usize) -> f32 {
+        let mut heaviest = 0.0f32;
+        for j in 0..self.bodies.len() {
+            if j == i || !self.bodies[j].dynamic() {
+                continue;
+            }
+            let gap = length(sub(self.bodies[i].x, self.bodies[j].x));
+            if gap > self.bodies[i].reach + self.bodies[j].reach + 2.0 {
+                continue;
+            }
+            if !self.body_touches(i, j).is_empty() {
+                heaviest = heaviest.max(self.bodies[j].setup.mass);
+            }
+        }
+        heaviest
+    }
+
+    /// Takes body `i` out (a grab on it ends).
+    pub fn remove_at(&mut self, i: usize) -> Rigid {
+        // Pairs are kept by index: start them afresh.
+        self.touching.clear();
+        self.this_step.clear();
+        self.began.clear();
+        if let Some(s) = &mut self.spring {
+            if s.body == i {
+                self.spring = None;
+            } else if s.body > i {
+                s.body -= 1;
+            }
+        }
+        self.bodies.remove(i)
+    }
+
+    /// Where a body's model-space point is now.
+    pub fn point(&self, body: usize, local: Vec3) -> Vec3 {
+        self.bodies[body].to_world(local)
+    }
+
+    /// A world point as a point of a body's model space.
+    pub fn local_point(&self, body: usize, world: Vec3) -> Vec3 {
+        self.bodies[body].to_model(world)
+    }
+
+    /// `hkpMouseSpringAction::applyAction` (Havok's, named by the Xbox
+    /// PDB): the body's velocities × the object damping; then the impulse
+    /// at the held point that would take away the spring damping × the
+    /// point's velocity plus the elasticity × the distance to the target ÷
+    /// the step, through the body's inverse mass matrix at that point;
+    /// at most the step × the mass × the most relative force; applied at
+    /// the point. Nothing when that matrix has no inverse.
+    // Translated from 00cbb1e0 (decompiled, FalloutNV.exe 1.4.0.525)
+    fn apply_spring(&mut self, s: &Spring, dt: f32) {
+        let b = &mut self.bodies[s.body];
+        if !b.dynamic() || dt <= 0.0 {
+            return;
+        }
+        let p = b.to_world(s.local);
+        let err = sub(p, s.target);
+        let r = sub(p, b.x);
+        // K: an impulse j at the point changes its velocity by K j.
+        let k_of = |b: &Rigid, j: Vec3| {
+            add(
+                scale(j, b.inverse_mass),
+                cross(b.inverse_inertia_world(cross(r, j)), r),
+            )
+        };
+        let cols = [
+            k_of(b, [1.0, 0.0, 0.0]),
+            k_of(b, [0.0, 1.0, 0.0]),
+            k_of(b, [0.0, 0.0, 1.0]),
+        ];
+        let k: Mat3 = [
+            [cols[0][0], cols[1][0], cols[2][0]],
+            [cols[0][1], cols[1][1], cols[2][1]],
+            [cols[0][2], cols[1][2], cols[2][2]],
+        ];
+        let k_inv = invert(&k);
+        if k_inv == [[0.0; 3]; 3] {
+            return;
+        }
+        b.v = scale(b.v, s.object_damping);
+        b.w = scale(b.w, s.object_damping);
+        let v_point = b.point_velocity(r);
+        let want = add(scale(v_point, s.damping), scale(err, s.elasticity / dt));
+        let mut j = scale(mat_vec(&k_inv, want), -1.0);
+        // The limit in game units: Havok's force per mass is in Havok
+        // units a second².
+        let limit = dt * s.max_relative_force * HAVOK_UNIT / b.inverse_mass;
+        let l = length(j);
+        if l > limit {
+            j = scale(j, limit / l);
+        }
+        b.kick(j, r);
+        b.moved = true;
     }
 
     /// Puts a body at a pose, still and asleep (a moved reference coming
@@ -625,7 +814,7 @@ impl RigidWorld {
     pub fn step(&mut self, collider: &Collider, dt: f32) {
         // Walkers wake what they push.
         for i in 0..self.bodies.len() {
-            if self.bodies[i].asleep && self.bodies[i].dynamic() {
+            if self.bodies[i].asleep && self.pushable(i) {
                 let pushed = self.movers.iter().any(|m| {
                     self.mover_touches(i, m)
                         .iter()
@@ -634,6 +823,13 @@ impl RigidWorld {
                 if pushed {
                     self.wake(i);
                 }
+            }
+        }
+        // The grab's spring acts first (an action, before Havok solves).
+        if let Some(s) = self.spring {
+            if s.body < self.bodies.len() && self.bodies[s.body].dynamic() {
+                self.wake(s.body);
+                self.apply_spring(&s, dt);
             }
         }
         if !self.awake() || dt <= 0.0 {
@@ -684,9 +880,26 @@ impl RigidWorld {
             })
             .collect();
         let h = dt / SUBSTEPS as f32;
+        self.this_step.clear();
         for _ in 0..SUBSTEPS {
             self.substep(collider, &nearby, h);
         }
+        // Contacts begun this step (Havok adds a contact point once).
+        let now: HashSet<(usize, Toucher)> = self.this_step.keys().copied().collect();
+        for (key, event) in &self.this_step {
+            if !self.touching.contains(key) {
+                self.began.push(*event);
+            }
+        }
+        // A pair with a sleeping side stays as it was.
+        let kept: Vec<(usize, Toucher)> = self
+            .touching
+            .iter()
+            .filter(|(a, _)| self.bodies.get(*a).is_some_and(|b| b.asleep))
+            .copied()
+            .collect();
+        self.touching = now;
+        self.touching.extend(kept);
         for b in &mut self.bodies {
             if b.asleep {
                 continue;
@@ -721,8 +934,8 @@ impl RigidWorld {
             if self.bodies[i].asleep || !self.bodies[i].dynamic() {
                 continue;
             }
-            for t in self.world_touches(collider, i, tris) {
-                touches.push((i, Other::World, t));
+            for (tri, t) in self.world_touches(collider, i, tris) {
+                touches.push((i, Other::World(tri), t));
             }
             for j in 0..self.bodies.len() {
                 if j == i || (j < i && !self.bodies[j].asleep) {
@@ -735,9 +948,11 @@ impl RigidWorld {
                 let found = self.body_touches(i, j);
                 touches.extend(found.into_iter().map(|t| (i, Other::Body(j), t)));
             }
-            for m in &self.movers {
-                for t in self.mover_touches(i, m) {
-                    touches.push((i, Other::Mover(m.velocity), t));
+            if self.pushable(i) {
+                for m in &self.movers {
+                    for t in self.mover_touches(i, m) {
+                        touches.push((i, Other::Mover(m.velocity), t));
+                    }
                 }
             }
         }
@@ -753,6 +968,33 @@ impl RigidWorld {
             .filter(|(_, &l)| l > 0.0)
             .map(|(&(a, other, t), &l)| self.contact(a, other, &t, l, &before))
             .collect();
+        for c in &contacts {
+            let (key, other_body, triangle) = match c.other {
+                Other::World(t) => (Toucher::World(collider.owner(t)), None, Some(t)),
+                Other::Body(j) => (Toucher::Body(j), Some(j), None),
+                Other::Mover(_) => continue,
+            };
+            // A pair of bodies once, under the lower index.
+            let pair = match key {
+                Toucher::Body(j) if j < c.a => (j, Toucher::Body(c.a)),
+                k => (c.a, k),
+            };
+            let event = ContactEvent {
+                body: c.a,
+                other_body,
+                triangle,
+                point: add(self.bodies[c.a].x, c.arm_a),
+                speed: c.approach.abs(),
+            };
+            self.this_step
+                .entry(pair)
+                .and_modify(|old| {
+                    if event.speed > old.speed {
+                        *old = event;
+                    }
+                })
+                .or_insert(event);
+        }
         // Velocities from the moves.
         for (b, (_, q, _, _)) in self.bodies.iter_mut().zip(&before) {
             if b.asleep || !b.dynamic() {
@@ -856,7 +1098,7 @@ impl RigidWorld {
                 rel = sub(rel, add(vb, cross(wb_, arm_b)));
             }
             Other::Mover(v) => rel = sub(rel, v),
-            Other::World => {}
+            Other::World(_) => {}
         }
         let me = &self.bodies[a].setup;
         Contact {
@@ -866,8 +1108,8 @@ impl RigidWorld {
             arm_b,
             n: t.n,
             lambda,
-            friction: (me.friction * t.surface.friction).max(0.0).sqrt(),
-            restitution: (me.restitution * t.surface.restitution).max(0.0).sqrt(),
+            friction: combined_friction(me.friction, t.surface.friction),
+            restitution: combined_restitution(me.restitution, t.surface.restitution),
             approach: dot(rel, t.n),
         }
     }
@@ -885,7 +1127,7 @@ impl RigidWorld {
                 }
             }
             Other::Mover(v) => rel = sub(rel, v),
-            Other::World => {}
+            Other::World(_) => {}
         }
         (rel, moving)
     }
@@ -948,10 +1190,21 @@ impl RigidWorld {
     }
 
     /// Where body `i` touches the collider's triangles `tris`.
-    fn world_touches(&self, collider: &Collider, i: usize, tris: &[u32]) -> Vec<Touch> {
+    fn world_touches(&self, collider: &Collider, i: usize, tris: &[u32]) -> Vec<(u32, Touch)> {
         let b = &self.bodies[i];
         let mut out = Vec::new();
+        let mut tags = Vec::new();
         for &t in tris {
+            let start = out.len();
+            self.triangle_touches(collider, b, t, &mut out);
+            tags.extend(std::iter::repeat(t).take(out.len() - start));
+        }
+        tags.into_iter().zip(out).collect()
+    }
+
+    /// Where body `b` touches the collider's triangle `t`.
+    fn triangle_touches(&self, collider: &Collider, b: &Rigid, t: u32, out: &mut Vec<Touch>) {
+        {
             let [ta, tb, tc] = collider.triangle(t);
             let shell = collider.shell(t);
             let surface = collider.surface(t).unwrap_or(DEFAULT_SURFACE);
@@ -1051,7 +1304,6 @@ impl RigidWorld {
                 }
             }
         }
-        out
     }
 
     /// Where body `i` touches body `j` (`j`'s side as model-space points
@@ -1159,6 +1411,23 @@ impl Touch {
         // `on_a` holds it there (see `point_in_shape`).
         self.on_a
     }
+}
+
+/// A contact's friction: the square root of the two bodies' frictions
+/// multiplied (the contact manager's new point, `00cfd800`, from each
+/// entity's material at `+0x90`).
+// Translated from 00cfd800 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn combined_friction(a: f32, b: f32) -> f32 {
+    (a * b).max(0.0).sqrt()
+}
+
+/// A contact's restitution: the square root of the two restitutions
+/// multiplied (`+0x94`), kept in a byte as × 128 rounded (`00cfd800`).
+// Translated from 00cfd800 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn combined_restitution(a: f32, b: f32) -> f32 {
+    let r = (a * b).max(0.0).sqrt();
+    // FISTP to an integer, its low byte kept.
+    f32::from((r * 128.0).round() as i32 as u8) / 128.0
 }
 
 /// The points of a shape that touch others here, with their radius:
@@ -1684,8 +1953,9 @@ mod tests {
             w.update(&c, 1.0 / 60.0);
         }
         let t = sub(w.bodies[i].pose().1, at);
-        // Off northward, not sideways.
-        assert!(t[1] > 10.0 && t[2] < 30.0 && t[0].abs() < 15.0, "{t:?}");
+        // Off northward, more than sideways (lying on its side it rolls a
+        // little either way).
+        assert!(t[1] > 10.0 && t[2] < 30.0 && t[0].abs() < t[1], "{t:?}");
         assert!(w.bodies[i].asleep && w.bodies[i].moved);
         // Lying on its side on the ground: its axis level.
         let (r, _) = w.bodies[i].pose();
@@ -1767,5 +2037,151 @@ mod tests {
         w.apply_linear_impulse(j, [4.0, 0.0, 0.0]);
         assert_eq!(w.bodies[j].velocity(), [0.0; 3]);
         assert!(w.bodies[j].asleep);
+    }
+
+    #[test]
+    fn walkers_push_only_bodies_lighter_than_the_move_limit() {
+        let c = floor(0.0);
+        let mut w = RigidWorld::new();
+        let light = w.add(crate_(11, [10.0; 3], 20.0), (I3, [0.0, 0.0, 10.7]));
+        let heavy = w.add(crate_(12, [10.0; 3], 100.0), (I3, [0.0, 200.0, 10.7]));
+        for k in 0..60 {
+            let x = -40.0 + 150.0 * k as f32 / 60.0;
+            w.set_movers(vec![
+                Mover {
+                    feet: [x, 0.0, 0.0],
+                    radius: 20.0,
+                    height: 128.0,
+                    velocity: [150.0, 0.0, 0.0],
+                },
+                Mover {
+                    feet: [x, 200.0, 0.0],
+                    radius: 20.0,
+                    height: 128.0,
+                    velocity: [150.0, 0.0, 0.0],
+                },
+            ]);
+            w.update(&c, 1.0 / 60.0);
+        }
+        assert!(w.bodies[light].center()[0] > 20.0);
+        assert!(w.bodies[heavy].center()[0].abs() < 0.5 && w.bodies[heavy].asleep);
+    }
+
+    /// As the viewer has it: the body's triangles in the collider (the
+    /// walking character is kept off them) and the character as a mover.
+    fn walk_into(h: Vec3, mass: f32) -> (Vec3, Vec3) {
+        let mut c = floor(0.0);
+        let setup = crate_(13, h, mass);
+        let mut w = RigidWorld::new();
+        let i = w.add(setup.clone(), (I3, [0.0, 0.0, h[2] + 0.7]));
+        for shape in &setup.shapes {
+            let (v, t, shell) = shape.triangles();
+            let placed: Vec<Vec3> = v.iter().map(|p| add(*p, [0.0, 0.0, h[2] + 0.7])).collect();
+            c.add_layered(&placed, &t, (shell, 13, crate::NO_MATERIAL), None, 4);
+        }
+        let shape = crate::CharacterShape::PLAYER;
+        let mut walker = crate::Character::new([-100.0, 0.0, 0.0]);
+        for _ in 0..90 {
+            walker.update_controlled(&c, &shape, [280.0, 0.0], None, 1.0, 1.0 / 60.0);
+            w.set_movers(vec![Mover {
+                feet: walker.feet,
+                radius: shape.radius,
+                height: shape.height,
+                velocity: [walker.horizontal[0], walker.horizontal[1], 0.0],
+            }]);
+            w.update(&c, 1.0 / 60.0);
+            let (r, t) = w.delta(i);
+            c.move_owner(13, &r, t);
+        }
+        (w.bodies[i].center(), walker.feet)
+    }
+
+    #[test]
+    fn the_player_walking_into_clutter_pushes_it() {
+        // A low, light box (a tumbleweed's size): pushed ahead.
+        let (at, feet) = walk_into([15.0, 15.0, 15.0], 5.0);
+        assert!(at[0] > 30.0, "{at:?} (walker at {feet:?})");
+    }
+
+    #[test]
+    fn materials_combine_as_havok_does() {
+        // A bottle (0.5, 0.4) on the ground (2.5, 0.4).
+        assert!((combined_friction(0.5, 2.5) - 1.118_034).abs() < 1e-5);
+        // sqrt(0.16) = 0.4 → 51.2 → 51 / 128.
+        assert_eq!(combined_restitution(0.4, 0.4), 51.0 / 128.0);
+        assert_eq!(combined_restitution(1.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn a_falling_body_reports_one_contact_when_it_lands() {
+        let c = floor(0.0);
+        let mut w = RigidWorld::new();
+        let i = w.add(crate_(10, [3.0; 3], 1.0), (I3, [0.0, 0.0, 60.0]));
+        w.wake(i);
+        let mut events = Vec::new();
+        for _ in 0..120 {
+            w.update(&c, 1.0 / 60.0);
+            events.extend(w.take_contacts());
+        }
+        // Landing from about 56 units: sqrt(2 g h) ≈ 280 units a second.
+        let first = events.first().copied().expect("a landing");
+        assert!(first.speed > 200.0 && first.speed < 320.0, "{first:?}");
+        assert_eq!((first.body, first.other_body), (i, None));
+        assert!(first.triangle.is_some() && first.point[2] < 5.0);
+        // Resting on the floor doesn't keep reporting.
+        let late: Vec<_> = (0..60)
+            .flat_map(|_| {
+                w.update(&c, 1.0 / 60.0);
+                w.take_contacts()
+            })
+            .collect();
+        assert!(late.is_empty(), "{late:?}");
+    }
+
+    #[test]
+    fn the_grab_spring_carries_a_body_to_its_target() {
+        let c = floor(0.0);
+        let mut w = RigidWorld::new();
+        let i = w.add(crate_(8, [3.0; 3], 1.0), (I3, [0.0, 0.0, 3.7]));
+        let s = crate::grab::GrabSettings::default();
+        let (damping, elasticity, object_damping, max) = crate::grab::spring_values(10, &s);
+        w.spring = Some(Spring {
+            body: i,
+            local: [0.0; 3],
+            target: [20.0, 0.0, 60.0],
+            damping,
+            elasticity,
+            max_relative_force: max,
+            object_damping,
+        });
+        for _ in 0..180 {
+            w.update(&c, 1.0 / 60.0);
+        }
+        // Held under the target, sagging by gravity × step² ÷ elasticity
+        // (about 0.9 units).
+        let at = w.bodies[i].center();
+        assert!(length(sub(at, [20.0, 0.0, 60.0])) < 2.0, "{at:?}");
+        assert!(!w.bodies[i].asleep && w.bodies[i].moved);
+        // Let go: it falls back to the floor.
+        w.spring = None;
+        for _ in 0..240 {
+            w.update(&c, 1.0 / 60.0);
+        }
+        assert!(w.bodies[i].center()[2] < 5.0, "{:?}", w.bodies[i].center());
+        // Removing the held body ends the grab; others shift down.
+        let j = w.add(crate_(9, [3.0; 3], 1.0), (I3, [50.0, 0.0, 3.7]));
+        w.spring = Some(Spring {
+            body: j,
+            local: [0.0; 3],
+            target: [0.0; 3],
+            damping,
+            elasticity,
+            max_relative_force: max,
+            object_damping,
+        });
+        w.remove(8);
+        assert_eq!(w.spring.map(|s| s.body), Some(0));
+        w.remove(9);
+        assert!(w.spring.is_none());
     }
 }
