@@ -36,6 +36,9 @@ pub mod ids {
     pub const BASEMENT_CRATE: u32 = 0xF10;
 }
 
+/// An objective's index and its targets, each with its `CTDA` bytes.
+type Objective<'a> = (i32, &'a [(u32, &'a [u8])]);
+
 pub fn quest_targets(tag: &str) -> TempData {
     use ids::*;
     let data = TempData::new(tag);
@@ -61,7 +64,7 @@ pub fn quest_targets(tag: &str) -> TempData {
     plugin.extend(group(*b"KEYM", 0, &named(b"KEYM", KEY, "QTKey", &[])));
 
     // Quests: objective, then its targets each with their conditions.
-    let quest = |id: u32, name: &str, objectives: &[(i32, &[(u32, &[u8])])]| {
+    let quest = |id: u32, name: &str, objectives: &[Objective]| {
         let mut d = sub(b"FULL", &zstr(name));
         let mut qdata = vec![0u8, 50, 0, 0];
         qdata.extend(1.0f32.to_le_bytes());
