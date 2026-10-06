@@ -191,11 +191,14 @@ pub struct Walker {
     partial: bool,
     /// The long way last planned: the attached squares and the goal it
     /// was planned for.
-    long: Option<(Vec<(i32, i32)>, [f32; 3])>,
+    long: Option<LongPlan>,
     /// Hidden here because they stand outdoors beyond the attached cells
     /// (the game's lower processes; [`move_offstage`] moves them).
     parked: bool,
 }
+
+/// The long way last planned: the attached squares and the goal.
+type LongPlan = (Vec<(i32, i32)>, [f32; 3]);
 
 /// People turn 135° a second in place until their kit is read.
 const PEOPLE_RATES: [f32; 2] = [90.0 * 1.5 * mv::ONE_DEGREE, 90.0 * 2.5 * mv::ONE_DEGREE];
