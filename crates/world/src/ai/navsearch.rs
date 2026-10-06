@@ -44,10 +44,11 @@
 //! `0057b460` (a door whose extra data 0x1c has flag 0x100 is never
 //! crossed; what that data is wasn't traced). Flag 0x1000 is never in the
 //! data (`NVDP` portal triangles carry 0x400): the game sets it at run
-//! time on the triangles under a loaded door's bounds that aren't already
-//! its portals, adding them to the portal list (`006997e0`, from
-//! `006c8170`; cleared by `00699a30`). That registration isn't done here,
-//! so no triangle has the flag yet and doors cost nothing extra.
+//! time on the triangles under a closed door that aren't already its
+//! portals, adding them to the portal list (`006997e0`, from `006c8170`;
+//! cleared by `00699a30` when it opens): [`super::doors`]. Without a rule
+//! in the request, the navmesh's own door rules
+//! ([`NavMesh::door_rules`]) are asked.
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
