@@ -33,6 +33,36 @@ reading do not establish them.
 
 ## Active work: M1
 
+Overnight batches, 2026-10-06 (local session; integration branch
+`claude/overnight-integration`, not merged into `main`; each batch also has
+its own pushed `claude/m*-*` branch for review as a PR). Play copy builds 1-6
+were published from the integration branch. Everything below is implemented
+and unit-tested; **none of it has been compared side by side with the
+original game**.
+- M1: look-IK (`claude/m1-look-ik`), Pip-Boy mouse (`claude/m1-pipboy`),
+  player movement (`claude/m1-movement`), Doc's door farewell via TCFU
+  follow-ups (`claude/m1-dialogue`), NPC dialogue facing/zoom and topic
+  list (`claude/m1-dialogue-npc`), player furniture sitting
+  (`claude/m1-sitting`).
+- M2: grid-wide exterior reference scripts (`claude/m2-cell-scripts`),
+  package types and actions (`claude/m2-packages`), quest targets on the
+  compass (`claude/m2-quest-targets`), dynamite/explosions
+  (`claude/m2-explosives`), third-person camera and player body
+  (`claude/m2-third-person`), NPC weapon choice/reloads/GetShouldAttack/
+  OnStartCombat (`claude/m2-npc-combat`), Back in the Saddle and Ghost Town
+  Gunfight route fixes (`claude/m2-vcg02-route`, `claude/m2-vms16-route`).
+- Acceptance evidence ([GOODSPRINGS_ROUTE.md](GOODSPRINGS_ROUTE.md)): with
+  dialogue choices replayed by `--run` lines, Ghost Town Gunfight reaches
+  stage 100 (XP +50) on the integration build; Back in the Saddle completes
+  with several steps forced by console lines.
+- Blockers: starting VCG02 by talking to Sunny (greeting order traced and
+  matching; needs an original-game check), long outdoor NPC paths (agent
+  on `claude/m2-long-paths`), NPC aim far too accurate (agent on
+  `claude/m2-npc-aim`), eyes not moving (FaceGen eye update untraced),
+  explosion visuals, Pip-Boy map quest markers.
+**Next action:** review and merge the `claude/m*-*` PRs into `main`, then
+play the Goodsprings route in the play copy and file F12 reports.
+
 Look-IK batch, 2026-10-06 (local session, branch `claude/m1-look-ik`).
 Corrections: ADR-0004 (restructure) was rejected on 2026-10-06 and the
 layout stays; `codex/m1-reload-update-order` was dropped unmerged; Codex is
