@@ -760,6 +760,7 @@ fn draw_menus(
     windows: Query<&Window, With<PrimaryWindow>>,
     fixed: Res<FixedPointer>,
     time: Res<Time<bevy::time::Real>>,
+    pipboy: Option<Res<crate::pipboy::Pipboy>>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         if !draw.0.is_empty() {
@@ -799,8 +800,14 @@ fn draw_menus(
         for &menu in &tiles {
             items.extend(ui::draw_list(&mut screen.ui, menu, &mut files, &|_| None));
         }
-        // The cursor over everything while a menu is open and the pointer
-        // is in the window.
+        // The cursor over everything while a menu is open (the Pip-Boy
+        // too: it moves over the screen and the model's buttons,
+        // `007f8720`, except where DATA's map hides it, `0079a130`) and
+        // the pointer is in the window.
+        let wanted = !tiles.is_empty()
+            || pipboy
+                .as_ref()
+                .is_some_and(|p| p.open && !p.cursor_hidden());
         if let Some(cursor) = screen.cursor {
             let k = screen.ui.screen_size.resolution_converter();
             let at = match fixed.0 {
@@ -810,8 +817,8 @@ fn draw_menus(
                     .ok()
                     .and_then(|w| w.physical_cursor_position()),
             };
-            match (at, tiles.is_empty()) {
-                (Some(p), false) => {
+            match (at, wanted) {
+                (Some(p), true) => {
                     screen.ui.set_number(cursor, t::X, p.x * k);
                     screen.ui.set_number(cursor, t::Y, p.y * k);
                     screen.ui.set_number(cursor, t::VISIBLE, 1.0);

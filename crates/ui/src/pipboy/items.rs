@@ -42,7 +42,16 @@ pub struct ItemsMenu {
     /// The forms of the rows now, in order.
     pub shown: Vec<u32>,
     filled: Option<(usize, Vec<ItemLine>)>,
+    /// The last row the pointer was over (`011d9f34`, its
+    /// `listindex`): the knob clicks when it changes.
+    hovered: Option<usize>,
 }
+
+/// The rows' `id` (0x1d), which the click and mouse-over handlers look for
+/// (`00780140`, `00780ff0`).
+pub const ROW_ID: i32 = 0x1d;
+/// The first tab button's `id` (0x18 Weapons .. 0x1c Ammo, `0077fc10`).
+pub const FIRST_TAB_ID: i32 = 0x18;
 
 /// An item's row text (`00782850`): "name (count)" for more than one
 /// ("name+ (count)" for a modded weapon, not here yet).
@@ -176,6 +185,7 @@ impl ItemsMenu {
             icon: by_id(ui, menu, 11),
             shown: Vec::new(),
             filled: None,
+            hovered: None,
         };
         if let Some(tl) = m.tabline {
             tabline::set_current(ui, tl, 0);
@@ -235,7 +245,7 @@ impl ItemsMenu {
                 continue;
             };
             // Rows' `id` 0x1d (29), what the click handler looks for.
-            ui.set_number(row, t::ID, 29.0);
+            ui.set_number(row, t::ID, ROW_ID as f32);
             if let Some(marker) = ui.find_below(row, "IM_Template_ItemMarker") {
                 ui.set_number(marker, t::VISIBLE, if item.equipped { 1.0 } else { 0.0 });
             }
@@ -405,18 +415,106 @@ impl ItemsMenu {
             }
             Key::Activate => {
                 let items = self.tab_items(input);
-                if let Some(item) = self.list.selected.and_then(|i| items.get(i)) {
-                    if item.usable {
-                        out.push(match item.tab {
-                            ItemTab::Weapons | ItemTab::Apparel => Action::Equip(item.form),
-                            _ => Action::Use(item.form),
-                        });
-                    }
+                if let Some(action) = self
+                    .list
+                    .selected
+                    .and_then(|i| items.get(i))
+                    .and_then(|i| self.activate(i))
+                {
+                    out.push(action);
                 }
             }
             _ => {}
         }
         out
+    }
+
+    /// What equipping or using a row's item asks of the game (`00780140`
+    /// case 0x1d: weapons and apparel are equipped or taken off, the rest
+    /// used), when it can be.
+    fn activate(&self, item: &ItemLine) -> Option<Action> {
+        item.usable.then_some(match item.tab {
+            ItemTab::Weapons | ItemTab::Apparel => Action::Equip(item.form),
+            _ => Action::Use(item.form),
+        })
+    }
+
+    /// A tile clicked (`00780140`, slot 0x0c): a tab button (0x18 .. 0x1c)
+    /// turns to its tab when it isn't the one shown; a row (0x1d) equips,
+    /// takes off or uses its item. (Drop 7, Repair 8, Cancel 10, Mod 0x13
+    /// and the keyring 0x1e are not here yet.)
+    pub fn click(
+        &mut self,
+        ui: &mut Ui,
+        id: i32,
+        tile: Option<TileId>,
+        input: &PipboyInput,
+    ) -> Vec<Action> {
+        let mut out = Vec::new();
+        match id {
+            FIRST_TAB_ID..=0x1c => {
+                let tab = (id - FIRST_TAB_ID) as usize;
+                if tab != self.tab {
+                    self.show_tab(ui, tab, input);
+                    out.push(Action::Sound("UIPipBoyTab".into()));
+                }
+            }
+            ROW_ID => {
+                let items = self.tab_items(input);
+                let index = tile.and_then(|t| self.list.index_of(t));
+                if let Some(action) = index
+                    .and_then(|i| items.get(i))
+                    .and_then(|i| self.activate(i))
+                {
+                    out.push(action);
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+
+    /// The pointer onto a tile (`00780ff0`, slot 0x10): a row becomes the
+    /// chosen item, its card and picture shown; the knob clicks
+    /// (`007f8610`, `UIPipBoyScroll`) when the row's `listindex` differs from
+    /// the last one the pointer was over.
+    pub fn mouseover(
+        &mut self,
+        ui: &mut Ui,
+        id: i32,
+        tile: TileId,
+        input: &PipboyInput,
+    ) -> Vec<Action> {
+        let mut out = Vec::new();
+        if id != ROW_ID {
+            return out;
+        }
+        let Some(index) = self.list.index_of(tile) else {
+            return out;
+        };
+        if self.hovered != Some(index) {
+            self.hovered = Some(index);
+            out.push(Action::Sound("UIPipBoyScroll".into()));
+        }
+        self.list.choose(ui, Some(index));
+        let items = self.tab_items(input);
+        self.show_card(ui, items.get(index));
+        out
+    }
+
+    /// The pointer off a tile (`00781620`, slot 0x14; the interface first
+    /// lets the list drop its choice, `00717ef0`): leaving a row clears the
+    /// card and `_EquippableItem`.
+    pub fn unmouseover(&mut self, ui: &mut Ui, id: i32, tile: TileId) {
+        if id != ROW_ID {
+            return;
+        }
+        if let Some(index) = self.list.index_of(tile) {
+            if self.list.selected == Some(index) {
+                self.list.choose(ui, None);
+            }
+        }
+        self.show_card(ui, None);
     }
 }
 

@@ -61,8 +61,43 @@ pub struct DataMenu {
     /// The world map's markers' tiles, and the one chosen.
     markers: Vec<TileId>,
     pub marker: Option<usize>,
-    filled: Option<PipboyInput>,
+    /// What the map and the lists were last made from (each made again
+    /// only when its own part changes, so dragging, the pointer's row and
+    /// scrolling stay).
+    filled_map: Option<Option<super::WorldMapLine>>,
+    filled_lists: Option<(Vec<QuestLine>, Vec<super::NoteLine>, Vec<String>)>,
+    /// The last row the pointer was over (`011da400`).
+    hovered: Option<usize>,
+    /// The game's cursor is hidden (its alpha 0) while it's over the map:
+    /// the highlight box follows it instead (`0079a130`).
+    pub cursor_hidden: bool,
+    /// The map's place when the button went down (the menu's +0x120 /
+    /// +0x124, compared by `00796fd0` case 0x1a; where the game stores
+    /// them isn't traced, a guess): a release after the map moved is a
+    /// drag, not a click on a marker.
+    pressed_at: Option<(f32, f32)>,
 }
+
+/// The list rows' `id`s the click and mouse-over handlers look for
+/// (`00796fd0`, `00798cb0`): 0x17 a quest (its objectives shown, `_ItemType`
+/// 4; clicked, made the active quest by `009529d0`), 0x18 a note (shown by
+/// its kind, `007993d0`), 0x19 a radio station.
+pub const QUEST_ROW_ID: i32 = 0x17;
+pub const NOTE_ROW_ID: i32 = 0x18;
+pub const RADIO_ROW_ID: i32 = 0x19;
+/// The first tab button's `id` (0x20 Local Map .. 0x24 Radio, `00796b90`).
+pub const FIRST_TAB_ID: i32 = 0x20;
+/// The world map's picture (`MM_WorldMap_ParentImage`) and the local
+/// map's (`MM_LocalMap_ParentImage`): `id` 4 and 2.
+pub const WORLD_MAP_ID: i32 = 4;
+pub const LOCAL_MAP_ID: i32 = 2;
+/// A map marker's `id` (`MapMarkerTemplate`, `0079cdb0`): 26, compared as
+/// `01074f60` (26.0) by `00799dc0`.
+pub const MARKER_ID: i32 = 26;
+/// The part of the map clip window the cursor is "on the map" in
+/// (`0079a130`: 0 .. `01074f68` 850 across, 0 .. `010301a8` 500
+/// down).
+pub const MAP_AREA: [f32; 2] = [850.0, 500.0];
 
 impl DataMenu {
     /// Reads the menu, builds its tab line (`00796b90`: ids from 0x20,
@@ -110,7 +145,11 @@ impl DataMenu {
             data_rect: by_id(ui, menu, 13),
             markers: Vec::new(),
             marker: None,
-            filled: None,
+            filled_map: None,
+            filled_lists: None,
+            hovered: None,
+            cursor_hidden: false,
+            pressed_at: None,
         };
         d.set_tab(ui, 1);
         Ok(d)
@@ -142,26 +181,42 @@ impl DataMenu {
         if let Some(tile) = by_id(ui, self.menu, 1) {
             ui.set_string(tile, t::STRING, &input.date_time);
         }
-        if self.filled.as_ref() == Some(input) {
-            return;
+        let mut changed = false;
+        if self.filled_map.as_ref() != Some(&input.world_map) {
+            self.fill_world_map(ui, input);
+            self.filled_map = Some(input.world_map.clone());
+            changed = true;
         }
-        self.fill_world_map(ui, input);
-        self.fill_quests(ui, &input.quests);
-        let keep = self.notes.selected;
-        self.notes.clear(ui);
-        for n in &input.notes {
-            self.notes.add(ui, Some(&n.name));
+        let lists = (
+            input.quests.clone(),
+            input.notes.clone(),
+            input.stations.clone(),
+        );
+        if self.filled_lists.as_ref() != Some(&lists) {
+            self.fill_quests(ui, &input.quests);
+            let keep = self.notes.selected;
+            self.notes.clear(ui);
+            for n in &input.notes {
+                if let Some(row) = self.notes.add(ui, Some(&n.name)) {
+                    ui.set_number(row, t::ID, NOTE_ROW_ID as f32);
+                }
+            }
+            if !input.notes.is_empty() {
+                self.notes
+                    .select(ui, Some(keep.unwrap_or(0).min(input.notes.len() - 1)));
+            }
+            self.radio.clear(ui);
+            for s in &input.stations {
+                if let Some(row) = self.radio.add(ui, Some(s)) {
+                    ui.set_number(row, t::ID, RADIO_ROW_ID as f32);
+                }
+            }
+            self.filled_lists = Some(lists);
+            changed = true;
         }
-        if !input.notes.is_empty() {
-            self.notes
-                .select(ui, Some(keep.unwrap_or(0).min(input.notes.len() - 1)));
+        if changed {
+            self.show_selected(ui, input);
         }
-        self.radio.clear(ui);
-        for s in &input.stations {
-            self.radio.add(ui, Some(s));
-        }
-        self.filled = Some(input.clone());
-        self.show_selected(ui, input);
     }
 
     /// The world map (`0079cdb0`): the worldspace's picture with its
@@ -257,6 +312,7 @@ impl DataMenu {
         for q in quests {
             if let Some(row) = self.quests.add(ui, Some(&q.name)) {
                 ui.set_number(row, selected, if q.active { 1.0 } else { 0.0 });
+                ui.set_number(row, t::ID, QUEST_ROW_ID as f32);
             }
         }
         if !quests.is_empty() {
@@ -269,6 +325,7 @@ impl DataMenu {
     /// (`_ItemType` 4, each a row, done ones' squares filled), a note's
     /// text (1); the world map's chosen marker's name in the highlight box.
     fn show_selected(&mut self, ui: &mut Ui, input: &PipboyInput) {
+        self.show_marker_title(ui, input);
         let item_type = trait_id(ui, "_ItemType");
         let Some(rect) = self.data_rect else {
             return;
@@ -299,6 +356,10 @@ impl DataMenu {
             }
             _ => ui.set_number(rect, item_type, 0.0),
         }
+    }
+
+    /// The chosen marker's name in the highlight box (its `_Title`).
+    fn show_marker_title(&mut self, ui: &mut Ui, input: &PipboyInput) {
         if let Some(highlight) = by_id(ui, self.menu, 6) {
             let title = trait_id(ui, "_Title");
             let name = self
@@ -306,7 +367,10 @@ impl DataMenu {
                 .and_then(|i| input.world_map.as_ref()?.markers.get(i))
                 .map(|m| m.name.clone())
                 .unwrap_or_default();
-            ui.set_string(highlight, title, &name);
+            // `00799dc0` leaves the title as it was for "Companion".
+            if !name.eq_ignore_ascii_case("Companion") {
+                ui.set_string(highlight, title, &name);
+            }
         }
     }
 
@@ -318,9 +382,9 @@ impl DataMenu {
 
     /// A key (`00799790`): left and right change tab, wrapping round the
     /// five; up and down choose in the Quests, Misc and Radio lists; the A
-    /// button on the world map presses the marker under the cursor (the
-    /// map's markers are reached with the mouse or the stick: neither is
-    /// here yet, so none is chosen), on a quest makes it the active one.
+    /// button on the world map presses the marker the highlight box found
+    /// under the pointer ([`DataMenu::pointer_moved`]; the pad's stick isn't
+    /// here), on a quest makes it the active one.
     pub fn key(&mut self, ui: &mut Ui, key: Key, input: &PipboyInput) -> Vec<Action> {
         let mut out = Vec::new();
         match key {
@@ -368,6 +432,163 @@ impl DataMenu {
                 _ => {}
             },
             _ => {}
+        }
+        out
+    }
+
+    /// The list a row tile is in (quests, notes, radio), by its `id`.
+    fn row_list(&mut self, id: i32) -> Option<&mut ListBox> {
+        match id {
+            QUEST_ROW_ID => Some(&mut self.quests),
+            NOTE_ROW_ID => Some(&mut self.notes),
+            RADIO_ROW_ID => Some(&mut self.radio),
+            _ => None,
+        }
+    }
+
+    /// A tile clicked (`00796fd0`, slot 0x0c): a tab button (0x20 .. 0x24)
+    /// shows its tab; a quest row (0x17) makes that quest the active one
+    /// unless it's finished (`0059e400`, `009529d0`); the world map's
+    /// picture (4) presses the marker the highlight box has found (case 4
+    /// → 0x1a), when the map wasn't dragged since the button went down and
+    /// the marker can be travelled to. (The game asks "%s %s?" first,
+    /// `00703e80` with `00798710`: that box isn't here yet, so the travel is
+    /// asked for at once. Notes' audio, the radio playing, the custom
+    /// marker (0x0c) and challenges are not here yet.)
+    pub fn click(
+        &mut self,
+        ui: &mut Ui,
+        id: i32,
+        tile: Option<TileId>,
+        input: &PipboyInput,
+    ) -> Vec<Action> {
+        let mut out = Vec::new();
+        match id {
+            FIRST_TAB_ID..=0x24 => {
+                self.set_tab(ui, (id - FIRST_TAB_ID) as usize);
+                self.show_selected(ui, input);
+                out.push(Action::Sound("UIPipBoyTab".into()));
+            }
+            QUEST_ROW_ID => {
+                let index = tile.and_then(|t| self.quests.index_of(t));
+                if let Some(q) = index.and_then(|i| input.quests.get(i)) {
+                    if !q.completed {
+                        out.push(Action::ActiveQuest(q.form));
+                    }
+                }
+            }
+            WORLD_MAP_ID if self.tab == 1 => {
+                let unmoved = match (self.pressed_at, self.world) {
+                    (Some(at), Some(w)) => at == (ui.number(w, t::X), ui.number(w, t::Y)),
+                    _ => false,
+                };
+                if let Some(m) = self
+                    .marker
+                    .filter(|_| unmoved)
+                    .and_then(|i| input.world_map.as_ref()?.markers.get(i))
+                {
+                    if m.travel {
+                        out.push(Action::Travel(m.form));
+                    }
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+
+    /// The button went down over the menu: where the map is then.
+    pub fn pressed(&mut self, ui: &mut Ui) {
+        self.pressed_at = self.world.map(|w| (ui.number(w, t::X), ui.number(w, t::Y)));
+    }
+
+    /// The pointer onto a tile (`00798cb0`, slot 0x10): a quest, note or
+    /// radio row becomes the list's choice and shows what it holds (a
+    /// quest's objectives, a note's text); the knob clicks (`007f8610`,
+    /// `UIPipBoyScroll`) when its `listindex` differs from the last row the
+    /// pointer was over.
+    pub fn mouseover(
+        &mut self,
+        ui: &mut Ui,
+        id: i32,
+        tile: TileId,
+        input: &PipboyInput,
+    ) -> Vec<Action> {
+        let mut out = Vec::new();
+        let Some(list) = self.row_list(id) else {
+            return out;
+        };
+        let Some(index) = list.index_of(tile) else {
+            return out;
+        };
+        list.choose(ui, Some(index));
+        if self.hovered != Some(index) {
+            self.hovered = Some(index);
+            out.push(Action::Sound("UIPipBoyScroll".into()));
+        }
+        self.show_selected(ui, input);
+        out
+    }
+
+    /// The pointer over the menu (`0079a130`, every frame on the Local Map
+    /// and World Map tabs): the highlight box is centred on it (`x`, `y`
+    /// in its clip window); inside the map's area (0 .. 850 × 0 .. 500 of
+    /// that window) the game's cursor is hidden; then the marker nearest
+    /// the box's centre within half its height is found (`00799dc0`): its
+    /// name becomes the box's `_Title` (not for "Companion") and
+    /// `UIPipBoyHighlight` plays when it changes. (The game measures the
+    /// markers in the map's own frame from their `_x`/`_y`; here their
+    /// centres on the screen, the same points as the file lays them out.)
+    pub fn pointer_moved(
+        &mut self,
+        ui: &mut Ui,
+        at: Option<[f32; 2]>,
+        input: &PipboyInput,
+    ) -> Vec<Action> {
+        let mut out = Vec::new();
+        self.cursor_hidden = false;
+        if self.tab > 1 {
+            return out;
+        }
+        let Some(at) = at else {
+            return out;
+        };
+        let Some(bx) = by_id(ui, self.menu, 6) else {
+            return out;
+        };
+        let Some(frame) = ui.tiles[bx].parent else {
+            return out;
+        };
+        let (fx, fy) = ui.screen_position(frame);
+        let (lx, ly) = (at[0] - fx, at[1] - fy);
+        self.cursor_hidden = (0.0..=MAP_AREA[0]).contains(&lx) && (0.0..=MAP_AREA[1]).contains(&ly);
+        let (w, h) = (ui.number(bx, t::WIDTH), ui.number(bx, t::HEIGHT));
+        ui.set_number(bx, t::X, lx - w / 2.0);
+        ui.set_number(bx, t::Y, ly - h / 2.0);
+        if self.tab != 1 {
+            return out;
+        }
+        let (bsx, bsy) = ui.screen_position(bx);
+        let centre = (bsx + w / 2.0, bsy + h / 2.0);
+        let index_id = trait_id(ui, "_MarkerIndex");
+        let mut best = f32::MAX;
+        let mut found = None;
+        for &m in &self.markers.clone() {
+            let (mx, my) = ui.screen_position(m);
+            let (mw, mh) = (ui.number(m, t::WIDTH), ui.number(m, t::HEIGHT));
+            let d =
+                ((mx + mw / 2.0 - centre.0).powi(2) + (my + mh / 2.0 - centre.1).powi(2)).sqrt();
+            if d < best && d < h / 2.0 {
+                best = d;
+                found = Some(ui.number(m, index_id) as usize);
+            }
+        }
+        if found != self.marker {
+            self.marker = found;
+            if found.is_some() {
+                out.push(Action::Sound("UIPipBoyHighlight".into()));
+            }
+            self.show_selected(ui, input);
         }
         out
     }
