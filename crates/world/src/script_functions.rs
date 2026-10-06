@@ -825,13 +825,13 @@ fn read(facts: &Facts, name: &str, on: Option<FormId>, args: &[Value]) -> Option
                 f64::from(scale)
             }
             // `005a30c0`: how often the player has hit this friend or ally
-            // (extra data 0x45, `world::crime::assault`).
+            // lately (extra data 0x45, `world::crime::friend_hit_count`).
             "GetFriendHit" => {
                 let who = on?;
                 if !is_actor(order, who) {
                     0.0
                 } else {
-                    f64::from(s.friendly_hits.get(&who).copied().unwrap_or(0))
+                    f64::from(crate::crime::friend_hit_count(order, s, who))
                 }
             }
             // `005a49f0` / `008b87a0`: one of the person's factions holds

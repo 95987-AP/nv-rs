@@ -922,6 +922,10 @@ pub fn hurt(
         // The dead stop fighting, and nobody fights them any more.
         state.combat.remove(&who);
         state.combat.retain(|_, target| *target != who);
+        state.hit_targets.remove(&who);
+        for list in state.hit_targets.values_mut() {
+            list.retain(|t| *t != who);
+        }
         state.events.push(Event::Died { who, by });
         if by == PLAYER_REF {
             let kind = if is_creature(order, who) {

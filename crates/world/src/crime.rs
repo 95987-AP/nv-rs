@@ -314,15 +314,48 @@ pub fn assault(order: &LoadOrder, state: &mut GameState, victim: FormId) -> bool
     if allowance.is_some() && crate::script_functions::ignores_friendly_hits(order, state, victim) {
         return false;
     }
-    if let Some(limit) = allowance {
-        let hits = state.friendly_hits.entry(victim).or_insert(0);
-        *hits += 1;
-        if *hits <= limit {
+    // Translated from 008987f0 (decompiled, FalloutNV.exe 1.4.0.525):
+    // an allowance of 0 counts nothing; above 999 the record starts afresh
+    // (`ExtraDataList::RemoveFriendHitsExtra`, Xbox PDB) before the hit.
+    if let Some(limit) = allowance.filter(|&l| l > 0) {
+        if limit > 999 {
+            state.friendly_hits.remove(&victim);
+        }
+        add_friend_hit(order, state, victim);
+        if friend_hit_count(order, state, victim) <= limit {
             return false;
         }
     }
     assault_crime(order, state, victim);
     true
+}
+
+/// The player's recent hits on a friend or ally (`ExtraFriendHits`, Xbox
+/// PDB, extra data 0x45): the times of hits within `fFriendHitTimer` (10 s)
+/// of now (`ExtraFriendHits::GetHitCount`, `00435e20` → `RemoveOldHits`
+/// `00435e40`), as `GetFriendHit` reports them. The game's clock
+/// (`011f1bf0`) is taken as the state's seconds.
+pub fn friend_hit_count(order: &LoadOrder, state: &GameState, victim: FormId) -> u32 {
+    let timer = f64::from(game_setting(order, "fFriendHitTimer").unwrap_or(10.0));
+    state.friendly_hits.get(&victim).map_or(0, |hits| {
+        hits.iter().filter(|&&t| state.seconds - t <= timer).count() as u32
+    })
+}
+
+/// One more hit on a friend or ally (`ExtraFriendHits::AddHit`, Xbox PDB):
+/// hits older than `fFriendHitTimer` are dropped, and one within
+/// `fFriendMinimumLastHitTime` (0.5 s) of the last isn't counted.
+// Translated from 00435d40 (decompiled, FalloutNV.exe 1.4.0.525)
+fn add_friend_hit(order: &LoadOrder, state: &mut GameState, victim: FormId) {
+    let timer = f64::from(game_setting(order, "fFriendHitTimer").unwrap_or(10.0));
+    let gap = f64::from(game_setting(order, "fFriendMinimumLastHitTime").unwrap_or(0.5));
+    let now = state.seconds;
+    let hits = state.friendly_hits.entry(victim).or_default();
+    hits.retain(|&t| now - t <= timer);
+    if hits.last().is_some_and(|&last| now - last < gap) {
+        return;
+    }
+    hits.push(now);
 }
 
 /// The assault crime itself (`008c0460`, also `SendAssaultAlarm`'s): none

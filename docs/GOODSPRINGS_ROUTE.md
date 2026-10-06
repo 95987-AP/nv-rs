@@ -281,6 +281,31 @@ take part, as their packages say.
    cleaver; all six die; stage 100 with XP +50; Ringo then talks to the
    player.
 
+4. **The gang killed itself after realistic NPC spread** (branch
+   `claude/m2-friendly-fire`). Stray hits went through the viewer's
+   untraced "whoever is hurt fights back" rule, so gangers hit by each
+   other's spread fought each other ("GSJoeCobbRef was killed by
+   GSPG06Ref", "GSPG05Ref was killed by GSPG06Ref"). Replaced by the
+   game's `Actor::AttackedBy` (`008987f0`, `docs/NPC_COMBAT.md` "Hits from
+   allies, friends and strays"): `GoodspringsPowderGangFaction` is its own
+   ally (`XNAM` reaction 2), allies and friends tolerate hits, and a stray
+   from someone fighting somebody else starts no fight. Tests:
+   `crates/world/tests/friendly_fire.rs`. Re-run with the exact command
+   above and `--wait 330` (private outputs
+   `%USERPROFILE%\nv-re\work\friendlyfire-2026-10-06`, runs 1–2): no
+   Powder Ganger took on, turned to or helped against another in either
+   run; stray pellets still hurt allies (run 2: 10 ganger-on-ganger stray
+   hits, one fatal, "GSPG05Ref was killed by GSPG02Ref": a shotgun
+   pellet meant for the player struck GSPG05, who was clubbing the player
+   at 1.8 health). Run 2 **reached stage 100** at about 197 s (XP +50).
+   Run 1 did **not**: the townspeople (Sunny, Trudy, Ringo, Cheyenne,
+   settlers 01 and 03) died, four gangers died (Joe Cobb, GSPG05, GSPG03,
+   GSPG01), GSPG02 and GSPG06 survived and went back to their packages;
+   the automation player doesn't shoot, so nothing could finish them.
+   Ringo's stray hit Cheyenne, who was already fighting and isn't allied
+   to his factions, so she took him on (`0097f580`) and Trudy then killed
+   her: traced behaviour on this data, **not compared**.
+
 ### Investigated, not changed
 
 - Target after a kill: when a fighter's target dies the viewer drops it
@@ -311,7 +336,9 @@ take part, as their packages say.
   (`docs/NPC_COMBAT.md`); run 11 exercised weapon choice and reloads but
   not the VMS16b branch (`GSJoeCobbTriggerScript`, `OnStartCombat
   player`).
-- In run 10 Trudy killed Easy Pete (friendly fire during the melee); not
-  investigated, not seen in run 11.
+- In run 10 Trudy killed Easy Pete (friendly fire during the melee); the
+  hit reaction is now traced (fix 4); whether the game's gunfight ends with
+  the town or the gang winning when the player doesn't fight is not
+  compared.
 - The guard packages' intruder scan (`docs/PACKAGES.md`).
 - Save/reload during the fight was not tried.

@@ -308,6 +308,105 @@ original game.
   LOS/360° LOS counter names).
 - Not verified on the CPU with `nv-call` (the functions read actor and
   process objects).
-- Stray hits on bystanders go through the existing "whoever is hurt
-  fights back" rule (`Runner::strike_at`); the game's tolerance of
-  friends' hits (`iFriendHit…` settings) isn't traced.
+- Stray hits on bystanders went through the old "whoever is hurt
+  fights back" rule; replaced by `Actor::AttackedBy` (next section).
+
+## Hits from allies, friends and strays (batch `claude/m2-friendly-fire`)
+
+2026-10-06. Code: `crates/world/src/combat_ai.rs` (`attacked_by`),
+`crates/world/src/factions.rs` (`fights_when_hit`),
+`crates/world/src/crime.rs` (friend-hit record), `Runner::attacked` in
+`crates/world/src/scripting.rs`, `viewer/src/fighting.rs` (new targets).
+Status: **implemented and tested on generated inputs; not compared with
+the original game.**
+
+### What the game does (traced)
+
+- `008987f0` = `Actor::AttackedBy(Actor*, ActiveEffect*)` (Xbox PDB), the
+  victim's reaction to a hit (its callers are the hit handling): returns
+  at once when the victim is dead (vtable +0x22c), a ghost (`008ace90`),
+  hit by itself, or in life state 4 with the attacker as its commanding
+  actor. When the victim has a combat controller (+0x428) and the
+  attacker is already one of its targets (`0097fa10` =
+  `CombatController::IsActoraCombatTarget`, group target list), only the
+  last step runs. Otherwise:
+  - the victim's detection of the attacker is updated (process +0x504 /
+    +0xf0), level 3 when above a threshold;
+  - **the player as attacker**: a Friend (reaction 3) or Ally (2) counts the
+    hit in `ExtraFriendHits` (extra 0x45) when the allowance
+    (`iFriendHitCombatAllowed` 3 / `iFriendHitNonCombatAllowed` 0 /
+    `iAllyHitCombatAllowed` 1000 / `iAllyHitNonCombatAllowed` 3, "combat" =
+    the victim has a controller) is above 0 (disassembly `00898ae7`);
+    1000 or more clears the record first (`00422670` = `RemoveFriendHits
+    Extra`); `00422590` (`AddFriendHit`) → `00435d40`: hits older than
+    `fFriendHitTimer` (10 s, `00435e40` `RemoveOldHits`) are dropped, a hit
+    within `fFriendMinimumLastHitTime` (0.5 s) of the last isn't added;
+    count ≤ allowance → forgiven (a remark, `009839b0`, unless `008a67f0`,
+    `009336c0`, `008a78f0(5)`); else the assault alarm `008c0460`.
+    `SetIgnoreFriendlyHits` (`005a3790`) returns before counting;
+  - an NPC attacker hitting a guard (+0x304 `IsActoraGuard`, Xbox +0x300)
+    with no controller raises the assault alarm with that attacker (not
+    done);
+  - **start of combat**: `008b0670` (`Actor::CanAttackActor`, Xbox PDB):
+    attacker the player → `GetShouldAttackActor(player, attacked)`; victim
+    the player or a teammate (`00566950`, actor +0x18d) → yes; else
+    `008b06d0(attacker, attacked = 1)`. **And** the attacker is the player,
+    or the attacker's combat target (+0x42c) is the victim, or the
+    victim's commanding actor (`008b0ba0`, process +0x52c) is the player
+    and the attacker's target is the player; and the victim isn't the
+    player → process +0x33c `EnterCombat` (Xbox PDB). So a stray shot from
+    someone fighting somebody else never starts a fight.
+  - `SetBeenAttacked(1)` (+0x474); with a controller, `0097f580`
+    (probably `CombatController::DamagedByAttacker`, Xbox PDB, not
+    confirmed): an attacker with a process, not already a target, whom
+    `008b06d0(attacker, attacked = 1)` says to fight → `0097f930`
+    (`CombatController::AddTarget`).
+- `008b06d0` = `Actor::GetShouldAttackActor` (Xbox PDB) with the attacked
+  flag: the victim frenzied (aggression 3) → yes; else yes when the
+  attacker is frenzied or the reaction (`008b87a0`) is neither friend (3)
+  nor ally (2). A teammate attacker is evaluated as the player; a teammate
+  victim uses aggression 1 and the attacker's reaction to the player
+  (`FollowerSwitchAggressive` ≠ 0), never fights a child; perk entry 0x0F
+  last. Faction reaction `008b87a0`/`008b8740`/`0048c1b0` is only `XNAM`:
+  no implicit "same faction" alliance. `GoodspringsPowderGangFaction`
+  (00104C7E) has `XNAM` to itself = 2 (ally), so the Powder Gangers and
+  Joe Cobb are allies of each other.
+
+### Implemented (with tests)
+
+- `combat_ai::attacked_by` and `factions::fights_when_hit` (translated);
+  `Runner::attacked` uses them for hits and explosions between people
+  other than the player: allies and friends tolerate hits, strays start
+  no fights, and someone fighting takes a non-friend who hurts them on as
+  another target (`GameState::hit_targets`, moved into the fighter's
+  `Targets` by the fight frame; never an ally, so allies don't become each
+  other's targets).
+- The player's friend hits: allowance 0 counts nothing, the 10 s window,
+  the 0.5 s minimum gap, the reset above 999; `GetFriendHit` = hits in the
+  window (`world::crime::friend_hit_count`).
+- Tests: `crates/world/tests/friendly_fire.rs` (4, generated fighting
+  world: ally tolerance, stray vs aimed, new target, frenzy);
+  `crates/world/tests/functions.rs`
+  `a_fighting_friend_forgives_three_hits_within_ten_seconds` (and the
+  allowance-0 count changed to 0).
+
+### Gunfight re-run (private outputs `nv-re\work\friendlyfire-2026-10-06`)
+
+Two runs of `docs/GOODSPRINGS_ROUTE.md`'s command with `--wait 330`: no
+Powder Ganger fought another (none took on, turned to or helped against
+a gang member); stray pellets still hurt allies (run 2: 10 hits, one
+fatal). Run 2 reached stage 100 (~197 s); in run 1 the town lost (two
+gangers survived; the automation player doesn't shoot). Details in the
+route file, fix 4. **Not compared** with the original game.
+
+### Not done (labelled in code)
+
+- The player hurt by people and the player's hits past the allowance keep
+  the old "fights back" entry (for the player it is only the in-combat
+  state used by the HUD and level-ups).
+- Detection update on being hit, guards' assault alarm for NPC attackers,
+  `SetBeenAttacked`, the remark (`009839b0`), life state 4, the perk entry
+  point, `008bffc0` (player attacker), `FollowerSwitchAggressive` = 0.
+- "Already a target" is the current target or one queued from hits (the
+  viewer's full `Targets` list isn't visible to the world crate).
+- Commanding actor = the player's teammates.
