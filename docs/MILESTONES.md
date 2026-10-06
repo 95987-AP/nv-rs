@@ -283,6 +283,18 @@ Generated regressions pass; not compared with the original. Evidence:
 **Next action:** record where Sunny stops in the original when the player
 stays behind the saloon.
 
+M2 batch `claude/m2-player-actions` (2026-10-06): the crosshair's Info
+panel from `00579280`/`00775a00` (Sit, Sleep, Take, Open, Talk, Search,
+Pickpocket/Steal, "Door to Goodsprings", lock and Empty lines, weight and
+value), pickups' "added" message and sound, the Sneak toggle with the
+lower eye and the sneak meter, iron sights (Aim control, FOV, `IS`
+animations, true iron sights), mouse look with the right button free,
+Always Run and Auto Move. Seen live in the viewer (couch sit/stand,
+stimpak pickup, Sunny talk/pickpocket, [HIDDEN], varmint rifle sights);
+not compared with the original. Evidence and gaps (scopes, sway,
+hotkeys): [PLAYER_ACTIONS.md](PLAYER_ACTIONS.md). **Next action:**
+compare those screens in the original game.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

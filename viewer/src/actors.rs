@@ -210,8 +210,24 @@ impl ActorRig {
         let own = animation::movement_group(flags, unscaled)
             .and_then(|g| self.moves.iter().find(|(id, _)| *id == g).cloned());
         if let Some((g, seq)) = own {
+            // The Forward (FastForward) group of the same set when it has
+            // its own file (the player's sneaking groups), else the walk's.
+            let set = if flags.running {
+                group::FAST_FORWARD
+            } else {
+                group::FORWARD
+            };
+            let own_forward = self
+                .moves
+                .iter()
+                .find(|(id, _)| *id == set)
+                .map(|(_, s)| s.clone());
             let forward = if flags.running { &sk.run } else { &sk.walk };
-            let forward = forward.as_ref().or(sk.walk.as_ref()).unwrap_or(&seq);
+            let forward = own_forward
+                .as_ref()
+                .or(forward.as_ref())
+                .or(sk.walk.as_ref())
+                .unwrap_or(&seq);
             self.player.movement_rate =
                 animation::movement_rate(unscaled, GroupData::read(forward).speed());
             self.player.play(g, &seq, -1, bones);

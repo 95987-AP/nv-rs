@@ -58,25 +58,6 @@ const SHADER: Handle<Shader> = weak_handle!("3c8e51d2-7a4f-4b19-9e06-5d2b8f17a6c
 /// The render layer only the HUD's camera sees.
 const HUD_LAYER: usize = 23;
 
-/// Ordinary action classes (`00579280`, `00f80050`). Ownership is applied
-/// separately, using the same crime rules as activation (`00579690`).
-fn supported_activation(
-    order: &esm::LoadOrder,
-    reference: esm::FormId,
-) -> Option<(esm::FormId, &'static str, &'static str)> {
-    let base = world::scripting::base_of(order, reference)?;
-    let rr = order.get(base)?;
-    let (setting, default) = match rr.entry.header.kind {
-        kind if kind == esm::FourCC::new(b"ACTI") => ("sTargetTypeActivate", "Activate"),
-        kind if kind == esm::FourCC::new(b"CONT") => ("sTargetTypeOpen", "Open"),
-        kind if kind == esm::FourCC::new(b"BOOK") => ("sTargetTypeRead", "Read"),
-        kind if world::scripting::is_item(kind) => ("sTargetTypeTake", "Take"),
-        // Furniture Sit/Sleep and terminal state branches remain unported.
-        _ => return None,
-    };
-    Some((base, setting, default))
-}
-
 /// The HUD's picture, which the image space pass lays over the scene.
 #[derive(Resource, Clone, ExtractResource)]
 pub struct HudLayer(pub Handle<Image>);
@@ -92,6 +73,8 @@ pub struct ShowHud(pub bool);
 pub struct HudMessages {
     pub on: bool,
     pub queue: Vec<String>,
+    /// Messages with their own icon (text, icon path).
+    pub with_icon: Vec<(String, String)>,
 }
 
 pub struct HudPlugin;
@@ -461,12 +444,19 @@ pub struct HudState<'w, 's> {
     cameras: Query<'w, 's, &'static Transform, With<FlyCamera>>,
     /// The game's menus open, drawn over the HUD (`game_menus`).
     game_menus: Res<'w, crate::game_menus::MenuDraw>,
+    /// The sights' node kept (`viewmodel::SightingNode`): no crosshair.
+    sighting: Res<'w, crate::viewmodel::SightingNode>,
+    /// The player sneaking (`walk::Player`), and the people who may
+    /// detect them (`ai::Walker::detected_player`), for the sneak meter.
+    player: Res<'w, crate::walk::Player>,
+    walkers: Query<'w, 's, &'static crate::ai::Walker>,
 }
 
 impl HudState<'_, '_> {
-    /// The native rollover prompt, matching the viewer's E dispatch order:
-    /// person, load/swing door, then a supported activatable. The Activatable text
-    /// resource is deliberately ignored; its name is built from the base record.
+    /// The reference under the crosshair, in the viewer's E dispatch order
+    /// (a person, a load door, a door that swings, an object), and what
+    /// the Info panel says about it (`world::activation::info`, the game's
+    /// `00775a00`).
     fn info_prompt(&self) -> Option<ui::hud::InfoPrompt> {
         if self.conversation.0.is_some()
             || self.menus.is_open()
@@ -481,61 +471,88 @@ impl HudState<'_, '_> {
         let eye = crate::walk::game_point(camera.translation);
         let f = camera.forward().as_vec3();
         let direction = [f.x, -f.z, f.y];
-        let choice = if let Some((talker, _)) = &self.talk_target.0 {
-            Some((talker.base, "sTargetTypeTalk", "Talk", false))
+        let reference = if let Some((talker, _)) = &self.talk_target.0 {
+            talker.reference
         } else if let Some(door) =
             crate::walk::door_in_view(&self.doors.0, &self.collision.0, eye, direction)
         {
-            Some((
-                esm::FormId(door.reference),
-                "sTargetTypeOpenDoor",
-                "Open",
-                true,
-            ))
+            esm::FormId(door.reference)
         } else if let Some(reference) =
             crate::walk::opening_door_in_view(&self.collision.0, eye, direction)
         {
-            Some((reference, "sTargetTypeOpen", "Open", true))
+            reference
         } else {
-            self.activatable.0.as_ref().and_then(|(reference, _)| {
-                let (base, setting, default) = supported_activation(order, *reference)?;
-                Some((base, setting, default, false))
-            })
-        }?;
-        let (base, setting, exe_default, resolve_target_base) = choice;
-        let base = if resolve_target_base {
-            world::scripting::base_of(order, base)?
-        } else {
-            base
+            self.activatable.0.as_ref()?.0
         };
-        let target = order.get(base)?.record().ok()?.full_name()?;
-        let crime = self.activatable.0.as_ref().is_some_and(|(reference, _)| {
-            world::scripting::base_of(order, *reference) == Some(base)
-                && order.get(base).is_some_and(|r| {
-                    world::scripting::is_item(r.entry.header.kind)
-                        || r.entry.header.kind == esm::FourCC::new(b"CONT")
-                })
-                && !world::crime::may_take(
-                    order,
-                    &self.state.0,
-                    world::crime::owner_of(order, &self.state.0, *reference),
-                )
-        });
-        let (setting, exe_default) = if crime {
-            ("sSteal", "Steal")
-        } else {
-            (setting, exe_default)
-        };
-        let action = world::scripting::game_setting_text(order, setting)
-            .unwrap_or_else(|| exe_default.to_string());
+        let info = world::activation::info(order, &self.state.0, reference)?;
         Some(ui::hud::InfoPrompt {
-            action,
-            target,
-            // The current viewer action handler is KeyE; display that same
-            // input until key rebinding is implemented end to end.
+            action: info.action,
+            target: info.target,
+            // The Activate control's key (control 5, `00877720(5, 0)`'s
+            // name, then ")"); the viewer's binding is E.
             shortcut: Some("E".to_string()),
-            crime,
+            crime: info.crime,
+            lock: info.lock,
+            empty: info.empty,
+            weight_value: info
+                .weight_value
+                .map(|w| [w.weight, w.weight_label, w.value, w.value_label]),
         })
+    }
+    /// What the sneak meter says while the player sneaks (`007732d0`):
+    /// in combat when someone fights the player (`009444d0` counting them
+    /// through `009931c0`), all of them searching when none has seen the
+    /// player for over `fCombatDetectionLostTime`; the highest detection
+    /// level of the people about (`00973710`: each one's detection of the
+    /// player, kept −100 … 100, 100 for one fighting the player); and the
+    /// hostile detection flag (player +0x5f8, set there when a hostile one
+    /// detects the player: `008b06d0`'s hostility test isn't followed;
+    /// whether they would attack on sight stands for it). `None` when not
+    /// sneaking.
+    fn sneak_meter(&self) -> Option<ui::hud::SneakMeterState> {
+        if !self.player.sneaking || !self.player.walking {
+            return None;
+        }
+        let order = &self.game.0.order;
+        let state = &self.state.0;
+        let now = self.time.elapsed_secs();
+        let lost =
+            world::scripting::game_setting(order, "fCombatDetectionLostTime").unwrap_or(15.0);
+        let mut fighters = 0;
+        let mut searching = 0;
+        let mut level = i32::MIN;
+        let mut hostile = false;
+        for w in self.walkers.iter() {
+            if state.dead.contains(&w.reference) {
+                continue;
+            }
+            let fight = w.fight.as_ref().filter(|f| f.memory.target == PLAYER_REF);
+            let detected = if let Some(f) = fight {
+                fighters += 1;
+                if f.memory.unseen_for(now) > lost {
+                    searching += 1;
+                }
+                100
+            } else if w.detected_player == i32::MIN {
+                continue;
+            } else {
+                w.detected_player.clamp(-100, 100)
+            };
+            if detected > 0
+                && world::factions::attacks_on_sight(order, state, w.reference, PLAYER_REF)
+            {
+                hostile = true;
+            }
+            level = level.max(detected);
+        }
+        let level = if level == i32::MIN { 0 } else { level };
+        let in_combat = fighters > 0;
+        Some(ui::hud::SneakMeterState::of(
+            in_combat,
+            in_combat && searching == fighters,
+            hostile,
+            level,
+        ))
     }
 
     /// The HUD's input this frame (`opacity`: `fHudOpacity`).
@@ -641,7 +658,9 @@ impl HudState<'_, '_> {
                 .map(|&position| ui::compass::CompassQuest { position })
                 .collect(),
             opacity,
-            crosshair: !dead,
+            // Hidden with the sights' node kept (`00771700` clears the
+            // reticle's bit when player +0xe34 is set in first person).
+            crosshair: !dead && !self.sighting.0,
             subtitle: None,
             experience: Some(experience),
             menu_open: self.menu_hides_xp(),
@@ -866,11 +885,17 @@ fn update_hud(
                 .queue_message(&mut b.ui, &text, None, ui::hud::MESSAGE_SECONDS);
         }
     }
+    for (text, icon) in messages.with_icon.drain(..) {
+        b.hud
+            .queue_message(&mut b.ui, &text, Some(&icon), ui::hud::MESSAGE_SECONDS);
+    }
     let input = from.input(b.opacity);
     // Restore each prior mask before this frame writes tile visibility, then
     // save the fresh state under the mask selected below.
     b.hud.lift_mask(&mut b.ui, &mut b.masked);
     b.hud.update(&mut b.ui, &input);
+    b.hud
+        .update_sneak(&mut b.ui, from.sneak_meter(), b.opacity, input.time);
     let info = from.info_prompt();
     b.hud.update_info(&mut b.ui, info.as_ref(), b.opacity);
     // V.A.T.S. on, or one of the game's menus open: the HUD shows only what
@@ -1066,46 +1091,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn info_activation_resolves_reference_to_acti_base_name() {
+    fn info_activation_names_the_base_and_its_action() {
         use esm::{ActivePlugins, LoadOrder};
-        use testdata::functions::ids::{CHEST_REF, CUP_REF, HOUSE, VIGOR_TESTER_REF};
+        use testdata::functions::ids::{CHEST_REF, CUP_REF, VIGOR_TESTER_REF};
 
         let data = testdata::functions::functions("hud-info-activation");
         let order = LoadOrder::from_data_dir(data.path(), &ActivePlugins::OfficialOnly).unwrap();
-        let reference = esm::FormId(VIGOR_TESTER_REF);
-        let base = world::scripting::base_of(&order, reference).unwrap();
-        assert_ne!(base, reference);
-        assert_eq!(
-            order.get(base).unwrap().entry.header.kind,
-            esm::FourCC::new(b"ACTI")
-        );
-        assert_eq!(
-            supported_activation(&order, reference),
-            Some((base, "sTargetTypeActivate", "Activate"))
-        );
-        let target = order
-            .get(base)
-            .unwrap()
-            .record()
-            .unwrap()
-            .full_name()
-            .unwrap();
-        assert_eq!(target, "Vit-o-matic Vigor Tester");
-        assert!(order.get(esm::FormId(HOUSE)).is_some());
-        assert_eq!(
-            supported_activation(&order, esm::FormId(CUP_REF))
-                .unwrap()
-                .1,
-            "sTargetTypeTake"
-        );
-        assert_eq!(
-            supported_activation(&order, esm::FormId(CHEST_REF))
-                .unwrap()
-                .1,
-            "sTargetTypeOpen"
-        );
+        let state = world::scripting::GameState::new(&order);
+        let info = |r: u32| world::activation::info(&order, &state, esm::FormId(r)).unwrap();
+        let tester = info(VIGOR_TESTER_REF);
+        assert_eq!(tester.action.as_deref(), Some("Activate"));
+        assert_eq!(tester.target, "Vit-o-matic Vigor Tester");
+        // The cup is someone else's: "Steal", in the crime colour.
+        let cup = info(CUP_REF);
+        assert_eq!(cup.action.as_deref(), Some("Steal"));
+        assert!(cup.crime);
+        assert_eq!(info(CHEST_REF).action.as_deref(), Some("Open"));
     }
-
     #[test]
     fn quads_land_on_the_games_pixels() {
         // The HP meter at 60, 844 units, 296 x 20, on a 1920 x 1080 screen

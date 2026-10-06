@@ -237,6 +237,116 @@ pub struct ViewModel {
     reload: Option<nif::Sequence>,
     equip: Option<nif::Sequence>,
     unequip: Option<nif::Sequence>,
+    /// The iron-sights variants of the hold pose and the attack
+    /// (`world::iron_sights::first_person_is`: `<kind>aimis.kf`,
+    /// `<kind>attack…is.kf`), and how far the view has gone over to them
+    /// (0 to 1, over `fAnimationDefaultBlend`).
+    aim_is: Option<nif::Sequence>,
+    attack_is: Option<nif::Sequence>,
+    is_blend: f32,
+    /// The weapon model's `##SightingNode`, where it sits in the model
+    /// (`008bb650` looks for it with `bTrueIronSights`; the HUD hides the
+    /// crosshair while it is kept, [`SightingNode`], and the first-person
+    /// camera sits at it, `00874c10`), and the skeleton's `Weapon` bone.
+    sighting_node: Option<nif::Transform>,
+    weapon_bone: Option<usize>,
+}
+
+/// The weapon's sighting node kept while looking down the sights in first
+/// person (`PlayerCharacter` +0xe34, `m_pWeaponSightingNode` (Xbox PDB),
+/// set by `008bbbf0` from `008bb650` when `bTrueIronSights:GamePlay` is
+/// on): the HUD hides the crosshair then (`00771700`).
+#[derive(Resource, Default)]
+pub struct SightingNode(pub bool);
+
+/// The player's fields of view as `0095de30` eases them for the sights
+/// (`world::iron_sights::step_fov`): the world's (the main camera's in
+/// first person, `player_camera::place_view`) and the first-person
+/// pass's.
+#[derive(Resource)]
+pub struct IronSightsFov {
+    pub fov: world::iron_sights::Fov,
+    settings: Option<world::iron_sights::FovSettings>,
+}
+
+impl Default for IronSightsFov {
+    fn default() -> Self {
+        IronSightsFov {
+            fov: world::iron_sights::Fov {
+                world: cellview::GAME_FOV_DEGREES,
+                first_person: FIRST_PERSON_FOV_DEGREES,
+            },
+            settings: None,
+        }
+    }
+}
+
+/// The easing's settings: the viewer's world and first-person fields of
+/// view (`fDefaultWorldFOV`, `fDefault1stPersonFOV`), `[Combat]
+/// fIronSightsZoomDefault` and `bIronSightsZoomEnable` from the INI files,
+/// `fIronSightsFOVTimeChange` from the game settings.
+fn fov_settings(game: &cellview::Game) -> world::iron_sights::FovSettings {
+    let base = world::iron_sights::FovSettings::default();
+    world::iron_sights::FovSettings {
+        world: cellview::GAME_FOV_DEGREES,
+        first_person: FIRST_PERSON_FOV_DEGREES,
+        zoom_default: game
+            .settings
+            .float("Combat", "fIronSightsZoomDefault")
+            .unwrap_or(base.zoom_default),
+        time_change: world::scripting::game_setting(&game.order, "fIronSightsFOVTimeChange")
+            .filter(|t| *t > 0.0)
+            .unwrap_or(base.time_change),
+        enabled: game
+            .settings
+            .get("Combat", "bIronSightsZoomEnable")
+            .map_or(base.enabled, |v| v.trim() != "0"),
+    }
+}
+
+/// Where a model's node of that name sits in the model: its parents'
+/// transforms over its own, the top node's left out (the model is hung on
+/// a bone, which takes the top node's place).
+fn node_in_model(game: &cellview::Game, model: &str, name: &str) -> Option<nif::Transform> {
+    let bytes = game.assets.read(&assets::mesh_path(model)).ok()??;
+    let bones = nif::Nif::parse(bytes).ok()?.skeleton().ok()?;
+    let i = bones
+        .iter()
+        .position(|b| b.name.eq_ignore_ascii_case(name))?;
+    let mut t = bones[i].local;
+    let mut parent = bones[i].parent;
+    while let Some(j) = parent {
+        if bones[j].parent.is_none() {
+            break;
+        }
+        t = bones[j].local.then_child(&t);
+        parent = bones[j].parent;
+    }
+    Some(t)
+}
+
+/// One bone's two poses mixed, `w` of the way from `a` to `b`
+/// (translation and scale straight, rotation along the arc). The game
+/// blends its sequences' local transforms; these are the bones' model
+/// space ones, which is this viewer's simplification.
+fn mix(a: &nif::Transform, b: &nif::Transform, w: f32) -> nif::Transform {
+    let quat = |r: &[[f32; 3]; 3]| {
+        Quat::from_mat3(&Mat3::from_cols(
+            Vec3::new(r[0][0], r[1][0], r[2][0]),
+            Vec3::new(r[0][1], r[1][1], r[2][1]),
+            Vec3::new(r[0][2], r[1][2], r[2][2]),
+        ))
+        .normalize()
+    };
+    let m = Mat3::from_quat(quat(&a.rotation).slerp(quat(&b.rotation), w));
+    let rotation = [0, 1, 2].map(|i| [m.x_axis[i], m.y_axis[i], m.z_axis[i]]);
+    let ta = Vec3::from(a.translation);
+    let tb = Vec3::from(b.translation);
+    nif::Transform {
+        rotation,
+        translation: ta.lerp(tb, w).to_array(),
+        scale: a.scale + (b.scale - a.scale) * w,
+    }
 }
 
 /// An animation file's first sequence, if the game has the file.
@@ -290,6 +400,11 @@ pub fn update_view_model(
     mut first_person_projection: Query<&mut Projection, With<FirstPersonCamera>>,
     mut transforms: Query<&mut Transform, (Without<FlyCamera>, Without<FirstPersonCamera>)>,
     mut visibility: Query<&mut Visibility>,
+    (mut iron, mut sighting, anim): (
+        ResMut<IronSightsFov>,
+        ResMut<SightingNode>,
+        Option<Res<crate::actors::AnimSettings>>,
+    ),
 ) {
     let order = &game.0.order;
     let state = &state.0;
@@ -341,6 +456,9 @@ pub fn update_view_model(
                 .zstring();
             Some((model, w.animation))
         });
+        view.sighting_node = held
+            .as_ref()
+            .and_then(|(model, _)| node_in_model(&game.0, model, "##SightingNode"));
         let Some(look) = world::actor::first_person_look(order, female, &worn, held) else {
             return;
         };
@@ -362,6 +480,7 @@ pub fn update_view_model(
         let (Some(looking), Some(camera_bone)) = (find("Bip01 Looking"), find("Camera1st")) else {
             return;
         };
+        view.weapon_bone = find("Weapon");
         let turned = (0..skeleton.bones.len())
             .filter(|&i| {
                 let mut b = Some(i);
@@ -397,7 +516,42 @@ pub fn update_view_model(
         });
         view.equip = sequence(&game.0, &world::actor::first_person_ready(animation, true));
         view.unequip = sequence(&game.0, &world::actor::first_person_ready(animation, false));
+        // Looking down the sights: the weapon groups' `IS` variants.
+        let is = world::iron_sights::first_person_is;
+        view.aim_is = sequence(&game.0, &is(&world::actor::first_person_pose(animation)));
+        view.attack_is = sequence(&game.0, &is(&attack_file));
     }
+    // The sights' field of view, eased every frame (`0095de30`).
+    let dt = time.delta_secs();
+    let settings = *iron.settings.get_or_insert_with(|| fov_settings(&game.0));
+    let sight = weapon
+        .as_ref()
+        .filter(|_| attack.out)
+        .and_then(|w| world::iron_sights::sight_fov(order, w.form_id));
+    let mut fov = iron.fov;
+    world::iron_sights::step_fov(&mut fov, &settings, attack.iron_sights, sight, false, dt);
+    iron.fov = fov;
+    // `bTrueIronSights:GamePlay` (on unless the INI turns it off).
+    let true_iron_sights = game
+        .0
+        .settings
+        .get("GamePlay", "bTrueIronSights")
+        .is_none_or(|v| v.trim() != "0");
+    let kept = attack.iron_sights
+        && true_iron_sights
+        && view.sighting_node.is_some()
+        && !third_person.camera.actually_third;
+    if sighting.0 != kept {
+        sighting.0 = kept;
+    }
+    // Over to the sights' poses, or back, over the default blend.
+    let blend = anim.map_or(0.2, |a| a.0.default_blend).max(1e-3);
+    let target = if attack.iron_sights { 1.0 } else { 0.0 };
+    view.is_blend = if view.is_blend < target {
+        (view.is_blend + dt / blend).min(target)
+    } else {
+        (view.is_blend - dt / blend).max(target)
+    };
     let (Some(holder), Some(root), Some(skeleton)) =
         (view.holder, view.root, view.skeleton.clone())
     else {
@@ -450,7 +604,7 @@ pub fn update_view_model(
     }
     // V.A.T.S.'s menu zooms the first-person view too (`0095de30`): the
     // first-person camera's own field of view.
-    let fov = cellview::vertical_fov(vats.first_person_fov.unwrap_or(FIRST_PERSON_FOV_DEGREES));
+    let fov = cellview::vertical_fov(vats.first_person_fov.unwrap_or(iron.fov.first_person));
     if let Ok(mut projection) = first_person_projection.single_mut() {
         if let Projection::Perspective(p) = projection.as_mut() {
             if p.fov != fov {
@@ -465,23 +619,37 @@ pub fn update_view_model(
     let dir = [f.x, -f.z, f.y];
     let heading = dir[0].atan2(dir[1]);
     let pitch = dir[2].clamp(-1.0, 1.0).asin();
+    let looping = |s: &nif::Sequence| {
+        let span = (s.stop - s.start).max(1e-3);
+        s.start + now.rem_euclid(span)
+    };
     let mut layers: Vec<(&nif::Sequence, f32)> = Vec::new();
     if let Some(s) = skeleton.idle.as_deref() {
-        let span = (s.stop - s.start).max(1e-3);
-        layers.push((s, s.start + now.rem_euclid(span)));
+        layers.push((s, looping(s)));
     }
     let reloading = playing(
         view.reload.as_ref(),
         faster(attack.reload_started, attack.reload_rate),
         now,
     );
-    let firing = playing(
-        view.attack.as_ref(),
-        faster(attack.fired_at, attack.attack_rate),
-        now,
-    );
+    let fired = faster(attack.fired_at, attack.attack_rate);
+    let firing = playing(view.attack.as_ref(), fired, now);
     layers.extend(readying.or(reloading).or(firing));
     let mut pose = nif::posed_layers(&skeleton.bones, &layers);
+    // Down the sights: the `IS` hold pose and attack (the reload and the
+    // drawing have none), mixed in as far as the blend has gone.
+    if view.is_blend > 0.0 {
+        if let Some(aim_is) = view.aim_is.as_ref() {
+            let mut sights: Vec<(&nif::Sequence, f32)> = vec![(aim_is, looping(aim_is))];
+            let firing_is = playing(view.attack_is.as_ref(), fired, now)
+                .or_else(|| playing(view.attack.as_ref(), fired, now));
+            sights.extend(readying.or(reloading).or(firing_is));
+            let posed = nif::posed_layers(&skeleton.bones, &sights);
+            for (bone, is) in pose.iter_mut().zip(&posed) {
+                *bone = mix(bone, is, view.is_blend);
+            }
+        }
+    }
     let pivot = pose[view.looking].translation;
     let (s, c) = pitch.sin_cos();
     let rotation = [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]];
@@ -520,6 +688,22 @@ pub fn update_view_model(
     let local = camera_transform.compute_matrix().inverse() * world_root;
     if let Ok(mut t) = transforms.get_mut(root) {
         *t = Transform::from_matrix(local);
+    }
+    // True iron sights: the first-person camera at the weapon's sighting
+    // node (`00874c10` sets the camera's translation from player +0xe34's
+    // world position while it's kept): the view moves so the node is at
+    // its origin.
+    let at_sights = match (sighting.0, view.sighting_node, view.weapon_bone) {
+        (true, Some(node), Some(bone)) => {
+            let node = pose[bone].then_child(&node).translation;
+            -local.transform_point3(Vec3::from(node))
+        }
+        _ => Vec3::ZERO,
+    };
+    if let Ok(mut t) = transforms.get_mut(holder) {
+        if t.translation != at_sights {
+            t.translation = at_sights;
+        }
     }
 }
 

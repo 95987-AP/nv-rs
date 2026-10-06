@@ -252,6 +252,7 @@ pub fn place_view(
     collision: Res<crate::walk::CellCollision>,
     mut view: ResMut<PlayerView>,
     mut cameras: Query<(&mut Transform, &FlyCamera, &mut Projection)>,
+    iron: Option<Res<crate::viewmodel::IronSightsFov>>,
 ) {
     let Ok((mut transform, fly, mut projection)) = cameras.single_mut() else {
         return;
@@ -291,7 +292,9 @@ pub fn place_view(
             *transform = Transform::from_translation(at).looking_at(target, Vec3::Y);
             fov.unwrap_or(world_fov)
         }
-        View::FirstPerson => world_fov,
+        // First person: the world's field of view as the sights ease it
+        // (`viewmodel::IronSightsFov`, `0095de30`).
+        View::FirstPerson => iron.map_or(world_fov, |i| i.fov.world),
     };
     // V.A.T.S. has its own field of view while it's on.
     if vats.is_on() {

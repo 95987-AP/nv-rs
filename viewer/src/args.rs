@@ -93,15 +93,19 @@ OPTIONS:
                             pixel (screenshots have no mouse)
 
 CONTROLS:
-    right mouse button + move      look around (flying: either button)
+    mouse                          look around (walking; flying: hold
+                                   a button)
     left mouse button              attack (walking)
+    right mouse button, Left Alt   aim down the sights (held)
     V                              V.A.T.S.: Left/Right target, Up/Down
                                    part, Enter or E queue an attack, X a
                                    special one, Backspace undo, Space or
                                    R play the queue, V/Esc/Tab leave
     W A S D                        move
     F                              walk (with collision) / fly
-    walking:  Shift walk slowly, Ctrl or C sneak, Space jump, R reload
+    walking:  Shift walk slowly, Ctrl sneak on/off, Caps Lock always
+              run on/off, Q auto move, Space jump, R reload (held:
+              put the weapon away or draw it)
     flying:   Space / Ctrl (or Q) up, down; Shift faster; mouse
               wheel changes speed
     E                              go through the load door in view,
