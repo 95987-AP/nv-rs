@@ -15,8 +15,10 @@
 //! (guesses, marked where they're used): gravity (real gravity, as for
 //! walking), how Havok measures the limits' angles (checked only in that the
 //! skeleton's own pose falls inside every limit), no bouncing (the bodies'
-//! restitution isn't combined with the world's), and the bodies not
-//! colliding with each other.
+//! restitution isn't combined with the world's). A ragdoll's own bodies
+//! meet as the game's collision filter has them: one system group, so the
+//! part table decides ([`parts_meet`], `00c84740`); they're pushed apart
+//! without friction (this solver's).
 
 use crate::vec::*;
 use crate::{segment_triangle_closest, Collider, Vec3};
@@ -45,6 +47,25 @@ pub struct BodySetup {
     pub angular_damping: f32,
     pub max_linear_speed: f32,
     pub max_angular_speed: f32,
+    /// Its Havok layer and body part number (the filter word's low byte
+    /// and bits 8–12): which other bodies of the same ragdoll it meets
+    /// ([`crate::layers::Filter::collides`]).
+    pub layer: u8,
+    pub part: u8,
+}
+
+/// Whether two bodies of one ragdoll meet: one ragdoll's bodies share a
+/// system group, so the collision filter (`00c84740`) takes the part
+/// table for them when both are on the biped or dead-biped layer
+/// (`00624070`: layer 8 or 29); the order it's asked in isn't known, so
+/// either way round counts.
+pub fn parts_meet(a: &BodySetup, b: &BodySetup) -> bool {
+    let f = crate::layers::Filter::shared();
+    // Any non-zero system group, the same for both.
+    let word = |s: &BodySetup| u32::from(s.layer & 0x7f) | u32::from(s.part & 0x1f) << 8 | 1 << 16;
+    let linked = |s: &BodySetup| matches!(s.layer, 8 | 29);
+    let both = linked(a) && linked(b);
+    f.collides(word(a), word(b), both) || f.collides(word(b), word(a), both)
 }
 
 /// How far a joint lets its bodies turn: each vector in its own body's
@@ -112,6 +133,8 @@ struct Contact {
 pub struct Ragdoll {
     pub bodies: Vec<BodySetup>,
     pub joints: Vec<JointSetup>,
+    /// Pairs of its own bodies that meet ([`parts_meet`]).
+    pairs: Vec<(usize, usize)>,
     state: Vec<State>,
     /// Time not yet stepped.
     pending: f32,
@@ -140,9 +163,19 @@ impl Ragdoll {
                 w: [0.0; 3],
             })
             .collect();
+        let mut pairs = Vec::new();
+        for i in 0..bodies.len() {
+            for j in i + 1..bodies.len() {
+                let (a, b) = (&bodies[i], &bodies[j]);
+                if a.capsule.is_some() && b.capsule.is_some() && parts_meet(a, b) {
+                    pairs.push((i, j));
+                }
+            }
+        }
         Ragdoll {
             bodies,
             joints,
+            pairs,
             state,
             pending: 0.0,
             still: 0.0,
@@ -298,6 +331,10 @@ impl Ragdoll {
         }
         for j in 0..self.joints.len() {
             self.solve_joint(j);
+        }
+        for k in 0..self.pairs.len() {
+            let (a, b) = self.pairs[k];
+            self.solve_pair(a, b);
         }
         let mut contacts = Vec::new();
         for (i, tris) in nearby.iter().enumerate() {
@@ -517,6 +554,41 @@ impl Ragdoll {
         }
     }
 
+    /// Pushes two of the ragdoll's own capsules apart where they overlap
+    /// (bodies whose parts meet, [`parts_meet`]); shared by how readily
+    /// each gives there (this solver's, as for the joints).
+    fn solve_pair(&mut self, a: usize, b: usize) {
+        let (Some((a0, a1, ra)), Some((b0, b1, rb))) =
+            (self.bodies[a].capsule, self.bodies[b].capsule)
+        else {
+            return;
+        };
+        let ends = |me: &Self, body: usize, p: Vec3, q: Vec3| {
+            let (r, origin) = me.frame(body);
+            (add(origin, mat_vec(&r, p)), add(origin, mat_vec(&r, q)))
+        };
+        let (pa, qa) = ends(self, a, a0, a1);
+        let (pb, qb) = ends(self, b, b0, b1);
+        let (on_a, on_b) = segments_closest(pa, qa, pb, qb);
+        let gap = sub(on_b, on_a);
+        let d = length(gap);
+        let depth = ra + rb - d;
+        if depth <= 0.0 || d < 1e-6 {
+            return;
+        }
+        let n = scale(gap, 1.0 / d);
+        // The touching points, from each centre.
+        let arm_a = sub(add(on_a, scale(n, ra)), self.state[a].x);
+        let arm_b = sub(sub(on_b, scale(n, rb)), self.state[b].x);
+        let w = self.inverse_mass_at(a, arm_a, n) + self.inverse_mass_at(b, arm_b, n);
+        if w <= 0.0 {
+            return;
+        }
+        let p = scale(n, depth / w);
+        self.shift(a, scale(p, -1.0), arm_a);
+        self.shift(b, p, arm_b);
+    }
+
     /// Pushes a body's capsule out of the triangles it overlaps.
     fn solve_contacts(
         &mut self,
@@ -599,6 +671,47 @@ pub fn joint_angles(limit: &Limit, r1: &Mat3, r2: &Mat3) -> JointAngles {
         }
         Limit::Free => JointAngles::Free,
     }
+}
+
+/// The closest points of two segments (`p1`–`q1`, `p2`–`q2`): on the
+/// first, then on the second (Ericson, "Real-Time Collision Detection",
+/// 5.1.9).
+fn segments_closest(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (Vec3, Vec3) {
+    let d1 = sub(q1, p1);
+    let d2 = sub(q2, p2);
+    let r = sub(p1, p2);
+    let a = dot(d1, d1);
+    let e = dot(d2, d2);
+    let f = dot(d2, r);
+    let eps = 1e-9;
+    let (s, t) = if a <= eps && e <= eps {
+        (0.0, 0.0)
+    } else if a <= eps {
+        (0.0, (f / e).clamp(0.0, 1.0))
+    } else {
+        let c = dot(d1, r);
+        if e <= eps {
+            ((-c / a).clamp(0.0, 1.0), 0.0)
+        } else {
+            let b = dot(d1, d2);
+            let denom = a * e - b * b;
+            let mut s = if denom > eps {
+                ((b * f - c * e) / denom).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let mut t = (b * s + f) / e;
+            if t < 0.0 {
+                t = 0.0;
+                s = (-c / a).clamp(0.0, 1.0);
+            } else if t > 1.0 {
+                t = 1.0;
+                s = ((b - c) / a).clamp(0.0, 1.0);
+            }
+            (s, t)
+        }
+    };
+    (add(p1, scale(d1, s)), add(p2, scale(d2, t)))
 }
 
 fn angle_between(a: Vec3, b: Vec3) -> f32 {
@@ -772,6 +885,8 @@ mod tests {
             angular_damping: 0.05,
             max_linear_speed: 7000.0,
             max_angular_speed: 30.0,
+            layer: 8,
+            part: 0,
         }
     }
 
@@ -800,6 +915,55 @@ mod tests {
         // Lying on its side: its axis the radius above the floor.
         assert!((origin[2] - 3.0).abs() < 0.5, "{origin:?}");
         assert!(r.asleep);
+    }
+
+    #[test]
+    fn own_bodies_meet_only_as_the_part_table_says() {
+        // Two rods crossing at the same spot, held up (no mass for the
+        // first). A head (part 1) and a left forearm (6) meet in the
+        // game's table (`01268078` row 1 has bit 6); a head and the body
+        // (2) don't.
+        let crossing = |part_a: u8, part_b: u8| {
+            let mut a = rod(0.0);
+            a.part = part_a;
+            let mut b = rod(4.0);
+            b.part = part_b;
+            let mut r = Ragdoll::new(
+                vec![a, b],
+                Vec::new(),
+                &[(I3, [0.0, 0.0, 500.0]), (I3, [0.0, 0.0, 502.0])],
+            );
+            r.step(&Collider::new());
+            let (_, low) = r.frame(0);
+            let (_, high) = r.frame(1);
+            high[2] - low[2]
+        };
+        assert!(parts_meet(
+            &BodySetup {
+                part: 1,
+                ..rod(1.0)
+            },
+            &BodySetup {
+                part: 6,
+                ..rod(1.0)
+            }
+        ));
+        assert!(!parts_meet(
+            &BodySetup {
+                part: 1,
+                ..rod(1.0)
+            },
+            &BodySetup {
+                part: 2,
+                ..rod(1.0)
+            }
+        ));
+        // Meeting: pushed apart to the two radii (6), less a step's fall.
+        let apart = crossing(1, 6);
+        assert!(apart > 5.0, "{apart}");
+        // Not meeting: the second falls through the first.
+        let through = crossing(1, 2);
+        assert!(through < 2.0, "{through}");
     }
 
     #[test]

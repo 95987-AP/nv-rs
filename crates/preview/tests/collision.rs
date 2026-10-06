@@ -190,6 +190,7 @@ fn doors_that_open_own_their_leaves_and_swing_them() {
         skeleton: None,
         sequences,
         particles: None,
+        bsx_flags: 0,
     };
     let closed = placement(0x904, 0x830, b"DOOR", [0.0, 0.0, 0.0], 0.0);
     let mut open = placement(0x905, 0x830, b"DOOR", [0.0, 300.0, 0.0], 0.0);
@@ -276,6 +277,7 @@ fn a_placed_scale_scales_the_collision() {
         skeleton: None,
         sequences: Default::default(),
         particles: None,
+        bsx_flags: 0,
     };
     let mut crate_ = placement(0x908, 0x803, b"STAT", [0.0, 0.0, 0.0], 0.0);
     crate_.scale = 2.0;
@@ -319,6 +321,7 @@ fn moving_clutter_is_a_body_and_left_out_of_the_collider() {
         skeleton: None,
         sequences: Default::default(),
         particles: None,
+        bsx_flags: 0,
     };
     let bottle = model(vec![part(10, true, body(4, 1.0, 4, 0.5), [2.0, 2.0, 10.0])]);
     let shelf = model(vec![part(

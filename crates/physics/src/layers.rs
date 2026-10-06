@@ -261,8 +261,8 @@ impl Filter {
     }
 
     /// Whether two filter words collide (`a` first: a ray's word, or the
-    /// first body's). `same_ragdoll_parts` stands for `00624070` on both
-    /// words (not traced; read as "both are ragdoll parts that may touch").
+    /// first body's). `linked_parts` stands for `00624070` on both words:
+    /// each body's layer is the biped (8) or dead-biped (29) one.
     // Translated from 00c84740 (decompiled, FalloutNV.exe 1.4.0.525)
     pub fn collides(&self, a: u32, b: u32, linked_parts: bool) -> bool {
         let la = (a & 0x7f) as u8;

@@ -29,6 +29,7 @@ pub mod ragdoll;
 pub mod rigid;
 pub mod shapes;
 mod vec;
+pub mod wind;
 
 use std::collections::{HashMap, HashSet};
 

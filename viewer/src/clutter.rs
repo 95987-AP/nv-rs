@@ -205,8 +205,19 @@ fn simulate(
     mut clutter: ResMut<Clutter>,
     mut sounds: ResMut<SoundRequests>,
     drawn: Query<&Simulated>,
+    (exterior, mut weathers): (
+        Option<Res<crate::exterior::Exterior>>,
+        ResMut<crate::weather::Weathers>,
+    ),
 ) {
     let order = &game.0.order;
+    // The sky's wind for the wind listener (`physics::wind`): outdoors the
+    // weathers' mix, indoors none (`00453550`).
+    let sky_wind = exterior.as_ref().map_or(0.0, |e| {
+        weathers
+            .mix(order, &state.0, e.weather)
+            .map_or(0.0, |w| w.wind())
+    });
     let state = &mut state.0;
     let clutter = &mut *clutter;
     let settings = *clutter.settings.get_or_insert_with(|| {
@@ -259,12 +270,13 @@ fn simulate(
         if let Some(&pose) = state.havok_moved.get(&body.reference) {
             clutter.world.place(i, pose, true);
         }
-        if body.settle {
-            // Havok settles it as its place loads (placed a little sunk
-            // into what holds it).
-            clutter.world.wake(i);
-        }
-        // Still moving when saved: on its way again (`00563380`).
+        // Added asleep (`RigidWorld::add`): the game adds a loading
+        // place's bodies to Havok in a batch without activating them
+        // (`00c674d0` → `hkpWorld::addEntityBatch(…, 0)`, `00c94bd0`) and
+        // wakes only those already moving; one added alone is left asleep
+        // too when it's still and not on the biped layer (`00c6b0a0`). So
+        // placed clutter stays where it was put until something touches
+        // it. Still moving when saved: on its way again (`00563380`).
         if let Some(&(v, w)) = state.havok_velocity.get(&body.reference) {
             clutter.world.set_velocity(i, v, w);
         }
@@ -378,6 +390,39 @@ fn simulate(
         .filter(|&i| !clutter.world.bodies[i].asleep)
         .collect();
     clutter.world.update(&collision.0, time.delta_secs());
+    // The wind listener, once a frame after the steps, with the frame's
+    // time (`00c6ae70` → `00c66e20`), on the bodies the wind moves.
+    let dt = time.delta_secs();
+    let wind = physics::wind::Wind::set(sky_wind, physics::wind::SKY_WIND_DIRECTION);
+    if dt > 0.0 && wind.speed != 0.0 {
+        // Every five seconds, where the wind has taken its bodies.
+        let now = time.elapsed_secs();
+        if (now / 5.0).floor() != ((now - dt) / 5.0).floor() {
+            for b in clutter.world.bodies.iter().filter(|b| b.setup.wind) {
+                let at = b.pose().1;
+                println!(
+                    "{now:.1} s: wind {:.1} (heading {:.2} rad) has {} at ({:.1}, {:.1}, {:.1}), {:.1} units from where it was put.",
+                    wind.speed,
+                    wind.direction,
+                    FormId(b.setup.reference),
+                    at[0],
+                    at[1],
+                    at[2],
+                    dist(at, b.rest().1)
+                );
+            }
+        }
+        for i in 0..clutter.world.bodies.len() {
+            if !clutter.world.bodies[i].setup.wind {
+                continue;
+            }
+            // `GetRandom(x)`: −x..x from the game's dice (`00476b70`).
+            let mut random = |x: f32| x * ((state.roll() % 2_000_001) as f32 / 1_000_000.0 - 1.0);
+            if let Some(force) = physics::wind::push(&wind, dt, &mut random) {
+                clutter.world.apply_force(i, force, dt);
+            }
+        }
+    }
     let woken = (0..clutter.world.bodies.len()).filter(|&i| !clutter.world.bodies[i].asleep);
     let moving: std::collections::BTreeSet<usize> = awake.into_iter().chain(woken).collect();
     for i in moving {
@@ -399,13 +444,15 @@ fn simulate(
         if b.asleep {
             let name = clutter.info.get(&reference).map_or("", |(n, _)| n.as_str());
             let at = b.pose().1;
+            let put = b.rest().1;
             println!(
-                "{:.1} s: {} ({name}) comes to rest at ({:.1}, {:.1}, {:.1}).",
+                "{:.1} s: {} ({name}) comes to rest at ({:.1}, {:.1}, {:.1}), {:.1} units from where it was put.",
                 time.elapsed_secs(),
                 FormId(reference),
                 at[0],
                 at[1],
-                at[2]
+                at[2],
+                dist(at, put)
             );
         }
     }

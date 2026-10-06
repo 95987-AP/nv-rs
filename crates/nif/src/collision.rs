@@ -236,6 +236,28 @@ pub struct RigidBodyInfo {
     /// How many constraints (`bhk…Constraint` blocks: hinges, ragdoll
     /// joints, springs) join it to other bodies (228).
     pub constraints: u32,
+    /// The body's flags (`bhkWorldObject::FLAGS`, Xbox PDB): bit 0
+    /// [`BODY_WIND`], the rest runtime state. The block's last word.
+    pub body_flags: u32,
+}
+
+/// `bhkWorldObject::FLAGS::WIND` (Xbox PDB): the body is pushed by the
+/// wind (`bhkWindListener`, `physics::wind`).
+pub const BODY_WIND: u32 = 1;
+
+/// `BSXFlags` bit 1, "Havok": the game's `00c6a350` only changes the
+/// motion of a model's bodies without being forced when it's set.
+pub const BSX_HAVOK: u32 = 2;
+
+impl Nif {
+    /// The model's `BSXFlags` value (the block's name index, then the
+    /// value), if it has the block.
+    pub fn bsx_flags(&self) -> Option<u32> {
+        (0..self.blocks().len())
+            .find(|&i| self.block_type(i) == "BSXFlags")
+            .and_then(|i| self.block_bytes(i).get(4..8))
+            .map(|v| u32::from_le_bytes([v[0], v[1], v[2], v[3]]))
+    }
 }
 
 /// A model's collision.
@@ -516,9 +538,21 @@ impl Nif {
                 .and_then(|_| c.u32("the constraint count"))
                 .unwrap_or(0)
         };
+        // The block's last word, after the constraint references: the
+        // `bhkWorldObject` flags the game reads into `+0x10` (`iFlags`,
+        // Xbox PDB) as it loads the body.
+        // Translated from 00c8ea30 (decompiled, FalloutNV.exe 1.4.0.525)
+        let body_flags = {
+            let mut c = Reader::new(bytes, self.blocks()[index].offset);
+            let at = 232 + 4 * constraints as usize;
+            c.take(at, "the rigid body's fields before its flags")
+                .and_then(|_| c.u32("the body flags"))
+                .unwrap_or(0)
+        };
         let info = RigidBodyInfo {
             block: index,
             constraints,
+            body_flags,
             mass,
             center,
             inertia,
