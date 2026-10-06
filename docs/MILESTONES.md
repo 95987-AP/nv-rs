@@ -165,6 +165,19 @@ installed-data check pass; not compared with the game; Pip-Boy map quest
 markers and the navmesh-level path search remain. See
 [QUEST_TARGETS.md](QUEST_TARGETS.md).
 
+M2 route batch (`claude/m2-vcg02-route`): Back in the Saddle (`VCG02`)
+driven in the viewer with installed data and completed in one run, with
+the quest start, bottle hits, two package end actions, the walk to the
+first well, the kills and the reward request simulated by console lines
+(new `--run-at`/`--say` testing aids). Fixed: people walking into the
+place joining trigger/talk lists, drawing references enabled after load
+(bottles, geckos), `KillActor`'s `OnDeath`, shots at disabled objects.
+Blockers: Sunny's first greeting (traced order says "Everything all
+right?", which can't start the quest), no long-distance paths, package end
+actions. Not compared with the original. Evidence:
+[GOODSPRINGS_ROUTE.md](GOODSPRINGS_ROUTE.md). **Next action:** record
+Sunny's first greeting in the original game.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,
