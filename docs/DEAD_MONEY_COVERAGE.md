@@ -6,7 +6,7 @@ earlier Dead Money work recorded (`docs/DEAD_MONEY.md` on the Dead Money branche
 changes. Names and behaviour are described in my own words; no game text is quoted, and nothing
 decompiled is included.
 
-**57 quests**: 4 PLAYED, 17 PARTIAL, 36 NOT PLAYED.
+**57 quests**: 4 PLAYED, 18 PARTIAL, 34 NOT PLAYED, 1 NEVER STARTED.
 
 ## How to read it
 
@@ -15,6 +15,8 @@ decompiled is included.
 * **PARTIAL**: some of it was played; the note says how far and what was helped along with a console
   line (`--run "SetStage ..."`).
 * **NOT PLAYED**: not tried; the note says what blocks it.
+* **NEVER STARTED**: the data has the quest but nothing starts it, so the original never plays it
+  either (leftover content); the note says how that was found and what to check.
 * **[G]** marks a guess (nothing in the data or the code settles it). **[C]** marks something to check
   against the original game. Both are things for the maintainer to confirm.
 * "Needs" is the systems the quest's scripts and objectives point at. It comes from reading the quest
@@ -45,14 +47,14 @@ The quests with stages and objectives the player sees.
 | Find Collar 12: Christine (`NVDLC01MQ01c`) | 10, 20, 30, 40, 100, 255 | dialogue (no voice, stage directions), companion recruit, clinic basement terminal and power, Auto-Doc wing, shielded speakers | **PARTIAL** | Played: her silent conversation, stage 100, the crew notice, her following the player. Later checked (see DEAD_MONEY.md on the stack, 'The clinic basement and the Auto-Doc wing'): the basement terminal's power-off item and the Auto-Doc scene run correctly (rules level, and the scene in the viewer). Still not played by hand: the terminal screen in the viewer and the walk between the two; the scene stops at Christine standing in the pod because a package's End action (her 'start conversation') isn't dispatched yet. [C] Whether the normal route needs the basement before the conversation can be had isn't checked. |
 | Return to the Fountain (`NVDLC01MQ01d`) | 10, 100 | dialogue | **PARTIAL** | Started by the master quest when all three are recruited and finished by Elijah's Act 2 greeting, which worked; but the recruits before it were helped along (see MQ01a to c). |
 | Trigger the Gala Event (`NVDLC01MQ02`) | 10, 50, 100, 255 | companions in place, climbing (ladder, bell tower), control panel, elevator, timed door, traps, radio, autosave, teleport | **NOT PLAYED** | Blocked by MQ02a to c, which aren't finished, and by the climb to the bell tower (ladders and stairs in the viewer are untried [G]). The three companions must be in place first. Objectives: reach the control panel at the top of the bell tower and activate it; then get to the main gate and into the casino. |
-| Fires in the Sky (`NVDLC01MQ02a`) | 5, 10, 30, 40, 100, 255 | companion escort and wait, terminal, items (harvester remains), Villa ghost people | **PARTIAL** | Started: Elijah's Act 2 greeting sets stage 5/10 and the first objectives show. Not played: escorting Dog to the substation, telling him to wait (dialogue), the two slabs of remains, the optional terminal that locks him in. |
+| Fires in the Sky (`NVDLC01MQ02a`) | 5, 10, 30, 40, 100, 255 | companion escort and wait, terminal, items (harvester remains), Villa ghost people | **PARTIAL** | Played: Elijah's Act 2 greeting starts it; telling Dog to wait (he stays, after the teammate-wait fix) and to follow again; walking him into the Gala trigger (it completes its objective, shows the next, and Dog walks up and starts his talk, after three engine fixes: see DEAD_MONEY.md 'Act 2'); the first replies. Run as script lines, not by hand: one ending reply (stage 100, XP) and the substation terminal's Lock Gate item (stage 100). Not played: picking the replies through to an ending, the feeding path (two slabs of remains, stage 40), the terminal screen, Dog walking to his Gala position. [G] The lines a topic names through its INFC list are said like its own. [C] How the original ends this conversation by hand. |
 | Strike Up the Band (`NVDLC01MQ02b`) | 10, 30, 40, 100, 255 | companion escort and wait, security holograms, switches, rooftop, items | **PARTIAL** | Started as MQ02a. Not played: escorting Dean to the rooftop, turning on both security holograms, his waiting. Holograms as enemies are untried (see HoloSupport). |
 | Mixed Signals (`NVDLC01MQ02c`) | 10, 20, 30, 50, 60, 70, 100, 255 | companion escort and wait, electrical box repair, elevator, remote terminal | **PARTIAL** | Started as MQ02a. Not played: the switching station, repairing the electrical box, the elevator, the remote maintenance terminal. |
-| Heist of the Centuries (`NVDLC01MQ03`) | 10, 20, 30, 40, 50, 100, 255 | casino interior, receptionist terminal and music sequence puzzle, vault with locks and voice code, elevators, sneaking, a boss fight, collar explosion timer, music, fade to credits | **NOT PLAYED** | Blocked by Act 2 and the Gala. Never tried: loading the casino interior, the vault, the music-sequence terminal, the fight with Elijah, the optional sneak-out. Repeating stages allowed (flag 0x08). |
-| Put the Beast Down (`NVDLC01MQ03a`) | 5, 10, 20, 30, 40, 50, 60, 100 | casino, key, stealth (not being spotted by Dog), gas valves, dialogue or combat, collar timer | **NOT PLAYED** | Needs the casino and its electrical closet first. [G] The detection rules for 'not spotted' use nv-rs's own detection, unverified for this. |
+| Heist of the Centuries (`NVDLC01MQ03`) | 10, 20, 30, 40, 50, 100, 255 | casino interior, receptionist terminal and music sequence puzzle, vault with locks and voice code, elevators, sneaking, a boss fight, collar explosion timer, music, fade to credits | **NOT PLAYED** | Blocked by Act 2 and the Gala for a normal start; the casino itself is not a blocker any more: its interior loads in about 5 seconds and its power switch works (see MQ03a), from the test character `characters/dead-money-casino.txt`. Never tried: the vault, the music-sequence terminal, the fight with Elijah, the optional sneak-out. Repeating stages allowed (flag 0x08). |
+| Put the Beast Down (`NVDLC01MQ03a`) | 5, 10, 20, 30, 40, 50, 60, 100 | casino, key, stealth (not being spotted by Dog), gas valves, dialogue or combat, collar timer | **PARTIAL** | Played: starting in the casino as the Lobby's knock-out script leaves the player (`characters/dead-money-casino.txt`: MQ02 done, MQ03a at stage 5), then the power switch with E (`--use`): MQ03a goes to stage 10, MQ03b and MQ03c start, the slot machines, hologram dealers and bartender come into view, Elijah's intercom speaks. Not played: reaching the switch on foot, the kitchen key, the gas valves, Dog's fight or talk, the collar timer. [G] The detection rules for 'not spotted' use nv-rs's own detection, unverified for this. |
 | Curtain Call at the Tampico (`NVDLC01MQ03b`) | 10, 15, 20, 30, 40, 50, 60, 100 | theatre interior, security holograms, holotape projector, key, combat or dialogue, collar timer | **NOT PLAYED** | Blocked by the casino and by holograms as enemies being untried. |
 | Last Luxuries (`NVDLC01MQ03c`) | 10, 20, 30, 100 | executive suites, combat with a former companion, collar timer | **NOT PLAYED** | Blocked by reaching the suites. A quest script ends it if Christine dies by other means. |
-| Wake Up the Sierra Madre (`NVDLC01MQ03d`) | 10, 20, 100 | casino electrical closet, power switch, security holograms | **NOT PLAYED** | The smallest of the casino quests; blocked only by reaching the casino. |
+| Wake Up the Sierra Madre (`NVDLC01MQ03d`) | 10, 20, 100 | casino electrical closet, power switch, security holograms | **NEVER STARTED** | Nothing starts it: no script, dialogue result, terminal or record in the plugin names its form or sets one of its stages. Its two objectives are the ones MQ03a shows at stage 10 (the electrical closet, restoring power), which the casino switch completes. Leftover content, so it can't be played. [C] The maintainer's note has the console steps to confirm it stays at stage 0 in the original after the switch. |
 
 ### The opening and the ending
 
@@ -133,21 +135,18 @@ Quests that hold a system's rules.
 
 ## Next quests to play
 
-Of the quests not played at all, the three that look best to take next (a judgement [G], by size and by
-what they unblock, not a measured effort):
+Of the quests not finished, the three that look best to take next (a judgement [G], by size and by
+what they unblock, not a measured effort). The casino has been shown to load and play, so the MQ03
+quests are open to a test character that starts there:
 
-1. **`NVDLC01MQ01c`'s missing leg with `NVDLC01ClinicAutoDocQuest`.** Finishing Act 1's last open
-   piece: the clinic basement terminal that cuts the shielded speakers' power, the Auto-Doc wing and the
-   short scene after it. Small, uses terminals and the companion recruit already in place, and it turns
-   MQ01c from PARTIAL into PLAYED.
-2. **`NVDLC01MQ03d` Wake Up the Sierra Madre.** Three stages, one place (the casino's electrical
-   closet). The cheapest way to find out whether the casino interior loads and plays, which every other
-   MQ03 quest needs. Start it with a test character placed at the casino (like the bunker entry
-   character), since reaching it normally needs the whole Gala.
+1. **`NVDLC01MQ02b` Strike Up the Band (Dean).** The next companion escort after Dog's: the rooftop
+   and its two security holograms and switches. It tests holograms as enemies and a second wait/follow
+   run, which the first escort has now cleared.
+2. **`NVDLC01MQ02c` Mixed Signals (Christine).** The switching station: the electrical box, the elevator
+   and the remote terminal. Together with MQ02b it unblocks the Gala itself (`NVDLC01MQ02`).
 3. **`NVDLC01MQ03c` Last Luxuries.** Four stages, one fight against Christine in the executive suites
-   with her collar's timer. A good test of combat with a former companion and the collar explosion,
-   which the Villa runs have not exercised.
+   with her collar's timer. Open now from the casino character; a good test of combat with a former
+   companion and the collar explosion.
 
-Not on the list on purpose: MQ02 (needs MQ02a to c first), MQ03 itself and MQ03a/b (large, and need
-the casino first), and the radio quests (the station playback is a feature to build, not a quest to
+Not on the list on purpose: MQ02 (needs MQ02a to c first), MQ03 itself and MQ03a/b (large), and the radio quests (the station playback is a feature to build, not a quest to
 play).
