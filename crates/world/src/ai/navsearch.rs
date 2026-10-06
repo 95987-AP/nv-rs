@@ -103,11 +103,16 @@ pub struct PathRequest<'a> {
     /// `006a6fa0`; filled by the smoother's failures between tries,
     /// `006cc5e0`): (triangle, edge).
     pub avoid_edges: &'a [(usize, usize)],
+    /// How near the goal counts as there (+0x74, "Target Radius"): a goal
+    /// off the navmesh within it of an open edge needs no ray-cast way
+    /// (`006cac90`, [`super::offmesh`]).
+    pub target_radius: f32,
 }
 
 impl Default for PathRequest<'_> {
     fn default() -> Self {
         PathRequest {
+            target_radius: 0.0,
             radius: crate::movement::REQUEST_RADIUS,
             avoid: &[],
             no_doors: false,
@@ -326,6 +331,21 @@ impl NavMesh {
         (found, route)
     }
 
+    /// What crossing from triangle `from` into its neighbour `to` costs.
+    #[cfg(test)]
+    pub(crate) fn crossing_cost_for_test(
+        &self,
+        from: usize,
+        to: usize,
+        at: [f32; 3],
+        request: &PathRequest,
+    ) -> f32 {
+        let e = (0..3)
+            .find(|&e| self.triangles[from].neighbors[e] == Some(to))
+            .expect("neighbours");
+        self.crossing_cost(from, e, at, request).expect("crossable")
+    }
+
     /// What crossing edge `e` of triangle `t` (its node at `at`) costs, if
     /// it may be crossed (`006a6fa0`'s loop body).
     fn crossing_cost(
@@ -346,8 +366,19 @@ impl NavMesh {
             if request.no_doors {
                 return None;
             }
-            if let (Some(&door), Some(rule)) = (self.door_portals.get(&n), request.door) {
-                match rule(door) {
+            // The triangle's door (`00699af0`: the data's portals first,
+            // then those added for closed doors at run time).
+            let door = self
+                .door_portals
+                .get(&n)
+                .or_else(|| self.door_triangles.get(&n))
+                .copied();
+            if let Some(door) = door {
+                let way = match request.door {
+                    Some(rule) => rule(door),
+                    None => self.door_rules.get(&door).copied().unwrap_or(DoorWay::Open),
+                };
+                match way {
                     DoorWay::Shut => return None,
                     DoorWay::Open => {}
                     DoorWay::Locked => door_mult = 100.0,

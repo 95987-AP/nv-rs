@@ -1440,6 +1440,48 @@ pub fn lod_block_scene(assets: &Assets, path: &str) -> Option<CellScene> {
     })
 }
 
+/// A collision part's box in model space, placed: its centre, the placed
+/// model axes and half sizes (`world::ai::doors::DoorBox`).
+fn door_box(part: &nif::CollisionPart, place: &Transform) -> Option<world::ai::doors::DoorBox> {
+    let points: Vec<[f32; 3]> = match &part.shape {
+        nif::CollisionShape::Triangles { vertices, .. }
+        | nif::CollisionShape::Convex { vertices, .. } => vertices.clone(),
+        nif::CollisionShape::Sphere { center, radius } => vec![
+            [center[0] - radius, center[1] - radius, center[2] - radius],
+            [center[0] + radius, center[1] + radius, center[2] + radius],
+        ],
+        nif::CollisionShape::Capsule { a, b, radius } => {
+            let lo = [0, 1, 2].map(|k| a[k].min(b[k]) - radius);
+            let hi = [0, 1, 2].map(|k| a[k].max(b[k]) + radius);
+            vec![lo, hi]
+        }
+    };
+    let mut lo = [f32::INFINITY; 3];
+    let mut hi = [f32::NEG_INFINITY; 3];
+    for p in &points {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k] - part.shell);
+            hi[k] = hi[k].max(p[k] + part.shell);
+        }
+    }
+    if lo[0] > hi[0] {
+        return None;
+    }
+    let middle = [0, 1, 2].map(|k| 0.5 * (lo[k] + hi[k]));
+    let origin = place.apply_point([0.0; 3]);
+    let axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]].map(|e| {
+        let p = place.apply_point(e);
+        let d = [p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+        d.map(|v| v / l)
+    });
+    Some(world::ai::doors::DoorBox {
+        center: place.apply_point(middle),
+        axes,
+        half: [0, 1, 2].map(|k| 0.5 * (hi[k] - lo[k]) * place.scale),
+    })
+}
+
 /// A door that opens where it stands: a `DOOR` that isn't a load door.
 pub fn is_opening_door(object: &world::Placement) -> bool {
     object.base_type == esm::FourCC::new(b"DOOR") && object.teleport.is_none()
@@ -1461,6 +1503,9 @@ pub struct SwingDoor {
     pub sequences: std::sync::Arc<Vec<nif::Sequence>>,
     /// Each keyframed collision part's nodes, top down (`nif::CollisionPart::nodes`).
     pub leaves: Vec<Vec<(String, Transform)>>,
+    /// Its collision parts' boxes as placed (closed), in its placed axes:
+    /// the navmesh obstacles a closed door marks (`world::ai::doors`).
+    pub boxes: Vec<world::ai::doors::DoorBox>,
 }
 
 impl SwingDoor {
@@ -1527,6 +1572,13 @@ impl CellScene {
                 .filter(|p| p.keyframed && nif::collision::layers::blocks_walking(p.layer))
                 .map(|p| p.nodes.clone())
                 .collect();
+            let place = self.transform(instance, convention);
+            let boxes = model
+                .collision
+                .iter()
+                .filter(|p| nif::collision::layers::blocks_walking(p.layer))
+                .filter_map(|p| door_box(p, &place))
+                .collect();
             out.push(SwingDoor {
                 reference: object.form_id,
                 base: object.base,
@@ -1535,9 +1587,10 @@ impl CellScene {
                     .clone()
                     .unwrap_or_else(|| object.base.to_string()),
                 open_by_default: object.open_by_default,
-                place: self.transform(instance, convention),
+                place,
                 sequences,
                 leaves,
+                boxes,
             });
         }
         out
