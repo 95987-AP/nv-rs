@@ -81,6 +81,17 @@ the only supported target), eye meshes (FaceGen eye update), and
 Pip-Boy mouse input and player movement. **Next action:** record Doc's
 look-IK in a private game copy with `nv-probe` and compare.
 
+Look-IK reconcile, 2026-10-06 (`claude/m1-lookik-reconcile`, unmerged):
+the contributor's head-track target choice, actor look anchors, FaceGen
+eye darting and eye limits (`playcon/claude/*`, 9defa47, 5dfb5d9,
+ae5b593, ddc0d59) are ported onto the native controller after re-checking
+them in Ghidra; where the two ports disagreed the executable settled it
+(the eye chain runs for people, so eyes aim at the target; the tracking
+distance is between positions). Doc, Sunny and Goodsprings NPCs track
+the player and each other in the viewer; 0064c410 and the eye-range
+helpers are nv-call regression vectors. Not compared with the original.
+**Next action:** record Doc's look in a private game copy with `nv-probe`.
+
 The published baseline includes the opening package look lock, Doc's queued
 chair exit, native Info HUD and tester bounds correction, SPECIAL interface,
 and same-cell trigger reset on F9. Live evidence reaches the tester through
@@ -139,9 +150,12 @@ couch entry framing in the original.
 
 Outstanding M1 gates:
 - Exact opening camera transition replay and Doc/player assistance timing.
-- Doc head/eye tracking: ported and unit-tested; the original-game
-  comparison, target choice and eye meshes remain
-  ([OPENING_LOOK_IK.md](OPENING_LOOK_IK.md)).
+- Doc head/eye tracking: ported, unit-tested and seen in the viewer,
+  with whom actors look at and the FaceGen eyes (reconciled with a
+  contributor's branches, 2026-10-06, `claude/m1-lookik-reconcile`); the
+  original-game comparison remains
+  ([OPENING_LOOK_IK.md](OPENING_LOOK_IK.md),
+  [HEAD_TRACK_TARGET.md](HEAD_TRACK_TARGET.md)).
 - Original face editor instead of auto-accept, and opening movie playback
   ([FACE_CREATION.md](FACE_CREATION.md)).
 - In-progress animation save restoration, full character-creation route,
