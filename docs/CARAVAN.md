@@ -50,10 +50,14 @@ constructor `0073b7e0`).
 - The table: six tracks of up to seven rows; tracks 0–2 the player's, 3–5
   the opponent's, track t against 5 − t. A row is a number card and the
   face cards played on it.
-- The deal (`PrepareGameMenu`): the player's deck is their in-deck cards,
-  the opponent's the `ShowCaravanMenu` deck; eight cards each, the
-  player's then the opponent's, each picked at random from what's left; then
-  each side's next card is picked at random. Decks are never shuffled.
+- The deal (`PrepareGameMenu`, `0073ea90`): the player's deck is their
+  in-deck cards in the deck screen's order, the opponent's the
+  `ShowCaravanMenu` deck's `CARD`s; eight cards each, the player's then
+  the opponent's, each picked at random from what's left and taken out with
+  the deck's last card moved into its place (`009a4320`); then each side's
+  next card is picked at random. Decks are never shuffled. Cards drawn
+  later, and hand cards played, are taken out keeping the order
+  (`006bf8f0`).
 - Starting the caravans (flag `CAF_TRACK_SETUP` 0x800): number cards only;
   the player's go on their first empty track (0, 1, 2), the opponent's on
   its last empty one (5, 4, 3), row 0; nothing is drawn. Throwing a card

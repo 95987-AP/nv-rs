@@ -102,9 +102,10 @@ pub fn deck(order: &LoadOrder, form: FormId) -> Vec<Card> {
 /// `iCaravanLosses`, `iCaravanLargestWinning`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Collection {
-    /// Cards owned but not in the deck.
+    /// Cards owned but not in the deck, in the list's order (its head
+    /// first).
     pub inactive: Vec<FormId>,
-    /// The deck.
+    /// The deck, the same way.
     pub active: Vec<FormId>,
     pub cap_winnings: u32,
     pub cap_losses: u32,
@@ -120,14 +121,15 @@ impl Collection {
 }
 
 /// `AddCardToPlayer` (`PlayerCharacter::AddCaravanCard`): a card the
-/// player doesn't have goes in with the cards outside the deck. False for
-/// a form that isn't a card.
+/// player doesn't have goes in with the cards outside the deck, at the
+/// head of that list (`00969bc0` → `005ae3d0`, `AddHead`). False for a
+/// form that isn't a card.
 pub fn add_card_to_player(order: &LoadOrder, state: &mut GameState, form: FormId) -> bool {
     if card(order, form).is_none() {
         return false;
     }
     if !state.caravan.owns(form) {
-        state.caravan.inactive.push(form);
+        state.caravan.inactive.insert(0, form);
     }
     true
 }
@@ -199,20 +201,22 @@ pub struct Game {
 pub type Dice<'a> = &'a mut dyn FnMut(usize) -> usize;
 
 impl Game {
-    /// A new game (`PrepareGameMenu`): eight cards dealt to each, the
-    /// player's first then the opponent's, each picked at random from what's
-    /// left of the deck; then each side's next card picked.
+    /// A new game (`PrepareGameMenu`, `0073ea90`): eight cards dealt to
+    /// each, the player's first then the opponent's, each picked at random
+    /// from what's left of the deck and taken out with the deck's last card
+    /// moved into its place (`009a4320`); then each side's next card
+    /// picked.
     pub fn new(mut player_deck: Vec<Card>, mut npc_deck: Vec<Card>, dice: Dice) -> Game {
         let mut player_hand = Vec::new();
         let mut npc_hand = Vec::new();
         for _ in 0..HAND {
             if !player_deck.is_empty() {
                 let i = dice(player_deck.len());
-                player_hand.push(player_deck.remove(i));
+                player_hand.push(player_deck.swap_remove(i));
             }
             if !npc_deck.is_empty() {
                 let i = dice(npc_deck.len());
-                npc_hand.push(npc_deck.remove(i));
+                npc_hand.push(npc_deck.swap_remove(i));
             }
         }
         let pick = |deck: &Vec<Card>, dice: Dice| (!deck.is_empty()).then(|| dice(deck.len()));
@@ -825,8 +829,11 @@ mod tests {
         let deck: Vec<Card> = (1..=10).map(|v| c(v, 1)).collect();
         let mut g = Game::new(deck.clone(), deck, &mut |_| 0);
         assert_eq!(g.player_hand.len(), 8);
-        assert_eq!(g.player_hand[0], c(1, 1));
-        assert_eq!(g.player_deck, vec![c(9, 1), c(10, 1)]);
+        // Each pick takes the first card, the last moving into its place
+        // (`009a4320`).
+        let values: Vec<i32> = g.player_hand.iter().map(|c| c.value).collect();
+        assert_eq!(values, vec![1, 10, 9, 8, 7, 6, 5, 4]);
+        assert_eq!(g.player_deck, vec![c(3, 1), c(2, 1)]);
         assert_eq!(g.next_player, Some(0));
         assert!(g.setup);
         assert_eq!(g.setup_track(false), Some(0));
@@ -835,8 +842,9 @@ mod tests {
         assert_eq!(g.player_hand.len(), 7);
         g.setup = false;
         g.play(false, 0, 1, 0, &mut |_| 0);
-        assert_eq!(g.player_hand.last(), Some(&c(9, 1)));
-        assert_eq!(g.player_deck, vec![c(10, 1)]);
+        // Draws keep the deck's order (`006bf8f0`).
+        assert_eq!(g.player_hand.last(), Some(&c(3, 1)));
+        assert_eq!(g.player_deck, vec![c(2, 1)]);
         g.discard(false, 0, &mut |_| 0);
         assert!(g.player_deck.is_empty());
         assert_eq!(g.next_player, None);
