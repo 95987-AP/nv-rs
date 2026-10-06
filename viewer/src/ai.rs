@@ -587,12 +587,14 @@ pub fn move_actors(
         }
         let before = walker.position;
         walker.turning = None;
-        // Talking to the player in the dialogue menu: they stop where they
-        // are (the walk held, not dropped) and turn in place to face the
-        // player, unless seated or sitting down (who can't turn, `008843a0`):
-        // the conversation's rule, the target facing the one who started it
-        // every frame (`008ec460`; that the player's menu runs it is
-        // inferred).
+        // Talking to the player in the dialogue menu: the world's update
+        // stands still (the main loop `0086e650` skips the process lists in
+        // menu mode); the menu itself updates the speaker every frame
+        // (`00762950` → `Actor::UpdateInDialogue`, Xbox PDB, `008a5580`):
+        // they stop where they are (the walk held, not dropped) and, unless
+        // seated or in combat, turn in place to face the player whenever
+        // more than a degree off and not turning already
+        // (`world::dialogue_view::speaker_turns`).
         let seated = state.furniture.contains_key(&me) || state.sitters.contains_key(&me);
         if menu_speaker == Some(me) {
             // A line of their own (chatter, a conversation) gives way.
@@ -606,18 +608,25 @@ pub fn move_actors(
             }
             rig.walking = false;
             rig.speed = 0.0;
-            if !seated {
-                if let Some(p) = state.player_position {
-                    let flat = (p[0] - walker.position[0]).hypot(p[1] - walker.position[1]);
-                    if flat > 1.0 {
-                        face(
-                            walker,
-                            mv::heading_to(before, p),
-                            dt,
-                            false,
-                            &moves.settings,
-                        );
-                    }
+            let in_combat = state.combat.contains_key(&me);
+            if let Some(p) = state.player_position {
+                let toward = mv::heading_to(before, p);
+                if world::dialogue_view::speaker_turns(
+                    walker.heading,
+                    toward,
+                    walker.turn.active,
+                    seated,
+                    in_combat,
+                ) {
+                    walker.turn.request(walker.heading, toward, &moves.settings);
+                }
+            }
+            // The turn under way plays out (`ActorMover::UpdateMovement`,
+            // Xbox PDB, with the mover's dialogue flag set, `009c9900`).
+            if walker.turn.active && !seated {
+                let rate = walker.rates[usize::from(in_combat)];
+                if let Some(side) = walker.turn.update(&mut walker.heading, dt, rate) {
+                    walker.turning = Some(side);
                 }
             }
             place(walker, &mut transform, state, &mut talkers);

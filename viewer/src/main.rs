@@ -217,6 +217,7 @@ fn main() {
         .init_resource::<dialogue::Talkers>()
         .init_resource::<dialogue::TalkTarget>()
         .init_resource::<dialogue::Conversation>()
+        .init_resource::<dialogue::DialogueView>()
         .insert_resource(dialogue::AutoTalk(args.talk))
         .insert_resource(player)
         .insert_resource(walk::CellCollision(physics::Collider::new()))
@@ -342,6 +343,9 @@ fn main() {
                 faces::start_lines,
                 faces::release_voices,
                 faces::animate_faces,
+                // The dialogue menu's view on the speaker, once their head
+                // has moved.
+                dialogue::focus_camera,
             )
                 .chain()
                 .after(actors::animate_actors),

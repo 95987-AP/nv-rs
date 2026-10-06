@@ -130,7 +130,7 @@ fn the_menu_lists_top_level_and_learned_topics_the_speaker_answers() {
         choices.into_iter().map(|c| c.topic.form_id.0).collect()
     };
     let menu = |state: &GameState| -> Vec<(u32, String)> {
-        dialogue::menu_topics(&order, &top, &[], &doc, state)
+        dialogue::menu_topics(&order, &top, &doc, state)
             .into_iter()
             .map(|c| (c.topic.form_id.0, c.label))
             .collect()
@@ -143,9 +143,6 @@ fn the_menu_lists_top_level_and_learned_topics_the_speaker_answers() {
             (TOPIC_ABOUT, "Tell me about yourself.".to_string()),
         ]
     );
-    // The opening line's follow-ups stay in the main list.
-    let opened = dialogue::menu_topics(&order, &top, &[FormId(TOPIC_SECRET)], &doc, &state);
-    assert_eq!(ids(opened), [TOPIC_TOWN, TOPIC_ABOUT, TOPIC_SECRET]);
     // Asking about him teaches the secret, which is offered from then on.
     let about = dialogue::pick(&order, FormId(TOPIC_ABOUT), &doc, &state).unwrap();
     dialogue::line_begins(&mut state, &about, FormId(DOC_REF));
@@ -154,11 +151,11 @@ fn the_menu_lists_top_level_and_learned_topics_the_speaker_answers() {
     let learned: Vec<u32> = menu(&state).into_iter().map(|(t, _)| t).collect();
     assert_eq!(learned, [TOPIC_TOWN, TOPIC_ABOUT, TOPIC_SECRET]);
     // A line with follow-ups offers only those (that he answers).
-    let next = dialogue::next_choices(&order, &about, &top, &[], &doc, &state);
+    let next = dialogue::next_choices(&order, &about, &top, &doc, &state);
     assert_eq!(ids(next), [TOPIC_TOWN]);
     // One without goes back to the main list.
     let town = dialogue::pick(&order, FormId(TOPIC_TOWN), &doc, &state).unwrap();
-    let back = dialogue::next_choices(&order, &town, &top, &[], &doc, &state);
+    let back = dialogue::next_choices(&order, &town, &top, &doc, &state);
     assert_eq!(ids(back), [TOPIC_TOWN, TOPIC_ABOUT, TOPIC_SECRET]);
     // Nothing while the quest the lines belong to isn't running.
     state.running.remove(&FormId(QUEST));
@@ -262,7 +259,7 @@ fn skill_checks_show_what_they_need_and_pick_the_outcome() {
             None,
             None,
         );
-        let choices = dialogue::next_choices(&order, &about, &top, &[], &doc, state);
+        let choices = dialogue::next_choices(&order, &about, &top, &doc, state);
         assert_eq!(choices.len(), 1);
         (choices[0].info.form_id.0, choices[0].label.clone())
     };

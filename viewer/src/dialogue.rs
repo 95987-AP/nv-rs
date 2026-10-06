@@ -4,19 +4,26 @@
 //! (`world::dialogue::after_line`, `00762ff0`) decide: the speaker goes
 //! straight on to the line's follow-up (`TCFU`), the menu closes after a
 //! Goodbye, or the line's topics come up as numbered choices, or, after a
-//! line with none, the main list (`dialogue::menu_topics`: the greeting's
-//! follow-ups and the top-level and learned topics they answer). Space
-//! skips a line. Only the stand-in text panel (used when the game's menu
-//! files can't be read) also ends the conversation on Tab or Esc; the
-//! game's dialogue menu takes only its "A"/Enter key (`007628c0`).
+//! line with none, the main list (`dialogue::menu_topics`: the player's
+//! top-level and learned topics the speaker answers). Space skips a line.
+//! Only the stand-in text panel (used when the game's menu files can't be
+//! read) also ends the conversation on Tab or Esc; the game's dialogue
+//! menu takes only its "A"/Enter key (`007628c0`).
+//!
+//! The menu zooms in as it opens and out before it goes, the player's
+//! view held on the speaker's head meanwhile ([`focus_camera`],
+//! `world::dialogue_view`).
 
 use std::sync::Arc;
 
 use bevy::audio::{AudioPlayer, AudioSource};
 use bevy::prelude::*;
+use bevy::render::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
+use bevy::render::mesh::VertexAttributeValues;
 use cellview::{ActorData, ACTIVATE_REACH};
 use esm::FormId;
 use world::dialogue::{self, Choice, GameState, Info, Speaker, Topic};
+use world::dialogue_view::{self as view_rules, Focus, FocusInput, MenuZoom, ViewSettings};
 use world::scripting::{Runner, ScriptCache};
 
 use crate::scripts::{ScriptedTalk, Scripts};
@@ -109,7 +116,6 @@ impl Conversation {
                 speaker,
                 name: "Test speaker".into(),
                 info,
-                opening: vec![],
                 response: 0,
                 since: 0.0,
                 voice: None,
@@ -118,6 +124,8 @@ impl Conversation {
                 line_only: true,
                 shown_line: None,
                 shown_topics: false,
+                zoom: MenuZoom::opening(),
+                package_zoom: None,
             }),
             Some(vec![]),
         )
@@ -128,9 +136,6 @@ pub struct Talk {
     speaker: Speaker,
     name: String,
     info: Info,
-    /// The follow-ups of the line that opened the conversation: they stay
-    /// in the main list (`dialogue::menu_topics`).
-    opening: Vec<FormId>,
     /// The response being said, and since when (seconds).
     response: usize,
     since: f32,
@@ -146,6 +151,12 @@ pub struct Talk {
     /// line and response, or the topics.
     shown_line: Option<(FormId, usize)>,
     shown_topics: bool,
+    /// The menu's zoom in, and out once it's to close
+    /// (`world::dialogue_view::MenuZoom`).
+    zoom: MenuZoom,
+    /// The speaker's dialogue package's zoom, when a dialogue package of
+    /// theirs is running as the menu opens (`00761a20`).
+    package_zoom: Option<f32>,
 }
 
 impl Talk {
@@ -324,6 +335,7 @@ type TalkExtras<'w, 's> = (
     ResMut<'w, crate::menus::Menus>,
     Query<'w, 's, &'static crate::ai::Walker>,
     ResMut<'w, crate::game_menus::GameMenus>,
+    ResMut<'w, DialogueView>,
 );
 
 /// Looking for someone to talk to, and the conversation itself.
@@ -337,7 +349,10 @@ pub fn talk(
     talkers: Res<Talkers>,
     collision: Res<CellCollision>,
     mut target: ResMut<TalkTarget>,
-    (mut auto_talk, scripts, mut scripted, mut menus, walkers, mut game_menus): TalkExtras<'_, '_>,
+    (mut auto_talk, scripts, mut scripted, mut menus, walkers, mut game_menus, mut view): TalkExtras<
+        '_,
+        '_,
+    >,
     mut conversation: ResMut<Conversation>,
     mut player: ResMut<Player>,
     mut audio: ResMut<Assets<AudioSource>>,
@@ -352,7 +367,7 @@ pub fn talk(
     let speaking = conversation
         .0
         .as_ref()
-        .filter(|t| t.choices.is_none())
+        .filter(|t| t.choices.is_none() && !t.zoom.closing())
         .map(|t| t.speaker.reference);
     if state.0.speaking.iter().copied().ne(speaking) {
         state.0.speaking = speaking.into_iter().collect();
@@ -383,6 +398,22 @@ pub fn talk(
         let Conversation(Some(talk), top_level) = &mut *conversation else {
             return;
         };
+        // The menu's zoom (`00762950`): in as it opens, the first line
+        // already being said (`00761a20` starts it); out once it's to close,
+        // the menu going only when that's over, nothing more said meanwhile.
+        if !talk.line_only {
+            let s = view.settings(&game.0);
+            if talk.zoom.step(time.delta_secs(), &s) {
+                if let Some(s) = screen.as_deref_mut() {
+                    crate::game_menus::dialog::end(s);
+                }
+                end(&mut commands, &mut conversation.0, &mut player, &mut panel);
+                return;
+            }
+            if talk.zoom.closing() {
+                return;
+            }
+        }
         let skip =
             keys.just_pressed(KeyCode::Space) || answer == Some(ui::menus::dialog::Answer::Skip);
         if talk.choices.is_none() {
@@ -434,14 +465,7 @@ pub fn talk(
                         state.0.roll();
                         let top =
                             top_level.get_or_insert_with(|| dialogue::top_level_topics(order));
-                        dialogue::after_line(
-                            order,
-                            &talk.info,
-                            top,
-                            &talk.opening,
-                            &talk.speaker,
-                            &state.0,
-                        )
+                        dialogue::after_line(order, &talk.info, top, &talk.speaker, &state.0)
                     };
                     match next {
                         dialogue::AfterLine::FollowUp(info) => {
@@ -460,6 +484,12 @@ pub fn talk(
                             talk.voice = play_voice(&mut commands, &mut audio, &game.0, talk);
                         }
                         dialogue::AfterLine::Topics(list) => talk.choices = Some(list),
+                        // A line said on its own just ends; the menu zooms
+                        // out first (state 4, `00762ff0`, `00762950`).
+                        dialogue::AfterLine::Close if !talk.line_only => {
+                            talk.zoom.close();
+                            return;
+                        }
                         dialogue::AfterLine::Close => {
                             if let Some(s) = screen.as_deref_mut() {
                                 crate::game_menus::dialog::end(s);
@@ -768,10 +798,16 @@ fn start_talk(
         return None;
     };
     begin_line(order, scripts, state, &info, talker.reference, menu);
+    // The menu's zoom follows a running dialogue package's (`00761a20`:
+    // package type 15, `00672850` reads its `PKDD` float).
+    let package_zoom = world::ai::current_package(order, state, talker.reference)
+        .filter(|p| p.kind == world::ai::kinds::DIALOGUE)
+        .and_then(|p| world::ai::dialogue_data(order, p.form_id))
+        .map(|d| d.fov);
     Some(Talk {
+        package_zoom,
         speaker,
         name,
-        opening: info.choices.clone(),
         info,
         response: 0,
         since: now,
@@ -781,6 +817,7 @@ fn start_talk(
         line_only: !menu,
         shown_line: None,
         shown_topics: false,
+        zoom: MenuZoom::opening(),
     })
 }
 
@@ -809,6 +846,226 @@ fn end(
     for (mut text, mut visible) in panel.iter_mut() {
         text.0.clear();
         *visible = Visibility::Hidden;
+    }
+}
+
+/// The dialogue menu's view (`world::dialogue_view`): its settings, the
+/// player's focus on the speaker, and the fields of view.
+#[derive(Resource, Default)]
+pub struct DialogueView {
+    settings: Option<ViewSettings>,
+    focus: Focus,
+    /// The world's and the first-person view's fields of view while the
+    /// menu has the view, then on their way back to the default after.
+    fovs: Option<(f32, f32)>,
+    /// The menu had the view last frame.
+    active: bool,
+    /// Where the head was found has been printed for this conversation.
+    logged: bool,
+}
+
+impl DialogueView {
+    fn settings(&mut self, game: &cellview::Game) -> ViewSettings {
+        *self.settings.get_or_insert_with(|| {
+            ViewSettings::read(&game.order, |s, k| game.settings.float(s, k))
+        })
+    }
+}
+
+/// The speaker's head as `00953060` measures it: the bound of their face
+/// node, here the head parts' vertices as skinned now (a box's middle and
+/// the farthest vertex from it; how Gamebryo merges the skinned pieces'
+/// own bounds into the node's isn't reproduced). Without head parts, the
+/// `Bip01 Head` bone (else `Bip01 Speaker`) with radius 32 (`0101e340`).
+#[allow(clippy::type_complexity)]
+fn head_bound(
+    speaker: FormId,
+    roots: &Query<(
+        Entity,
+        &crate::scripts::PlacedRef,
+        Option<(&crate::ai::Walker, &crate::actors::ActorRig)>,
+    )>,
+    pieces: &Query<(&Mesh3d, &SkinnedMesh, &ChildOf), With<crate::faces::FacePiece>>,
+    joints: &Query<&GlobalTransform>,
+    meshes: &Assets<Mesh>,
+    binds: &Assets<SkinnedMeshInverseBindposes>,
+    now: f32,
+) -> Option<([f32; 3], f32)> {
+    let (root, _, rig) = roots.iter().find(|(_, p, _)| p.0 == speaker.0)?;
+    // Just placed (talked to as the place loads, `--talk`): the bones
+    // aren't in the world yet (Bevy places them after the frame's
+    // updates), so wait a frame.
+    if joints
+        .get(root)
+        .is_ok_and(|g| *g == GlobalTransform::IDENTITY)
+    {
+        return None;
+    }
+    let mut points: Vec<[f32; 3]> = Vec::new();
+    for (mesh, skin, child_of) in pieces {
+        if child_of.parent() != root {
+            continue;
+        }
+        let (Some(mesh), Some(inverse)) = (meshes.get(&mesh.0), binds.get(&skin.inverse_bindposes))
+        else {
+            continue;
+        };
+        let (
+            Some(VertexAttributeValues::Float32x3(positions)),
+            Some(VertexAttributeValues::Uint16x4(indices)),
+            Some(VertexAttributeValues::Float32x4(weights)),
+        ) = (
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION),
+            mesh.attribute(Mesh::ATTRIBUTE_JOINT_INDEX),
+            mesh.attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT),
+        )
+        else {
+            continue;
+        };
+        let matrices: Vec<Option<Mat4>> = skin
+            .joints
+            .iter()
+            .zip(inverse.iter())
+            .map(|(&e, bind)| joints.get(e).ok().map(|g| g.compute_matrix() * *bind))
+            .collect();
+        for ((p, js), ws) in positions.iter().zip(indices).zip(weights) {
+            let v = Vec3::from(*p);
+            let mut world = Vec3::ZERO;
+            for k in 0..4 {
+                if ws[k] > 0.0 {
+                    if let Some(Some(m)) = matrices.get(usize::from(js[k])) {
+                        world += m.transform_point3(v) * ws[k];
+                    }
+                }
+            }
+            points.push(game_point(world));
+        }
+    }
+    if points.is_empty() {
+        let (walker, rig) = rig?;
+        let pose = rig.pose_now(now);
+        let bone = ["Bip01 Head", "Bip01 Speaker"].iter().find_map(|name| {
+            rig.skeleton
+                .bones
+                .iter()
+                .position(|b| b.name.eq_ignore_ascii_case(name))
+        })?;
+        let at = walker.placement().apply_point(pose.get(bone)?.translation);
+        return Some((at, 32.0));
+    }
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    for p in &points {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let center = [0, 1, 2].map(|k| (lo[k] + hi[k]) * 0.5);
+    let radius = points
+        .iter()
+        .map(|p| {
+            (0..3)
+                .map(|k| (p[k] - center[k]).powi(2))
+                .sum::<f32>()
+                .sqrt()
+        })
+        .fold(0.0f32, f32::max);
+    Some((center, radius))
+}
+
+/// Every frame of the dialogue menu the player's view is on the speaker
+/// (`world::dialogue_view::Focus`, `00953060`, run by the menu's update
+/// `00762950` with the menu's zoom); after it, the field of view goes back
+/// to the default (`0095de30`). Lines said on their own (`SayTo`) leave the
+/// view alone.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn focus_camera(
+    time: Res<Time>,
+    game: Res<GameFiles>,
+    conversation: Res<Conversation>,
+    mut view: ResMut<DialogueView>,
+    roots: Query<(
+        Entity,
+        &crate::scripts::PlacedRef,
+        Option<(&crate::ai::Walker, &crate::actors::ActorRig)>,
+    )>,
+    pieces: Query<(&Mesh3d, &SkinnedMesh, &ChildOf), With<crate::faces::FacePiece>>,
+    joints: Query<&GlobalTransform>,
+    (meshes, binds): (Res<Assets<Mesh>>, Res<Assets<SkinnedMeshInverseBindposes>>),
+    mut cameras: Query<(&mut FlyCamera, &mut Transform, &mut Projection)>,
+) {
+    let Ok((mut fly, mut transform, mut projection)) = cameras.single_mut() else {
+        return;
+    };
+    let s = view.settings(&game.0);
+    let dt = time.delta_secs();
+    let defaults = (
+        cellview::GAME_FOV_DEGREES,
+        crate::viewmodel::FIRST_PERSON_FOV_DEGREES,
+    );
+    let talk = conversation.0.as_ref().filter(|t| !t.line_only);
+    let Some(talk) = talk else {
+        // After the menu: back toward the defaults.
+        view.active = false;
+        let Some((world_fov, first_fov)) = view.fovs else {
+            return;
+        };
+        let back = (
+            view_rules::fov_back(world_fov, defaults.0, dt, &s),
+            view_rules::fov_back(first_fov, defaults.1, dt, &s),
+        );
+        view.fovs = (back != defaults).then_some(back);
+        if let Projection::Perspective(p) = &mut *projection {
+            p.fov = cellview::vertical_fov(back.0);
+        }
+        return;
+    };
+    if !view.active {
+        // The menu opens (`00761a20` focuses with 0: nothing zoomed yet).
+        view.active = true;
+        view.logged = false;
+        view.focus = Focus::default();
+        if view.fovs.is_none() {
+            view.fovs = Some(defaults);
+        }
+    }
+    let Some(head) = head_bound(
+        talk.speaker.reference,
+        &roots,
+        &pieces,
+        &joints,
+        &meshes,
+        &binds,
+        time.elapsed_secs(),
+    ) else {
+        return;
+    };
+    let input = FocusInput {
+        eye: game_point(transform.translation),
+        head,
+        percent: view_rules::focus_percent(talk.zoom.percent, talk.package_zoom),
+        zooming_out: talk.zoom.closing(),
+        dt,
+        heading: -fly.yaw,
+        pitch: fly.pitch,
+        fovs: view.fovs.unwrap_or(defaults),
+    };
+    let out = view.focus.frame(&s, &input);
+    if !view.logged {
+        view.logged = true;
+        let (c, r) = head;
+        println!(
+            "Dialogue view: eye {:.0},{:.0},{:.0}; the speaker's head {:.0},{:.0},{:.0}, radius {r:.1}.",
+            input.eye[0], input.eye[1], input.eye[2], c[0], c[1], c[2]
+        );
+    }
+    view.fovs = Some(out.fovs);
+    fly.yaw = cellview::space::heading_to_yaw(out.heading);
+    fly.pitch = out.pitch.clamp(-1.54, 1.54);
+    transform.rotation = Quat::from_euler(EulerRot::YXZ, fly.yaw, fly.pitch, 0.0);
+    if let Projection::Perspective(p) = &mut *projection {
+        p.fov = cellview::vertical_fov(out.fovs.0);
     }
 }
 

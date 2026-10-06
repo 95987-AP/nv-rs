@@ -37,7 +37,7 @@ fn the_farewell_follows_up_to_a_goodbye_that_closes_the_menu() {
     dialogue::line_begins(&mut state, &welcome, doc.reference);
 
     // The greeting has no topics of its own: the speaker goes straight on.
-    let AfterLine::FollowUp(gift) = dialogue::after_line(&order, &welcome, &top, &[], &doc, &state)
+    let AfterLine::FollowUp(gift) = dialogue::after_line(&order, &welcome, &top, &doc, &state)
     else {
         panic!("the greeting should go on to the gift");
     };
@@ -45,7 +45,7 @@ fn the_farewell_follows_up_to_a_goodbye_that_closes_the_menu() {
     dialogue::line_begins(&mut state, &gift, doc.reference);
 
     // Of the gift's two follow-ups, the one whose condition passes.
-    let AfterLine::FollowUp(middle) = dialogue::after_line(&order, &gift, &top, &[], &doc, &state)
+    let AfterLine::FollowUp(middle) = dialogue::after_line(&order, &gift, &top, &doc, &state)
     else {
         panic!("the gift should go on");
     };
@@ -58,8 +58,7 @@ fn the_farewell_follows_up_to_a_goodbye_that_closes_the_menu() {
     state.globals.insert(FormId(SWITCH), 0.0);
 
     // The middle offers its topic.
-    let AfterLine::Topics(list) = dialogue::after_line(&order, &middle, &top, &[], &doc, &state)
-    else {
+    let AfterLine::Topics(list) = dialogue::after_line(&order, &middle, &top, &doc, &state) else {
         panic!("the middle line should offer topics");
     };
     let topics: Vec<u32> = list.iter().map(|c| c.topic.form_id.0).collect();
@@ -68,8 +67,7 @@ fn the_farewell_follows_up_to_a_goodbye_that_closes_the_menu() {
     assert_eq!(thanks.form_id, FormId(THANKS_LINE));
 
     // The answer goes on to the Goodbye line.
-    let AfterLine::FollowUp(bye) = dialogue::after_line(&order, &thanks, &top, &[], &doc, &state)
-    else {
+    let AfterLine::FollowUp(bye) = dialogue::after_line(&order, &thanks, &top, &doc, &state) else {
         panic!("the answer should go on to the goodbye");
     };
     assert_eq!(bye.form_id, FormId(BYE));
@@ -93,7 +91,7 @@ fn the_farewell_follows_up_to_a_goodbye_that_closes_the_menu() {
     );
     assert_eq!(state.globals.get(&FormId(DOOR_OPEN)), Some(&2.0));
     assert_eq!(
-        dialogue::after_line(&order, &bye, &top, &[], &doc, &state),
+        dialogue::after_line(&order, &bye, &top, &doc, &state),
         AfterLine::Close
     );
 
@@ -114,20 +112,20 @@ fn goodbye_states_and_lines_without_follow_ups() {
     let mut bye = info(&order, BYE);
     bye.follow_ups = vec![FormId(GIFT)];
     assert_eq!(
-        dialogue::after_line(&order, &bye, &top, &[], &doc, &state),
+        dialogue::after_line(&order, &bye, &top, &doc, &state),
         AfterLine::Close
     );
 
     let see_you = dialogue::pick(&order, FormId(GOODBYE), &doc, &state).unwrap();
     assert_eq!(dialogue::ending(&see_you), Ending::GoodbyeTopic);
     assert_eq!(
-        dialogue::after_line(&order, &see_you, &top, &[], &doc, &state),
+        dialogue::after_line(&order, &see_you, &top, &doc, &state),
         AfterLine::Close
     );
     let mut see_you_more = see_you.clone();
     see_you_more.follow_ups = vec![FormId(GIFT)];
     assert!(matches!(
-        dialogue::after_line(&order, &see_you_more, &top, &[], &doc, &state),
+        dialogue::after_line(&order, &see_you_more, &top, &doc, &state),
         AfterLine::FollowUp(i) if i.form_id == FormId(GIFT)
     ));
 
@@ -136,7 +134,7 @@ fn goodbye_states_and_lines_without_follow_ups() {
     assert!(dialogue::menu_runs_begin_script(&immediate));
     // No follow-up, no topics: the menu closes ("invalid choice list").
     assert_eq!(
-        dialogue::after_line(&order, &immediate, &top, &[], &doc, &state),
+        dialogue::after_line(&order, &immediate, &top, &doc, &state),
         AfterLine::Close
     );
     assert_eq!(dialogue::ending(&immediate), Ending::Continue);
@@ -171,6 +169,35 @@ fn random_runs_are_chosen_among() {
         dialogue::choose(left, 5).map(|i| i.form_id),
         Some(FormId(PLAIN))
     );
+}
+
+/// The main list is the player's topics (`0083ec30`, `0083ed50`): every
+/// top-level topic whatever its kind, without the hard-coded
+/// `SpeechChallengeFailure` and `InfoRefusal`, and only the topics of the
+/// player's Intelligence class, highest priority first.
+#[test]
+fn the_main_list_is_the_players_topics() {
+    let (_data, order) = order("dialogue-flow-main-list");
+    let mut state = GameState::new(&order);
+    let doc = doc(&order);
+    let top = dialogue::top_level_topics(&order);
+    state.globals.insert(FormId(LIST_ON), 1.0);
+    let list = |state: &GameState| -> Vec<u32> {
+        dialogue::menu_topics(&order, &top, &doc, state)
+            .into_iter()
+            .map(|c| c.topic.form_id.0)
+            .collect()
+    };
+    state.actor_values.insert((PLAYER_REF, 9), 3.0);
+    assert_eq!(list(&state), [DUMB_ASK, ASK, CHAT]);
+    state.actor_values.insert((PLAYER_REF, 9), 6.0);
+    assert_eq!(list(&state), [SMART_ASK, ASK, CHAT]);
+    // A line without choices of its own leads there.
+    let middle = info(&order, IMMEDIATE_LINE);
+    let AfterLine::Topics(after) = dialogue::after_line(&order, &middle, &top, &doc, &state) else {
+        panic!("the main list should follow");
+    };
+    assert_eq!(after.len(), 3);
 }
 
 /// Low-Intelligence lines only for a player at or below

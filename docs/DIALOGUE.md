@@ -38,7 +38,7 @@ Data (`FalloutNV.esm`, read with `nvinspect`):
 | `00762860` | Goodbye state `+0x2c`: 2 Goodbye flag, 1 `GOODBYE` topic (`0061a2d0(1,2)`) | `dialogue::ending` |
 | `00762160` | Close: end script for states 2/3 unless flag 0x08 | `menu_runs_end_script` |
 | `0083ebb0` | Begin script unless flag 0x40 | `menu_runs_begin_script` |
-| `0083ec30`, `0083ed50`, `0083f110` | Topic list: info's `TCLT` or the global list; topics 0xFD/0x118 excluded; priority sort | not changed (see gaps) |
+| `0083ec30`, `0083ed50`, `0083f110` | Topic list: info's `TCLT` or the player's list; topics 0xFD/0x118 excluded; priority sort | carried out in the next batch (below) |
 | `00762950` | Menu update: state 1 cuts a clicked-away voice after 500 ms; state 3 waits the line timer | viewer skip timing |
 | `008a20d0`, `008bc590` | Say: missing voice file sets the menu timer to `fDialogSpeechDelaySeconds` (`011d32c4`, exe 2.0) | silent-line duration |
 | `0061b320` | NPC say: same matching (`0061a790`); "run immediately" runs script 0 at once | `social::pick_for` |
@@ -78,14 +78,81 @@ the data, so it isn't offered) → 0015E139 → 001057E7 → close; the door
 Nothing here has been checked side by side with the original yet; the
 installed-data route through the door is the next check.
 
+## The speaker, the world and the view during the menu
+
+Branch `claude/m1-dialogue-npc`, 2026-10-06. Private exports in
+`%USERPROFILE%\nv-re\work\dialogue-npc-2026-10-06`. Names marked (Xbox
+PDB) come from the prototype's symbols: `DialogMenu` (states
+`eCameraZoomIn` 0, `eLoadSpeech` 1, `eSpeechIdle` 2, `ePlaySpeech` 3,
+`eCameraZoomOut` 4, `eServiceFadeOut` 5; `+0x128 fPercentZoomed`,
+`fPackagePercentZoom`), `MenuTopicManager` (`+0x10
+bSpeechChallengeLoss`), `MenuTopic` (`+0x8 bTopicIsChoice`). Actor
+vtable slots on PC are the Xbox ones + 4 from `+0x258` on (checked
+against `Character`'s vtable `01086a6c`: `+0x264` `UpdateInDialogue`
+`008a5580`, `+0x280` `InitiateDialogue` `008b2170`, `+0x288`
+`EndDialogue` `008b1070`).
+
+| Address | What | Used for |
+| --- | --- | --- |
+| `0086e650` | Main loop: in menu mode (`00702360`) the process lists aren't updated | everyone but the speaker holds still (unchanged) |
+| `00761a20` | `DialogMenu::Create`: speaker's dialogue package zoom (`00672850`, `PKDD` float), first line said at once | `MenuZoom`, `focus_percent` |
+| `00762950` | `DoIdle`: zoom in over `fDialogZoomInSeconds` (1.5), out over `fDialogZoomOutSeconds` (0.5), menu destroyed at 0; every frame `FocusOnActor` and, while in dialogue with the PC (`00933840`), the speaker's `UpdateInDialogue` | `world::dialogue_view::MenuZoom`, viewer close after zoom-out |
+| `00953060` | `PlayerCharacter::FocusOnActor` (own error text): face node bound (or `Bip01 Head`/`Bip01 Speaker`, radius 32), look point raised by `fDlgLookAdj`, zoom atan(`fDlgFocus` × r / d) × 100 ≤ `fDefaultFOV`, eased over the zoom in; pitch/heading start/stop thresholds `fDlgLookDegStart/Stop`, `fDlgHeadingDegStart/Stop`, rate `fDlgLookMult` | `Focus::frame`, `dialogue::focus_camera` |
+| `00fa8d40`…`00fa8e60`, `00f6e610`, `00f6e640`, `00fbc020` | Setting initialisers: 3.2, 13, 0.2, 13, 0.2, −5, 2; 1.5, 0.5; `fDefaultFOV` 75 | `ViewSettings::DEFAULT` |
+| `0095de30` | Outside dialogue and V.A.T.S. the field of view returns at 30 ÷ `fIronSightsFOVTimeChange` °/s | `fov_back` after the menu |
+| `008a5580` | `Actor::UpdateInDialogue`: not seated, not in combat (`+0x104`), mover not rotating (state 4), > 1° off (`01023128`) → `RequestRotateActor` toward the player (`009dce80`); mover updated with its dialogue flag (`009c9900`) | `speaker_turns`, viewer `ai::move_actors` |
+| `0083ec30`, `0083ed50`, `0083f0d0` | `LoadNextTopicList`/`FillTopicList`: a line's `TCLT` in stored order, else the player's topics (`+0x6a8`) sorted by priority (`0083f110`); 0xFD `SpeechChallengeFailure` and 0x118 `InfoRefusal` left out; topic `DATA` flags 0x10/0x20 Intelligence classes | `dialogue::menu_topics`, `answered` |
+| `00619030`, `00619410`, `00952830` | `TESTopic::InitItem` adds every topic flagged 0x02 (any kind) to the player's list; `AddTopic` | `Topic::is_top_level` (the `GOODBYE` topic, kind 1, is one) |
+| `0083e850` | `DoSpeechChallengeCheck` for lines flagged 0x80: chance from Speech, disposition and difficulty, `rand() % 100`; a loss says the `SpeechChallengeFailure` line and pops back to the previous list | not carried out (see gaps) |
+
+### Implemented
+
+- `world::dialogue_view` (new): `ViewSettings` (game settings and INI),
+  `MenuZoom`, `focus_percent`, `Focus::frame` (translated from
+  `00953060`), `fov_back`, `speaker_turns` (translated from `008a5580`).
+- Viewer: the menu zooms in as it opens and, once to close, zooms out for
+  `fDialogZoomOutSeconds` before it goes (world still frozen, nothing more
+  said); `dialogue::focus_camera` turns the player's view onto the
+  speaker's head and narrows the field of view, then lets it return.
+- Viewer `ai::move_actors`: the speaker's in-menu turn follows
+  `008a5580` (replaces the inferred "face every frame" rule; combat
+  excluded, turn played out once started).
+- `world::dialogue`: the main list is the player's topics (top-level of
+  any kind plus learned), without the opening line's follow-ups (that
+  guess is gone: Sunny Smiles' main list reaches "Goodbye." through the
+  top-level `GOODBYE` topic, kind 1, priority 5, her "Until next time.");
+  the refusal topics and wrong-Intelligence topics are left out.
+
+### Tested
+
+`crates/world/src/dialogue_view.rs` unit tests (zoom timing, package
+zoom, zoom on the head by the end of the zoom in, the FOV clamp, the
+start/stop thresholds, no turn while zooming out, the FOV return, the
+speaker's turn rule); `crates/world/tests/dialogue_flow.rs`
+`the_main_list_is_the_players_topics` on new generated topics.
+
+### Not compared with the original game
+
+None of this has been checked side by side yet; the zoom and turn rates
+and the head bound especially need a recording of a conversation.
+
 ## Remaining gaps
 
-- The main topic list after a line without topics still keeps the opening
-  line's follow-ups (a guess); `0083ec30`'s global list, the 0xFD/0x118
-  exclusion and `0083f0d0`'s topic flags are not carried out.
-- Say once a day (`00935a40` list), speech-challenge outcome (`0083e850`),
-  the `+0x24` next-speaker rules inside the menu, the pause after a voiced
-  line (`008bc590` sets the timer when called with its second argument 0;
-  which callers pass what is untraced).
-- Speaker/listener behaviour during the menu (camera focus `00953060`,
-  the NPC turning and holding position) is not changed here.
+- The head's bound: the game merges the face node's skinned pieces'
+  bounds; here a box-middle/farthest-vertex sphere over the head parts as
+  skinned now (an approximation, labelled in `dialogue::head_bound`).
+- Not carried out from `00953060`/`00761a20`: the depth of field
+  (`fDialogFocalDepthRange` 300, `…Strength` 0.65 × percentage), the
+  forced first-person view (`00951a10`, `00950110`) and its restoration,
+  a seated player's look offset (`+0x6e4`), the menu tiles showing only
+  from 10 % zoom (`00762950` state 0).
+- Which update calls `0095de30` (the FOV return) is untraced; the
+  first-person view model's own FOV isn't zoomed (it is hidden during
+  conversations).
+- The speaker's dialogue animation and emotion handling in
+  `UpdateInDialogue` (`+0xb4` cases 1/5/8), dialogue idles and
+  `GetIsTalking`-conditioned idles are not traced.
+- `0083e850`'s random speech challenge (0x80 lines), the loss pop-back,
+  XP and disposition change; rumors (topic flag 0x01, `0042df90`);
+  `InfoRefusal` lines; say once a day (`00935a40`); the `+0x24`
+  next-speaker rules; the pause after a voiced line (`008bc590`).

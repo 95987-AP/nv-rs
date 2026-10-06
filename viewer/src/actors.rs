@@ -485,8 +485,8 @@ pub fn animate_actors(
         let rig = &mut *rig;
         // In the dialogue menu only the speaker moves: `ai` holds everyone
         // else (`still`) and has the speaker stop walking and turn in place
-        // to face the player (inferred, see `ai::move_actors`), which plays
-        // here; the dead's ragdolls wait.
+        // to face the player (`008a5580`, see `ai::move_actors`), which
+        // plays here; the dead's ragdolls wait.
         if in_dialogue && (rig.still || rig.ragdoll.is_some()) {
             continue;
         }
