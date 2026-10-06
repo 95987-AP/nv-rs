@@ -33,7 +33,6 @@ pub struct HeadTrack {
 #[derive(Resource, Default)]
 pub struct LookSettings(pub Settings);
 
-
 /// Gives each placed person their head tracking once their skeleton is
 /// up (0087e130).
 pub fn set_up(
@@ -181,4 +180,3 @@ pub fn track(
 pub fn player_look_point(camera: &GlobalTransform) -> [f32; 3] {
     crate::walk::game_point(camera.translation())
 }
-

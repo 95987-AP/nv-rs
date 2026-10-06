@@ -6,7 +6,6 @@
 
 mod actors;
 mod ai;
-mod look;
 mod args;
 mod chatter;
 mod combat;
@@ -27,6 +26,7 @@ mod lighting;
 mod lockpick;
 mod lod;
 mod lod_objects;
+mod look;
 mod map;
 mod menus;
 mod music;

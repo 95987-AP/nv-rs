@@ -467,6 +467,7 @@ pub fn script_idles(
 /// in menu mode and stands still, animations included (someone talked to
 /// mid-stride kept walking on the spot before), except, in the dialogue
 /// menu, the speaker: they stop walking and turn to face the player.
+#[allow(clippy::too_many_arguments)]
 pub fn animate_actors(
     time: Res<Time>,
     settings: Option<Res<AnimSettings>>,
@@ -526,7 +527,9 @@ pub fn animate_actors(
                 // Whom they look at: `ai`'s head-track target, or the
                 // player while they're the one talking to them. Only the
                 // player's look point is ported (00952ff0).
-                let looking = w.look_target().or(speaker.filter(|s| *s == w.reference).map(|_| PLAYER));
+                let looking = w
+                    .look_target()
+                    .or(speaker.filter(|s| *s == w.reference).map(|_| PLAYER));
                 let target = looking.filter(|who| *who == PLAYER).and(player_point);
                 let bones = rig.skeleton.bones.clone();
                 crate::look::track(&mut ht, &s.0, &bones, &mut pose, &w.placement(), target);
