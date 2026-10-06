@@ -3126,6 +3126,15 @@ mix), `viewer/src/music.rs` (`MusicPlugin`), `nvinspect <Data> music
     stops, the actor stops; for the player the factions around forgive
     crimes. `IsCombatTarget` (`008bc700`). `GetFactionRankDifference`
     (`0047d680` on both bases). `GetArmorRating` (actor value 18).
+  - `GetShouldAttack` (`0059ed30`): 100 when the caller would attack the
+    other on sight (`008b06d0`), else 0 (the game's scripts all test `== 0`;
+    its early 0 within one combat group, `00992640`, needs combat groups).
+    `GetIsAlignment` (`005a4dd0`): Karma (actor value 23) in `0047e040`'s
+    band (0 good, 1 neutral, 2 evil, 3 very good, 4 very evil).
+    `SetItemValue` (`005d3e30` → `0048e960`): the reference's base's value
+    for every one of them, saved; barter, repair costs, pickpocketing and
+    the Pip-Boy's VAL read it. `GetContainer` (`005ce5c0`): the holder of
+    the item whose script runs, else 0.
   - `MenuMode n` (`0059c380`): 0 any menu, 1 a Pip-Boy menu (1002, 1003,
     1023, 1035, 1061), else that menu; open while its `MenuMode` blocks run.
   - `Autosave`, `ForceSave`, `SystemSave` (`bAllowScripted…:SaveGame`, exe

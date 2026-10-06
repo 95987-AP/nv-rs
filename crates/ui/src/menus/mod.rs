@@ -5,16 +5,23 @@
 //! `%USERPROFILE%\nv-re\findings\menus.md`.
 
 pub mod barter;
+pub mod caravan;
 pub mod chargen;
+pub mod companion_wheel;
+pub mod computers;
 pub mod container;
 pub mod dialog;
+pub mod hacking;
 pub mod levelup;
 pub mod message;
 pub mod quantity;
 pub mod recipe;
+pub mod repair_services;
 pub mod sleepwait;
+pub mod slots;
 pub mod textedit;
 pub mod traits;
+mod typed;
 pub mod vigor;
 
 #[cfg(test)]

@@ -1110,6 +1110,32 @@ pub fn play(
                 describe_id(order, *category),
                 describe_id(order, *actor)
             ),
+            Event::TeammateContainer(m) => {
+                format!("trading things with {}", describe_id(order, *m))
+            }
+            Event::Caravan {
+                npc,
+                deck,
+                difficulty,
+                share,
+            } => format!(
+                "Caravan against {} ({}, difficulty {difficulty}, betting {share})",
+                describe_id(order, *npc),
+                describe_id(order, *deck)
+            ),
+            Event::RepairServices(m) => {
+                format!("{}'s repair services", describe_id(order, *m))
+            }
+            Event::Casino {
+                game,
+                casino,
+                min_bet,
+                max_bet,
+                min_winnings,
+            } => format!(
+                "{game:?} at {} (bets {min_bet} to {max_bet}, least winnings {min_winnings})",
+                describe_id(order, *casino)
+            ),
             Event::Died { who, by } => format!(
                 "{} killed by {}",
                 describe_id(order, *who),
@@ -1163,6 +1189,7 @@ pub fn play(
                 format!("the {} menu opens", if *sleep { "sleep" } else { "wait" })
             }
             Event::More(shown) => world::more_functions::describe(order, &state, shown),
+            Event::TerminalBack => "the terminal menu goes back a screen".to_string(),
             Event::Enable(r, on) => format!(
                 "{} {}",
                 describe_id(order, *r),

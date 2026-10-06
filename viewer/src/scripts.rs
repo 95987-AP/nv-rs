@@ -251,6 +251,16 @@ fn refresh_cell_scripts(
     cell_scripts: &mut CellScripts,
 ) {
     if state.player_cell == cell_scripts.cell {
+        // Things dropped here since (made references of items).
+        for made in world::scripting::made_items_here(order, state) {
+            if !cell_scripts
+                .refs
+                .iter()
+                .any(|r| r.reference == made.reference)
+            {
+                cell_scripts.refs.push(made);
+            }
+        }
         return;
     }
     cell_scripts.cell = state.player_cell;
@@ -259,6 +269,9 @@ fn refresh_cell_scripts(
         .player_cell
         .map(|c| world::scripting::interactive_references(order, c))
         .unwrap_or_default();
+    cell_scripts
+        .refs
+        .extend(world::scripting::made_items_here(order, state));
     let mut runner = Runner::new(order, cache, state);
     for r in cell_scripts.refs.iter().filter(|r| r.script.is_some()) {
         runner.run_blocks(r.reference, Some(r.reference), "onload", |_| true);
@@ -965,6 +978,7 @@ pub fn run_scripts(
     // Quest positions, triggers and saves must follow the collision capsule.
     let feet = player.position_for_view(eye);
     state.player_position = Some(feet);
+    state.player_heading = heading;
     match &exterior {
         Some(e) => {
             state.player_world = Some(e.grid.world.form_id);
@@ -976,12 +990,12 @@ pub fn run_scripts(
         }
     }
     // `--run`: each line as the console would run it, once the place is
-    // up and the player is in it.
-    if player.ready {
-        for line in std::mem::take(&mut start_commands.0) {
-            let flow = Runner::new(order, &scripts.0, state).run_source(&line, None, None);
-            println!("{line}: {flow:?}");
-        }
+    // up and the player is in it; one a frame, so each sees what the
+    // scripts did after the one before (an item's `OnAdd`).
+    if player.ready && !start_commands.0.is_empty() {
+        let line = start_commands.0.remove(0);
+        let flow = Runner::new(order, &scripts.0, state).run_source(&line, None, None);
+        println!("{line}: {flow:?}");
     }
     refresh_cell_scripts(order, &scripts.0, state, &mut cell_scripts);
     // Walking away from a seat gets the player up.
@@ -1037,7 +1051,16 @@ pub fn run_scripts(
                     waiting.push(crate::menus::Menu::Container(c, name));
                 }
                 Some(Used::Terminal(t, r)) => {
-                    waiting.push(crate::menus::Menu::Terminal(t, r));
+                    use crate::game_menus::hacking::{use_terminal, Using};
+                    match use_terminal(order, state, t, r) {
+                        Using::Open(m) => waiting.push(m),
+                        Using::Refused(why) => {
+                            if let Some(s) = order.form_by_editor_id(crate::lockpick::POPUP_SOUND) {
+                                sound_requests.0.push(s);
+                            }
+                            announce(why, &mut notices);
+                        }
+                    }
                 }
                 Some(Used::Lockpick(r)) => lockpicking.request = Some(r),
                 Some(Used::Sleep) => {
@@ -1116,6 +1139,38 @@ pub fn run_scripts(
             // `game_menus::recipe`, with `world::crafting`'s rules.
             Event::RecipeMenu { actor, category } => {
                 waiting.push(crate::menus::Menu::Recipe { actor, category });
+                None
+            }
+            Event::RepairServices(vendor) => {
+                waiting.push(crate::menus::Menu::RepairServices(vendor));
+                None
+            }
+            Event::TeammateContainer(who) => {
+                waiting.push(crate::menus::Menu::Teammate(who));
+                None
+            }
+            Event::Casino {
+                game,
+                casino,
+                min_bet,
+                max_bet,
+                ..
+            } => {
+                println!("{game:?} at {casino} (bets {min_bet} to {max_bet}): not shown yet.");
+                None
+            }
+            Event::Caravan {
+                npc,
+                deck,
+                difficulty,
+                share,
+            } => {
+                waiting.push(crate::menus::Menu::Caravan {
+                    npc,
+                    deck,
+                    difficulty,
+                    share,
+                });
                 None
             }
             // `ShowSleepWaitMenu` (its refusals already given): the game's
@@ -1348,8 +1403,21 @@ pub fn run_scripts(
                 let base = world::scripting::base_of(order, what);
                 match base.and_then(|b| order.get(b)).map(|r| r.entry.header.kind) {
                     Some(k) if k.as_bytes() == b"TERM" => {
-                        waiting.push(crate::menus::Menu::Terminal(base.unwrap_or(what), what));
-                        None
+                        use crate::game_menus::hacking::{use_terminal, Using};
+                        match use_terminal(order, state, base.unwrap_or(what), what) {
+                            Using::Open(m) => {
+                                waiting.push(m);
+                                None
+                            }
+                            Using::Refused(why) => {
+                                if let Some(s) =
+                                    order.form_by_editor_id(crate::lockpick::POPUP_SOUND)
+                                {
+                                    sound_requests.0.push(s);
+                                }
+                                Some(why)
+                            }
+                        }
                     }
                     Some(k) if k.as_bytes() == b"CONT" => {
                         match locked(order, state, what, &name(what)) {
@@ -1368,6 +1436,10 @@ pub fn run_scripts(
                 }
             }
             Event::Activate { .. } => None,
+            // An item's own `ForceTerminalBack` is carried out by the
+            // terminal menu (`game_menus::computers`). From another script
+            // it isn't (the game's goes back if a terminal menu is open).
+            Event::TerminalBack => None,
             Event::More(shown) => {
                 println!("{}", world::more_functions::describe(order, state, &shown));
                 match shown {

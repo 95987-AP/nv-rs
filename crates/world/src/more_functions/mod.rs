@@ -166,6 +166,10 @@ pub struct State {
     /// → `00753420`, kind 0 SPECIAL, 1 tag skills).
     pub special_points: i32,
     pub tag_points: i32,
+    /// Bases whose value `SetItemValue` changed (`005d3e30` → `0048e960`:
+    /// the form's value data, +4, for every one of them; the form marked
+    /// changed, so saved).
+    pub item_values: HashMap<FormId, i32>,
     /// The seconds the effect script running now covers
     /// (`ScriptEffectElapsedSeconds`; `None` outside one; not saved).
     pub effect_seconds: Option<f32>,
@@ -279,6 +283,8 @@ pub const READS: &[&str] = &[
     "GetFactionRankDifference",
     "IsCombatTarget",
     "IsIdlePlaying",
+    "GetShouldAttack",
+    "GetIsAlignment",
 ];
 
 /// The functions that change things ([`change`]), by the game's own names.
@@ -721,6 +727,33 @@ fn read(facts: &Facts, name: &str, on: Option<FormId>, args: &[Value]) -> Option
             let who = on?;
             flag(actor(who) && s.combat.get(&who) == Some(&arg(0).form()))
         }
+        // `0059ed30`: 100 when the caller would attack the other on sight
+        // (`008b06d0`, [`crate::factions::attacks_on_sight`]), else 0; both
+        // people or creatures. (Its early 0 for another in the caller's
+        // combat group, `00992640`, needs combat groups, not kept here.)
+        "GetShouldAttack" => {
+            let (who, other) = (on?, arg(0).form());
+            let attacks = actor(who)
+                && actor(other)
+                && crate::factions::attacks_on_sight(order, s, who, other);
+            if attacks {
+                100.0
+            } else {
+                0.0
+            }
+        }
+        // `005a4dd0`: whether the caller's Karma (actor value 23) is in the
+        // band asked (`0047e040`, [`crate::reputation::alignment`]: 0 good,
+        // 1 neutral, 2 evil, 3 very good, 4 very evil).
+        "GetIsAlignment" => {
+            let who = on?;
+            let karma = facts.current_actor_value(who, 23).unwrap_or(0.0) as f32;
+            flag(
+                actor(who)
+                    && i64::from(crate::reputation::alignment(order, karma))
+                        == arg(0).number() as i64,
+            )
+        }
         _ => return None,
     })
 }
@@ -1111,6 +1144,11 @@ pub(crate) fn save_lines(state: &GameState, line: &mut dyn FnMut(String)) {
     for (base, on) in v {
         line(format!("broadcast {} {}", id(*base), u8::from(*on)));
     }
+    let mut v: Vec<_> = m.item_values.iter().collect();
+    v.sort_by_key(|(k, _)| **k);
+    for (base, value) in v {
+        line(format!("itemvalue {} {value}", id(*base)));
+    }
     for (word, map) in [("combatstyle", &m.combat_styles), ("speaker", &m.speakers)] {
         let mut v: Vec<_> = map.iter().collect();
         v.sort_by_key(|(k, _)| **k);
@@ -1213,6 +1251,9 @@ pub(crate) fn load_line(state: &mut GameState, raw: &str) -> Option<Result<(), S
             }
             "combatstyle" => {
                 m.combat_styles.insert(form(1)?, form(2)?);
+            }
+            "itemvalue" => {
+                m.item_values.insert(form(1)?, num(2)? as i32);
             }
             "speaker" => {
                 m.speakers.insert(form(1)?, form(2)?);

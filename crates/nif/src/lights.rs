@@ -105,6 +105,27 @@ impl Nif {
         Ok(())
     }
 
+    /// Any scene object's name (its `NiAVObject` fields).
+    pub fn av_name(&self, index: usize) -> Option<String> {
+        if index >= self.blocks().len() {
+            return None;
+        }
+        let ctx = self.ctx();
+        let mut r = Reader::new(self.block_bytes(index), self.blocks()[index].offset);
+        read_av_object(&mut r, &ctx).ok().map(|av| av.net.name)
+    }
+
+    /// Any scene object's own transform (its `NiAVObject` fields), also
+    /// for blocks [`Nif::block`] doesn't decode (lights, cameras).
+    pub fn av_transform(&self, index: usize) -> Option<Transform> {
+        if index >= self.blocks().len() {
+            return None;
+        }
+        let ctx = self.ctx();
+        let mut r = Reader::new(self.block_bytes(index), self.blocks()[index].offset);
+        read_av_object(&mut r, &ctx).ok().map(|av| av.transform)
+    }
+
     fn light(&self, index: usize, kind: LightKind, parent: &Transform) -> Result<Light> {
         let ctx = self.ctx();
         let mut r = Reader::new(self.block_bytes(index), self.blocks()[index].offset);

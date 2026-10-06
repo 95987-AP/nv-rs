@@ -180,13 +180,18 @@ impl Nif {
         counts
     }
 
-    /// The name of a block, for types that have one.
+    /// The name of a block, for types that have one (cameras and lights
+    /// too, read from their `NiAVObject` fields).
     pub fn block_name(&self, index: usize) -> Option<String> {
         match self.block(index).ok()? {
             Block::Node(n) => Some(n.av.net.name),
             Block::Geometry(g) => Some(g.av.net.name),
             Block::Shader(s) => Some(s.net.name),
-            _ => None,
+            _ => match self.block_type(index) {
+                "NiCamera" | "NiPointLight" | "NiSpotLight" | "NiAmbientLight"
+                | "NiDirectionalLight" => self.av_name(index),
+                _ => None,
+            },
         }
         .filter(|n| !n.is_empty())
     }

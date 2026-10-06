@@ -86,6 +86,10 @@ pub struct Terrain {
     pub lod_normal: Option<Handle<Image>>,
     #[texture(119)]
     pub lod_noise: Option<Handle<Image>>,
+    /// The hour's light outdoors (`crate::shared_light::BUFFER`): the
+    /// ambient, the sun and the fog.
+    #[storage(121, read_only)]
+    pub shared: Handle<bevy::render::storage::ShaderStorageBuffer>,
 }
 
 /// `terrain.wgsl`'s `LandBlend`: the middle of the player's cell (Bevy x
@@ -152,6 +156,7 @@ impl Terrain {
             }
         };
         Terrain {
+            shared: crate::shared_light::BUFFER,
             lighting,
             land_blend,
             lod_base: lod.0,

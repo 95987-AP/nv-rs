@@ -121,7 +121,7 @@ pub const RECORDS: &[RecordEntry] = &[
     r("SPEL", "actor effect (spell, ability, addiction)", Partial, "SPIT EFID EFIT CTDA FULL", "world::magic, world::items", "abilities on races and actors (SPLO) aren't given"),
     r("ACTI", "activator", Partial, "MODL SCRI FULL", "world::placement, world::scripting", "SNAM (looping sound), VNAM (activation sound), RNAM (radio station), WNAM (water), INAM (radio template), XATO, destruction (DEST DSTD DSTF DMDL)"),
     r("TACT", "talking activator", Partial, "MODL SCRI FULL", "world::placement, world::scripting", "SNAM, VNAM (voice type), INAM (radio template): talking activators don't speak"),
-    r("TERM", "terminal", Partial, "DESC DNAM ITXT RNAM ANAM INAM TNAM SCTX CTDA SCRI MODL FULL", "world::terminal", "the hacking word game; SNAM (sound), PNAM (password note)"),
+    r("TERM", "terminal", Partial, "DESC DNAM PNAM ITXT RNAM ANAM INAM TNAM SCTX CTDA SCRI MODL FULL", "world::terminal, world::hacking", "SNAM (sound)"),
     r("ARMO", "armour and clothing", Partial, "BMDT MODL MOD2 MOD3 DATA DNAM FULL ICON YNAM ZNAM", "world::actor, world::items, world::combat, world::impacts, world::sound", "first-person and ground models (MOD4, MOD2 in 1st person), the female icon (ICO2), BIPL/REPL lists, ETYP, EITM effects, SNAM sounds, TNAM, BMCT"),
     r("BOOK", "book", Partial, "DATA FULL ICON YNAM ZNAM", "world::items, world::sound", "DESC (the text shown when read), the book menu"),
     r("CLOT", "clothing (Oblivion-era; unused)", NA, "", "", "none in the data"),
@@ -306,7 +306,7 @@ pub const FILE_KINDS: &[FileKind] = &[
     f("tai", "texture atlas index", Done, "ui", ""),
     f("tex", "font texture", Done, "ui::font", ""),
     f("tri", "FaceGen morph targets", Done, "nif::tri", ""),
-    f("txt", "text: the hacking word list (menus\\falloutdict.txt), the menu sources (master_menu_file.txt), placeholders", No, "", "falloutdict.txt (the hacking game's words) isn't read"),
+    f("txt", "text: the hacking word list (menus\\falloutdict.txt), the menu sources (master_menu_file.txt), placeholders", Partial, "world::hacking", "only falloutdict.txt (the hacking game's words) is read"),
     f("wav", "sound (PCM)", Partial, "cellview::sound", "16-bit PCM read; no 3D placement, volumes or most sound kinds"),
     f("xml", "menu", Partial, "ui", "every menu file is worked out as the game does; only the HUD is drawn"),
 ];

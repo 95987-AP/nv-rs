@@ -604,8 +604,8 @@ pub fn talk(
     };
     // Using a person (`world::living::pickpocket::use_person`): the dead
     // are searched (their inventory opens as a container); sneaking, the
-    // living's pockets picked; the unconscious and fleeing refuse; else
-    // talking.
+    // living's pockets picked; the unconscious and fleeing refuse; a
+    // teammate's wheel of orders; else talking.
     use world::living::pickpocket::{use_person, Use};
     let fleeing = walkers
         .iter()
@@ -656,6 +656,12 @@ pub fn talk(
             });
             return;
         }
+        Use::Wheel => {
+            menus.push(crate::menus::Menu::CompanionWheel(talker.reference));
+            return;
+        }
+        // A teammate who can't take orders now: nothing (`00754d90`).
+        Use::Nothing => return,
         Use::Talk => {}
     }
     let Some(mut talk) = start_talk(order, &scripts.0, &mut state.0, talker, name, GREETING, now)

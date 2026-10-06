@@ -487,3 +487,341 @@ pub fn recipe_menu() -> String {
         list_box("RM_Items_IngredientList", 6, 442.0, "225"),
     )
 }
+/// A hacking menu with the tiles, ids, traits and templates the hacking
+/// code uses (`hacking_menu.xml`'s structure: the depth rect holding the
+/// cursor and the four areas, the lockout's two lines beside it).
+pub fn hacking_menu() -> String {
+    "<menu name=\"HackingMenu\"><class>&HackingMenu;</class><locus>&true;</locus>
+       <user0></user0><user1>0</user1><user2>&false;</user2><user3>0</user3>
+       <rect name=\"depth\"><locus>&true;</locus><width>920</width><height>630</height><x>32</x>
+         <y><copy>48</copy><sub src=\"parent()\" trait=\"user1\"/></y>
+         <hotrect name=\"cursor\"><id>4</id><width>17</width><height>17</height><_blink_interval>400</_blink_interval></hotrect>
+         <rect name=\"intro\"><id>0</id><visible>&true;</visible><locus>&true;</locus></rect>
+         <rect name=\"header\"><id>1</id><locus>&true;</locus><height>150</height>
+           <visible><not src=\"sibling(intro)\" trait=\"visible\"/></visible>
+           <user0>&false;</user0><user1></user1><user2></user2></rect>
+         <rect name=\"screen\"><id>2</id><locus>&true;</locus><y>150</y><_start_col2>342</_start_col2>
+           <visible><not src=\"sibling(intro)\" trait=\"visible\"/></visible>
+           <width>665</width><height>476</height>
+           <user0></user0><user1>-1</user1><user2></user2><user3></user3><user4>-1</user4><user5></user5></rect>
+         <rect name=\"log\"><id>3</id><locus>&true;</locus><x>665</x><y>150</y><width>255</width><height>476</height>
+           <visible><not src=\"sibling(intro)\" trait=\"visible\"/></visible>
+           <text name=\"prompt\"><font>5</font><x>17</x><y>440</y><string><copy src=\"HackingMenu\" trait=\"user0\"/></string></text>
+           <text name=\"entry\"><id>5</id><font>5</font><x>38</x><y>440</y></text></rect>
+       </rect>
+       <rect name=\"locked\"><locus>&true;</locus><visible><copy src=\"parent()\" trait=\"user2\"/></visible>
+         <text name=\"locked1\"><id>6</id><font>5</font></text>
+         <text name=\"locked2\"><id>7</id><font>5</font></text></rect>
+       <template name=\"hacking_password_file_template\">
+         <hotrect name=\"row\"><visible>&false;</visible><target>&true;</target><locus>&true;</locus>
+           <width>323</width><height>17</height>
+           <x><copy src=\"HackingMenu\" trait=\"user3\"/><add><copy src=\"parent()\" trait=\"_start_col2\"/><mul src=\"me()\" trait=\"user0\"/></add></x>
+           <y><copy src=\"me()\" trait=\"height\"/><mul src=\"me()\" trait=\"listindex\"/></y>
+           <user0></user0>
+           <text name=\"row_text\"><font>5</font><string><copy src=\"parent()\" trait=\"string\"/></string><y>6</y></text></hotrect>
+       </template>
+       <template name=\"hacking_password_log_template\">
+         <text name=\"log_line\"><font>5</font><x>17</x>
+           <y><copy>440</copy><sub><copy>20</copy><mul><copy>3</copy><add src=\"me()\" trait=\"listindex\"/></mul></sub></y></text>
+       </template>
+       <template name=\"hacking_intro_template\">
+         <text name=\"intro_text\"><visible>&false;</visible><font>5</font></text>
+       </template>
+       <template name=\"hacking_guess_template\">
+         <hotrect name=\"guess\"><visible><copy src=\"parent()\" trait=\"user0\"/></visible>
+           <x><copy src=\"parent()\" trait=\"user1\"/><add><copy src=\"me()\" trait=\"listindex\"/><mul>2</mul><add>1</add><mul src=\"me()\" trait=\"width\"/></add></x>
+           <y><copy src=\"parent()\" trait=\"user2\"/></y><width>17</width><height>17</height></hotrect>
+       </template>
+     </menu>"
+        .to_string()
+}
+
+/// A terminal menu with the tiles, ids and template the terminal code uses
+/// (`computers_menu.xml`'s structure: the logon's four lines, the headers,
+/// the welcome and separator, the list, the prompt and result, the cursor,
+/// the display zone and its text).
+pub fn computers_menu() -> String {
+    format!(
+        "<menu name=\"ComputersMenu\"><class>&ComputersMenu;</class><locus>&true;</locus>
+           <rect name=\"depth\"><locus>&true;</locus><width>960</width><height>720</height>
+             <image name=\"background\"><id>13</id><target>&true;</target><width>960</width><height>720</height><filename>a.dds</filename></image>
+             <text name=\"logon1\"><id>9</id><x>100</x><y>60</y><font>5</font></text>
+             <text name=\"logon2\"><id>10</id><x>100</x><y>108</y><font>5</font></text>
+             <text name=\"logon3\"><id>11</id><x>100</x><y>156</y><font>5</font></text>
+             <text name=\"logon4\"><id>12</id><x>100</x><y>204</y><font>5</font></text>
+             <text name=\"header1\"><id>3</id><y>60</y><font>5</font></text>
+             <text name=\"header2\"><id>4</id><y>84</y><font>5</font></text>
+             <text name=\"server\"><id>0</id><y>108</y><font>5</font></text>
+             <text name=\"welcome\"><id>7</id><visible>&false;</visible><wrapwidth>600</wrapwidth><x>100</x><y>152</y><font>5</font></text>
+             <image name=\"separator\"><id>15</id><visible>&false;</visible><x>100</x><y>200</y><filename>a.dds</filename></image>
+             {list}
+             <text name=\"prompt\"><id>8</id><visible>&false;</visible><font>5</font><x>100</x><y>666</y></text>
+             <text name=\"result\"><id>5</id><visible>&false;</visible><font>5</font><x>134</x><y>666</y></text>
+             <hotrect name=\"cursor\"><id>6</id><visible>&false;</visible><width>17</width><height>17</height><_blink_interval>400</_blink_interval></hotrect>
+             <hotrect name=\"zone\"><id>2</id><locus>&true;</locus><target>&true;</target><visible>&false;</visible><x>100</x><y>220</y><width>700</width><height>400</height>
+               <text name=\"zone_text\"><id>14</id><font>5</font><y>10</y><visible>&false;</visible><wrapwidth>600</wrapwidth><wraplines>16</wraplines></text></hotrect>
+           </rect>
+           <template name=\"computers_file_template\">
+             <hotrect name=\"computers_file_template_item\">{item}<user0></user0>
+               <text name=\"computers_file_template_text\"><string><copy src=\"parent()\" trait=\"user0\"/></string><font>5</font><y>15</y></text>
+             </hotrect>
+           </template>
+         </menu>",
+        list = list_box("computers_file_directory", 1, 700.0, "300"),
+        item = LIST_ITEM,
+    )
+}
+
+/// A merchant's repair menu laid out like `repair_services_menu.xml`: the
+/// labels (0, 1), the list (2), the picture (3), the stats (4: condition
+/// cards 5 and 10 with `user0`, stat cards 6 and 11, the "+" texts 7 and
+/// 8, the error 9 shown while card 10 isn't, the cost 12), the buttons
+/// (13 repair, 14 Repair All, 15 Done); a line's text first, its meter
+/// (18) and its worn mark last.
+/// The companion wheel's tiles as `companion_wheel_menu.xml` has them:
+/// eight `radial` slices round the screen's centre (radius 76 to 332;
+/// four on the right from 30 to 150 degrees, four on the left from 210 to
+/// 330, the file's angles), the texts, Exit.
+pub fn companion_wheel_menu() -> String {
+    let angles = [
+        ("0.523598", "1.047196"),
+        ("1.047196", "1.5707943"),
+        ("1.5707943", "2.094329"),
+        ("2.094329", "2.61799"),
+        ("3.665186", "4.188784"),
+        ("4.188784", "4.7123823"),
+        ("4.7123823", "5.235980"),
+        ("5.235980", "5.759578"),
+    ];
+    let slices: String = angles
+        .iter()
+        .enumerate()
+        .map(|(i, (from, to))| {
+            format!(
+                "<radial name=\"CWM_Slice{i}\"><id>{i}</id><filename>a.dds</filename>
+                   <target>&true;</target><width>760</width><height>760</height>
+                   <user0>960</user0><user1>540</user1><user2>{from}</user2><user3>{to}</user3>
+                   <user4>76</user4><user5>332</user5><user10>0</user10><user11>0</user11></radial>"
+            )
+        })
+        .collect();
+    let text = |name: &str, id: i32| {
+        format!("<text name=\"{name}\"><id>{id}</id><font>2</font><string></string></text>")
+    };
+    format!(
+        "<menu name=\"CompanionWheelMenu\"><class>&CompanionWheelMenu;</class>
+           <rect name=\"NOGLOW_BRANCH\"><hotrect name=\"CWM_MainRect\"><locus>&true;</locus>
+             <x>580</x><y>160</y><width>760</width><height>760</height>
+             {}{}{}
+             <rect name=\"CWM_ExitButton\"><id>11</id><target>&true;</target><string></string></rect>
+             {}{}{}{}{slices}
+           </hotrect></rect>
+         </menu>",
+        text("CWM_RadialLabel", 8),
+        text("CWM_ButtonPreviewText", 9),
+        text("CWM_ButtonContextText", 10),
+        text("CWM_Subtitle", 12),
+        text("CWM_ExitCallout", 13),
+        text("CWM_SelectCallout", 14),
+        text("CWM_NavigateCallout", 15),
+    )
+}
+
+pub fn repair_services_menu() -> String {
+    let card = |name: &str, id: i32, extra: &str| {
+        format!(
+            "<rect name=\"{name}\"><id>{id}</id><_Title></_Title><_Value></_Value><user0>0</user0>{extra}</rect>"
+        )
+    };
+    format!(
+        "<menu name=\"RepairServicesMenu\"><class>&RepairServicesMenu;</class>
+           <_PCButton_A>RSM_RepairAllButton</_PCButton_A><_PCButton_E>RSM_DoneButton</_PCButton_E>
+           <rect name=\"NOGLOW_BRANCH\"><rect name=\"RSM_MainRect\"><locus>&true;</locus><width>1020</width><height>680</height>
+             <text name=\"RSM_VendorSkillLabel\"><id>0</id><string></string><font>2</font></text>
+             <text name=\"RSM_CapsLabel\"><id>1</id><string></string><font>2</font></text>
+             {}
+             <image name=\"RSM_ItemIcon\"><id>3</id><visible>&false;</visible></image>
+             <rect name=\"RSM_StatsDisplayRect\"><id>4</id><visible>&false;</visible><locus>&true;</locus>
+               {}{}
+               <text name=\"RSM_HealthImprovementText\"><id>7</id><font>4</font><string></string>
+                 <visible><copy src=\"sibling(RSM_FixedItemHealth)\" trait=\"visible\"/></visible></text>
+               <text name=\"RSM_StatImprovementText\"><id>8</id><font>4</font><string></string>
+                 <visible><copy src=\"sibling(RSM_FixedItemHealth)\" trait=\"visible\"/></visible></text>
+               <text name=\"RSM_ErrorText\"><id>9</id><font>2</font><string></string>
+                 <visible><not src=\"sibling(RSM_FixedItemHealth)\" trait=\"visible\"/></visible></text>
+               {}{}
+               <text name=\"RSM_RepairCostText\"><id>12</id><font>6</font><string></string>
+                 <visible><copy src=\"sibling(RSM_FixedItemHealth)\" trait=\"visible\"/></visible></text>
+             </rect>
+             <image name=\"RSM_RepairButton\"><id>13</id><filename>a.dds</filename><target>&true;</target></image>
+             <image name=\"RSM_RepairAllButton\"><id>14</id><filename>a.dds</filename><target>&true;</target><string></string></image>
+             <image name=\"RSM_DoneButton\"><id>15</id><filename>a.dds</filename><target>&true;</target></image>
+           </rect></rect>
+           <template name=\"RSM_RepairListTemplate\"><hotrect name=\"RSM_RepairListTemplateRect\">{LIST_ITEM}
+             <_Value></_Value><_RepairCost></_RepairCost><_CanRepair>&true;</_CanRepair>
+             <text name=\"ListItemText\"><font>2</font><string><copy src=\"parent()\" trait=\"string\"/></string><wrapwidth>260</wrapwidth></text>
+             <image name=\"RSM_Template_MeterBackground\"><filename>solid.dds</filename><width>60</width></image>
+             <image name=\"RSM_Template_Meter\"><id>18</id><filename>solid.dds</filename><width>0</width></image>
+             <image name=\"RSM_Template_ItemMarker\"><filename>square.dds</filename><visible>&false;</visible></image>
+           </hotrect></template>
+         </menu>",
+        list_box("RSM_RepairList", 2, 480.0, "580"),
+        card("RSM_BrokenItemHealth", 5, ""),
+        card("RSM_BrokenItemStat", 6, ""),
+        card("RSM_FixedItemHealth", 10, "<visible>&false;</visible>"),
+        card(
+            "RSM_FixedItemStat",
+            11,
+            "<visible><copy src=\"sibling(RSM_FixedItemHealth)\" trait=\"visible\"/></visible>"
+        ),
+    )
+}
+
+/// A stand-in for `caravan_menu.xml` and its four prefabs: the screens'
+/// rects (0–3), the displays (a rect with `_Value`, a title and a value
+/// text), the buttons (a hotrect with a text child), the scrollbar, the
+/// track value rects (shown later), the info rects the code widens.
+pub fn caravan_menu() -> String {
+    let display = |name: &str, id: i32| {
+        format!(
+            "<rect name=\"{name}\"><id>{id}</id><_Value></_Value><string></string>
+               <text name=\"{name}Title\"><font>7</font><string></string></text>
+               <text name=\"{name}Value\"><font>7</font><string><copy src=\"parent()\" trait=\"_Value\"/></string></text>
+             </rect>"
+        )
+    };
+    let button = |name: &str, id: i32| {
+        format!(
+            "<hotrect name=\"{name}\"><id>{id}</id><target>&true;</target><string></string><_PCButtonText></_PCButtonText>
+               <text name=\"{name}Text\"><font>7</font><string><copy src=\"parent()\" trait=\"string\"/></string></text>
+             </hotrect>"
+        )
+    };
+    let text = |name: &str, id: i32| {
+        format!("<text name=\"{name}\"><id>{id}</id><font>7</font><string></string></text>")
+    };
+    let tracks: String = (23..29)
+        .map(|i| display(&format!("CGM_Track{i}"), i))
+        .collect();
+    format!(
+        "<menu name=\"CaravanMenu\"><class>&CaravanMenu;</class>
+           <rect name=\"NOGLOW_BRANCH\">
+             <rect name=\"CBM_MainRect\"><id>0</id><width>1000</width>
+               <rect name=\"CBM_InfoRect\"><width>300</width>
+                 {}{}{}{}{}
+                 <text name=\"CBM_NPCBetValue\"><x>20</x><string></string></text>
+               </rect>
+               {}{}{}{}
+             </rect>
+             <rect name=\"CDM_MainRect\"><id>1</id><width>1000</width>
+               {}{}{}{}{}{}{}{}{}{}
+               <hotrect name=\"CDM_Scrollbar\"><id>15</id><user0>0</user0><_current_value>12</_current_value></hotrect>
+             </rect>
+             <rect name=\"CDG_MainRect\"><id>2</id><width>1600</width>
+               <rect name=\"CGM_InfoRect\"><x>1300</x><width>300</width>{}{}{}{}{}{}</rect>
+               {}{}{}{}
+               <rect name=\"CGM_PlayerTrackRect\"><visible>&false;</visible>{tracks}</rect>
+               <rect name=\"CGM_NPCTrackRect\"><visible>&false;</visible></rect>
+               {}{}
+             </rect>
+             <rect name=\"CDR_MainRect\"><id>3</id><width>1000</width>
+               <rect name=\"CRM_InfoRect\"><width>300</width>{}{}{}{}{}{}{}{}{}</rect>
+             </rect>
+           </rect>
+         </menu>",
+        display("CBM_NPCBetDisplay", 4),
+        display("CBM_PlayerBetDisplay", 5),
+        display("CBM_TotalFundsDisplay", 6),
+        text("CBM_PlayerBetTitle", 40),
+        text("CBM_TotalFundsTitle", 41),
+        button("CBM_AutoMatchButton", 37),
+        button("CBM_RaiseButton", 36),
+        button("CBM_AcceptButton", 7),
+        button("CBM_ExitButton", 38),
+        display("CDM_CardsInDeckDisplay", 8),
+        display("CDM_TotalCardsDisplay", 9),
+        button("CDM_CaravanDeckButton", 10),
+        button("CDM_AllCardsButton", 11),
+        button("CDM_AddButton", 12),
+        button("CDM_RemoveButton", 13),
+        button("CDM_PlayButton", 14),
+        button("CDM_NavigateButton", 39),
+        text("CDM_CardsInDeckTitle", 42),
+        text("CDM_TotalCardsTitle", 43),
+        display("CGM_AnteDisplay", 16),
+        display("CGM_NetTotalDisplay", 17),
+        display("CGM_WinLossDisplay", 18),
+        text("CGM_AnteTitle", 44),
+        text("CGM_NetTotalTitle", 45),
+        text("CGM_WinLossTitle", 46),
+        button("CGM_SelectCardButton", 19),
+        button("CGM_DiscardCardButton", 20),
+        button("CGM_DiscardTrackButton", 21),
+        button("CGM_ForfeitGameButton", 22),
+        display("CGM_PlayerCardNum", 29),
+        display("CGM_NPCCardNum", 30),
+        display("CRM_NPCBetDisplay", 31),
+        display("CRM_Losses", 32),
+        display("CRM_WinLoss", 33),
+        display("CRM_LargestWinning", 34),
+        text("CRM_Info", 35),
+        text("CRM_WinningsTitle", 47),
+        text("CRM_LossesTitle", 48),
+        text("CRM_WinLossTitle", 49),
+        text("CRM_BiggestTitle", 50),
+    )
+}
+
+/// The slot machine's menu as its file lays it out: the three displays (a
+/// rect with `_Value`, its title copying `_Value` and its value `_X`), the
+/// six buttons, the status line, the menu's `_PCButton_` traits.
+pub fn slots_menu_file() -> String {
+    let display = |name: &str, id: i32| {
+        format!(
+            "<rect name=\"{name}\"><id>{id}</id><_Value></_Value>
+               <text name=\"{name}Title\"><font>7</font><string><copy src=\"parent()\" trait=\"_Value\"/></string></text>
+               <text name=\"{name}Value\"><font>7</font><string><copy src=\"parent()\" trait=\"_X\"/></string></text>
+             </rect>"
+        )
+    };
+    let button = |name: &str, id: i32| {
+        format!(
+            "<hotrect name=\"{name}\"><id>{id}</id><target>&true;</target><string></string>
+               <text name=\"{name}Text\"><font>7</font><string><copy src=\"parent()\" trait=\"string\"/></string></text>
+             </hotrect>"
+        )
+    };
+    format!(
+        "<menu name=\"SlotMachineMenu\"><class>&SlotMachineMenu;</class>
+           <_PCButton_Q>SMM_DecreaseBet</_PCButton_Q><_PCButton_E>SMM_IncreaseBet</_PCButton_E>
+           <_PCButton_W>SMM_Spin</_PCButton_W><_PCBUTTON_S>SMM_BetMax</_PCBUTTON_S>
+           <_PCBUTTON_R>SMM_ExitButton</_PCBUTTON_R><_PCBUTTON_F>SMM_PayoutList</_PCBUTTON_F>
+           <rect name=\"NOGLOW_BRANCH\">
+             {}{}
+             <rect name=\"SMM_CasinoNameDisplay\"><id>2</id><_Value></_Value>
+               <text name=\"SMM_CasinoNameTitle\"><string><copy src=\"parent()\" trait=\"_Value\"/></string></text>
+               <text name=\"SMM_TotalEarningsValue\"><string><copy src=\"parent()\" trait=\"_X\"/></string></text>
+             </rect>
+             {}{}{}{}{}{}
+             <text name=\"SMM_StatusText\"><id>9</id><font>7</font><visible>&false;</visible></text>
+           </rect>
+         </menu>",
+        display("SMM_CurrentBetDisplay", 0),
+        display("SMM_ChipsDisplay", 1),
+        button("SMM_Spin", 3),
+        button("SMM_IncreaseBet", 4),
+        button("SMM_DecreaseBet", 5),
+        button("SMM_PayoutList", 6),
+        button("SMM_BetMax", 7),
+        button("SMM_ExitButton", 8),
+    )
+}
+
+/// A UI with the slot machine's menu loaded.
+pub fn slots_menu() -> (Ui, super::slots::SlotsMenu) {
+    let mut ui = self::ui();
+    let mut code = super::slots::SlotsMenu::new(0);
+    let menu = load(&mut ui, &slots_menu_file(), &mut code);
+    code.menu = menu;
+    (ui, code)
+}

@@ -128,6 +128,30 @@ impl Plugin for PipboyPlugin {
 #[derive(Resource, Default)]
 pub struct StartPipboy(pub Option<String>);
 
+/// `--pipboy-keys`: keys pressed in it, one a frame, once it's up.
+#[derive(Resource, Default)]
+pub struct StartPipboyKeys(pub Vec<String>);
+
+/// `--pad`: the menus as with a 360 pad connected (for testing what only
+/// shows with one).
+#[derive(Resource, Default)]
+pub struct PretendPad(pub bool);
+
+/// A `--pipboy-keys` name as the key the menus get.
+fn named_key(name: &str) -> Option<Key> {
+    Some(match name {
+        "up" => Key::Up,
+        "down" => Key::Down,
+        "left" => Key::Left,
+        "right" => Key::Right,
+        "enter" => Key::Activate,
+        "padx" => Key::ButtonX,
+        "pady" => Key::ButtonY,
+        k if k.len() == 1 => Key::Letter(k.chars().next()?),
+        _ => return None,
+    })
+}
+
 /// The screen effect's constants (`ISIFSCANBLEND`'s `Params`,
 /// `DistortParams`, `Tint`, `Offsets`).
 #[derive(Clone, Copy, Debug, ShaderType)]
@@ -174,12 +198,15 @@ struct Built {
     font_images: HashMap<(usize, u32), Option<Handle<Image>>>,
     last: Vec<DrawItem>,
     drawn: Vec<(Entity, Handle<Mesh>, Handle<TileMaterial>)>,
+    /// Whether its menus show a pad's buttons (`ui::game::set_pad`).
+    pad: bool,
 }
 
 /// The arm on screen.
 struct Arm {
     worn: Vec<FormId>,
-    weapon: Option<FormId>,
+    /// The weapon held and its model (a mod fitted changes it).
+    weapon: Option<(FormId, String)>,
     female: bool,
     lighting: u64,
     holder: Entity,
@@ -373,6 +400,7 @@ fn build(game: &cellview::Game) -> Result<Built, String> {
         font_images: HashMap::new(),
         last: Vec::new(),
         drawn: Vec::new(),
+        pad: false,
     })
 }
 
@@ -471,6 +499,7 @@ fn pipboy_keys(
     mut commands: Commands,
     mut pipboy: ResMut<Pipboy>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut start_keys: ResMut<StartPipboyKeys>,
     around: Around,
 ) {
     let Around {
@@ -493,6 +522,10 @@ fn pipboy_keys(
     let free = !menus.others_open() && conversation.0.is_none();
 
     if pipboy.open {
+        // A menu over it (the drop's "How many?") has the keys.
+        if menus.game_open {
+            return;
+        }
         // The Pip-Boy control again puts it away.
         if keys.just_pressed(KeyCode::Tab) {
             close(
@@ -548,7 +581,28 @@ fn pipboy_keys(
             return;
         }
     }
-    let pressed = menu_keys(&keys);
+    // `--pipboy-keys`' "close": put away as the Pip-Boy control does.
+    if pipboy.input.is_some() && start_keys.0.first().is_some_and(|k| k == "close") {
+        start_keys.0.remove(0);
+        println!("--pipboy-keys: close");
+        close(
+            &mut commands,
+            pipboy,
+            &mut menus,
+            &mut player,
+            &conversation,
+            now,
+        );
+        sound(order, &mut requests, "UIPipBoyAccessDown");
+        return;
+    }
+    let mut pressed = menu_keys(&keys);
+    // `--pipboy-keys`: one a frame once its menus are filled.
+    if pipboy.input.is_some() && !start_keys.0.is_empty() {
+        let name = start_keys.0.remove(0);
+        println!("--pipboy-keys: {name}");
+        pressed.extend(named_key(&name));
+    }
     // The keyboard is the Pip-Boy's while it's up (Escape left to the
     // viewer).
     let held: Vec<KeyCode> = keys
@@ -599,9 +653,31 @@ fn pipboy_keys(
             Action::Equip(form) => {
                 let item = FormId(form);
                 if state.is_equipped(PLAYER_REF, item) {
-                    state.unequip(PLAYER_REF, item);
+                    state.unequip_item(order, PLAYER_REF, item);
                 } else {
                     state.equip(order, PLAYER_REF, item);
+                }
+            }
+            // ITEMS' Drop (`00780140` case 7): the game's refusals as a
+            // corner message (`007052f0`); then more than
+            // `iInventoryAskQuantityAt` asks "How many?" (`007aba00`),
+            // fewer drop one (`00780c50(1)`). The player's current action
+            // (`008a7570`, for something equipped) isn't tracked here.
+            Action::Drop(form) => {
+                let item = FormId(form);
+                let in_air = player.walking && !player.character.on_ground;
+                if let Some(setting) = world::items::drop_refusal(order, state, item, false, in_air)
+                {
+                    say(world::scripting::game_setting_text(order, setting)
+                        .or_else(|| ui::game::exe_text_setting(setting).map(str::to_string))
+                        .unwrap_or_default());
+                    continue;
+                }
+                let count = state.item_count(order, PLAYER_REF, item);
+                if world::items::drop_asks(order, count) {
+                    menus.push(crate::menus::Menu::PipboyDrop { item, most: count });
+                } else if count > 0 && state.drop_item(order, PLAYER_REF, item, 1).is_some() {
+                    println!("Dropped {item}.");
                 }
             }
             Action::Use(form) => {
@@ -638,6 +714,43 @@ fn pipboy_keys(
                 }
             }
             Action::ActiveQuest(form) => state.active_quest = Some(FormId(form)),
+            // ITEMS' Repair: the screen on that item (`007b7020`).
+            Action::OpenRepair(form) => {
+                let input = ui::pipboy::gather::repair_input(order, state, FormId(form));
+                if let Some(b) = pipboy.built.as_mut() {
+                    b.pipboy.open_repair(&mut b.ui, input);
+                }
+            }
+            // Mending with a part (`007b5d80`), then the screen again or
+            // ITEMS (`007b5b40`).
+            Action::Repair { chosen, part } => {
+                let to = world::repair::repair_with(order, state, FormId(chosen), FormId(part));
+                println!("Repaired {chosen:08X} with {part:08X}: {:.0}%.", to * 100.0);
+                let input = ui::pipboy::gather::repair_input(order, state, FormId(chosen));
+                if let Some(b) = pipboy.built.as_mut() {
+                    b.pipboy.repaired(&mut b.ui, input);
+                }
+            }
+            // The weapon mod screen (ITEMS' Mod, `00784710`).
+            Action::OpenItemMod(form) => {
+                let input = ui::pipboy::gather::item_mod_input(order, state, FormId(form));
+                if let Some(b) = pipboy.built.as_mut() {
+                    b.pipboy.open_item_mod(&mut b.ui, input);
+                }
+            }
+            // A mod fitted (`007838a0` → `00783af0`): one used up, the
+            // sound, the list again.
+            Action::FitMod { weapon, item } => {
+                let (weapon, item) = (FormId(weapon), FormId(item));
+                if world::weapon_mods::attach(order, state, PLAYER_REF, weapon, item) {
+                    println!("Fitted {item} to {weapon}.");
+                    sound(order, &mut requests, ui::pipboy::item_mod::FIT_SOUND);
+                }
+                let input = ui::pipboy::gather::item_mod_input(order, state, weapon);
+                if let Some(b) = pipboy.built.as_mut() {
+                    b.pipboy.item_modded(&mut b.ui, input);
+                }
+            }
         }
     }
 }
@@ -740,6 +853,8 @@ fn update_pipboy(
     mut transforms: Query<&mut Transform, (Without<FlyCamera>, Without<PipboyCamera>)>,
     mut visibility: Query<&mut Visibility>,
     piece_materials: Query<&MeshMaterial3d<GameLitMaterial>>,
+    pads: Query<(), With<Gamepad>>,
+    pretend_pad: Res<PretendPad>,
 ) {
     let Around {
         time,
@@ -845,6 +960,13 @@ fn update_pipboy(
     let Some(b) = pipboy.built.as_mut() else {
         return;
     };
+    // A pad connected shows its buttons (`00719630`; Bevy's gamepads stand
+    // for XInput's pad 0, `bDisable360Controller` isn't read).
+    let pad = pretend_pad.0 || !pads.is_empty();
+    if b.pad != pad {
+        ui::game::set_pad(&mut b.ui, pad);
+        b.pad = pad;
+    }
 
     // The hum while it's up.
     if pipboy.open && pipboy.hum.is_none() {
@@ -873,6 +995,7 @@ fn update_pipboy(
     let at = whereabouts(order, &state.0, &markers, heading);
     let input = ui::pipboy::gather::gather(order, &state.0, &at);
     b.pipboy.fill(&mut b.ui, &input);
+    b.pipboy.update(&mut b.ui, f64::from(now));
     if let Some((section, page)) = pipboy.pending.take() {
         b.pipboy.show(&mut b.ui, section);
         if let Some(p) = page {
@@ -1037,17 +1160,14 @@ fn update_pipboy(
                 .is_some_and(|r| r.entry.header.kind.as_bytes() == b"ARMO")
         })
         .collect();
-    // The weapon in hand, as the ordinary first-person view holds it.
+    // The weapon in hand, as the ordinary first-person view holds it (with
+    // its mods, `world::weapon_mods::player_model`).
     let weapon = world::combat::weapon_in_hand(order, &state.0, PLAYER_REF).and_then(|w| {
-        let model = order
-            .get(w.form_id)?
-            .record()
-            .ok()?
-            .get(esm::FourCC::new(b"MODL"))?
-            .zstring();
+        let flags = world::weapon_mods::flags(&state.0, PLAYER_REF, w.form_id);
+        let model = world::weapon_mods::player_model(order, w.form_id, flags)?;
         Some((w.form_id, model, w.animation))
     });
-    let weapon_id = weapon.as_ref().map(|(id, _, _)| *id);
+    let weapon_id = weapon.as_ref().map(|(id, model, _)| (*id, model.clone()));
     let rebuild = pipboy.arm.as_ref().is_none_or(|a| {
         a.worn != worn
             || a.female != female
@@ -1261,7 +1381,7 @@ fn build_arm(
     });
     Some(Arm {
         worn: worn.to_vec(),
-        weapon: weapon.map(|(id, _, _)| id),
+        weapon: weapon.map(|(id, model, _)| (id, model)),
         female,
         lighting: lighting_changes,
         holder,

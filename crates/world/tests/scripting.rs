@@ -944,7 +944,7 @@ fn locks_keys_and_terminals() {
         ("Office Terminal", "Welcome, USER")
     );
     assert!(!t.unlocked());
-    assert_eq!(t.science_needed(), 25);
+    assert_eq!(world::hacking::min_skill(t.difficulty), 25.0);
     assert_eq!(t.items.len(), 2);
     assert_eq!(t.items[0].result.as_deref(), Some("Unlocking..."));
     assert_eq!(t.items[1].note, Some(FormId(NOTE)));
@@ -962,21 +962,66 @@ fn locks_keys_and_terminals() {
     assert!(locks::lock_now(&order, &state, strongbox).is_none());
     assert!(state.unhandled.is_empty(), "{:?}", state.unhandled_first);
 
-    // Hacking it: locked until Science reaches 25, then open for good,
-    // worth `iXPRewardHackComputerEasy` once.
-    use world::terminal::{try_hack, Access};
+    // Getting in: the hacking game once Science reaches the easy
+    // minimum (25); hacked, it opens for good, worth
+    // `iXPRewardHackComputerEasy` once, and `GetLocked` still says 1.
+    use world::terminal::{access, Access};
     let r = FormId(TERMINAL_REF);
     Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 10", None, None);
-    assert_eq!(
-        try_hack(&order, &mut state, &t, r),
-        Access::NeedsScience(25)
-    );
+    assert_eq!(access(&order, &state, &t, r), Access::NeedsScience(25));
     Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 25", None, None);
-    assert_eq!(try_hack(&order, &mut state, &t, r), Access::Hacked);
+    assert_eq!(access(&order, &state, &t, r), Access::Hack);
+    world::terminal::hacked(&order, &mut state, &t, r);
     assert_eq!(world::experience::xp(&state), 60.0);
     Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 0", None, None);
-    assert_eq!(try_hack(&order, &mut state, &t, r), Access::Open);
-    assert_eq!(world::experience::xp(&state), 60.0);
+    assert_eq!(access(&order, &state, &t, r), Access::Open);
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLocked"),
+        1.0
+    );
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLockLevel"),
+        1.0
+    );
+    // A script's `Lock` takes the hack away and sets the level; `Unlock`
+    // opens it.
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Lock 3", None, None);
+    Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 60", None, None);
+    assert_eq!(access(&order, &state, &t, r), Access::NeedsScience(75));
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLockLevel"),
+        3.0
+    );
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Unlock", None, None);
+    assert_eq!(access(&order, &state, &t, r), Access::Open);
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLocked"),
+        0.0
+    );
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLockLevel"),
+        -1.0
+    );
+    // Locked out: `GetLocked` 2; level 5 ("requires key") too.
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Lock", None, None);
+    world::terminal::lock_out(&mut state, r);
+    assert_eq!(access(&order, &state, &t, r), Access::LockedOut);
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLocked"),
+        2.0
+    );
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Unlock", None, None);
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Lock 5", None, None);
+    assert_eq!(access(&order, &state, &t, r), Access::LockedOut);
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Unlock", None, None);
+    Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 0", None, None);
+    // `ForceTerminalBack` (a terminal item's script) asks the menu back.
+    state.events.clear();
+    Runner::new(&order, &scripts, &mut state).run_source("ForceTerminalBack", Some(r), Some(r));
+    assert!(state
+        .events
+        .iter()
+        .any(|e| matches!(e, world::scripting::Event::TerminalBack)));
     // Quest scripts reward experience too.
     Runner::new(&order, &scripts, &mut state).run_source("RewardXP 25", None, None);
     assert_eq!(world::experience::xp(&state), 85.0);
@@ -1858,4 +1903,75 @@ fn play_bink_gives_the_movie_and_its_flags_with_the_games_defaults() {
             letterbox: true,
         }))
     );
+}
+
+/// Scripted items see their `OnAdd` on the holder's next script run
+/// (`00574fa0` flags it, `004d2480` runs it), each item its own copy of
+/// the script: `TestCaseBundle`'s `OnAdd Player` gives 25 cases and
+/// `RemoveMe` takes the bundle away (as the game's `Case10mmAddScript`).
+#[test]
+fn scripted_items_see_their_onadd() {
+    let (_data, order) = order("scripting-onadd");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let (bundle, case) = (FormId(CASE_BUNDLE), FormId(CASE));
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.AddItem TestCaseBundle 2",
+        None,
+        None,
+    );
+    assert_eq!(state.item_count(&order, PLAYER_REF, bundle), 2);
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(state.item_count(&order, PLAYER_REF, bundle), 0);
+    assert_eq!(state.item_count(&order, PLAYER_REF, case), 50);
+    // In a chest the block (`OnAdd Player`) doesn't run.
+    let chest = FormId(CHEST_REF);
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "ChestRef.AddItem TestCaseBundle 1",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(state.item_count(&order, chest, bundle), 1);
+    // Taken from it, it runs for the player.
+    state.move_item(&order, chest, PLAYER_REF, bundle, 1);
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(state.item_count(&order, PLAYER_REF, case), 75);
+    assert_eq!(state.item_count(&order, PLAYER_REF, bundle), 0);
+    // `RemoveMe` outside an item's own run does nothing.
+    Runner::new(&order, &scripts, &mut state).run_source("RemoveMe", None, None);
+    assert!(state.unhandled.is_empty(), "{:?}", state.unhandled_first);
+    // Each item keeps its own variables: `OnAdd` marks it, the same run's
+    // `GameMode` (later in the script) gives 5 cases and removes it.
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.AddItem TestLateBundle 1",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(state.item_count(&order, PLAYER_REF, FormId(LATE_BUNDLE)), 0);
+    assert_eq!(state.item_count(&order, PLAYER_REF, case), 80);
+    assert!(state.item_scripts.is_empty());
+    // `OnEquip` and `OnUnequip` (the faction outfits' warnings).
+    let global = |state: &mut GameState| state.globals.get(&FormId(GLOBAL)).copied();
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.AddItem TestScriptedHat 1",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.EquipItem TestScriptedHat",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(global(&mut state), Some(99.0));
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.UnequipItem TestScriptedHat",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(global(&mut state), Some(7.0));
 }

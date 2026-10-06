@@ -82,7 +82,29 @@ pub struct Response {
     pub emotion: u32,
     pub emotion_value: i32,
     pub number: u8,
+    /// `NAM1` as the game says it: the actors' notes in braces left out
+    /// ([`without_notes`]).
     pub text: String,
+}
+
+/// A response's text as the game shows it (`0083d8b0`, building a line's
+/// response, `0083d280`): what's in braces left out, braces within braces
+/// counted, and a `}` with none open dropped ("{Rush of health}MMmmahh."
+/// is "MMmmahh.").
+pub fn without_notes(text: &str) -> String {
+    let mut depth = 0u32;
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if depth == 0 && c != '}' {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// How a condition compares (the top three bits of its first byte).
@@ -515,7 +537,7 @@ impl Info {
                 }
                 k if k == NAM1 => {
                     if let Some(r) = pending.as_mut() {
-                        r.text = sub.zstring();
+                        r.text = without_notes(&sub.zstring());
                     }
                 }
                 k if k == CTDA => conditions.extend(read_condition(rr, &sub.data)),
@@ -779,6 +801,22 @@ pub fn voice_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `0083d8b0`: notes in braces aren't shown (the game's lines as
+    /// written: Cass's `Regenerating`, `FollowersTacticsCombatAggressive`).
+    #[test]
+    fn notes_left_out() {
+        assert_eq!(
+            without_notes("{Rush of health}MMmmahh. <Smacks lips>"),
+            "MMmmahh. <Smacks lips>"
+        );
+        assert_eq!(
+            without_notes("{Eager}I'll do like I'm doing then - {slight evil}except I'll try."),
+            "I'll do like I'm doing then - except I'll try."
+        );
+        assert_eq!(without_notes("a{b{c}d}e}f"), "aef");
+        assert_eq!(without_notes("No notes."), "No notes.");
+    }
 
     fn speaker() -> Speaker {
         Speaker {

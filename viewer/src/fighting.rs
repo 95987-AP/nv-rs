@@ -636,6 +636,7 @@ fn ranged(
         if let Some(sound) = w.sound {
             c.sounds.0.push(sound);
         }
+        world::noise::attacked(order, state, walker.reference, w);
         let dealt = Runner::new(order, c.scripts, state).hit(walker.reference, target, Some(w));
         if let Some(dmg) = dealt {
             report_hit(
@@ -740,6 +741,9 @@ fn melee(
             fight.attack_until = now + kit.attack_seconds(weapon);
             if let Some(sound) = weapon.and_then(|w| w.sound) {
                 c.sounds.0.push(sound);
+            }
+            if let Some(w) = weapon {
+                world::noise::attacked(order, state, walker.reference, w);
             }
             let dealt = Runner::new(order, c.scripts, state).strike(
                 walker.reference,

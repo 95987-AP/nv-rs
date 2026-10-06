@@ -228,7 +228,8 @@ fn inside(r: [f32; 4], x: f32, y: f32) -> bool {
 }
 
 /// Whether the point (menu units) is on the tile's picture: an image's
-/// rectangle, a text's glyphs (the game picks the drawn geometry).
+/// rectangle, a text's glyphs (the game picks the drawn geometry); a
+/// radial tile's slice of its circle besides ([`in_slice`]).
 fn hits(ui: &mut Ui, tile: TileId, x: f32, y: f32) -> bool {
     let (tx, ty) = ui.screen_position(tile);
     match ui.tiles[tile].kind {
@@ -236,6 +237,11 @@ fn hits(ui: &mut Ui, tile: TileId, x: f32, y: f32) -> bool {
             let w = ui.number(tile, t::WIDTH);
             let h = ui.number(tile, t::HEIGHT);
             inside([tx, ty, w, h], x, y)
+        }
+        kind::RADIAL => {
+            let w = ui.number(tile, t::WIDTH);
+            let h = ui.number(tile, t::HEIGHT);
+            inside([tx, ty, w, h], x, y) && in_slice(ui, tile, x, y)
         }
         kind::TEXT => match ui.layout(tile) {
             Some(layout) => layout.quads.iter().any(|q| {
@@ -252,6 +258,47 @@ fn hits(ui: &mut Ui, tile: TileId, x: f32, y: f32) -> bool {
     }
 }
 
+/// A radial tile's own test (`RadialTile`'s slot 0x14, `00a216b0`): the
+/// point's angle around the centre (`user0`, `user1`), clockwise from
+/// straight up (a point level with it: π/2 to the right, 3π/2 to the left),
+/// within `user2` .. `user3`, and its distance within `user4` .. `user5`.
+/// (The game scales the pointer to the menu's units first; it's in them
+/// here.)
+pub fn in_slice(ui: &mut Ui, tile: TileId, x: f32, y: f32) -> bool {
+    let u = |ui: &mut Ui, i: i32| ui.number(tile, t::USER0 + i);
+    let (cx, cy) = (u(ui, 0), u(ui, 1));
+    let (fx, fy) = (x - cx, y - cy);
+    let angle = slice_angle(fx, fy);
+    if !(u(ui, 2) <= angle && angle <= u(ui, 3)) {
+        return false;
+    }
+    let distance = (fx * fx + fy * fy).sqrt();
+    u(ui, 4) <= distance && distance <= u(ui, 5)
+}
+
+/// `00a216b0`'s angle of a point `fx`, `fy` from the centre (y down):
+/// atan(−fx / fy), + π below the centre, + 2π up and to the left (with the
+/// exe's own rounded constants).
+#[allow(clippy::approx_constant)]
+pub fn slice_angle(fx: f32, fy: f32) -> f32 {
+    let mut a = if fy == 0.0 {
+        if fx <= 0.0 {
+            4.71238
+        } else {
+            1.57075
+        }
+    } else {
+        (-fx / fy).atan()
+    };
+    if fy > 0.0 {
+        a += 3.14159;
+    }
+    if fx < 0.0 && fy < 0.0 {
+        a += 6.28318;
+    }
+    a
+}
+
 /// The tile under the point (`007126c0`): the drawn tiles of the menu
 /// (`menu`: the top menu, which takes all clicks when it stacks "no click
 /// past", `00716910`) from the nearest (highest depth, then the later in
@@ -263,7 +310,7 @@ pub fn pick(ui: &mut Ui, menu: TileId, x: f32, y: f32) -> Option<TileId> {
     for (order, tile) in ui.descendants(menu).into_iter().enumerate() {
         if !matches!(
             ui.tiles[tile].kind,
-            kind::IMAGE | kind::HOTRECT | kind::TEXT
+            kind::IMAGE | kind::HOTRECT | kind::TEXT | kind::RADIAL
         ) {
             continue;
         }
@@ -482,6 +529,11 @@ impl Interface {
                 ui.refresh();
             }
         }
+    }
+
+    /// Whether the left button is held down on a tile.
+    pub fn held(&self) -> bool {
+        self.pressed.is_some()
     }
 
     /// Forgets tiles the menu's code took away (a list's lines filled
@@ -924,5 +976,33 @@ mod tests {
         assert_eq!(clip_rect(&mut ui, label), Some([10.0, 20.0, 100.0, 50.0]));
         let deep = ui.find(menu, "Deep").unwrap();
         assert_eq!(clip_rect(&mut ui, deep), None);
+    }
+}
+
+#[cfg(test)]
+mod radial_tests {
+    use super::*;
+
+    /// `00a216b0`: up and right is 0..π/2, right π/2, down π, left 3π/2.
+    #[test]
+    fn slice_angles() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert!(close(slice_angle(0.0, -10.0), 0.0));
+        assert!(close(slice_angle(10.0, -10.0), std::f32::consts::FRAC_PI_4));
+        assert!(close(slice_angle(10.0, 0.0), std::f32::consts::FRAC_PI_2));
+        assert!(close(slice_angle(0.0, 10.0), std::f32::consts::PI));
+        assert!(close(
+            slice_angle(-10.0, 0.0),
+            3.0 * std::f32::consts::FRAC_PI_2
+        ));
+        assert!(close(
+            slice_angle(-10.0, -10.0),
+            7.0 * std::f32::consts::FRAC_PI_4
+        ));
+        // The wheel's first slice (30 to 60 degrees) holds its icon's
+        // middle: (557, 250) around (390, 390).
+        let a = slice_angle(557.0 - 390.0, 250.0 - 390.0);
+        let (from, to) = (std::f32::consts::FRAC_PI_6, std::f32::consts::FRAC_PI_3);
+        assert!((from..=to).contains(&a));
     }
 }
