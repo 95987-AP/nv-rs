@@ -11,10 +11,15 @@
 //! within the game's distances (`world::face::Reach`). Only positions move;
 //! the normals stay as at rest (whether the game moves them isn't traced).
 //!
+//! While someone has a head-track target (`ai::Walker::looking_at`) their
+//! eyes move after the keys have played, as the game's face update does
+//! (`00663510` → `0064be40`): toward their look controller's eye heading
+//! and pitch (`look::HeadTrack`, `00888970`) plus a dart offset, on the
+//! LookLeft/Right/Up/Down morphs (`world::face::FaceAnimation::track_eyes`).
+//!
 //! Not done: the head turns a `.lip` carries (pitch, roll, yaw; which bone
-//! they turn, and in what order, isn't traced), eye tracking (how the
-//! look-at point becomes angles, and when it runs, isn't traced) and
-//! expressions (moods, a line's emotion).
+//! they turn, and in what order, isn't traced) and expressions (moods, a
+//! line's emotion), so the eyes always dart as for no expression.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -217,14 +222,25 @@ pub fn release_voices(
     }
 }
 
-/// Every frame: each face moves on (its blinks, its line's keys), and its
-/// pieces are redrawn when the weights they show change. The dead don't
-/// blink (the game has an "eyes closed" face state, presumably for them;
-/// who sets it isn't traced, so their eyes stay as they were).
+/// What `animate_faces` reads of an actor: the face, the rig (still or
+/// fallen), whom they look at and their look controller's eye angles.
+type FaceOf = (
+    Entity,
+    &'static mut ActorFace,
+    Option<&'static ActorRig>,
+    Option<&'static crate::ai::Walker>,
+    Option<&'static crate::look::HeadTrack>,
+);
+
+/// Every frame: each face moves on (its blinks, its line's keys, and its
+/// eyes while it has someone to look at), and its pieces are redrawn when
+/// the weights they show change. The dead don't blink (the game has an
+/// "eyes closed" face state, presumably for them; who sets it isn't
+/// traced, so their eyes stay as they were).
 pub fn animate_faces(
     time: Res<Time>,
     faces: Res<Faces>,
-    mut actors: Query<(Entity, &mut ActorFace, Option<&ActorRig>)>,
+    mut actors: Query<FaceOf>,
     joints: Query<&GlobalTransform>,
     cameras: Query<&GlobalTransform, With<FlyCamera>>,
     mut pieces: Query<(&mut FacePiece, &mut Mesh3d, &ChildOf)>,
@@ -233,11 +249,17 @@ pub fn animate_faces(
     let eye = cameras.single().ok().map(|c| game_point(c.translation()));
     let dt = time.delta_secs();
     let mut redraw: HashMap<Entity, Weights> = HashMap::new();
-    for (root, mut face, rig) in &mut actors {
+    for (root, mut face, rig, walker, look) in &mut actors {
         if rig.is_some_and(|r| r.still || r.ragdoll.is_some()) {
             continue;
         }
         face.animation.update(dt, &faces.0);
+        // The eyes follow while there is someone to look at (`00663510`;
+        // its three untraced conditions are not modelled).
+        if walker.is_some_and(|w| w.looking_at().is_some()) {
+            let desired = look.map_or((0.0, 0.0), |l| l.ik.desired_eyes());
+            face.animation.track_eyes(dt, desired, &faces.0);
+        }
         // Measured from the camera to the head, as the game does.
         let head = joints
             .get(face.head.unwrap_or(root))

@@ -1,12 +1,85 @@
 # Opening Doc look IK trace
 
-## Implementation, 2026-10-06
+## Reconciled implementation, 2026-10-06
 
-`crates/world/src/look_ik.rs` ports the controller; `viewer/src/look.rs`
-runs it on placed people after animation sampling (`ActorRig::pose_now`)
-and before skinning. Status: implemented and unit-tested. Pure helpers are
-checked against the original's code on the real CPU (nv-call); the whole
-behaviour has **not** been compared with the original game.
+Two independent ports existed: (A) this branch's (`claude/m1-look-ik`,
+7fce95d), a translation of `bhkRagdollController` with nv-call oracle
+tests, and (B) a contributor's, on `playcon/claude/lookik-native-solver`
+(42195d5), `lookik-head-tracking` (da055f5), `lookik-actor-anchor`
+(5dfb5d9), `lookik-aim-point` (f6af27d, bc36030), `head-track-target`
+(9defa47, c4fa1c8) and `facegen-eyes` (ae5b593, ddc0d59, 8fe07f2). B was
+not merged (it is based on an old main); its evidence-backed parts were
+re-checked in Ghidra and ported onto A on `claude/m1-lookik-reconcile`.
+Credit to B's author for the target choice, eye darting and anchor traces.
+
+`crates/world/src/look_ik.rs` ports the controller, `head_track.rs` whom
+actors look at, `face.rs` the FaceGen eye update; `viewer/src/look.rs`
+runs the controller on placed people after animation sampling
+(`ActorRig::pose_now`) and before skinning, `ai.rs` keeps the target
+slots and `faces.rs` moves the eyes. Status: implemented and unit-tested;
+pure helpers checked on the real CPU (nv-call); seen working in the viewer
+(below); **not** compared with the original game.
+
+### Differences and how they were settled
+
+| Question | A | B | Evidence | Kept |
+| --- | --- | --- | --- | --- |
+| Does the eye chain (mode 0, `bUseHeadPose` +0x190) run? | yes, for non-creatures | never (only the constructor writes +0x190) | 0087e541..0087e551 call the setter 004e4660 (`this+400` = 0x190) when `IsCreature` (vtable +0x21c: `Character`'s and `PlayerCharacter`'s 0047c850 return 0, `Creature`'s 008d0360 returns 1) is false; B's scan found direct stores only | A |
+| What the eyes aim at (`fDesiredEyeHeading`/`Pitch`, +0x150/+0x154) | LookIK's eye heading/pitch | always 0 | 00888970 (00888989..008889ec) stores +0x19c/+0x1a0 through 00888a20 while +0xb3, else 0 | A, with B's darting around it |
+| Tracking distance | own head to the anchor | between the two positions (+0x1f4) | 008a3100: its own and the target's +0x1f4 positions go to 00457990 | B |
+| Units of the reach (5), behind side (5), ease-ahead (3) | Havok | game units | 008a3b70 stores the target through 004a3e00, which scales by 011c582c (1/6.9991) | A |
+| "No previous rotation yet" test (00c78610) | x, y, z within 0.001 of 0 | all four zero | 00c78cc4 `AND EDX,0x7` keeps only x, y, z | A (identity counts as none) |
+| Initial previous rotation, step limit | identity, armed | none (inferred), armed | constructor 00c7f1bf..00c7f1cc writes 010c71b0 (identity) at +0x120 and 1 at +0x130 per bone | A |
+| Point for a target behind | eye point + side | head + side | follows from mode 0 running | A |
+| Axis override `(+0x2a4)+0x1c` | not modelled | never created | 00c7de60 creates it for head-pose actors, storing the first actor's +0x150/+0x160 for others sharing the skeleton; the same set-up pose gives the same axes here | no effect |
+| Other actors' look anchor | head node | head node, palette fallback, 0.9 x height | 008a2fa0; with a head pose its z is the actor's own eye point (00c757b0: head pose +0xf0 bone 1 under SG bone +0x144 and +0x10) | B + z from 00c757b0 |
+| Eye limits | constructor's 60 degrees, dead zones 0 | traced (`fTrackEyeXY` 28, dead zones 20/10) but taken as unused | 00607420 → 00607810(0), 00607830, 00c748d0(0); settings 00f80fc0..00f81050 | B's values in A's mode 0 |
+| Head-pose head bone local (00a86bf0) | identity, unresolved | — | 00a86bf0 is NiTransform's identity constructor | A, resolved |
+| Quaternion helpers | native operation order, oracle-tested | generic f32, `acos(w)` without abs | nv-call vectors | A |
+| Target out of range | nothing changes | nothing changes | 008a3a72/008a3a83 | same |
+| Pose the update starts from | animated | animated (00c79680 in, 00c79a50 out) | B's trace | same |
+| INI overrides | defaults only | `[LookIK]`/`[RagdollAnim]` read | registered INI settings | B |
+
+### Ported from B
+
+- Whom actors look at: the six target slots, the chooser 008a3ed0, filter
+  008a4810 and score 008a46c0 (constants re-read: 100 at 01017a40, 500 at
+  01013d84, 100 at 01016410, 120 degrees at 01084d88, 1000 at 01017b70,
+  0.5 at 01011588), 008a3100's timers and frame budget, and the
+  `SayTo`/dialogue/conversation slots with demote (HEAD_TRACK_TARGET.md).
+- Other actors' look anchor (008a2fa0) and its 0.9 x height fallback.
+- The player's anchor: `Camera1st` in first person; in third person
+  (+0x64a set) as an actor, their body's `Bip01 Head`.
+- FaceGen eye darting (0064be40, 0064bf90, 0064bda0; timer ranges and
+  chances re-read at 01016248..010162c0, emotion offsets at
+  00f81140..00f814d0) and the look morphs 0064c410 (LookDown 8, LookLeft
+  9, LookRight 10, LookUp 11), now aimed at LookIK's eye angles.
+- The eye dead zones going to LookIK mode 0 (ddc0d59).
+
+### Verified
+
+- Unit-tested: all of the above. Oracle (nv-call, same image and CPU):
+  A's vectors, plus 0064c410 (five heading/pitch cases: modifier weights
+  and kept angles bit for bit) and 00649f00/00649f70/00649fe0/0064a070
+  (ranges and dead zones), with the settings snapshotted at their
+  defaults; script `%USERPROFILE%\nv-re\work\lookikreconcile-2026-10-06\eyes_vectors.ps1`.
+- Live in the viewer (release build, `--screenshot` frames and a
+  temporary per-second log of each controller, kept privately in
+  `%USERPROFILE%\nv-re\work\lookikreconcile-2026-10-06\live\`): in the
+  opening (`--new-game`; `GSDocMitchellHouse --stage VCG01 0`) Doc's
+  target is the player through each `SayTo` line, his head turns to the
+  camera and, with the player beside him, stops at the cone while the
+  eyes go to their 28-degree limit on that side (LookLeft); between lines
+  the ACTION slot is demoted and the look eases out (1 degree an update)
+  until the next line. In the Prospector Saloon Sunny Smiles turns her
+  head and eyes to the player, in and out of the dialogue menu (whose
+  camera still frames her). In Goodsprings (`WastelandNV --at
+  -61250,13800,10280,330,5`) two Powder Gangers (00101C9E, 00101C9F)
+  look at each other's eye points, one turning his head back over his
+  shoulder as he walks away, and switch to the player when he comes
+  within 400.
+- Not compared with the original game; `nv-probe` recordings of Doc are
+  the next step.
 
 Names come from the Xbox 360 prototype's PDB (`Fallout_Release_MemDebug`,
 Xbox PDB). The PC layout matches `bhkRagdollController` (Xbox PDB) with
@@ -73,18 +146,18 @@ regression tests in `look_ik.rs`; private vectors and scripts in
 wrong correction.
 
 Unresolved (labelled in the code):
-- The target choice of 008a3100/008a3ed0 is not ported; the viewer uses
-  `ai`'s look-at target or the dialogue speaker's listener, and only the
-  player as target (NPC-to-NPC tracking is not driven).
 - The model frame is taken as the skeleton root's (+Y forward); the
   native SG pose's root (via `pRagdollRoot`) is not traced.
-- The head-pose head bone's local transform (00a86bf0) is taken as the
-  identity; `bEnableRagdollAnim` (+0x41) gating isn't modelled.
-- The eye heading/pitch go through 00888970 (process vfunc +0x144's
-  object) to 00888a20, which stores them as `BSFaceGenAnimationData`
-  `fDesiredEyeHeading`/`fDesiredEyePitch` (+0x150/+0x154, Xbox PDB);
-  that FaceGen eye update (toward `fCurrentEyeHeading`/`Pitch`, +0x140,
-  and the eye nodes) is not traced, so eyes don't move yet.
+- `bEnableRagdollAnim` (+0x41) gating isn't modelled; +0x1a8
+  (`fTrackEyeZ`) is stored but no reader was found.
+- Not modelled in 008a3100: the package branch (+0x27c, flag 0x100000),
+  the FaceGen-distance return, the detection-level and process
+  conditions (`noticed` stands for detection level >= 1); 00663510's
+  three untraced gate conditions. Expressions aren't driven, so the eyes
+  dart as for no expression.
+- Anchors come from the last pose drawn (a frame late for actors posed
+  later); the player's third-person anchor keeps the head's own height
+  (whether the player's controller has a head pose isn't traced).
 - Precision: SSE estimates use exact reciprocals (tier C) and x87
   extended precision is approximated with f64.
 

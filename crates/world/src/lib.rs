@@ -44,6 +44,7 @@ pub mod functions;
 pub mod furniture;
 pub mod grass;
 pub mod gun_wobble;
+pub mod head_track;
 pub mod idles;
 mod image_space;
 pub mod impacts;

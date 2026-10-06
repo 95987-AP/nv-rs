@@ -57,6 +57,13 @@ fn bone_names(bones: &[nif::Bone]) -> Vec<String> {
     bones.iter().map(|b| b.name.to_ascii_lowercase()).collect()
 }
 
+impl PlayerBody {
+    /// The skeleton's root entity (carrying its `ActorRig`), once built.
+    pub fn root(&self) -> Option<Entity> {
+        self.root
+    }
+}
+
 /// The holder's placement: at the feet, turned to the heading (clockwise
 /// from north), at the actor's scale.
 fn placement(feet: [f32; 3], heading: f32, scale: f32) -> Transform {

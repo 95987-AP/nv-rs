@@ -29,10 +29,10 @@ use preview::cell::ActorSkeleton;
 use world::animation::groups::AnimSet;
 use world::animation::pick::{Frame, Library, Picker};
 use world::animation::{self, group, section, MoveFlags, Player};
-use world::movement::TurnSide;
 
 /// The player's reference.
 const PLAYER: esm::FormId = esm::FormId(0x14);
+use world::movement::TurnSide;
 
 /// The animation settings from the INI (`[General]`
 /// `fAnimationDefaultBlend` 0.2, `fAnimationMult` 1).
@@ -564,7 +564,7 @@ pub fn animate_actors(
     game: Option<Res<crate::GameFiles>>,
     state: Option<Res<crate::dialogue::DialogueState>>,
     mut library: Option<ResMut<crate::anim_library::AnimLibrary>>,
-    camera: Query<&GlobalTransform, With<crate::FlyCamera>>,
+    mut anchors: Option<ResMut<crate::look::LookAnchors>>,
     mut rigs: Query<(
         &mut ActorRig,
         Option<&mut crate::look::HeadTrack>,
@@ -585,11 +585,7 @@ pub fn animate_actors(
     ) {
         return;
     }
-    let speaker = conversation
-        .as_ref()
-        .and_then(|c| c.0.as_ref().map(|t| t.speaker()));
-    let player_point = camera.iter().next().map(crate::look::player_look_point);
-    for (mut rig, head_track, walker) in &mut rigs {
+    for (mut rig, mut head_track, walker) in &mut rigs {
         let rig = &mut *rig;
         // In the dialogue menu only the speaker moves: `ai` holds everyone
         // else (`still`) and has the speaker stop walking and turn in place
@@ -663,16 +659,30 @@ pub fn animate_actors(
                 }
             }
             let mut pose = rig.pose_now(now);
-            if let (Some(mut ht), Some(w), Some(s)) = (head_track, walker, look.as_ref()) {
-                // Whom they look at: `ai`'s head-track target, or the
-                // player while they're the one talking to them. Only the
-                // player's look point is ported (00952ff0).
-                let looking = w
-                    .look_target()
-                    .or(speaker.filter(|s| *s == w.reference).map(|_| PLAYER));
-                let target = looking.filter(|who| *who == PLAYER).and(player_point);
-                let bones = rig.skeleton.bones.clone();
-                crate::look::track(&mut ht, &s.0, &bones, &mut pose, &w.placement(), target);
+            if let (Some(ht), Some(w), Some(s)) = (head_track.as_deref_mut(), walker, look.as_ref())
+            {
+                // Whom they look at: `ai`'s head-track target
+                // (`world::head_track`), at their look anchor
+                // (`look::LookAnchors`).
+                let target = w
+                    .looking_at()
+                    .and_then(|who| anchors.as_ref()?.0.get(&who).copied());
+                let bones = &rig.skeleton.bones;
+                let placement = w.placement();
+                crate::look::track(ht, &s.0, bones, &mut pose, &placement, w.position, target);
+            }
+            // Where the others look at this one (008a2fa0).
+            if let (Some(w), Some(a)) = (walker, anchors.as_deref_mut()) {
+                match crate::look::anchor_of(
+                    head_track.as_deref(),
+                    &rig.skeleton.bones,
+                    &pose,
+                    &w.placement(),
+                    w.position,
+                ) {
+                    Some(t) => a.0.insert(w.reference, t),
+                    None => a.0.remove(&w.reference),
+                };
             }
             pose
         };
