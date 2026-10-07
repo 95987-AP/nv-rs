@@ -1088,6 +1088,11 @@ pub fn run_scripts(
     let now = time.elapsed_secs();
     // What the game announces goes to the HUD's message corner while it's
     // drawn, else to the notice panel.
+    // The HUD's quest text takes quest updates and objective lines while
+    // the HUD is drawn (`ui::quest_text`); otherwise they're notices.
+    let hud_on = hud_messages.on;
+    let mut quest_texts = Vec::new();
+    let mut objective_lines = Vec::new();
     let mut announce = |n: crate::hud::HudMessage, notices: &mut Notices| {
         println!("{}", n.text);
         if hud_messages.on {
@@ -1517,13 +1522,35 @@ pub fn run_scripts(
             Event::KnockedOut { who } => Some(format!("{} is down.", name(who))),
             Event::GotUp { who } => Some(format!("{} gets up.", name(who))),
             Event::Journal { quest, text } => Some(format!("{}: {text}", name(quest))),
+            // The HUD's objective lines (`0077a5b0`).
             Event::Objective {
                 text, completed, ..
-            } => Some(if completed {
-                format!("Completed: {text}")
-            } else {
-                text
-            }),
+            } => {
+                if hud_on {
+                    objective_lines.push(ui::quest_text::Objective {
+                        text,
+                        completed,
+                        reminder: false,
+                    });
+                    None
+                } else {
+                    Some(if completed {
+                        format!("Completed: {text}")
+                    } else {
+                        text
+                    })
+                }
+            }
+            // The HUD's quest names (`world::quest_text`).
+            Event::QuestText(text) => {
+                let notice = crate::hud::quest_notice(order, text);
+                if hud_on {
+                    quest_texts.push(notice);
+                    None
+                } else {
+                    Some(format!("{}\n{}", notice.title, notice.subtitle))
+                }
+            }
             Event::Talk {
                 speaker,
                 to,
@@ -1836,6 +1863,11 @@ pub fn run_scripts(
             );
         }
     }
+    for n in &quest_texts {
+        println!("{}: {}", n.title, n.subtitle);
+    }
+    hud_messages.quests.extend(quest_texts);
+    hud_messages.objectives.extend(objective_lines);
     // Script execution has already mutated GameState. Dispatch every pending
     // idle request before snapshotting, so its corresponding presentation
     // queue cannot be lost merely because Save appeared earlier in events.

@@ -601,6 +601,33 @@ fn objectives_shown_and_completed_as_the_game_keeps_them() {
         &mut state,
         "SetObjectiveDisplayed TestQuest 10 1",
     );
+    // The first objective shown says "Quest added" on the HUD (once:
+    // `005ec5d0`, the quest's flag 0x20), and is kept in a save.
+    let added = |state: &GameState| {
+        state
+            .events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Event::QuestText(world::quest_text::QuestText::Quest {
+                        update: world::quest_text::Update::Added,
+                        ..
+                    })
+                )
+            })
+            .count()
+    };
+    assert_eq!(added(&state), 1);
+    let (loaded, _) = world::save::load(&world::save::save(&state, None)).unwrap();
+    assert!(loaded.quests_announced.contains(&FormId(QUEST)));
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "SetObjectiveDisplayed TestQuest 20 1\nSetObjectiveDisplayed TestQuest 20 0",
+    );
+    assert_eq!(added(&state), 1);
     state.events.clear();
     run(
         &order,

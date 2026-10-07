@@ -78,6 +78,49 @@ pub struct ShowHud(pub bool);
 pub struct HudMessages {
     pub on: bool,
     pub queue: Vec<HudMessage>,
+    /// For the quest reminder (`ui::quest_text`): quest names and
+    /// objective lines.
+    pub quests: Vec<ui::quest_text::Notice>,
+    pub objectives: Vec<ui::quest_text::Objective>,
+}
+
+/// A quest update or custom text as the HUD's quest text shows it: a
+/// quest's title is the setting `ui::quest_text` picks, its subtitle the
+/// quest's name (`00408da0`: its `FULL`, empty without one).
+pub fn quest_notice(
+    order: &esm::LoadOrder,
+    text: world::quest_text::QuestText,
+) -> ui::quest_text::Notice {
+    use ui::quest_text::{Kind, Notice};
+    use world::quest_text::{QuestText, Update};
+    match text {
+        QuestText::Quest { quest, update } => {
+            let (kind, setting, default) = match update {
+                Update::Added => (Kind::Added, "sQuestAddedText", "Quest added"),
+                Update::Completed => (Kind::Completed, "sQuestCompletedText", "Quest completed"),
+                Update::Failed => (Kind::Failed, "sQuestFailed", "Quest FAILED"),
+            };
+            let name = order
+                .get(quest)
+                .and_then(|r| r.record().ok())
+                .and_then(|r| r.full_name())
+                .unwrap_or_default();
+            let mut n = Notice::quest(kind, &name);
+            n.title = world::scripting::game_setting_text(order, setting)
+                .unwrap_or_else(|| default.to_string());
+            n
+        }
+        QuestText::Custom(c) => Notice {
+            kind: Kind::Custom,
+            title: c.title,
+            subtitle: c.subtitle,
+            priority: c.priority,
+            justification: c.justification,
+            title_font: c.title_font,
+            subtitle_font: c.subtitle_font,
+            sound: c.sound,
+        },
+    }
 }
 
 /// A corner message: its text and picture (`world::message_icon`; `None`
@@ -803,6 +846,20 @@ impl HudState<'_, '_> {
             subtitle: None,
             experience: Some(experience),
             menu_open: self.menu_hides_xp(),
+            quest_gate: self.quest_gate(),
+        }
+    }
+
+    /// What lets the quest text show (`0077a650`): quest names with no
+    /// menu up, or in dialogue; objective lines unless the character
+    /// generation menu (1048) is up. (V.A.T.S. is added by the caller.)
+    fn quest_gate(&self) -> ui::quest_text::Gate {
+        let first = self.game_menus.1.first().copied();
+        let no_menu = first.is_none() && !self.menus.is_open();
+        let dialogue = first == Some(ui::menus::dialog::CLASS) || self.conversation.0.is_some();
+        ui::quest_text::Gate {
+            names: no_menu || dialogue,
+            objectives: !self.game_menus.1.contains(&1048),
         }
     }
 
@@ -866,7 +923,24 @@ fn build(game: &Game, size: UVec2) -> Result<Built, String> {
             .or_insert_with(|| text.to_string());
     }
     let mut ui = ui::game::new_ui(&mut read, &ini, texts, size.x, size.y);
-    let hud = ui::hud::load(&mut ui, &mut read)?;
+    let mut hud = ui::hud::load(&mut ui, &mut read)?;
+    // The quest text's timing from the game's settings (the exe's
+    // defaults otherwise).
+    let setting = |name: &str, default: f32| {
+        world::scripting::game_setting(&game.order, name).unwrap_or(default)
+    };
+    let d = ui::quest_text::Timing::default();
+    hud.quest_timing = ui::quest_text::Timing {
+        letter_delay: setting("fQuestCinematicCharacterFadeInDelay", d.letter_delay),
+        letter_remain: setting("fQuestCinematicCharacterRemain", d.letter_remain),
+        letter_fade_in: setting("fQuestCinematicCharacterFadeIn", d.letter_fade_in),
+        letter_fade_out: setting("fQuestCinematicCharacterFadeOut", d.letter_fade_out),
+        objective_delay: setting("fQuestCinematicObjectiveFadeInDelay", d.objective_delay),
+        objective_pause: setting("fQuestCinematicObjectivePauseTime", d.objective_pause),
+        objective_fade_in: setting("fQuestCinematicObjectiveFadeIn", d.objective_fade_in),
+        objective_fade_out: setting("fQuestCinematicObjectiveFadeOut", d.objective_fade_out),
+        objective_scroll: setting("fQuestCinematicObjectiveScrollTime", d.objective_scroll),
+    };
     let vats = match ui::vats::load(&mut ui, &mut read) {
         Ok(v) => Some(v),
         Err(e) => {
@@ -932,6 +1006,7 @@ fn update_hud(
     assets: HudAssets,
     mut old_line: Query<&mut Visibility, With<crate::combat::HudText>>,
     vats: Res<crate::vats::Vats>,
+    mut sound_requests: ResMut<crate::sounds::SoundRequests>,
 ) {
     let HudAssets {
         mut images,
@@ -1028,11 +1103,27 @@ fn update_hud(
                 .queue_message(&mut b.ui, &text, icon.as_deref(), ui::hud::MESSAGE_SECONDS);
         }
     }
-    let input = from.input(b.opacity);
+    let mut input = from.input(b.opacity);
+    // No quest names in V.A.T.S. (`0077a650`, `011f2250` + 8).
+    if vats.hud_mask.is_some() {
+        input.quest_gate.names = false;
+    }
+    for n in messages.quests.drain(..) {
+        b.hud.queue_quest(n, input.time);
+    }
+    for o in messages.objectives.drain(..) {
+        b.hud.queue_objective(o, input.time);
+    }
     // Restore each prior mask before this frame writes tile visibility, then
     // save the fresh state under the mask selected below.
     b.hud.lift_mask(&mut b.ui, &mut b.masked);
     b.hud.update(&mut b.ui, &input);
+    // The quest text's sounds (`UIPopUpQuestNew`, `UIQuestUpdate`…).
+    for name in b.hud.sounds.drain(..) {
+        if let Some(id) = game.order.form_by_editor_id(&name) {
+            sound_requests.0.push(id);
+        }
+    }
     b.hud
         .update_sneak(&mut b.ui, from.sneak_meter(), b.opacity, input.time);
     let info = from.info_prompt();

@@ -242,6 +242,7 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
         ("unconscious", &state.unconscious),
         ("marker", &state.map_markers),
         ("found", &state.discovered),
+        ("announced", &state.quests_announced),
         ("teammate", &state.teammates),
         ("picked", &state.picked),
     ] {
@@ -619,6 +620,9 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
             }
             "found" => {
                 state.discovered.insert(form(1)?);
+            }
+            "announced" => {
+                state.quests_announced.insert(form(1)?);
             }
             "teammate" => {
                 state.teammates.insert(form(1)?);

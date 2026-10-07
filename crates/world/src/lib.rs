@@ -85,6 +85,7 @@ pub mod player_camera;
 pub mod player_death;
 pub mod quest;
 pub mod quest_targets;
+pub mod quest_text;
 pub mod radio;
 pub mod ref_scripts;
 pub mod region;

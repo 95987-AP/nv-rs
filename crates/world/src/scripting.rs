@@ -224,6 +224,9 @@ pub struct GameState {
     pub running: HashSet<FormId>,
     pub completed: HashSet<FormId>,
     pub failed: HashSet<FormId>,
+    /// Quests whose "Quest added" has been shown (the quest's flag 0x20,
+    /// `world::quest_text`).
+    pub quests_announced: HashSet<FormId>,
     pub globals: HashMap<FormId, f32>,
     /// Lines said (for "say once").
     pub said: HashSet<FormId>,
@@ -1149,6 +1152,9 @@ pub enum Event {
         text: String,
         completed: bool,
     },
+    /// The HUD's quest text: a quest added, completed or failed, or custom
+    /// text such as a place discovered (`world::quest_text`).
+    QuestText(crate::quest_text::QuestText),
     /// A script opened one of the game's menus (by the number `MenuMode`
     /// blocks use).
     Menu(u16),
@@ -3511,12 +3517,14 @@ impl<'a> Runner<'a> {
                 });
             }
             if e.flags & quest::COMPLETES_QUEST != 0 {
-                self.state.completed.insert(quest_id);
-                // `0060fb60`: no longer the active quest.
+                // `0060fb60` → `0060ca30` (announced when newly completed);
+                // no longer the active quest.
+                crate::quest_text::complete(self.state, quest_id);
                 crate::quest_targets::quest_ended(self.state, quest_id);
             }
             if e.flags & quest::FAILS_QUEST != 0 {
-                self.state.failed.insert(quest_id);
+                // `0060caf0`: failed (and completed) unless it was either.
+                crate::quest_text::fail(self.state, quest_id);
                 crate::quest_targets::quest_ended(self.state, quest_id);
             }
             if let Some(source) = e.script {
@@ -3624,12 +3632,10 @@ impl<'a> Runner<'a> {
                 self.state.running.remove(&arg(0).form());
             }
             "CompleteQuest" => {
-                self.state.completed.insert(arg(0).form());
-                // Completing a quest (`0060ca30`) announces it
-                // (`0077a480`), which stops it being the active quest.
-                // (That the command goes through `0060ca30` is assumed;
-                // its handler isn't traced here.)
-                crate::quest_targets::quest_ended(self.state, arg(0).form());
+                // `005c7280` → `0060ca30`: completing a quest not completed
+                // announces it (`0077a480`), which stops it being the
+                // active quest.
+                crate::quest_text::complete(self.state, arg(0).form());
             }
             // The objective's state (`005d7c20`, `005d7d30`, `005ec5d0`: 0
             // neither, 1 shown, 2 done unseen, 3 shown and done): showing

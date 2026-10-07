@@ -27,6 +27,7 @@ pub mod menu;
 pub mod menus;
 pub mod names;
 pub mod pipboy;
+pub mod quest_text;
 pub mod tabline;
 pub mod text;
 pub mod tile;

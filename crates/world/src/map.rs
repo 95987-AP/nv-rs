@@ -127,15 +127,11 @@ pub fn discover(
             state.discovered.insert(m.reference);
             found.push(m.clone());
             crate::stats::bump(state, crate::stats::LOCATIONS_DISCOVERED, 1);
-            // The notice: `sDiscoveredText`, then the place's name.
+            // The HUD's quest text: `sDiscoveredText` over the place's
+            // name (`0076b960`, `world::quest_text`).
             let text = crate::scripting::game_setting_text(order, "sDiscoveredText")
                 .unwrap_or_else(|| "You have discovered".into());
-            state.events.push(crate::scripting::Event::Message {
-                title: None,
-                text: format!("{text}\n{}", m.name),
-                buttons: Vec::new(),
-                icon: None,
-            });
+            crate::quest_text::discovered(state, &text, &m.name);
             crate::experience::reward_setting(order, state, "iXPRewardDiscoverMapMarker");
         }
     }

@@ -76,6 +76,11 @@ fn a_greeting_and_the_quest_script_carry_the_quest_through() {
                 text: "Talk to the doctor.".into(),
                 completed: false
             },
+            // Its first objective shown: "Quest added" (`005ec5d0`).
+            Event::QuestText(world::quest_text::QuestText::Quest {
+                quest: FormId(QUEST),
+                update: world::quest_text::Update::Added
+            }),
             Event::Message {
                 title: Some("Note".into()),
                 text: "Hello there.".into(),
