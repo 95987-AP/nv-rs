@@ -692,12 +692,23 @@ fn run_tutorials(
     mut queue: ResMut<crate::menus::Menus>,
     mut state: ResMut<crate::dialogue::DialogueState>,
     time: Res<Time<bevy::time::Real>>,
+    vats: Option<Res<crate::vats::Vats>>,
+    pipboy: Option<Res<crate::pipboy::Pipboy>>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         return;
     };
     let now_ms = time.elapsed_secs_f64() * 1000.0;
-    tutorial::update(screen, &game.0, &mut state.0, now_ms, queue.lockpicking);
+    // The viewer's own menus on top when none of the game's is: the
+    // lockpicking menu, V.A.T.S.'s, the Pip-Boy's.
+    let other = if queue.lockpicking {
+        Some(world::tutorial::menu::LOCKPICK)
+    } else if vats.as_ref().is_some_and(|v| v.in_menu()) {
+        Some(world::tutorial::menu::VATS)
+    } else {
+        pipboy.as_ref().and_then(|p| p.top_class())
+    };
+    tutorial::update(screen, &game.0, &mut state.0, now_ms, other);
     queue.game_open = !screen.open.is_empty();
 }
 

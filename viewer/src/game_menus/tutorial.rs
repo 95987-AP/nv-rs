@@ -179,12 +179,13 @@ pub fn held(open: &[OpenMenu]) -> bool {
     })
 }
 
-/// The class of the menu on top: the game's menus here, else the
-/// lockpicking menu when it's up (it isn't one of them in the viewer).
-pub fn top_class(screen: &mut Screen, lockpicking: bool) -> Option<i32> {
+/// The class of the menu on top: the game's menus here, else `other`,
+/// the viewer's own menu that's up (the lockpicking menu, V.A.T.S.'s, the
+/// Pip-Boy's: not among them in the viewer).
+pub fn top_class(screen: &mut Screen, other: Option<i32>) -> Option<i32> {
     match screen.open.last_mut() {
         Some(m) => Some(m.code().class()),
-        None => lockpicking.then_some(world::tutorial::menu::LOCKPICK),
+        None => other,
     }
 }
 
@@ -195,10 +196,10 @@ pub fn update(
     game: &Game,
     state: &mut GameState,
     now_ms: f64,
-    lockpicking: bool,
+    other: Option<i32>,
 ) {
     let held = held(&screen.open);
-    let top = Top(top_class(screen, lockpicking));
+    let top = Top(top_class(screen, other));
     let Some(id) = state.tutorials.update(now_ms as u32, true, held, &top) else {
         return;
     };

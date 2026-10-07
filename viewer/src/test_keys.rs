@@ -48,6 +48,8 @@ pub fn parse(at: f32, v: &str) -> Result<TimedPress, String> {
     let what = match name.to_ascii_lowercase().as_str() {
         "mouse-left" => Press::Mouse(MouseButton::Left),
         "mouse-right" => Press::Mouse(MouseButton::Right),
+        // The pause menu's key.
+        "escape" => Press::Key(KeyCode::Escape),
         n if n.starts_with("mouse-x=") || n.starts_with("wheel=") => {
             let (kind, amount) = n.split_once('=').unwrap_or_default();
             let amount = amount
@@ -222,6 +224,10 @@ mod tests {
             }
         );
         assert_eq!(parse(1.0, "R:1.5").unwrap().what, Press::Key(KeyCode::KeyR));
+        assert_eq!(
+            parse(1.0, "escape").unwrap().what,
+            Press::Key(KeyCode::Escape)
+        );
         assert_eq!(
             parse(1.0, "mouse-left").unwrap().what,
             Press::Mouse(MouseButton::Left)

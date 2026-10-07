@@ -609,6 +609,9 @@ pub struct Pipboy {
     drop_asked: Option<u32>,
     /// The number keys (hot keys 1 to 8) held, as their events said.
     hotkeys_held: [bool; 8],
+    /// ITEMS was up last frame (its `InventoryMenu` made: `0077fc10`
+    /// asks for the weapons help as it's made).
+    items_up: bool,
     /// A note's audio playing.
     note: Option<NotePlayback>,
     /// The world map's quest markers.
@@ -626,6 +629,13 @@ impl Pipboy {
     pub fn menu_class(&self) -> Option<i32> {
         let b = self.built.as_ref().filter(|_| self.open)?;
         Some(b.pipboy.class())
+    }
+
+    /// The class of its menu on top while it's up (STATS, ITEMS, DATA,
+    /// or the repair or mod screen over ITEMS), for the tutorial manager.
+    pub fn top_class(&self) -> Option<i32> {
+        let b = self.built.as_ref().filter(|_| self.open)?;
+        Some(b.pipboy.top_class())
     }
 
     /// Whether the game's cursor is hidden over the Pip-Boy (DATA's map
@@ -1135,10 +1145,30 @@ fn pipboy_keys(
         }
     }
 
+    // ITEMS made (`InventoryMenu::Create`, `0077fc10`): it asks for the
+    // weapons help over itself (`ShowMessage(0x22, 1002, 512)`).
+    let items_up = pipboy.open
+        && pipboy
+            .built
+            .as_ref()
+            .is_some_and(|b| b.pipboy.section == Section::Items);
+    if items_up && !pipboy.items_up {
+        use world::tutorial::{ask, id, menu};
+        ask(
+            order,
+            &mut state.0.tutorials,
+            id::WEAPONS,
+            menu::INVENTORY,
+            menu::DELAY,
+        );
+    }
+    pipboy.items_up = items_up;
+
     // One of the game's own menus over the Pip-Boy (the fast-travel
-    // question, "how many?") takes the keys and the mouse, as the game's
-    // interface hands them to the menu on top (`0070f6e0`; how it orders
-    // the Pip-Boy's menus under a box isn't traced further).
+    // question, "how many?", a help message) takes the keys and the
+    // mouse, as the game's interface hands them to the menu on top
+    // (`0070f6e0`; how it orders the Pip-Boy's menus under a box isn't
+    // traced further).
     if pipboy.open && menus.game_open {
         return;
     }
@@ -1586,6 +1616,10 @@ fn pipboy_keys(
                 if let Some(b) = pipboy.built.as_mut() {
                     b.pipboy.open_item_mod(&mut b.ui, input);
                 }
+            }
+            // `ShowMessage` (`00718630`): ITEMS' tab buttons.
+            Action::Tutorial { id, menu, delay } => {
+                world::tutorial::ask(order, &mut state.tutorials, id, menu, delay);
             }
             // A mod fitted (`007838a0` → `00783af0`): one used up, the
             // sound, the list again.

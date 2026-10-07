@@ -201,6 +201,15 @@ pub fn change(order: &LoadOrder, state: &mut GameState, rep: FormId, kind: u8, b
     });
     let after = levels(order, state, rep);
     if after != before {
+        // The title's box (`006155f0`) first asks for the reputation help,
+        // over any menu (the box), half a second on.
+        crate::tutorial::ask(
+            order,
+            &mut state.tutorials,
+            crate::tutorial::id::REPUTATION,
+            0,
+            500,
+        );
         let title = title(order, after.0, after.1);
         state.events.push(Event::Message {
             title: Some(name),
@@ -355,4 +364,70 @@ pub fn karmic_title(order: &LoadOrder, state: &GameState) -> Option<String> {
     };
     let level = state.player_level.clamp(1, 30);
     game_setting_text(order, &format!("sKarmicTitle{row}{level:02}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tutorial::{self, id, Screen};
+
+    /// A message box on top, shown.
+    struct MessageBoxUp;
+    impl Screen for MessageBoxUp {
+        fn is_menu_open(&self, class: i32) -> bool {
+            class == tutorial::menu::MESSAGE
+        }
+        fn top_menu_shown(&self) -> bool {
+            true
+        }
+    }
+
+    /// A master with a reputation (most 20) and the reputation help
+    /// (`HelpReputation`, Auto Display).
+    fn order() -> LoadOrder {
+        use testdata::{group, record, sub, zstr};
+        let mut header = 1.34f32.to_le_bytes().to_vec();
+        header.extend([0; 8]);
+        let mut bytes = record(b"TES4", 0, &sub(b"HEDR", &header));
+        let mut rep = sub(b"EDID", &zstr("RepTest"));
+        rep.extend(sub(b"FULL", &zstr("Testville")));
+        rep.extend(sub(b"DATA", &20f32.to_le_bytes()));
+        bytes.extend(group(*b"REPU", 0, &record(b"REPU", 0x900, &rep)));
+        let mut help = sub(b"EDID", &zstr("HelpReputation"));
+        help.extend(sub(b"DESC", &zstr("Text")));
+        help.extend(sub(b"FULL", &zstr("Reputation")));
+        help.extend(sub(b"DNAM", &3u32.to_le_bytes()));
+        let form = tutorial::message_form(id::REPUTATION).0;
+        bytes.extend(group(*b"MESG", 0, &record(b"MESG", form, &help)));
+        let plugin = esm::Plugin::from_bytes(bytes).unwrap();
+        LoadOrder::single("FalloutNV.esm", None, plugin).unwrap()
+    }
+
+    /// A new title asks for the reputation help (`006155f0`:
+    /// `ShowMessage(0x27, 0, 500)`), which comes up over a message box
+    /// half a second later; a change within the level doesn't.
+    #[test]
+    fn a_new_title_asks_for_the_reputation_help() {
+        let order = order();
+        let mut state = GameState::new(&order);
+        let rep = FormId(0x900);
+        change(&order, &mut state, rep, FAME, 1.0);
+        assert_eq!(
+            state.tutorials.update(1000, true, false, &MessageBoxUp),
+            None
+        );
+        assert_eq!(
+            state.tutorials.update(1600, true, false, &MessageBoxUp),
+            None
+        );
+        change(&order, &mut state, rep, FAME, 3.0);
+        assert_eq!(
+            state.tutorials.update(2000, true, false, &MessageBoxUp),
+            None
+        );
+        assert_eq!(
+            state.tutorials.update(2500, true, false, &MessageBoxUp),
+            Some(id::REPUTATION)
+        );
+    }
 }

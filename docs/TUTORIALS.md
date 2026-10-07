@@ -58,8 +58,9 @@ for (its class − 1001; 0 any menu), 8–31 a delay in milliseconds.
 | Caravan `00741060`, `00741500` | 0x1E–0x21 | opens the tutorial menu itself (by editor ID) if not shown, marks it, waits (`+0xe78`, id `+0xe7c`) until back on top |
 | crafting `00726ff0` | 0x26 | opens `HelpCrafting` itself if not shown, marks it |
 | reputation change `006155f0` | 0x27 | `ShowMessage(0x27, 0, 500)` |
-| V.A.T.S. (HUD `007e9200`) | 0x15 / 0x1B | `ShowMessage(id, VATS menu, 512)` |
-| inventory `0077fc10`, `00780140` | 0x22 weapons, 0x23 apparel, 0x24 ammo | by tab |
+| `VATSMenu::Create` `007e9200` | 0x15 (0x1B with a pad) | `ShowMessage(id, 1056, 512)` |
+| `InventoryMenu::Create` `0077fc10` | 0x22 weapons | `ShowMessage(0x22, 1002, 512)` as ITEMS is made |
+| ITEMS' tab buttons `00780140` | 0x23 apparel, 0x24 ammo | Apparel (0x19) `ShowMessage(0x23, 1002, 512)`, Ammo (0x1c) `ShowMessage(0x24, 1002, 500)`, each press (the tab shown or not; the arrow keys press the next tab's button, `00782190`) |
 | barter, container, dialogue, level up, repair, race, stats, map, chargen | | `ShowMessage` (none of vanilla's is "Auto Display") |
 
 ## The tutorial menu
@@ -111,7 +112,15 @@ is up as the pause menu. Hooked: Caravan's four,
 crafting, hacking, the terminal menu and lockpicking (`world::lockpick`'s
 `Effect::Tutorial` and `tutorial_wait`; the viewer now draws the
 lockpicking menu's scene and pictures before the HUD's camera, which lays
-the game's menus over them). Seen live: Caravan's betting and
+the game's menus over them); V.A.T.S. (`viewer/src/vats.rs`: the ask as
+it opens, `Vats::in_menu` for the manager, its keys held back while a
+game menu is over it); the Pip-Boy's ITEMS (`viewer/src/pipboy.rs`: the
+weapons ask when ITEMS comes up; `ui::pipboy::Action::Tutorial` from the
+Apparel and Ammo buttons; `Pipboy::top_class`, the repair and mod
+screens 1035 / 1061 over ITEMS); the reputation title
+(`world::reputation::change`, as the level changes). The manager's top
+menu is the game's menu on top, else the lockpicking menu, V.A.T.S.'s
+or the Pip-Boy's (`game_menus::run_tutorials`). Seen live: Caravan's betting and
 deck-building messages against Ringo, closed with E; the hacking message
 over a waiting hacking screen (GSSchoolTerminal01Ref); the lockpicking
 message over the lock (DinoBiteStorageDoorREF, NovacGiftShop), closed
@@ -127,9 +136,10 @@ else key by `sKB…`, the DirectInput key number's setting, `011d52f0`).
 the box reads "WSAD: Apply torque…" and "F: Force Lock" as in the game.
 A player's own bindings aren't read.
 
-Not done: V.A.T.S.'s, the Pip-Boy's (weapons, apparel, ammo; the
-Pip-Boy isn't one of the game menus here), the reputation message (no
-reputation message box here), the start menu's help manual and
-`ShowTutorialMenu`; "outside the game" (the viewer has no main menu) and
-the menus' fade-in (shown at once here). "Held" is the start menu up as
-the pause menu (`viewer/src/game_menus/tutorial.rs`, `held`).
+Not done: the reputation title's own box (`006155f0`'s message box with
+the title's picture and sound; the title is a corner message here, so the
+reputation help waits for the next message box); the pad's messages
+(0x1B, 0x1C, `HelpManualXBox`); "outside the game" (the viewer has no
+main menu) and the menus' fade-in (shown at once here). "Held" is the
+start menu up as the pause menu (`viewer/src/game_menus/tutorial.rs`,
+`held`).

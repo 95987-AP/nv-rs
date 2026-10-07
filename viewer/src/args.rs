@@ -121,7 +121,7 @@ OPTIONS:
                             pixel (screenshots have no mouse)
     --key-at SECONDS KEY[:HOLD]
                             for testing: press a key (a letter or digit,
-                            mouse-left, mouse-right, mouse-x=COUNTS: the
+                            mouse-left, mouse-right, escape, mouse-x=COUNTS: the
                             mouse moving sideways each frame, or
                             wheel=NOTCHES, negative out) that
                             many seconds after you're placed, held HOLD
