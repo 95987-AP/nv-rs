@@ -189,6 +189,92 @@ while the service menu is up.
 - Companion trade, repair and face menus aren't shown, so their
   `00763ff0` calls aren't either.
 
+## After the conversation: the package talks again (B12)
+
+Branch `claude/b12-doc-dialogue`, 2026-10-07. Playtest bug: after Doc's
+door conversation, leaving it started another at once, forever. Private
+exports in `%USERPROFILE%\nv-re\work\b12`. Names marked (Xbox PDB); PC
+process vtable `01087864` slots match the prototype's `BaseProcess` ones.
+
+### The data
+
+`VCG01DocMitchellFarewellDialogueStart` (00105BD2) stays valid while
+`GetStage VCG01 >= 115`. The Goodbye line 001057E7's end script activates
+`VCG01CasualHardcoreMessageREF` (its `OnActivate` asks about hardcore mode,
+a message box) and starts `VGenericTimer` (quest delay 0.1, `fTimer` 0.1,
+event 3): `SetStage VCG01 200` (complete quest flag; `Set GameHour to 8`,
+`StopQuest VCG01`) and `VCG02` stage 5. Doc's list puts
+`VCG01DocMitchellSandbox` (`GetQuestCompleted VCG01`) before the farewell,
+and the new game hour has his package looked at again.
+
+### Traced (FalloutNV.exe 1.4.0.525)
+
+| Address | What | Used for |
+| --- | --- | --- |
+| `008e8600` | DIALOGUE_ACTIVATE: a type-15 package (not Say To) only calls `InitiateDialogue` (actor +0x27c); no distance gate, no "already talked" test | `world::ai::talk` |
+| `008b19c0` | `InitiateDialogue`: `SavePackageToExtraData` (process +0x710, `009130f0` → `0041c930`, extra 0x19: package, step, target, flags), made type-0x1c package installed (`PutCreatedPackage`, actor +0x2f4, `0087eac0`) at step 1 (`SetCurrentProcedureIndex`) | the menu opens one update later |
+| `008e9640` | ACTIVATE (from the made package's DIALOGUE_ACTIVATE): in reach and `CanForceGreet` (process +0x3fc, `008da420`: not in VATS, the speaker detects the player, player not swimming, the player's anim action none or 7) → activates the player | as above |
+| `00762160` | Menu close: `EndDialogue` on the speaker, then `CheckforNewPackage` forced (process +0x24, `008da670`) before and after the end script; `SetGreetingTimer` | viewer `move_actors` |
+| `005fa330` | The activated NPC's base `Activate`: when the activator's saved package (extra 0x19) is a dialogue package (type 15), it is saved again at step 4, list 10's closing DONE (`0041c930(package, 4, target, 0, 0, 0)`), and `PackageDone` (process +0x5a0: end action; "once a day" notes the day, actor +0x28c); then the dialogue menu is asked for (`00709470(4, ...)`, opened outside menu mode, `007094f0`) | `DialogueRun::talk` marks the package done; viewer asks its end action |
+| `008b1070` | `EndDialogue`: the made package current → `LoadPackageFromExtraData` (process +0x714, `00913250`): the saved package back at its saved step (a step past the list's end would be 0): DONE after a talk; list 10 doesn't step back from DONE (`008eeec0` case 0x36) | `DialogueRun::conversation_over` |
+| `0090a1a0`, `00907700` | Package evaluation: the list's pick (`0067e780`) equal to the current package → no new start, step kept, even when forced | viewer `rethink` no longer restarts |
+| `008ec460` | DIALOGUE procedure (NPC conversations): sets the saved type-15 package's action-complete byte, ends with `EndDialogue` | NPC chats end the same way |
+| `005ab400`, `005ac1e0`, `0059c430` | Quest scripts (run every frame from the main loop, `008705d0`): a quest with its own delay starts with its countdown at 0; `GetSecondsPassed` = time gathered since the last run, else the frame's | `Runner::update` first run |
+| `0086e650`, `00702360` | In menu mode the process lists aren't updated | AI held still while any menu (message box, Pip-Boy) is up |
+
+So a dialogue package talks once: talking to someone finishes it, and the
+conversation's end restores it finished. It talks again only when a
+package starts anew (a different one picked, then this one again).
+
+### What was wrong
+
+The viewer's forced look at the package on close restarted the dialogue
+package (an untraced rule) and its Talk step opened the menu again in that
+same update. No game time passed between conversations, so
+`VGenericTimer` never ran and the loop never ended. Its AI also ran under
+the hardcore message box, so the new conversation opened beneath it.
+
+### Implemented
+
+- `world::ai::talk::DialogueRun`: travel done, conversation package made
+  (an update with no menu), talk under way, done; `conversation_over`
+  restores the saved step (DONE after a talk).
+- Viewer: the same package goes on as it was on any look (forced or
+  not); activating the player (or starting an NPC's conversation) asks
+  the package's end action and marks it done; menu close and NPC
+  conversation ends call `conversation_over`; AI held still in menu mode.
+- `Runner::update`: an own-delay quest's first run passes the frame's
+  seconds.
+
+### Tested
+
+`world::ai::talk` unit tests; `crates/world/tests/scripting.rs`
+`an_own_delay_quests_first_run_counts_the_frame`; viewer
+`a_dialogue_package_talks_once` (the old code opened a new conversation
+on the close's own update).
+
+### Verified live (release viewer, installed data)
+
+Route: `GSDocMitchellHouse --stage VCG01 110 --run "SetObjectiveCompleted
+VCG01 40 1" --run-at 3 "DocMitchellREF.StartConversation player"` (the
+psych test said first, as in the real route), the psych test and the
+farewell answered with `--say`, the hardcore box answered "No" with
+`--menu-pointer 963,809 --key-at 112 mouse-left`. Seen: the farewell
+package talks at the door (001057E8 → … → 001057E7), the hardcore box
+shows over a still Doc, and after it no conversation starts; 0.1–0.2 s
+later `VGenericTimer` sets VCG01 200 (the main quest's and "Talk to Sunny
+Smiles" objectives show) and Doc's sandbox is picked. The screenshot
+after it is the hallway with the HUD, no menu. Before the fix the same
+route reopened Doc's conversation ("Welcome back.") at once, forever, and
+under the hardcore box.
+
+### Not compared with the original game
+
+Nothing here has been checked side by side with the original. Doc's
+sandbox walk after the farewell sticks at (2292, 2311) behind the player
+in the doorway (not part of this fix). Not carried out: "once a day"
+packages' day note (actor +0x28c), whether DONE runs the end action a
+second time (`008eeec0` case 0x36 with `IsPackageDoneOnce`).
 ## Remaining gaps
 
 - The head's bound: the game merges the face node's skinned pieces'

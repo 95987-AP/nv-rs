@@ -2104,3 +2104,50 @@ fn scripted_items_see_their_onadd() {
     Runner::new(&order, &scripts, &mut state).update(0.1);
     assert_eq!(global(&mut state), Some(7.0));
 }
+
+/// A quest with its own delay runs at once, and on that first run
+/// `GetSecondsPassed` is the frame's time (`005ab400`, `005ac1e0`,
+/// `0059c430`); afterwards the time gathered since the last run. Doc
+/// Mitchell's farewell timer (`VGenericTimer`, delay 0.1, `fTimer` 0.1)
+/// counts down over its second and third runs this way.
+#[test]
+fn an_own_delay_quests_first_run_counts_the_frame() {
+    use testdata::{group, record, sub, zstr};
+    let data = testdata::TempData::empty("quest-first-run");
+    let mut script = sub(b"EDID", &zstr("TestTimerScript"));
+    script.extend(sub(b"SCHR", &[0; 20]));
+    script.extend(sub(
+        b"SCTX",
+        b"scn TestTimerScript\nfloat fSeen\nshort nRuns\nBegin GameMode\nset fSeen to GetSecondsPassed\nset nRuns to nRuns + 1\nEnd",
+    ));
+    let mut quest = sub(b"EDID", &zstr("TestTimer"));
+    quest.extend(sub(b"SCRI", &0x900u32.to_le_bytes()));
+    let mut qdata = vec![0x01, 50, 0, 0];
+    qdata.extend(0.1f32.to_le_bytes());
+    quest.extend(sub(b"DATA", &qdata));
+    let mut hedr = 1.34f32.to_le_bytes().to_vec();
+    hedr.extend([0; 8]);
+    let mut plugin = record(b"TES4", 0, &sub(b"HEDR", &hedr));
+    plugin.extend(group(*b"SCPT", 0, &record(b"SCPT", 0x900, &script)));
+    plugin.extend(group(*b"QUST", 0, &record(b"QUST", 0x901, &quest)));
+    data.write("FalloutNV.esm", &plugin);
+    let order = LoadOrder::from_data_dir(data.path(), &ActivePlugins::OfficialOnly).unwrap();
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let var = |state: &GameState, name: &str| {
+        state
+            .variables
+            .get(&FormId(0x901))
+            .and_then(|l| l.iter().find(|v| v.0 == name).map(|v| v.2))
+            .unwrap_or(0.0)
+    };
+    Runner::new(&order, &scripts, &mut state).update(0.0625);
+    assert_eq!(var(&state, "nruns"), 1.0);
+    assert_eq!(var(&state, "fseen"), 0.0625);
+    // Not again until 0.1 s have gathered; then all of it.
+    Runner::new(&order, &scripts, &mut state).update(0.0625);
+    assert_eq!(var(&state, "nruns"), 1.0);
+    Runner::new(&order, &scripts, &mut state).update(0.0625);
+    assert_eq!(var(&state, "nruns"), 2.0);
+    assert_eq!(var(&state, "fseen"), 0.125);
+}

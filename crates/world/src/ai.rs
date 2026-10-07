@@ -45,6 +45,7 @@ pub mod navsearch;
 pub mod offmesh;
 pub mod procedures;
 mod smoother;
+pub mod talk;
 
 const PACK: FourCC = FourCC::new(b"PACK");
 const PKDT: FourCC = FourCC::new(b"PKDT");
