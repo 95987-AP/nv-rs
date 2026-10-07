@@ -527,6 +527,14 @@ animation through the ragdoll isn't traced). Evidence and gaps:
 [PHYSICS.md](PHYSICS.md). **Next action:** trace how the game drives a
 dying creature's ragdoll with its death animation.
 
+M2 batch (`claude/m2-death-ragdoll`, 2026-10-07): death → ragdoll traced
+(`0089d900`): ragdolls play no `Death` animation, every body goes dynamic
+from its pose with the death nudge (`fDeathForceForceMin`), a killing
+hit's push only after a hit; the dead go limp with the AI held still
+(Cheyenne and Easy Pete seen falling live). Details: [PHYSICS.md](PHYSICS.md).
+**Next action:** trace which `00c65b00` branch the living biped takes
+(the bodies' velocity handed to the ragdoll).
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,
