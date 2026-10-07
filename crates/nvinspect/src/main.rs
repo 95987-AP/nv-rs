@@ -24,6 +24,8 @@ mod music_place_cmd;
 mod nif_cmd;
 mod particles_cmd;
 mod play_cmd;
+mod quest_coverage;
+mod quest_played;
 mod records;
 mod render_cmd;
 mod scripts_cmd;
@@ -254,6 +256,13 @@ COMMANDS FOR DATA FOLDERS ONLY:
     coverage files        every file in every archive and loose, by kind;
                           every NIF block type and whether nv-rs decodes it;
                           texture and sound formats; menu files (Markdown)
+    coverage functions    every script function the game's scripts call and
+                          its conditions ask, against what nv-rs carries
+                          out (Markdown)
+    coverage quests       every quest in the first plugin (FalloutNV.esm):
+                          stages, objectives, how it starts, the script
+                          functions its scripts need that nv-rs lacks, and
+                          how far it has been played: docs/QUEST_COVERAGE.md
 
 COMMANDS FOR ARCHIVES:
     info                  format, flags and what the archive holds
