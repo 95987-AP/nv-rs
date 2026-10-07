@@ -168,32 +168,44 @@ impl GameLighting {
     }
 }
 
+/// Bindless where the device allows (one bind group for many materials, so
+/// their draws go together): the lighting in one array (binding 101), the
+/// textures in Bevy's bindless arrays, found through the index table
+/// (binding 100, entries 50 to 59); otherwise each its own binding 50 to
+/// 59. (The standard material's own bindless entries are 0 to 30.)
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[bind_group_data(DrawKey)]
+#[data(50, GameLighting, binding_array(101))]
+#[bindless(limit(32), index_table(range(50..60), binding(100)))]
 pub struct GameLit {
-    #[uniform(100)]
     pub lighting: GameLighting,
     /// Depth test and write, decal (see [`DrawKey`]).
     pub key: DrawKey,
-    #[texture(101)]
-    #[sampler(102)]
+    #[texture(51)]
+    #[sampler(52)]
     pub glow: Option<Handle<Image>>,
     /// Sampled as stored (a linear texture); alpha is the specular mask.
-    #[texture(103)]
-    #[sampler(104)]
+    #[texture(53)]
+    #[sampler(54)]
     pub normal_map: Option<Handle<Image>>,
     /// The reflection's cube map, sampled as stored.
-    #[texture(105, dimension = "cube")]
-    #[sampler(106)]
+    #[texture(55, dimension = "cube")]
+    #[sampler(56)]
     pub environment: Option<Handle<Image>>,
     /// Where the reflection shows (red channel), sampled as stored.
-    #[texture(107)]
-    #[sampler(108)]
+    #[texture(57)]
+    #[sampler(58)]
     pub environment_mask: Option<Handle<Image>>,
-    /// The hour's light outdoors (`crate::shared_light::BUFFER`), read
-    /// when `lighting.scale.z` is 1.
-    #[storage(109, read_only)]
-    pub shared: Handle<bevy::render::storage::ShaderStorageBuffer>,
+    /// The hour's light outdoors (`crate::shared_light::TEXTURE`, read
+    /// texel by texel), read when `lighting.scale.z` is 1.
+    #[texture(59, sample_type = "float", filterable = false)]
+    pub shared: Handle<Image>,
+}
+
+impl From<&GameLit> for GameLighting {
+    fn from(m: &GameLit) -> Self {
+        m.lighting
+    }
 }
 
 impl MaterialExtension for GameLit {

@@ -1597,6 +1597,10 @@ impl Spawner<'_, '_> {
         // Blended pieces are built around the point the game sorts them by
         // (see `sort_center`).
         let centers: Vec<Option<[f32; 3]>> = scene.meshes.iter().map(sort_center).collect();
+        // Pieces with the same material (its data, and whether a normal map
+        // can be used) share one, so their draws can go together.
+        let mut same_material: std::collections::HashMap<String, Handle<GameLitMaterial>> =
+            std::collections::HashMap::new();
         for (data, center) in scene.meshes.iter().zip(&centers) {
             let (mesh, bind) = match actors::skinned_mesh(data) {
                 Some((mesh, bind)) => (
@@ -1609,9 +1613,14 @@ impl Spawner<'_, '_> {
                     None,
                 ),
             };
-            let material = self
-                .lit_materials
-                .add(lit_material(data, &textures, lighting));
+            let key = format!("{:?} {}", data.material, data.tangents.is_some());
+            let material = same_material
+                .entry(key)
+                .or_insert_with(|| {
+                    self.lit_materials
+                        .add(lit_material(data, &textures, lighting))
+                })
+                .clone();
             pieces.push((mesh, material));
             binds.push(bind);
         }
@@ -1914,7 +1923,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
-            shared: crate::shared_light::BUFFER,
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2027,7 +2036,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
-            shared: crate::shared_light::BUFFER,
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2107,7 +2116,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
-            shared: crate::shared_light::BUFFER,
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2173,7 +2182,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
-            shared: crate::shared_light::BUFFER,
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2436,7 +2445,7 @@ fn lit_material(
             _ => 0.0,
         };
         GameLit {
-            shared: crate::shared_light::BUFFER,
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 emissive: Vec4::new(ur, ug, ub, 0.0),
                 surface: Vec4::new(0.0, 0.0, 1.0, fog_mode),
@@ -2470,7 +2479,7 @@ fn lit_material(
             .and_then(|(e, _)| e.mask)
             .and_then(|i| textures[i].clone());
         GameLit {
-            shared: crate::shared_light::BUFFER,
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 emissive: Vec4::new(er, eg, eb, flag(glow.is_some())),
                 specular,
