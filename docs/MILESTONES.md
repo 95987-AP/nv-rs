@@ -530,6 +530,33 @@ animation through the ragdoll isn't traced). Evidence and gaps:
 [PHYSICS.md](PHYSICS.md). **Next action:** trace how the game drives a
 dying creature's ragdoll with its death animation.
 
+## M4: PR #12 review and streaming hitches (`claude/perf-streaming`, 2026-10-07)
+
+Merge notes for PR #12 (performance), stacked on `claude/perf-latest`;
+details and method in [PERFORMANCE.md](PERFORMANCE.md). The maintainer's
+three review points:
+- **Shared textures:** tinted faces and hair are keyed by what they were
+  made from (`"<base> + FaceGen <tint>"`, `"<base> + layer <file>"`, per-NPC
+  tint files), so they don't mix. The cache's lifetime was wrong instead
+  (textures freed while held, re-uploads across frames); fixed in
+  `ba8e864`.
+- **Screenshots** of Doc's house, faces (Doc, Trudy, Sunny, Chet, Pete) and
+  Goodsprings before/after: differences within the noise of two runs of
+  the same build (idle poses, grass, tumbleweeds).
+- **Acceptance-route frame rates** (median fps before → after, busy
+  machine, re-measure on a quiet one): doc 252–264 → 474–504, vcg02 132 →
+  273, vms16 113 → 240; all routes pass in both.
+
+Commits that should go into PR #12: `ba8e864` (texture lifetime). Follow-ups
+on the same branch: `d0bbcc0` (player body/view relit, not rebuilt),
+`1fe77bf` (outdoor collider gathered without re-measuring), `5e7f8eb`
+(materials kept when their lights don't change): flying out of
+Goodsprings, each 2 s window's longest frame 130–230 ms before
+`d0bbcc0`, 45–115 ms after it (median 75 ms), median 36–39 ms after
+`5e7f8eb`. Not fixable here: a minimized window held to 60 fps (bevy_winit
+redraw pacing). **Next action:** re-measure the route table on a quiet
+machine.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,
