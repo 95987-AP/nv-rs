@@ -1321,6 +1321,40 @@ pub struct NavMesh {
     /// `fJumpFallHeightMin` (exe default 256): how far the ray-cast way may
     /// drop at a step ([`offmesh`]).
     pub fall_height: f32,
+    /// Which triangles lie over each square of a grid, for finding the one
+    /// a point stands on without looking at all of them; made the first
+    /// time it's asked for.
+    pub index: TriangleIndex,
+}
+
+/// What's worked out once from a mesh, the first time it's asked for (a
+/// cache of the mesh: never compared): the triangles by the squares of a
+/// grid ([`GRID_SQUARE`] units across) their outline overlaps, seen from
+/// above (grown by [`GRID_MARGIN`], as [`height_in`] takes points a hair
+/// outside a triangle), each square's in the mesh's order; and the
+/// squares' extent.
+#[derive(Debug, Clone, Default)]
+pub struct TriangleIndex(
+    std::sync::OnceLock<HashMap<(i32, i32), Vec<usize>>>,
+    std::sync::OnceLock<((i32, i32), (i32, i32))>,
+);
+
+impl PartialEq for TriangleIndex {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+/// The index's squares, in game units.
+const GRID_SQUARE: f32 = 256.0;
+/// How far past a triangle's outline it's indexed.
+const GRID_MARGIN: f32 = 1.0;
+
+fn grid_square(x: f32, y: f32) -> (i32, i32) {
+    (
+        (x / GRID_SQUARE).floor() as i32,
+        (y / GRID_SQUARE).floor() as i32,
+    )
 }
 
 /// Casts a ray through the world's collision: how far along from `from`
@@ -1623,11 +1657,106 @@ impl NavMesh {
         (near <= OFF_MESH * OFF_MESH).then_some(t)
     }
 
+    /// The grid's squares ([`TriangleIndex`]), made the first time.
+    fn index(&self) -> &HashMap<(i32, i32), Vec<usize>> {
+        self.index.0.get_or_init(|| {
+            let mut squares: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+            for t in 0..self.triangles.len() {
+                let [a, b, c] = [0, 1, 2].map(|i| self.corner(t, i));
+                let lo = grid_square(
+                    a[0].min(b[0]).min(c[0]) - GRID_MARGIN,
+                    a[1].min(b[1]).min(c[1]) - GRID_MARGIN,
+                );
+                let hi = grid_square(
+                    a[0].max(b[0]).max(c[0]) + GRID_MARGIN,
+                    a[1].max(b[1]).max(c[1]) + GRID_MARGIN,
+                );
+                for x in lo.0..=hi.0 {
+                    for y in lo.1..=hi.1 {
+                        squares.entry((x, y)).or_default().push(t);
+                    }
+                }
+            }
+            squares
+        })
+    }
+
+    /// The triangles whose outline (seen from above, grown by the grid's
+    /// margin) comes within `reach` of a point across, in the mesh's order:
+    /// every triangle with a corner within `reach` of it, or holding it,
+    /// is among them (others nearby may be too).
+    pub fn triangles_near(&self, p: [f32; 3], reach: f32) -> Vec<usize> {
+        let index = self.index();
+        let lo = grid_square(p[0] - reach, p[1] - reach);
+        let hi = grid_square(p[0] + reach, p[1] + reach);
+        let mut found: Vec<usize> = (lo.0..=hi.0)
+            .flat_map(|x| (lo.1..=hi.1).map(move |y| (x, y)))
+            .filter_map(|square| index.get(&square))
+            .flatten()
+            .copied()
+            .collect();
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    /// The triangle whose middle is nearest a point (the first of those as
+    /// near), looking at the grid's squares ring by ring out from the
+    /// point's until no square left can hold a nearer one: a triangle is
+    /// in the square of its middle, and a square `r` rings out is at least
+    /// `r - 1` squares away across.
+    fn nearest_middle(&self, p: [f32; 3]) -> Option<usize> {
+        let index = self.index();
+        if index.is_empty() {
+            return None;
+        }
+        let ((x0, y0), (x1, y1)) = *self.index.1.get_or_init(|| {
+            index.keys().fold(
+                ((i32::MAX, i32::MAX), (i32::MIN, i32::MIN)),
+                |((ax, ay), (bx, by)), &(x, y)| ((ax.min(x), ay.min(y)), (bx.max(x), by.max(y))),
+            )
+        });
+        let (cx, cy) = grid_square(p[0], p[1]);
+        let rings = [x0 - cx, cx - x1, y0 - cy, cy - y1]
+            .iter()
+            .map(|d| d.unsigned_abs())
+            .max()
+            .unwrap_or(0) as i32;
+        let mut best: Option<(f32, usize)> = None;
+        let consider = |best: &mut Option<(f32, usize)>, t: usize| {
+            let d = distance2(self.centroid(t), p);
+            if best.map_or(true, |(bd, bt)| d.total_cmp(&bd).then(t.cmp(&bt)).is_lt()) {
+                *best = Some((d, t));
+            }
+        };
+        for r in 0..=rings {
+            if let Some((d, _)) = best {
+                let gap = (r - 1).max(0) as f32 * GRID_SQUARE;
+                if gap * gap > d {
+                    break;
+                }
+            }
+            for x in cx - r..=cx + r {
+                for y in cy - r..=cy + r {
+                    if (x - cx).abs() != r && (y - cy).abs() != r {
+                        continue;
+                    }
+                    for &t in index.get(&(x, y)).into_iter().flatten() {
+                        consider(&mut best, t);
+                    }
+                }
+            }
+        }
+        best.map(|(_, t)| t)
+    }
+
     /// The triangle a point stands on: one whose outline (seen from above)
     /// holds it, nearest in height; else the one whose middle is nearest.
     pub fn triangle_at(&self, p: [f32; 3]) -> Option<usize> {
         let mut best: Option<(f32, usize)> = None;
-        for t in 0..self.triangles.len() {
+        // Only those over the point's grid square can hold it.
+        let under = self.index().get(&grid_square(p[0], p[1]));
+        for &t in under.into_iter().flatten() {
             let [a, b, c] = [0, 1, 2].map(|i| self.corner(t, i));
             if let Some(z) = height_in(a, b, c, p) {
                 let dz = (z - p[2]).abs();
@@ -1641,9 +1770,7 @@ impl NavMesh {
                 return Some(t);
             }
         }
-        (0..self.triangles.len()).min_by(|&x, &y| {
-            distance2(self.centroid(x), p).total_cmp(&distance2(self.centroid(y), p))
-        })
+        self.nearest_middle(p)
     }
 
     /// A path from one point to another over the navmesh: the points to
@@ -2098,6 +2225,69 @@ mod tests {
     /// Four squares of 100, two by two, each as two triangles: from the
     /// bottom left to the top right by the bottom right (triangles 3, 6) or
     /// by the top left (1, 4).
+    /// The grid finds the triangle that looking at every one finds, and the
+    /// first nearest middle, near the mesh and far from it.
+    #[test]
+    fn the_grid_finds_what_looking_at_every_triangle_finds() {
+        for mesh in [corridor_mesh(), four_squares()] {
+            let every = |p: [f32; 3]| {
+                let mut best: Option<(f32, usize)> = None;
+                for t in 0..mesh.triangles.len() {
+                    let [a, b, c] = [0, 1, 2].map(|i| mesh.corner(t, i));
+                    if let Some(z) = height_in(a, b, c, p) {
+                        let dz = (z - p[2]).abs();
+                        if best.map_or(true, |(d, _)| dz < d) {
+                            best = Some((dz, t));
+                        }
+                    }
+                }
+                if let Some((dz, t)) = best {
+                    if dz < 200.0 {
+                        return Some(t);
+                    }
+                }
+                (0..mesh.triangles.len()).min_by(|&x, &y| {
+                    distance2(mesh.centroid(x), p).total_cmp(&distance2(mesh.centroid(y), p))
+                })
+            };
+            for x in (-3000..=3500).step_by(97) {
+                for y in (-3000..=3500).step_by(89) {
+                    for z in [0.0, 150.0, 400.0, -2000.0] {
+                        let p = [x as f32, y as f32, z];
+                        assert_eq!(mesh.triangle_at(p), every(p), "{p:?}");
+                    }
+                }
+            }
+            for v in &mesh.vertices {
+                assert_eq!(mesh.triangle_at(*v), every(*v));
+            }
+        }
+    }
+
+    /// Near a point, the grid gives every triangle with a corner within
+    /// reach or holding the point, in the mesh's order.
+    #[test]
+    fn triangles_near_holds_every_one_within_reach() {
+        for mesh in [corridor_mesh(), four_squares()] {
+            for x in (-300..=700).step_by(37) {
+                for y in (-300..=700).step_by(41) {
+                    for reach in [0.0, 10.0, 90.0, 300.0, 1000.0] {
+                        let p = [x as f32, y as f32, 0.0];
+                        let near = mesh.triangles_near(p, reach);
+                        assert!(near.windows(2).all(|w| w[0] < w[1]));
+                        for t in 0..mesh.triangles.len() {
+                            let c = [0, 1, 2].map(|i| mesh.corner(t, i));
+                            let close = c.iter().any(|v| (v[0] - p[0]).hypot(v[1] - p[1]) <= reach);
+                            if close || height_in(c[0], c[1], c[2], p).is_some() {
+                                assert!(near.contains(&t), "{p:?} {reach} {t}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn four_squares() -> NavMesh {
         let mut vertices = Vec::new();
         for y in 0..3 {
