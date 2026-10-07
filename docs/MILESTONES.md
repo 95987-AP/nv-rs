@@ -612,7 +612,10 @@ keys, references moved, disabled, locked, found map markers, containers,
 dead actors and their values, factions, challenges, reputations, local
 map fog, weather, radio); plugin indices are matched by name. Gaps listed
 in FOS_SAVES.md. `nvinspect fos-import` runs it on all nine saves with no
-failures. **Next action:** `--load-fos` in the viewer.
+failures. The viewer starts from a save with `--load-fos <SAVE>`
+(checked live on two of the saves: the player where the save says, the
+time and quest stages printed). **Next action:** compare a loaded save
+against the original game running the same save.
 
 ## Deferred
 

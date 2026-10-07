@@ -22,6 +22,7 @@ mod explosives;
 mod exterior;
 mod faces;
 mod fighting;
+mod fos_start;
 mod game_menus;
 mod grade;
 mod grass;
@@ -150,7 +151,20 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let (scene, outdoors) = match open_place(&game, &args.cell, args.at) {
+    // `--load-fos`: an original save gives the state and the place.
+    let mut from_save = match args.load_fos.as_deref().map(|p| fos_start::open(&game, p)) {
+        Some(Ok(start)) => Some(start),
+        Some(Err(e)) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+        None => None,
+    };
+    let opened = match from_save.as_mut() {
+        Some(start) => Ok((start.scene.take(), start.outdoors.take())),
+        None => open_place(&game, &args.cell, args.at),
+    };
+    let (scene, outdoors) = match opened {
         Ok(place) => place,
         Err(e) => {
             eprintln!("error: {e}");
@@ -189,7 +203,10 @@ fn main() {
     // Walking, except for screenshots, which keep the exact eye given.
     let player = walk::Player::new(args.screenshot.is_none() || args.walk);
     // A ready-made test character, set up before the first frame.
-    let mut state = world::dialogue::GameState::new(&game.order);
+    let mut state = match from_save {
+        Some(start) => start.state,
+        None => world::dialogue::GameState::new(&game.order),
+    };
     if let Some(path) = &args.character {
         match std::fs::read_to_string(path) {
             Ok(text) => {

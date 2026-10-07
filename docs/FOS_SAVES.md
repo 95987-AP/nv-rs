@@ -526,6 +526,23 @@ keep their ids. Change forms are applied in file order, references last
 | `player_crimes`, `steal_warnings`, `more.in_chargen`, `set_by_scripts.fast_travel` | The player's `iMinorCrimes`/`iMajorCrimes`, +0x228, +0x75c, +0x66d/+0x66e | |
 | `player_cell`, `player_world`, `player_position` and the place | The player's initial data (else global data 1) | An interior cell, or the worldspace and the cell at the grid square. |
 
+**In the viewer.** `nv-viewer <DATA> --load-fos <SAVE>` starts from a
+save instead of a new game (the CELL can be left out): it prints what it
+imported, the game time and the quests' stages, and opens the player's
+place as F9 opens nv-rs's own saves (an interior through
+`load_cell_now` with the imported disabled references, an exterior at the
+saved feet and heading). With `--screenshot` it makes a picture and quits,
+as usual.
+
+Checked live on 2026-10-07 with two of the nine saves: the autosave's
+backup (in `GSProspectorSaloonInterior` at 133, -822, 3459, facing north)
+opens in the saloon at the door, facing north, with Doc Mitchell's quest
+(`VCG01`) at stage 200 completed and `VCG02` at stage 5; a named save in
+Goodsprings (outside, at -67912, 3054, 8358, heading 225 degrees) opens on
+the road there facing south-west at 11:25, the weapon the player held
+drawn with its ammunition count. No comparison with the original game
+running the same save was made yet.
+
 Not imported (`world::fos_import::GAPS`): active effects (each effect's
 data is a block not interpreted), AI processes, packages, combat and
 pathing (nv-rs re-evaluates AI on loading), which actor a leveled list
