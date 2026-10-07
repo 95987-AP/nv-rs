@@ -31,8 +31,8 @@ OPTIONS:
                             FILE once everything has loaded, then quit
     --wait SECONDS          with --screenshot, let the game run this long
                             first (people walking, scripts)
-    --screen-size W,H       with --screenshot, open at this size instead
-                            (to check other shapes of screen)
+    --screen-size W,H       with --screenshot or --background, open at this
+                            size instead (to check other shapes of screen)
     --walk                  walk even with --screenshot (which otherwise
                             flies, keeping the exact eye position given)
     --fps                   print the frame rate every two seconds, and how
