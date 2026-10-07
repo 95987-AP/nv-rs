@@ -549,7 +549,8 @@ pub struct HudState<'w, 's> {
     talk_target: Res<'w, TalkTarget>,
     activatable: Res<'w, crate::scripts::Activatable>,
     doors: Res<'w, crate::walk::Doors>,
-    collision: Res<'w, crate::walk::CellCollision>,
+    /// What the crosshair is on (crosshair, the game's view caster).
+    crosshair: Res<'w, crate::crosshair::Crosshair>,
     menus: Res<'w, crate::menus::Menus>,
     talkers: Res<'w, Talkers>,
     markers: Res<'w, crate::map::MapMarkers>,
@@ -583,19 +584,12 @@ impl HudState<'_, '_> {
             return None;
         }
         let order = &self.game.0.order;
-        let camera = self.cameras.single().ok()?;
-        let eye = crate::walk::game_point(camera.translation);
-        let f = camera.forward().as_vec3();
-        let direction = [f.x, -f.z, f.y];
         let reference = if let Some((talker, _)) = &self.talk_target.0 {
             talker.reference
-        } else if let Some(door) =
-            crate::walk::door_in_view(&self.doors.0, &self.collision.0, eye, direction)
-        {
+        } else if let Some(door) = crate::walk::door_in_view(&self.doors.0, &self.crosshair) {
             esm::FormId(door.reference)
-        } else if let Some(reference) =
-            crate::walk::opening_door_in_view(&self.collision.0, eye, direction)
-                .filter(|&r| crate::walk::is_door(order, r))
+        } else if let Some(reference) = crate::walk::opening_door_in_view(&self.crosshair)
+            .filter(|&r| crate::walk::is_door(order, r))
         {
             reference
         } else {

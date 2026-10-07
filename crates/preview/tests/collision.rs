@@ -215,6 +215,17 @@ fn doors_that_open_own_their_leaves_and_swing_them() {
     assert!(leaf(&c, 300.0).is_some() && frame(&c, 300.0).is_some());
     assert!(c.owns(0x904) && c.owns(0x905));
     assert!(leaf(&c, 600.0).is_some() && !c.owns(0x906));
+    // Whatever owns them, every part's triangles name the reference they
+    // come from, frame and leaf, for the crosshair's pick
+    // (`physics::view_caster`): the load door's too.
+    for (y, door) in [(0.0, 0x904), (300.0, 0x905), (600.0, 0x906)] {
+        for (_, t) in [leaf(&c, y), frame(&c, y)].into_iter().flatten() {
+            assert_eq!(c.reference(t), door);
+        }
+        assert!(c
+            .raycast_reference([-60.0, y - 50.0, 100.0], [0.0, 1.0, 0.0], door)
+            .is_some());
+    }
     // The doors that swing, with their model's sequences and the leaf's
     // node chain.
     let doors = scene.swing_doors(RotationConvention::DEFAULT);

@@ -1633,7 +1633,7 @@ fn add_part(
     collider: &mut physics::Collider,
     part: &nif::CollisionPart,
     place: &Transform,
-    owner: u32,
+    (owner, reference): (u32, u32),
 ) {
     let at = |v: &[f32; 3]| place.apply_point(*v);
     let surface = (part.body != nif::RigidBodyInfo::default()).then_some(physics::Surface {
@@ -1641,12 +1641,13 @@ fn add_part(
         restitution: part.body.restitution,
     });
     let mut add = |v: &[[f32; 3]], t: &[[u32; 3]]| {
-        collider.add_layered(
+        collider.add_placed(
             v,
             t,
             (part.shell, owner, part.material),
             surface,
             part.layer,
+            reference,
         );
     };
     match &part.shape {
@@ -1909,7 +1910,7 @@ fn add_collision_marker(
         material: physics::NO_MATERIAL,
         body: Default::default(),
     };
-    add_part(collider, &part, &place, 0);
+    add_part(collider, &part, &place, (0, marker.form_id.0));
 }
 
 fn note_missing(loader: &mut Loader, model: Option<&str>) {
@@ -2000,7 +2001,7 @@ impl CellScene {
                 } else {
                     0
                 };
-                add_part(&mut collider, part, &place, owner);
+                add_part(&mut collider, part, &place, (owner, object.form_id.0));
             }
         }
         for marker in &self.cell.markers {

@@ -22,6 +22,8 @@ const DOOR: u32 = 0x80B;
 const BOOK: u32 = 0x80C;
 const LAMP: u32 = 0x80D;
 const KEY: u32 = 0x80E;
+const WALL: u32 = 0x80F;
+const SCONCE: u32 = 0x810;
 
 const ROOM: u32 = 0x900;
 const TOWN: u32 = 0x901;
@@ -42,6 +44,8 @@ const FAR_DOOR_REF: u32 = 0x91C;
 const BOOK_REF: u32 = 0x91D;
 const LAMP_REF: u32 = 0x91E;
 const KEYED_REF: u32 = 0x91F;
+const WALL_REF: u32 = 0x920;
+const SCONCE_REF: u32 = 0x921;
 
 fn named(kind: &[u8; 4], id: u32, name: Option<&str>, rest: &[u8]) -> Vec<u8> {
     let mut d = sub(b"EDID", &zstr(&format!("Test{id:X}")));
@@ -122,11 +126,11 @@ fn world() -> (testdata::TempData, LoadOrder) {
     let mut light = vec![0u8; 12];
     light.extend(2u32.to_le_bytes());
     light.extend([0u8; 20]);
-    plugin.extend(group(
-        *b"LIGH",
-        0,
-        &named(b"LIGH", LAMP, Some("Lamp"), &sub(b"DATA", &light)),
-    ));
+    let mut lights = named(b"LIGH", LAMP, Some("Lamp"), &sub(b"DATA", &light));
+    // One that can't be carried.
+    lights.extend(named(b"LIGH", SCONCE, None, &sub(b"DATA", &[0u8; 36])));
+    plugin.extend(group(*b"LIGH", 0, &lights));
+    plugin.extend(group(*b"STAT", 0, &named(b"STAT", WALL, None, &[])));
     // A tin can worth 2, weighing 0.5; a rifle worth 75, weighing 7.
     let mut misc = named(
         b"MISC",
@@ -197,6 +201,8 @@ fn world() -> (testdata::TempData, LoadOrder) {
     refs.extend(placed(b"REFR", DOOR_REF, DOOR, &sub(b"XTEL", &xtel)));
     refs.extend(placed(b"REFR", BOOK_REF, BOOK, &[]));
     refs.extend(placed(b"REFR", LAMP_REF, LAMP, &[]));
+    refs.extend(placed(b"REFR", WALL_REF, WALL, &[]));
+    refs.extend(placed(b"REFR", SCONCE_REF, SCONCE, &[]));
     let mut cells = cell(ROOM, "Doc Mitchell's House", &refs);
     let mut back = DOOR_REF.to_le_bytes().to_vec();
     back.extend(f32s(&[0.0; 6]));
@@ -317,6 +323,24 @@ fn the_info_panel_says_what_the_game_says() {
     let body = info(&s, SUNNY_REF);
     assert_eq!(body.action.as_deref(), Some("Search"));
     assert_eq!(body.empty.as_deref(), Some("Empty"));
+}
+
+/// `00631d60`: the view caster's fuzzy candidate takes the place of an
+/// exact pick on a static, a static collection, a tree, a light that can't
+/// be carried, or something with no base; never of furniture, items,
+/// containers, doors or people.
+#[test]
+fn the_fuzzy_pick_replaces_statics_and_fixed_lights_only() {
+    let (_data, order) = world();
+    let replaces = |r: u32| activation::fuzzy_replaces(&order, FormId(r));
+    assert!(replaces(WALL_REF));
+    assert!(replaces(SCONCE_REF));
+    assert!(replaces(0xABCDE));
+    for r in [
+        LAMP_REF, CHAIR_REF, CANS_REF, CHEST_REF, DOOR_REF, SUNNY_REF, TESTER_REF,
+    ] {
+        assert!(!replaces(r), "{r:X}");
+    }
 }
 
 #[test]

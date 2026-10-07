@@ -6,7 +6,7 @@
 //! crate's character.
 
 use bevy::prelude::*;
-use cellview::{space, DoorData, ACTIVATE_REACH, EYE_HEIGHT};
+use cellview::{space, DoorData, EYE_HEIGHT};
 use physics::{Character, CharacterShape, Collider};
 use world::locomotion::{self, SpeedSettings};
 
@@ -120,11 +120,6 @@ pub fn toggle_walking(
 pub fn game_point(p: Vec3) -> [f32; 3] {
     let s = 1.0 / space::METERS_PER_UNIT;
     [p.x * s, -p.z * s, p.y * s]
-}
-
-/// A direction from Bevy's space back to the game's.
-fn game_direction(d: Vec3) -> [f32; 3] {
-    [d.x, -d.z, d.y]
 }
 
 /// The people the player runs into: everyone alive here, upright
@@ -414,78 +409,30 @@ pub fn walk(
     let eye = z + EYE_HEIGHT + eye_offset(heights, player.sneak_blend);
     transform.translation = Vec3::from(space::point([x, y, eye]));
 }
-/// The load door the view is on, within reach and not behind a wall.
+/// The load door the crosshair is on, within reach (`crosshair`, the
+/// game's view caster).
 pub(crate) fn door_in_view<'a>(
     doors: &'a [DoorData],
-    collision: &Collider,
-    eye: [f32; 3],
-    dir: [f32; 3],
+    crosshair: &crate::crosshair::Crosshair,
 ) -> Option<&'a DoorData> {
-    let mut best: Option<(f32, &DoorData)> = None;
-    for door in doors {
-        // Slightly bigger than the model, so its frame counts.
-        let lo = door.lo.map(|c| c - 4.0);
-        let hi = door.hi.map(|c| c + 4.0);
-        if let Some(t) = ray_box(eye, dir, lo, hi) {
-            if t <= ACTIVATE_REACH && best.is_none_or(|(bt, _)| t < bt) {
-                best = Some((t, door));
-            }
-        }
-    }
-    let (t, door) = best?;
-    // A wall nearer than the door hides it (the door's own collision is
-    // about as near as its box).
-    if let Some((wall, _)) = collision.raycast(eye, dir, t) {
-        if wall < t - 24.0 {
-            return None;
-        }
-    }
-    Some(door)
+    let r = crosshair.target()?;
+    doors.iter().find(|d| d.reference == r.0)
 }
 
-/// A door that opens where it stands (not a load door) under the crosshair
-/// within reach. Its leaf's collision belongs to it
-/// (`preview::cell::CellScene::collider`) and swings with it
-/// (`doors::update_doors`), so the ray meets the leaf wherever it is; a
-/// wall nearer than the door hides it.
-pub(crate) fn opening_door_in_view(
-    collision: &Collider,
-    eye: [f32; 3],
-    dir: [f32; 3],
-) -> Option<esm::FormId> {
-    let (_, t) = collision.raycast_including_hidden(eye, dir, ACTIVATE_REACH)?;
-    let owner = collision.owner(t);
-    (owner != 0).then_some(esm::FormId(owner))
+/// The reference the crosshair is on within reach, for a door that opens
+/// where it stands (not a load door; [`is_door`] tells): its leaf's
+/// collision belongs to it (`preview::cell::CellScene::collider`) and
+/// swings with it (`doors::update_doors`), so the pick meets the leaf
+/// wherever it is.
+pub(crate) fn opening_door_in_view(crosshair: &crate::crosshair::Crosshair) -> Option<esm::FormId> {
+    crosshair.target()
 }
-
 /// Whether a reference is a door (its base a `DOOR`): other owners of the
 /// collider's triangles (clutter bodies, `clutter`) aren't doors to open.
 pub(crate) fn is_door(order: &esm::LoadOrder, reference: esm::FormId) -> bool {
     world::scripting::base_of(order, reference)
         .and_then(|b| order.get(b))
         .is_some_and(|b| b.entry.header.kind.as_bytes() == b"DOOR")
-}
-
-/// Where a ray enters an axis-aligned box, if it does.
-fn ray_box(origin: [f32; 3], dir: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Option<f32> {
-    let mut near = 0.0f32;
-    let mut far = f32::INFINITY;
-    for k in 0..3 {
-        if dir[k].abs() < 1e-9 {
-            if origin[k] < lo[k] || origin[k] > hi[k] {
-                return None;
-            }
-            continue;
-        }
-        let a = (lo[k] - origin[k]) / dir[k];
-        let b = (hi[k] - origin[k]) / dir[k];
-        near = near.max(a.min(b));
-        far = far.min(a.max(b));
-        if near > far {
-            return None;
-        }
-    }
-    Some(near)
 }
 
 /// Load doors: the crosshair line names where the door in view leads, and
@@ -495,10 +442,9 @@ pub fn doors(
     keys: Res<ButtonInput<KeyCode>>,
     game: Res<GameFiles>,
     doors: Res<Doors>,
-    collision: Res<CellCollision>,
+    crosshair: Res<crate::crosshair::Crosshair>,
     mut pending: ResMut<PendingScene>,
     mut pending_exterior: ResMut<PendingExterior>,
-    cameras: Query<&Transform, With<FlyCamera>>,
     mut prompt: Query<&mut Text, With<Prompt>>,
     talk_target: Res<crate::dialogue::TalkTarget>,
     conversation: Res<crate::dialogue::Conversation>,
@@ -519,16 +465,11 @@ pub fn doors(
     if talk_target.0.is_some() || conversation.0.is_some() {
         return;
     }
-    let Ok(transform) = cameras.single() else {
-        return;
-    };
-    let eye = game_point(transform.translation);
-    let dir = game_direction(transform.forward().as_vec3());
-    let door = door_in_view(&doors.0, &collision.0, eye, dir);
+    let door = door_in_view(&doors.0, &crosshair);
     // A door that swings open where it stands, when no load door is in view.
     let swing = door
         .is_none()
-        .then(|| opening_door_in_view(&collision.0, eye, dir))
+        .then(|| opening_door_in_view(&crosshair))
         .flatten()
         .filter(|&r| is_door(&game.0.order, r));
     let line = match (door, swing, &activatable.0) {
@@ -649,63 +590,6 @@ pub fn doors(
 mod tests {
     use super::*;
 
-    #[test]
-    fn rays_enter_boxes_in_front_only() {
-        let lo = [10.0, -1.0, -1.0];
-        let hi = [12.0, 1.0, 1.0];
-        assert_eq!(ray_box([0.0; 3], [1.0, 0.0, 0.0], lo, hi), Some(10.0));
-        assert_eq!(ray_box([0.0; 3], [-1.0, 0.0, 0.0], lo, hi), None);
-        assert_eq!(ray_box([0.0, 5.0, 0.0], [1.0, 0.0, 0.0], lo, hi), None);
-    }
-
-    #[test]
-    fn finds_the_door_in_view_open_or_shut() {
-        // A door's leaf (owned by the door, 0x904) 100 units north, and a
-        // wall (nobody's) 50 units east.
-        let quad = |c: &mut Collider, v: [[f32; 3]; 4], owner: u32| {
-            c.add_solid(&v, &[[0, 1, 2], [0, 2, 3]], 0.0, owner)
-        };
-        let mut c = Collider::new();
-        quad(
-            &mut c,
-            [
-                [-40.0, 100.0, 0.0],
-                [40.0, 100.0, 0.0],
-                [40.0, 100.0, 200.0],
-                [-40.0, 100.0, 200.0],
-            ],
-            0x904,
-        );
-        quad(
-            &mut c,
-            [
-                [50.0, -40.0, 0.0],
-                [50.0, 40.0, 0.0],
-                [50.0, 40.0, 200.0],
-                [50.0, -40.0, 200.0],
-            ],
-            0,
-        );
-        let eye = [0.0, 0.0, 120.0];
-        let north = [0.0, 1.0, 0.0];
-        assert_eq!(
-            opening_door_in_view(&c, eye, north),
-            Some(esm::FormId(0x904))
-        );
-        // Swung aside (a quarter turn about its left edge), it's found
-        // where it now is.
-        let turn = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
-        c.move_owner(0x904, &turn, [-40.0 + 100.0, 100.0 + 40.0, 0.0]);
-        assert_eq!(opening_door_in_view(&c, eye, north), None);
-        assert_eq!(
-            opening_door_in_view(&c, [-60.0, 100.0, 120.0], [1.0, 0.0, 0.0]),
-            Some(esm::FormId(0x904))
-        );
-        // A wall isn't a door; and out of reach, nothing.
-        assert_eq!(opening_door_in_view(&c, eye, [1.0, 0.0, 0.0]), None);
-        assert_eq!(opening_door_in_view(&c, [0.0, -100.0, 120.0], north), None);
-    }
-
     /// `0093e860`'s skip table by `GetAnimAction` + 1: drawing, putting
     /// away and reloading keep the sneak toggle off; attacking doesn't.
     #[test]
@@ -740,7 +624,5 @@ mod tests {
         let p = [100.0, -200.0, 300.0];
         let back = game_point(Vec3::from(space::point(p)));
         assert!(back.iter().zip(p).all(|(a, b)| (a - b).abs() < 1e-3));
-        let d = [0.0, 1.0, 0.0];
-        assert_eq!(game_direction(Vec3::from(space::direction(d))), d);
     }
 }

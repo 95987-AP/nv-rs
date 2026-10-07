@@ -719,9 +719,9 @@ pub fn player_furniture(
         bevy::prelude::Res<crate::dialogue::Conversation>,
         bevy::prelude::Res<crate::menus::Menus>,
     ),
-    (doors, collision, mut view): (
+    (doors, crosshair, mut view): (
         bevy::prelude::Res<crate::walk::Doors>,
-        bevy::prelude::Res<crate::walk::CellCollision>,
+        bevy::prelude::Res<crate::crosshair::Crosshair>,
         bevy::prelude::ResMut<crate::player_camera::PlayerView>,
     ),
     mut cameras: bevy::prelude::Query<(&mut bevy::prelude::Transform, &mut crate::FlyCamera)>,
@@ -766,9 +766,7 @@ pub fn player_furniture(
         && !menus.is_open()
         && !state.controls_off[world::scripting::controls::ROLLOVER]
     {
-        let f = transform.forward().as_vec3();
-        let eye = crate::walk::game_point(transform.translation);
-        let door = crate::walk::door_in_view(&doors.0, &collision.0, eye, [f.x, -f.z, f.y]);
+        let door = crate::walk::door_in_view(&doors.0, &crosshair);
         if door.is_none() {
             if let Some(&f) = state.furniture.get(&PLAYER_REF) {
                 player_activates(

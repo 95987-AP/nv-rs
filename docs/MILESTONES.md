@@ -596,6 +596,13 @@ hit's push only after a hit; the dead go limp with the AI held still
 
 B12 (`claude/b12-doc-dialogue`): Doc's door conversation no longer restarts forever: a dialogue package that has talked is finished (`005fa330` saves it at DONE, `008b1070`/`00913250` restore it, `0090a1a0` keeps the same package), the menu opens an update after `InitiateDialogue`, AI holds still under message boxes, and an own-delay quest's first run is traced (`005ac1e0`). Verified live: hardcore box, no new conversation, VCG01 completes, Doc sandboxes; not compared with the original ([DIALOGUE.md](DIALOGUE.md)). **Next action:** watch the farewell in the original game.
 
+B3 (`claude/b3-crosshair-pick`, 2026-10-07): the crosshair pick is the
+game's view caster (`0070bc20` → `00631d60`: layer-40 sphere cast, exact
+ray/NiPick per hit, fuzzy fallback for statics), one pick for talk, doors,
+objects, HUD and Grab; live in Doc's house and the Prospector Saloon
+([PLAYER_ACTIONS.md](PLAYER_ACTIONS.md)). **Next action:** compare the
+pick's fuzzy cases with the original game.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

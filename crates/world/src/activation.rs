@@ -13,10 +13,15 @@
 //! - the "added" message a pickup shows, with the item's pickup sound
 //!   (`004ce380`, sound `008adcf0`, `world::sound::item_sound`).
 //!
-//! The pick itself (which reference the crosshair is on) is the caller's:
-//! `0070bc20` casts a sphere of `fActivatePickSphereRadius` (16) from the
-//! camera node (`Camera1st` in first person) along the view, as far as
-//! `iActivatePickLength` (150), see [`PICK_LENGTH`], [`PICK_RADIUS`].
+//! The pick itself (which reference the crosshair is on) is
+//! `physics::view_caster` (`0070bc20` → `00631d60`): a sphere of
+//! `fActivatePickSphereRadius` (16) cast from the camera node (`Camera1st`
+//! in first person) along the view, as far as `iActivatePickLength` (150),
+//! see [`PICK_LENGTH`], [`PICK_RADIUS`]; [`fuzzy_replaces`] is its question
+//! about base forms. Not followed: `0070bc20`'s second look, for a pick
+//! that isn't an activator, container, door, actor or item, at the loaded
+//! cells' placeable water (cell `+0xc4` `+0x5c`, read as `BGSPlaceableWater`
+//! by `0057b240`'s cast) nearer than it (drinking from water).
 //!
 //! Not here (labelled where they would apply): the enemy health bar taking
 //! a living target's name instead of the Info line, activators' own
@@ -227,6 +232,29 @@ pub fn action_class(order: &LoadOrder, state: &GameState, reference: FormId) -> 
             }
         }
         _ => class::NONE,
+    }
+}
+
+/// Whether the view caster's fuzzy candidate takes the place of an exact
+/// pick on `reference` (`00631d60`'s last switch on the base's form type):
+/// a static, static collection or tree (0x20, 0x21, 0x25), a light that
+/// can't be carried (0x1e without `DATA` flags 0x2, `0046f070`), or a
+/// reference with no base.
+// Translated from 00631d60 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn fuzzy_replaces(order: &LoadOrder, reference: FormId) -> bool {
+    let Some((_, kind, record)) = base_record(order, reference) else {
+        return true;
+    };
+    match kind.as_bytes() {
+        b"STAT" | b"SCOL" | b"TREE" => true,
+        b"LIGH" => {
+            let flags = record
+                .get(esm::sig::DATA)
+                .filter(|s| s.data.len() >= 16)
+                .map_or(0, |s| le_u32(&s.data, 12));
+            flags & 0x2 == 0
+        }
+        _ => false,
     }
 }
 
