@@ -101,6 +101,7 @@ pub mod stats;
 pub mod talk_idles;
 pub mod terminal;
 pub mod tree;
+pub mod tutorial;
 pub mod vats;
 pub mod vats_camera;
 pub mod water;

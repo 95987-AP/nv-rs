@@ -282,6 +282,19 @@ pub const HELP_DECK: &str = "HelpCaravanDeckBuilding";
 pub const HELP_STARTING: &str = "HelpCaravanStartingCaravans";
 pub const HELP_CONTRACT_WAR: &str = "HelpCaravanContractWar";
 
+/// A tutorial's id (`world::tutorial`): the menu looks its message up by
+/// editor ID and marks the id shown (`00741060`, `00741500`).
+pub fn tutorial_id(name: &str) -> Option<u8> {
+    use crate::tutorial::id;
+    Some(match name {
+        HELP_BETTING => id::CARAVAN_BET,
+        HELP_DECK => id::CARAVAN_DECK,
+        HELP_STARTING => id::CARAVAN_TRACK,
+        HELP_CONTRACT_WAR => id::CARAVAN_GAME,
+        _ => return None,
+    })
+}
+
 /// The most cards a deck can hold (`UpdateCaravanFlags`: Add off above 107).
 pub const MAX_DECK: usize = 108;
 
@@ -2060,5 +2073,14 @@ mod tests {
         assert_eq!(values, sorted);
         assert_eq!(m.in_deck, 30);
         assert_eq!(m.cards.len(), 33);
+    }
+
+    #[test]
+    fn the_tutorials_are_ids_0x1e_to_0x21() {
+        assert_eq!(tutorial_id(HELP_BETTING), Some(0x1E));
+        assert_eq!(tutorial_id(HELP_DECK), Some(0x1F));
+        assert_eq!(tutorial_id(HELP_STARTING), Some(0x20));
+        assert_eq!(tutorial_id(HELP_CONTRACT_WAR), Some(0x21));
+        assert_eq!(tutorial_id("HelpHacking"), None);
     }
 }

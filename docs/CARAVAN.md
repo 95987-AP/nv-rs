@@ -186,7 +186,9 @@ constructor `0073b7e0`).
   each track with marked rows, in track order, and its rows are taken
   without emptying the last (a full seventh row would be left doubled).
 - Sounds (`GAMECaravan…`), the tutorials (`HelpCaravanBetting`,
-  `…DeckBuilding`, `…StartingCaravans`, `…ContractWar`), the results'
+  `…DeckBuilding`, `…StartingCaravans`, `…ContractWar`, ids 0x1E–0x21 of
+  the tutorial manager, [TUTORIALS.md](TUTORIALS.md): opened by the menu
+  itself when not yet shown, the menu waiting until it's on top again), the results'
   `GAMECaravanWin` / `GAMECaravanLose` before the camera goes back.
 
 ## The table
@@ -241,9 +243,6 @@ state reached), `world::caravan::money::tests`,
 
 ## Not done yet
 
-- The tutorial messages (`HelpCaravanBetting`…): the game's once-only
-  tutorial manager (`007185e0`, `00718840`) isn't here; the menu goes on
-  as if each were read.
 - The camera keeps its 45° across and the window's shape (the game keeps
   the file's 16:9 frustum on any screen).
 - The deck screen's scrollbar: its arrows, page areas, wheel and marker

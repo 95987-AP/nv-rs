@@ -522,6 +522,9 @@ pub struct GameState {
     /// The player's casinos: the chips won at each and the level reached
     /// (`world::casino`, `PlayerCharacter` +0x610), head first.
     pub casinos: Vec<crate::casino::CasinoData>,
+    /// The once-only tutorial messages: which have been shown, which are
+    /// asked for (`world::tutorial`; only the shown ones are saved).
+    pub tutorials: crate::tutorial::Tutorials,
     /// For the viewer: what to show or do, oldest first.
     pub events: Vec<Event>,
     /// Functions scripts called that aren't carried out yet, with counts,

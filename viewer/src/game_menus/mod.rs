@@ -35,6 +35,7 @@ pub mod slots;
 pub mod start;
 pub mod textedit;
 pub mod traits;
+pub mod tutorial;
 pub mod vigor;
 
 use std::collections::HashMap;
@@ -123,6 +124,7 @@ pub enum OpenMenu {
     Start(Box<start::StartScreen>),
     Hacking(Box<hacking::HackingScreen>),
     Computers(Box<computers::ComputersScreen>),
+    Tutorial(Box<ui::menus::tutorial::TutorialMenu>),
 }
 
 impl OpenMenu {
@@ -149,6 +151,7 @@ impl OpenMenu {
             OpenMenu::Start(m) => &mut m.menu,
             OpenMenu::Hacking(m) => &mut m.menu,
             OpenMenu::Computers(m) => &mut m.menu,
+            OpenMenu::Tutorial(m) => &mut **m,
         }
     }
 
@@ -175,6 +178,7 @@ impl OpenMenu {
             OpenMenu::Start(m) => m.menu.menu,
             OpenMenu::Hacking(m) => m.menu.menu,
             OpenMenu::Computers(m) => m.menu.menu,
+            OpenMenu::Tutorial(m) => m.menu,
         }
     }
 
@@ -203,6 +207,7 @@ impl OpenMenu {
             OpenMenu::Start(m) => m.menu.closed && m.menu.requests.is_empty(),
             OpenMenu::Hacking(m) => m.menu.closed,
             OpenMenu::Computers(m) => m.menu.closed,
+            OpenMenu::Tutorial(m) => m.closed,
         }
     }
 }
@@ -229,6 +234,7 @@ impl Plugin for GameMenusPlugin {
                     start_menu,
                     escape_opens_start_menu,
                     open_menus,
+                    run_tutorials,
                     run_open_menus,
                     start_menu_frame,
                     draw_menus,
@@ -608,9 +614,9 @@ fn open_menus(
         if message::takes(&request) {
             message::open(screen, &game.0, request);
         } else if hacking::takes(&request) {
-            hacking::open(screen, &game.0, &state.0, request, &hacking_sounds);
+            hacking::open(screen, &game.0, &mut state.0, request, &hacking_sounds);
         } else if computers::takes(&request) {
-            computers::open(screen, &game.0, &state.0, request);
+            computers::open(screen, &game.0, &mut state.0, request);
         } else if vigor::takes(&request) {
             sounds
                 .0
@@ -672,6 +678,24 @@ fn open_menus(
     if wanted && !to_perks {
         menus.levelup_to_perks = false;
     }
+}
+
+/// The tutorial manager's update (`007182e0`, in the interface manager's
+/// update): a message it picks opens over the menu it's for
+/// (`tutorial`).
+fn run_tutorials(
+    game: Res<GameFiles>,
+    mut menus: ResMut<GameMenus>,
+    mut queue: ResMut<crate::menus::Menus>,
+    mut state: ResMut<crate::dialogue::DialogueState>,
+    time: Res<Time<bevy::time::Real>>,
+) {
+    let Some(screen) = menus.screen.as_deref_mut() else {
+        return;
+    };
+    let now_ms = time.elapsed_secs_f64() * 1000.0;
+    tutorial::update(screen, &game.0, &mut state.0, now_ms, queue.lockpicking);
+    queue.game_open = !screen.open.is_empty();
 }
 
 /// What the menus need each frame from Bevy: the pointer, buttons, wheel
@@ -861,11 +885,14 @@ pub(crate) fn run_open_menus(
                     continue;
                 }
             }
-            // Tab or Escape leave the hacking and terminal menus and the
-            // companion wheel (their code 10).
+            // Tab or Escape leave the hacking and terminal menus, the
+            // companion wheel and the tutorial box (their code 10).
             if matches!(
                 top,
-                OpenMenu::Hacking(_) | OpenMenu::Computers(_) | OpenMenu::CompanionWheel(_)
+                OpenMenu::Hacking(_)
+                    | OpenMenu::Computers(_)
+                    | OpenMenu::CompanionWheel(_)
+                    | OpenMenu::Tutorial(_)
             ) && matches!(e.logical_key, Key::Escape | Key::Tab)
             {
                 use ui::menu::MenuCode;
@@ -881,6 +908,9 @@ pub(crate) fn run_open_menus(
                     OpenMenu::Computers(c) => {
                         c.menu
                             .special_key(ui, ui::menus::computers::LEAVE, now * 1000.0);
+                    }
+                    OpenMenu::Tutorial(t) => {
+                        t.special_key(ui, ui::menus::tutorial::CLOSE_CODE, now * 1000.0);
                     }
                     _ => {}
                 }
@@ -967,8 +997,8 @@ pub(crate) fn run_open_menus(
     }
     // The hacking and terminal menus' frames (`00767c90`, `00758470`),
     // after the pointer.
-    hacking::update(screen, now * 1000.0);
-    computers::update(screen, now * 1000.0);
+    hacking::update(screen, &state.0, now * 1000.0);
+    computers::update(screen, &state.0, now * 1000.0);
     // The sleep/wait menu's frame: its clicks carried out, the hours pass
     // (`007c0580`).
     let rest_held = screen.rest_down;
@@ -1226,6 +1256,13 @@ fn draw_menus(
                 .set_number(fader, t::VISIBLE, f32::from(alpha > 0.0));
             if alpha > 0.0 {
                 items.extend(ui::draw_list(&mut screen.ui, fader, &mut files, &|_| None));
+            }
+        }
+        // The tutorial box sizes its Vault-Tec symbol from the picture's
+        // own size (`filewidth`, set as the game's tile refresh does).
+        for m in &screen.open {
+            if let OpenMenu::Tutorial(t) = m {
+                ui::draw::update_file_sizes(&mut screen.ui, t.menu, &mut files);
             }
         }
         for &menu in &tiles {

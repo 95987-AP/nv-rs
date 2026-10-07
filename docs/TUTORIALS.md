@@ -1,0 +1,93 @@
+# Tutorial messages
+
+New Vegas shows a help box (the "VDSG Manual" box, `TutorialMenu`, class
+1059, `menus\tutorial_menu.xml`) the first time certain menus come up, once
+per saved game. Read from FalloutNV.exe 1.4.0.525, with the Xbox 360
+prototype's PDB names (`InterfaceManager::TutorialManager`,
+`Interface::TutorialMessageID`, `TutorialMenu`).
+
+## The manager
+
+The interface manager keeps it at `+0x4d4`: a 32-bit word for each of the
+41 ids (`TUT_PIPBOY_STATUS` 0 … `TUT_HARDCORE_NEEDS` 40), then the id about
+to be shown (`+0xa4`, 41 for none) and when it's due (`+0xa8`, a
+`GetTickCount`). A word's bits: 0 asked for, 1 shown, 2–7 the menu it waits
+for (its class − 1001; 0 any menu), 8–31 a delay in milliseconds.
+
+- An id's message is the form `0x168 + id` of FalloutNV.esm (`HelpHacking`
+  0x17B, `HelpCaravanBetting` 0x186…).
+- `ShowMessage(id, menu, delay)` (`00718630`): stores the delay; a menu
+  class of 1001–1084 or 0 is stored and the message is asked for if its
+  record exists, has "Auto Display" (`BGSMessage` +0x38 bit 1, the `DNAM`
+  flags' 2) and hasn't been shown. The answer tells the menu whether to
+  wait. Vanilla's barter, container, terminal, dialogue, levelling, race,
+  tag skills and Pip-Boy stats / data / items / repair messages have only
+  the "Message Box" flag, so they never come up.
+- `IsShown` (`00718840`), `MarkShown` (`007185e0`: shown, no longer asked
+  for).
+- The update (`007182e0`, from the interface manager's update `0070c4a0`,
+  every frame): nothing while the start menu is up (`011daac0` flag 1) or
+  the name entry (`011d8950`); outside the game (`011d8a80` +0xc not 2) the
+  choice is dropped. Once the chosen id is due, its menu (if any) is the
+  top menu and the top menu has faded in (`007024e0`: `Menu` +0x24 is 1),
+  the tutorial menu opens with it and it's marked shown (on failure the
+  line "Error occurred while trying to display tutorial message"). Until
+  then each update looks for one asked for, not shown and not the chosen
+  one; choosing it drops the previous choice's request (when that one's
+  menu is up) and sets it due after its delay (a delay of 0 looks again at
+  once). The menu test the game makes reads the *chosen* word's menu bits
+  to decide whether to look at the candidate's menu; with none chosen it
+  reads the manager's next field (41) as word 41, whose menu bits are 10,
+  so a candidate always needs its own menu on top, and one for any menu
+  (0) needs the message box (1001) on top. That is how the reputation
+  message (asked for with menu 0, 500 ms) comes up: over the message box
+  that announces the reputation change (`006155f0`).
+- Saved (`007187a0`, in the interface's part of the save, `007066d0`): bit
+  1 of each id, eight to a byte, six bytes; loading (`00718890`) sets only
+  those bits.
+- `bHelpEnabled:Interface` (`011db094`) is in the exe but nothing reads it
+  on PC.
+
+## Who asks
+
+| Menu | Id | How |
+| --- | --- | --- |
+| `HackingMenu::Create` `00765b80` | 0x13 hacking | `ShowMessage(0x13, 1055, 512)`; the update `00767c90` waits (`+0x1da`) |
+| lockpicking update `0078eb50` | 0x14 (0x1C with a pad) | in its "ready" state, `ShowMessage(id, 1014, 0)`; waits (`+0x99`) |
+| `ComputersMenu` `00757b70` | 0x18 terminal | `ShowMessage(0x18, 1057, 512)`; waits (`+0xc0`, `00758470`) |
+| Caravan `00741060`, `00741500` | 0x1E–0x21 | opens the tutorial menu itself (by editor ID) if not shown, marks it, waits (`+0xe78`, id `+0xe7c`) until back on top |
+| crafting `00726ff0` | 0x26 | opens `HelpCrafting` itself if not shown, marks it |
+| reputation change `006155f0` | 0x27 | `ShowMessage(0x27, 0, 500)` |
+| V.A.T.S. (HUD `007e9200`) | 0x15 / 0x1B | `ShowMessage(id, VATS menu, 512)` |
+| inventory `0077fc10`, `00780140` | 0x22 weapons, 0x23 apparel, 0x24 ammo | by tab |
+| barter, container, dialogue, level up, repair, race, stats, map, chargen | | `ShowMessage` (none of vanilla's is "Auto Display") |
+
+## The tutorial menu
+
+`TutorialMenu::Create(message, manual)` (`007e8890`; every caller above
+passes `manual` false): an open tutorial menu is closed first; ids 0–7 are
+the text, Next, Previous, Close, title, page, scrollbar and `TM_VDSG_text`;
+`sVDSGManual` and `sCloseButton` go on their tiles, Next, Previous and the
+page are hidden; `SetTitleAndText` (`007e9060`) puts the message's `FULL`
+and `DESC` (HTML when it starts with `<`) and the scrollbar back to the top;
+`UpdatePrevNext` (`007e9010`) makes Next and Previous clickable by page.
+Close (id 3, E) and the cancel code (10, `007e8e80`) close it. With
+`manual` true (the start menu's help) it pages through the help manual's
+list (FLST 0x163, 0x165 with a pad); not done here.
+
+## Here
+
+`world::tutorial` (`Tutorials` in `GameState::tutorials`, saved as a
+`tutorials` line; `ask` reads the record's flag), `ui::menus::tutorial`
+(`TutorialMenu`), the viewer's `game_menus::tutorial` (the update each
+frame over the open menus, `show` / `show_once`). Hooked: Caravan's four,
+crafting, hacking and the terminal menu. Seen live: Caravan's betting and
+deck-building messages against Ringo, closed with E, and the hacking
+message over a frozen hacking screen (GSSchoolTerminal01Ref).
+
+Not done: the lockpicking menu's (the viewer draws that menu above the
+game's menus), V.A.T.S.'s, the Pip-Boy's (weapons, apparel, ammo; the
+Pip-Boy isn't one of the game menus here), the reputation message (no
+reputation message box here), the start menu's help manual and
+`ShowTutorialMenu`; the "held" and "outside the game" states (the viewer
+has no start or main menu) and the menus' fade-in (shown at once here).

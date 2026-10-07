@@ -3,11 +3,9 @@
 //! table in `cellview::caravan` (drawn by `crate::caravan_table`). Here the
 //! menu's effects are carried out: sounds, the table's models posed and
 //! textured, the "How many?" box for a raise, the quit box, the player's
-//! card lists written back, the stake paid.
-//!
-//! Left out: the tutorial messages (`HelpCaravanBetting`…; the game's
-//! once-only tutorial manager, `007185e0` / `00718840`, isn't here, as for
-//! the lockpicking menu): the menu carries on as if each were read.
+//! card lists written back, the stake paid, the tutorial messages
+//! (`HelpCaravanBetting`…) shown once each (`tutorial::show_once`; the menu
+//! waits, `+0xe78` / `+0xe7c`, until it's back on top).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -61,6 +59,8 @@ pub struct CaravanScreen {
     pub facts: Facts,
     /// The "How many?" box is ours.
     asked: bool,
+    /// The tutorial the menu waits on (`+0xe78`, its id `+0xe7c`).
+    tutorial: Option<u8>,
     pub closed: bool,
 }
 
@@ -176,24 +176,46 @@ pub fn open(screen: &mut Screen, game: &Game, state: &mut GameState, request: cr
         table: Table::default(),
         facts: record_facts(state, name),
         asked: false,
+        tutorial: None,
         closed: false,
     };
     s.menu.open(&mut screen.ui);
     let mut sounds = Vec::new();
-    s.apply(fx, order, state, &mut sounds, screen_queue(&mut Vec::new()));
+    let mut prompts = Vec::new();
+    s.apply(fx, order, state, &mut sounds, &mut prompts);
     s.menu.fill(&mut screen.ui, &s.game, &s.facts, None);
     screen.open.push(OpenMenu::Caravan(Box::new(s)));
-}
-
-/// Somewhere for prompts during opening (none come then).
-fn screen_queue(v: &mut Vec<Prompt>) -> &mut Vec<Prompt> {
-    v
+    // The betting tutorial (`Create`, after the menu is shown).
+    for p in prompts {
+        if let Prompt::Tutorial(name) = p {
+            tutorial(screen, game, state, name);
+        }
+    }
 }
 
 /// A box the menu asks for.
 pub enum Prompt {
     HowMany(i32),
     Forfeit,
+    /// A tutorial message by editor ID.
+    Tutorial(&'static str),
+}
+
+/// A tutorial the menu asks for (`Create` `00741060`, `DoIdle`
+/// `00741500`): shown if it hasn't been, the menu waiting until it's back
+/// on top; else the menu carries on.
+fn tutorial(screen: &mut Screen, game: &Game, state: &mut GameState, name: &'static str) {
+    let id = world::caravan::menu::tutorial_id(name);
+    let wait = id.is_some_and(|id| super::tutorial::show_once(screen, game, state, id, name));
+    for m in screen.open.iter_mut() {
+        if let OpenMenu::Caravan(c) = m {
+            if wait {
+                c.tutorial = id;
+            } else {
+                c.game.tutorial_done();
+            }
+        }
+    }
 }
 
 impl CaravanScreen {
@@ -243,7 +265,7 @@ impl CaravanScreen {
         for e in fx {
             match e {
                 Effect::Sound(name) => sounds.extend(order.form_by_editor_id(name)),
-                Effect::Tutorial(_) => self.game.tutorial_done(),
+                Effect::Tutorial(name) => prompts.push(Prompt::Tutorial(name)),
                 Effect::Activate { model, sequence } => match model {
                     Model::Bill(i) | Model::Coin(i) => {
                         if let Some(m) = self.money_mut(model, i) {
@@ -670,10 +692,19 @@ pub fn after(screen: &mut Screen, game: &Game, state: &mut GameState, now_ms: f6
         }
     }
     let mut prompts = Vec::new();
+    let on_top = matches!(screen.open.last(), Some(OpenMenu::Caravan(_)));
     for m in screen.open.iter_mut() {
         let OpenMenu::Caravan(c) = m else {
             continue;
         };
+        // Waiting on a tutorial: done once the menu is back on top and the
+        // message shown (`DoIdle`'s start).
+        if let Some(id) = c.tutorial {
+            if on_top && state.tutorials.is_shown(id) {
+                c.tutorial = None;
+                c.game.tutorial_done();
+            }
+        }
         let mut dice = |n: usize| (state.roll() % n.max(1) as u64) as usize;
         let mut fx = Vec::new();
         if let (Some(n), true) = (how_many, c.asked) {
@@ -739,6 +770,7 @@ pub fn after(screen: &mut Screen, game: &Game, state: &mut GameState, now_ms: f6
                 b.owner = Some(FORFEIT_OWNER);
                 super::message::show(screen, game, b);
             }
+            Prompt::Tutorial(name) => tutorial(screen, game, state, name),
         }
     }
     sounds

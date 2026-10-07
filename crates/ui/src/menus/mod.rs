@@ -24,6 +24,7 @@ pub mod slots;
 pub mod start;
 pub mod textedit;
 pub mod traits;
+pub mod tutorial;
 mod typed;
 pub mod vigor;
 
