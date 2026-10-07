@@ -54,6 +54,11 @@ original game**.
   (`claude/m2-third-person`), NPC weapon choice/reloads/GetShouldAttack/
   OnStartCombat (`claude/m2-npc-combat`), Back in the Saddle and Ghost Town
   Gunfight route fixes (`claude/m2-vcg02-route`, `claude/m2-vms16-route`).
+- B5 (`claude/b5-weapon-effects`, 2026-10-07): firing sounds (2D for the
+  player, 3D and distant for people, placed and attenuated as the game's
+  audio does), muzzle flashes on the player's (both views) and people's
+  guns, melee swing-miss sounds; traced, unit-tested, seen live; not
+  compared with the original ([WEAPON_EFFECTS.md](WEAPON_EFFECTS.md)).
 - Acceptance evidence ([GOODSPRINGS_ROUTE.md](GOODSPRINGS_ROUTE.md)): with
   dialogue choices replayed by `--run` lines, Ghost Town Gunfight reaches
   stage 100 (XP +50) on the integration build; Back in the Saddle completes

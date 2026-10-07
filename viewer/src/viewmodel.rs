@@ -271,6 +271,14 @@ pub struct ViewModel {
     wobble: Option<(nif::camera::KeyedNode, Vec<usize>)>,
 }
 
+impl ViewModel {
+    /// The first-person skeleton's `Weapon` joint, where the weapon's
+    /// model hangs (`weapon_fx` places the muzzle flash under it).
+    pub(crate) fn weapon_joint(&self) -> Option<Entity> {
+        self.weapon_bone.and_then(|b| self.joints.get(b).copied())
+    }
+}
+
 /// The gun sway's amount kept between frames (`011a3b2c`) and what the
 /// scope's sway needs: the wobble (`008b0dd0(0)`) for the scope.
 #[derive(Resource)]
@@ -382,7 +390,11 @@ fn fov_settings(game: &cellview::Game) -> world::iron_sights::FovSettings {
 /// Where a model's node of that name sits in the model: its parents'
 /// transforms over its own, the top node's left out (the model is hung on
 /// a bone, which takes the top node's place).
-fn node_in_model(game: &cellview::Game, model: &str, name: &str) -> Option<nif::Transform> {
+pub(crate) fn node_in_model(
+    game: &cellview::Game,
+    model: &str,
+    name: &str,
+) -> Option<nif::Transform> {
     let bytes = game.assets.read(&assets::mesh_path(model)).ok()??;
     let bones = nif::Nif::parse(bytes).ok()?.skeleton().ok()?;
     let i = bones

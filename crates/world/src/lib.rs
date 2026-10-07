@@ -104,6 +104,7 @@ pub mod tree;
 pub mod vats;
 pub mod vats_camera;
 pub mod water;
+pub mod weapon_fx;
 pub mod weapon_mods;
 pub mod weather;
 

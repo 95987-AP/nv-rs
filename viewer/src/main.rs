@@ -58,6 +58,7 @@ mod vats;
 mod viewmodel;
 mod walk;
 mod water;
+mod weapon_fx;
 mod weather;
 
 use std::sync::Arc;
@@ -360,6 +361,7 @@ fn main() {
             local_map::LocalMapPlugin,
         ))
         .add_plugins(hiteffects::HitEffectsPlugin)
+        .add_plugins(weapon_fx::WeaponEffectsPlugin)
         .add_plugins(explosives::ExplosivesPlugin)
         .add_plugins(clutter::ClutterPlugin)
         .add_plugins(lockpick::LockpickPlugin)
@@ -1159,6 +1161,7 @@ fn take_screenshot(
     // The help and the health line stay out of pictures compared with
     // the game's.
     mut help: Query<&mut Visibility, KeptOutOfPictures>,
+    flash: Res<weapon_fx::WeaponEffects>,
 ) {
     let Some(path) = request.path.clone() else {
         return;
@@ -1175,6 +1178,14 @@ fn take_screenshot(
     request.waited += time.delta_secs();
     if request.taken || request.frames < SCREENSHOT_AFTER_FRAMES || request.waited < request.wait {
         return;
+    }
+    // `NV_SHOT_ON_FLASH=player` (or `npc`): after that, the picture waits
+    // for a muzzle flash on screen (`weapon_fx`), to check one by eye.
+    if let Ok(which) = std::env::var("NV_SHOT_ON_FLASH") {
+        let want = which.eq_ignore_ascii_case("player");
+        if flash.shown != Some(want) {
+            return;
+        }
     }
     request.taken = true;
     println!("Saving the view to {}", path.display());
