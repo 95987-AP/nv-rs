@@ -35,7 +35,10 @@ OPTIONS:
                             (to check other shapes of screen)
     --walk                  walk even with --screenshot (which otherwise
                             flies, keeping the exact eye position given)
-    --fps                   print the frame rate every two seconds
+    --fps                   print the frame rate every two seconds, and how
+                            long each frame's own work took on the main and
+                            render threads (apart from waiting for the
+                            display)
     --talk                  start talking to the nearest person once loaded
     --choose N,N,...        with --talk or a script's talking: pick these
                             replies in order (as the number keys would),

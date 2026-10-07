@@ -2579,14 +2579,14 @@ fn report_fps(
         let (main, main_longest) = work.main.lock().map(|mut t| t.take()).unwrap_or_default();
         let (render, render_longest) = work.render.lock().map(|mut t| t.take()).unwrap_or_default();
         println!(
-            "{:.0} frames per second ({:.1} ms a frame, longest {:.1} ms; work: main {:.1} ms, longest {:.1}; render {:.1} ms, longest {:.1})",
+            "{:.0} frames per second ({:.1} ms a frame, longest {:.1} ms)",
             counter.frames as f32 / counter.seconds,
             1000.0 * counter.seconds / counter.frames as f32,
-            1000.0 * counter.longest,
-            main,
-            main_longest,
-            render,
-            render_longest,
+            1000.0 * counter.longest
+        );
+        println!(
+            "  work: main {main:.1} ms a frame (longest {main_longest:.1}), \
+             render {render:.1} ms (longest {render_longest:.1})"
         );
         counter.frames = 0;
         counter.seconds = 0.0;
