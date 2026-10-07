@@ -1427,7 +1427,7 @@ pub fn base_of(order: &LoadOrder, reference: FormId) -> Option<FormId> {
 
 /// Every `CNTO` (form, count) on the base of a container, NPC or creature
 /// (the player's on `PLAYER_BASE`): items and leveled lists.
-fn record_contents(order: &LoadOrder, holder: FormId) -> Vec<(FormId, i32)> {
+pub(crate) fn record_contents(order: &LoadOrder, holder: FormId) -> Vec<(FormId, i32)> {
     let Some(base) = base_of(order, holder) else {
         return Vec::new();
     };

@@ -46,6 +46,11 @@ OPTIONS:
                             its first stage, which plays the intro movie;
                             scripts take you to Doc's house (the CELL can
                             then be left out)
+    --load-fos FILE         start from one of the original game's saves
+                            (.fos, read-only) instead of a new game: its
+                            quests, globals, inventory, the player's place
+                            (the CELL can then be left out); prints what
+                            it took (docs/FOS_SAVES.md)
     --character FILE        start as a ready-made test character: a file
                             of the game's script lines (editor IDs) run
                             on the new game before its first frame, plus
@@ -192,6 +197,9 @@ const NEW_GAME_QUEST: &str = "VCG00";
 /// anyway).
 const NEW_GAME_CELL: &str = "GSDocMitchellHouse";
 
+/// The CELL when `--load-fos` gives the place.
+pub const FROM_SAVE: &str = "(the save's place)";
+
 /// What the viewer was asked to do.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Args {
@@ -215,6 +223,8 @@ pub struct Args {
     pub stage: Option<(String, u16)>,
     /// A ready-made test character to start as (`world::character`).
     pub character: Option<PathBuf>,
+    /// `--load-fos`: an original save to start from (`world::fos_import`).
+    pub load_fos: Option<PathBuf>,
     /// A weapon to start with, equipped.
     pub weapon: Option<String>,
     /// Script lines to run once loaded, as console commands.
@@ -311,6 +321,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut new_game = false;
     let mut weapon = None;
     let mut character = None;
+    let mut load_fos = None;
     let mut run = Vec::new();
     let mut run_at = Vec::new();
     let mut say = Vec::new();
@@ -386,6 +397,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             "--new-game" => new_game = true,
             "--weapon" => weapon = Some(value("--weapon")?),
             "--character" => character = Some(value("--character")?.into()),
+            "--load-fos" => load_fos = Some(value("--load-fos")?.into()),
             "--run" => run.push(value("--run")?),
             "--run-at" => {
                 let v = value("--run-at")?;
@@ -509,6 +521,15 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
         }
     }
     let movies = movies.unwrap_or(screenshot.is_none());
+    // An original save says where to start.
+    if load_fos.is_some() {
+        if new_game || stage.is_some() {
+            return Err("--load-fos starts from the save; leave out --new-game and --stage".into());
+        }
+        if positional.len() == 1 {
+            positional.push(FROM_SAVE.to_string());
+        }
+    }
     match positional.as_slice() {
         [data, cell] => Ok(Some(Args {
             data: data.into(),
@@ -524,6 +545,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             choose,
             stage,
             character,
+            load_fos,
             weapon,
             run,
             run_at,
@@ -660,6 +682,18 @@ mod tests {
         assert!(parse(&strings(&["Data", "Cell", "--at", "1,2,3"]))
             .unwrap_err()
             .contains("X,Y,Z,HEADING"));
+    }
+
+    #[test]
+    fn an_original_save_gives_the_place() {
+        let args = parse(&strings(&["C:\\Games\\FNV", "--load-fos", "Save 1.fos"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(args.load_fos, Some(PathBuf::from("Save 1.fos")));
+        assert_eq!(args.cell, FROM_SAVE);
+        assert!(parse(&strings(&["D", "--load-fos", "a.fos", "--new-game"])).is_err());
+        assert!(parse(&strings(&["D", "--load-fos", "a.fos", "--stage", "Q", "1"])).is_err());
+        assert!(parse(&strings(&["D", "--load-fos"])).is_err());
     }
 
     #[test]

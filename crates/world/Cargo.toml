@@ -8,8 +8,10 @@ rust-version.workspace = true
 
 [dependencies]
 esm = { path = "../esm" }
+fos = { path = "../fos" }
 nif = { path = "../nif" }
 script = { path = "../script" }
 
 [dev-dependencies]
+fos = { path = "../fos", features = ["write"] }
 testdata = { path = "../testdata" }

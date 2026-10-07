@@ -711,6 +711,34 @@ joined by helpers, merged, the player's). Unblocks by function: 9 quests
 calling `ForceFlee`, 9 asking `GetGroupMemberCount`. Generated-data
 tests; live checks in the Prospector Saloon; not compared with the
 original. Evidence, gaps and next action: [FATIGUE.md](FATIGUE.md).
+## Original `.fos` saves (M7 research, `claude/fos-saves`, 2026-10-07)
+
+Format and scope written down from the exe's writer and reader and checked
+byte-for-byte against nine real saves: [FOS_SAVES.md](FOS_SAVES.md). Header,
+plugins, location table, all global data tables, change form records,
+form id and worldspace arrays decoded; quests, globals, misc stats, cells,
+topics, actor bases, factions, classes and challenges decode to their exact
+lengths. Read-only reader `crates/fos` and `nvinspect fos <SAVE> [PLUGIN]`,
+run on all nine saves.
+
+Part 2 (`claude/fos-import`): references' extra data (`00426a30`, the
+saved-under table `01183d30`), inventories (`004d4090`), mobile objects,
+actors, all four AI process levels, movers and pathing, packages made in
+game (the combat controller and its procedures), the player
+(`009590f0`: perks, active quest, hot keys, notes), projectiles, the
+small base form types, the weather and the radio decoded: every change
+form in all nine saves (36,322) decodes to its exact length, none skipped.
+`world::fos_import` builds a `GameState` from a save (globals and game
+time, quests with stages, objectives and variables, said topics, the
+player's place, name, S.P.E.C.I.A.L., experience, perks, inventory and hot
+keys, references moved, disabled, locked, found map markers, containers,
+dead actors and their values, factions, challenges, reputations, local
+map fog, weather, radio); plugin indices are matched by name. Gaps listed
+in FOS_SAVES.md. `nvinspect fos-import` runs it on all nine saves with no
+failures. The viewer starts from a save with `--load-fos <SAVE>`
+(checked live on two of the saves: the player where the save says, the
+time and quest stages printed). **Next action:** compare a loaded save
+against the original game running the same save.
 
 ## Deferred
 
