@@ -1224,13 +1224,13 @@ mod tests {
         d.extend(sub(b"SCRI", &0x201u32.to_le_bytes()));
         bytes.extend(group(*b"ACTI", 0, &record(b"ACTI", 0x400, &d)));
 
-        // TestQuest's line asks GetGroupMemberCount; TestStarted's line sets
+        // TestQuest's line asks GetDisposition; TestStarted's line sets
         // TestStaged's stage 10 (its source doesn't parse).
         let mut infos = Vec::new();
         let mut d = sub(b"QSTI", &0x101u32.to_le_bytes());
         let mut ctda = vec![0u8; 28];
         ctda[8..10].copy_from_slice(
-            &script::function("GetGroupMemberCount")
+            &script::function("GetDisposition")
                 .unwrap()
                 .0
                 .to_le_bytes(),
@@ -1314,7 +1314,7 @@ mod tests {
         // The functions used as missing here must stay missing for the test
         // to mean anything.
         assert!(!function_handled("StartCannibal"), "update this test");
-        assert!(!function_handled("GetGroupMemberCount"), "update this test");
+        assert!(!function_handled("GetDisposition"), "update this test");
         assert!(script::parse(BAD_SOURCE).is_err());
         assert!(script::parse(LEVER_SOURCE).is_ok());
 
@@ -1351,7 +1351,7 @@ mod tests {
         assert!(r.staged_by.is_empty());
         assert_eq!(r.scripts, 2);
         assert!(r.missing.is_empty());
-        assert_eq!(r.missing_conditions, ["GetGroupMemberCount"]);
+        assert_eq!(r.missing_conditions, ["GetDisposition"]);
         assert_eq!(r.player_moves, BTreeSet::from(["TestCell".to_string()]));
         assert!(r.not_running.is_empty());
 
@@ -1390,14 +1390,14 @@ mod tests {
             "{page}"
         );
         assert!(
-            page.contains("| `GetGroupMemberCount` | 0 | 1 | `TestQuest` |"),
+            page.contains("| `GetDisposition` | 0 | 1 | `TestQuest` |"),
             "{page}"
         );
         assert!(
             page.contains("started by `TestLeverScript (on ACTI TestLever)`"),
             "{page}"
         );
-        assert!(page.contains("`GetGroupMemberCount` (condition)"), "{page}");
+        assert!(page.contains("`GetDisposition` (condition)"), "{page}");
         // Within a status, the quests with something listed against them
         // come first.
         let not_played = page.split("### NOT PLAYED").nth(1).unwrap();
