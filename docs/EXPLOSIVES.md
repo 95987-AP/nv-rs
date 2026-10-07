@@ -140,8 +140,9 @@ Addresses are PC function entries; Xbox names where the prototype has them.
   record damage ≥ `fDangerousProjectileExplosionDamage`, and the distance
   where its blast still does that much (radius × √(1 − 5 ÷ damage),
   `006479a0` → `00647960`) ≥ `fDangerousProjectileExplosionRadius`: then
-  those within it of the aim point (`00992ba0`) refuse the attack: the
-  attacker, their combat group, and spectators when the attacker's
+  those the combat manager holds within it of the aim point (`00992ba0`)
+  refuse the attack: the attacker, their combat group, and spectators
+  (held, not targeted by the attacker's group) when the attacker's
   Responsibility ≥ 50, each unless the combat style's flag 0x20 / 0x40 /
   0x80 ("ignore damaging self / group / spectators", `009928c0`).
 - **Mines**: no fuse at launch (`009bda10`); each frame
@@ -289,9 +290,17 @@ the rocket flew straight 1015 units into the house; damage 57.5 (100 ×
   character controller's own limits on a missile's fall (taken as free
   fall), Turbo's share of the gravity, `DisableAllMines`, E on mines the
   player laid (they aren't references here), and V.A.T.S. grenade aiming.
-- The AI's danger test counts "their side" as faction allies and friends
-  (the game's combat group, `00992ba0`, isn't modelled) and bystanders as
-  everyone else who isn't a target.
+- The AI's danger test counts as the game does (`00992ba0`,
+  `combat_groups::explosion_nearby`): only those the combat manager holds
+  (group members and group targets, its map at +0x10: `00992480`,
+  `009867d0` → `009929e0`; `00986410` → `00992a50`; `00986560` →
+  `00992b00`), alive, within the reach; the attacker, its group (the same
+  vtable +0x3f8 group), and spectators (not targeted by the attacker's
+  group); the group's targets aren't counted. What's left: positions are
+  where each stands now (the game asks vtable +0x4d8 for the place after
+  the shot's flight time, `009a7e00`); the manager's map keeps an actor
+  once registered (removal not traced), here only those fighting now and
+  current group targets; groups follow `world::combat_groups`' model.
 - Disarming a placed mine credits the player by whether it reacts to them
   (whether its fuse was running isn't passed from the viewer).
 - The line of sight of an explosion on the floor ignores the surface the

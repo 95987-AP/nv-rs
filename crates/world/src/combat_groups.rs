@@ -192,3 +192,71 @@ pub fn tidy(state: &mut GameState) {
         state.combat_groups.joined.remove(&m);
     }
 }
+
+/// Who the combat manager holds (`CombatManager` +0x10, Xbox PDB name;
+/// the map of actor to a 64-bit mask of the groups targeting it): every
+/// group member (`CombatManager::AddCombatant` `00992480` and
+/// `AddGroupMember` `009867d0` → `00992700` register them with mask 0,
+/// `009929e0`) and every group target (`CombatGroup::AddTarget`
+/// `00986410` → `00992a50` sets the group's bit; removing a target,
+/// `00986560` → `00992b00`, clears it). Here: those fighting now and the
+/// targets of any group now.
+pub fn held_by_manager(state: &GameState, who: FormId) -> bool {
+    fighting(state, who) || targeted_by_any_group(state, who)
+}
+
+fn targeted_by_any_group(state: &GameState, who: FormId) -> bool {
+    let mut leads: Vec<FormId> = state
+        .combat
+        .keys()
+        .copied()
+        .chain(std::iter::once(PLAYER_REF))
+        .filter_map(|m| group_of(state, m))
+        .collect();
+    leads.sort();
+    leads.dedup();
+    leads.into_iter().any(|g| targets(state, g).contains(&who))
+}
+
+/// Who stands where an attacker's explosion would reach, as
+/// `CombatManager::CheckExplosionAttack` counts them (`00992ba0`): of
+/// those the manager holds ([`held_by_manager`]), alive (vtable +0x22c),
+/// within `reach` of `point` (squared lengths, `004a7290`): the attacker
+/// is `own`; anyone in the attacker's group (vtable +0x3f8 the same, so
+/// also anyone outside every group when the attacker is too) `group`;
+/// else anyone whose mask lacks the attacker's group's bit (not one of
+/// its targets) a spectator; the group's targets aren't counted against
+/// it. `candidates` are everyone loaded with where they are.
+// Translated from 00992ba0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn explosion_nearby(
+    state: &GameState,
+    attacker: FormId,
+    candidates: impl IntoIterator<Item = (FormId, [f32; 3])>,
+    point: [f32; 3],
+    reach: f32,
+) -> crate::explosions::Nearby {
+    let mut n = crate::explosions::Nearby::default();
+    let mine = group_of(state, attacker);
+    let my_targets = if mine.is_some() {
+        targets(state, attacker)
+    } else {
+        Vec::new()
+    };
+    for (who, at) in candidates {
+        if state.dead.contains(&who) || !held_by_manager(state, who) {
+            continue;
+        }
+        let d = [at[0] - point[0], at[1] - point[1], at[2] - point[2]];
+        if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] >= reach * reach {
+            continue;
+        }
+        if who == attacker {
+            n.own += 1;
+        } else if group_of(state, who) == mine {
+            n.group += 1;
+        } else if !my_targets.contains(&who) {
+            n.spectators += 1;
+        }
+    }
+    n
+}

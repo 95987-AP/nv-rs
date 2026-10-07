@@ -334,3 +334,48 @@ fn combat_groups_count_their_members_and_targets() {
     assert_eq!(groups::member_count(&state, a), 1);
     assert!(state.combat_groups.joined.is_empty());
 }
+
+#[test]
+fn an_explosions_danger_counts_the_combat_managers_actors() {
+    use world::combat_groups as groups;
+    let (_data, order) = order("fatigue-danger");
+    let mut state = GameState::new(&order);
+    let (a, b, c) = (FormId(PERSON_REF), FormId(FRIEND_REF), FormId(0x0100_0999));
+    let point = [0.0; 3];
+    let all = |state: &GameState| {
+        groups::explosion_nearby(
+            state,
+            a,
+            [
+                (a, [10.0, 0.0, 0.0]),
+                (b, [20.0, 0.0, 0.0]),
+                (c, [30.0, 0.0, 0.0]),
+                (PLAYER_REF, [0.0; 3]),
+            ],
+            point,
+            100.0,
+        )
+    };
+    // 00992ba0: `a` fights the player alone. The player is its group's
+    // target (not counted); `b` and `c` aren't in any fight, so the
+    // manager doesn't hold them: not spectators.
+    state.combat.insert(a, PLAYER_REF);
+    let n = all(&state);
+    assert_eq!((n.own, n.group, n.spectators), (1, 0, 0));
+    // `b` joins `a`'s group: its group.
+    state.combat.insert(b, PLAYER_REF);
+    groups::join(&mut state, b, a);
+    let n = all(&state);
+    assert_eq!((n.own, n.group, n.spectators), (1, 1, 0));
+    // `c` fights the player in a group of its own: held, not `a`'s group's
+    // target, so a spectator.
+    state.combat.insert(c, PLAYER_REF);
+    let n = all(&state);
+    assert_eq!((n.own, n.group, n.spectators), (1, 1, 1));
+    // Out of reach: not counted.
+    let far = groups::explosion_nearby(&state, a, [(c, [300.0, 0.0, 0.0])], point, 100.0);
+    assert_eq!(far.spectators, 0);
+    // The dead aren't counted.
+    state.dead.insert(c);
+    assert_eq!(all(&state).spectators, 0);
+}

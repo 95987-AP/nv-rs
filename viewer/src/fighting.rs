@@ -966,11 +966,11 @@ fn ranged(
 /// procedures ask `CombatManager::CheckExplosionAttack`, `00992720`,
 /// `world::explosions::explosion_attack_allowed`): counted within the
 /// reach where its blast still does `fDangerousProjectileExplosionDamage`
-/// are the shooter, their side and bystanders. The game counts its combat
-/// group's members (`00992ba0`); here their side is whoever their factions
-/// make allies or friends of them (`world::factions::reaction`), and
-/// bystanders anyone else who isn't one of their targets (a reading of the
-/// group's masks, unresolved).
+/// are the shooter, their combat group and spectators, of those the combat
+/// manager holds (`00992ba0`, `world::combat_groups::explosion_nearby`).
+/// Each is counted where they stand now; the game asks each one's place
+/// after the shot's flight time (vtable +0x4d8 with `009a7e00`'s time),
+/// not translated.
 fn blast_is_safe(
     c: &FightCtx,
     state: &GameState,
@@ -997,28 +997,18 @@ fn blast_is_safe(
         style.flags,
         responsibility,
         |reach| {
-            let mut n = world::explosions::Nearby::default();
-            let near = |p: [f32; 3]| distance(p, goal) < reach;
-            if near(walker.position) {
-                n.own += 1;
-            }
-            for o in c
-                .others
-                .iter()
-                .filter(|o| o.reference != me && near(o.position))
-            {
-                if state.dead.contains(&o.reference) || walker.targets.list.contains(&o.reference) {
-                    continue;
-                }
-                match world::factions::reaction(order, state, me, o.reference) {
-                    world::factions::Reaction::Ally | world::factions::Reaction::Friend => {
-                        n.group += 1
-                    }
-                    world::factions::Reaction::Enemy => {}
-                    world::factions::Reaction::Neutral => n.spectators += 1,
-                }
-            }
-            n
+            world::combat_groups::explosion_nearby(
+                state,
+                me,
+                std::iter::once((me, walker.position)).chain(
+                    c.others
+                        .iter()
+                        .filter(|o| o.reference != me)
+                        .map(|o| (o.reference, o.position)),
+                ),
+                goal,
+                reach,
+            )
         },
     )
 }
