@@ -298,6 +298,10 @@ pub fn disarm(
 pub struct MineStates {
     pub disarmed: BTreeSet<FormId>,
     pub gone: BTreeSet<FormId>,
+    /// Those whose fuse is counting down (the projectile's `+0xe4` below
+    /// `FLT_MAX`, set by `009c39e0`), read when one is disarmed
+    /// ([`use_placed`]). Not saved here.
+    pub fuse_running: BTreeSet<FormId>,
 }
 
 /// A placed mine (`PGRE`): its reference, record and where it lies.
@@ -382,6 +386,7 @@ pub fn take(order: &LoadOrder, state: &mut GameState, placed: &Placed) -> Option
 pub fn gone(state: &mut GameState, reference: FormId) {
     state.more.mines.gone.insert(reference);
     state.more.mines.disarmed.remove(&reference);
+    state.more.mines.fuse_running.remove(&reference);
     if state.disabled.insert(reference, true) != Some(true) {
         state
             .events
@@ -489,9 +494,9 @@ pub enum MineUsed {
 }
 
 /// E on a placed mine (`BGSProjectile::Activate`): an armed one is
-/// disarmed ([`disarm`]; whether its fuse was running isn't known here, so
-/// the credit goes by whether it reacts to the player), a disarmed one
-/// taken ([`take`]).
+/// disarmed ([`disarm`], credited when its fuse was running,
+/// [`MineStates::fuse_running`], or it reacts to the player), a disarmed
+/// one taken ([`take`]).
 pub fn use_placed(order: &LoadOrder, state: &mut GameState, reference: FormId) -> Option<MineUsed> {
     let space = state.place(order, reference)?.0;
     let mut placed = placed_in(order, state, space)
@@ -500,7 +505,16 @@ pub fn use_placed(order: &LoadOrder, state: &mut GameState, reference: FormId) -
     let s = MineSettings::read(order);
     match activation(&placed.mine) {
         MineUse::Disarm => {
-            disarm(order, state, &s, &mut placed.mine, PLAYER_REF, false, false);
+            let set_off = state.more.mines.fuse_running.remove(&reference);
+            disarm(
+                order,
+                state,
+                &s,
+                &mut placed.mine,
+                PLAYER_REF,
+                set_off,
+                false,
+            );
             state.more.mines.disarmed.insert(reference);
             Some(MineUsed::Disarmed(placed.mine.projectile.disable_sound))
         }

@@ -301,8 +301,10 @@ the rocket flew straight 1015 units into the house; damage 57.5 (100 ×
   the shot's flight time, `009a7e00`); the manager's map keeps an actor
   once registered (removal not traced), here only those fighting now and
   current group targets; groups follow `world::combat_groups`' model.
-- Disarming a placed mine credits the player by whether it reacts to them
-  (whether its fuse was running isn't passed from the viewer).
+- Disarming a placed mine credits the player as `009c43e0` does: its fuse
+  running (the projectile's `+0xe4` below `FLT_MAX`; the viewer marks
+  `MineStates::fuse_running` when one is set off) or it reacting to them.
+  The running fuse isn't saved.
 - The line of sight of an explosion on the floor ignores the surface the
   ray starts on (the collider's triangles are two-sided; a hit at 0).
 - Explosion hit reports carry the thrower's weapon, so the hit sounds are

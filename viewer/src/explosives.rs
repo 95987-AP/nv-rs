@@ -416,6 +416,7 @@ fn tend_mines(
                 world::mines::check_proximity(order, state, &s, &mut p.mine, &people, player, roll);
             if let Some(f) = set {
                 println!("{now:.1} s: mine {} is set off ({f:.2} s).", p.reference);
+                state.more.mines.fuse_running.insert(p.reference);
                 sounds.0.extend(p.mine.projectile.countdown_sound);
                 *fuse = Some(f);
                 *blink = world::mines::blink_interval(&s, f);

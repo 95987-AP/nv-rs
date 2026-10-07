@@ -344,6 +344,40 @@ fn the_player_disarms_a_mine_then_takes_it() {
 }
 
 #[test]
+fn disarming_credits_a_running_fuse_even_when_the_mine_spares_the_player() {
+    // 009c43e0: credited when the fuse (+0xe4) is below FLT_MAX, else only
+    // when the mine reacts to the one disarming (009c3930).
+    let (_data, order) = order("launchers-disarm-fuse");
+    let mut state = GameState::new(&order);
+    let s = MineSettings::read(&order);
+    let r = FormId(MINE_REF);
+    // The player in the owning faction: the guards' mine spares them.
+    state
+        .faction_changes
+        .insert((PLAYER_REF, FormId(GUARDS)), 0);
+    let placed = mines::placed_in(&order, &state, FormId(ROOM)).remove(0);
+    assert!(!mines::reacts_to(
+        &order,
+        &state,
+        &s,
+        &placed.mine,
+        PLAYER_REF
+    ));
+    // Quiet: disarmed, no credit.
+    assert!(mines::use_placed(&order, &mut state, r).is_some());
+    assert_eq!(world::stats::get(&state, world::stats::MINES_DISARMED), 0);
+    // Again with its fuse running (set off by someone else): credited.
+    let mut state = GameState::new(&order);
+    state
+        .faction_changes
+        .insert((PLAYER_REF, FormId(GUARDS)), 0);
+    state.more.mines.fuse_running.insert(r);
+    assert!(mines::use_placed(&order, &mut state, r).is_some());
+    assert_eq!(world::stats::get(&state, world::stats::MINES_DISARMED), 1);
+    assert!(state.more.mines.fuse_running.is_empty());
+}
+
+#[test]
 fn a_laid_mine_waits_then_its_fuse_runs() {
     let (_data, order) = order("launchers-laid");
     let p = ProjectileRecord::load(&order, FormId(MINE_PROJECTILE)).unwrap();
