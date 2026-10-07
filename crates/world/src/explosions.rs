@@ -640,41 +640,74 @@ impl Flight {
     }
 }
 
+/// What an explosion's line of sight starts from (`Explosion::RunLOSPick`
+/// (Xbox PDB), `009b1810`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LosPick {
+    /// The explosion's `ClosestPointNormal` (Xbox PDB, `+0xf4`,
+    /// [`closest_surface`]); zero when no surface was found.
+    pub normal: [f32; 3],
+    /// `fExplosionLOSBufferDistance` (exe 24): the start is moved this far
+    /// along the normal.
+    pub buffer_distance: f32,
+    /// `fExplosionLOSBuffer` (exe 6).
+    pub buffer: f32,
+    /// The explosion's owner (`pOwner`, Xbox PDB, `+0xc8`) has the
+    /// reference flag 0x01000000 (`00452370`): on the first point nothing
+    /// blocks. Projectiles' and mines' explosions have no owner
+    /// (`009c3190` passes none to `009ac9c0`).
+    pub owner_passes: bool,
+}
+
 /// Whether an explosion at `center` sees `point` (`Explosion::RunLOSPick`
-/// (Xbox PDB), `009b1810`): `cast(from, direction, length)` gives the
-/// nearest surface along a segment and its distance. A surface met blocks
-/// it, except one just below the explosion — straight down (the ray's z
-/// below −0.98) within `fExplosionLOSBuffer` (6) units of it — so a
-/// grenade lying on the floor isn't hidden by that floor (the reading of
-/// that test's vector is inferred). For people and creatures `offsets`
-/// adds the six points ±2 × their radius along each axis, tried in turn
-/// when the first is blocked. With the "ignore LOS" flag, always.
+/// (Xbox PDB), `009b1810`): the pick starts at `center` + the closest
+/// surface's normal × `fExplosionLOSBufferDistance` and every surface it
+/// meets on the way blocks (`cast(from, direction, length)` gives the
+/// nearest one's distance), except, when that normal's z is below −0.98,
+/// those nearer than `fExplosionLOSBuffer` to the start; on the first
+/// point an owner with flag 0x01000000 lets everything through. For
+/// people and creatures `offsets` adds the six points ±2 × their radius
+/// along each axis (`0084d030`), tried in turn when the first is blocked,
+/// with the same start and the normal's rule only. With the "ignore LOS"
+/// flag (0x10) the pick isn't made.
+// Translated from 009b1810 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn los_clear(
     center: [f32; 3],
     point: [f32; 3],
     offsets: Option<f32>,
-    buffer: f32,
+    pick: &LosPick,
     cast: &mut Cast,
 ) -> bool {
-    let mut points = vec![point];
-    if let Some(r) = offsets {
-        let r2 = r + r;
-        points.extend([
-            [point[0], point[1], point[2] + r2],
-            [point[0], point[1], point[2] - r2],
-            [point[0] + r2, point[1], point[2]],
-            [point[0] - r2, point[1], point[2]],
-            [point[0], point[1] + r2, point[2]],
-            [point[0], point[1] - r2, point[2]],
-        ]);
+    let from = add(center, scale(pick.normal, pick.buffer_distance));
+    let below = pick.normal[2] < -0.98;
+    let exempt = |d: f32| below && d < pick.buffer;
+    if segment_clear(from, point, &|d| pick.owner_passes || exempt(d), cast) {
+        return true;
     }
-    points
-        .into_iter()
-        .any(|p| segment_clear(center, p, buffer, cast))
+    let Some(r) = offsets else {
+        return false;
+    };
+    let r2 = r + r;
+    [
+        [point[0], point[1], point[2] + r2],
+        [point[0], point[1], point[2] - r2],
+        [point[0] + r2, point[1], point[2]],
+        [point[0] - r2, point[1], point[2]],
+        [point[0], point[1] + r2, point[2]],
+        [point[0], point[1] - r2, point[2]],
+    ]
+    .into_iter()
+    .any(|p| segment_clear(from, p, &exempt, cast))
 }
 
-// Translated from 009b1810 (decompiled, FalloutNV.exe 1.4.0.525)
-fn segment_clear(from: [f32; 3], to: [f32; 3], buffer: f32, cast: &mut Cast) -> bool {
+/// Every surface along the segment, nearest first (the pick's all-hits
+/// collector), blocks unless `exempt` at its distance from `from`.
+fn segment_clear(
+    from: [f32; 3],
+    to: [f32; 3],
+    exempt: &dyn Fn(f32) -> bool,
+    cast: &mut Cast,
+) -> bool {
     let full = length(sub(to, from));
     if full < 1e-3 {
         return true;
@@ -686,15 +719,51 @@ fn segment_clear(from: [f32; 3], to: [f32; 3], buffer: f32, cast: &mut Cast) -> 
             return true;
         };
         let at = along + d;
-        if dir[2] < -0.98 && at < buffer {
-            along = at + 0.5;
-            continue;
+        if !exempt(at) {
+            return false;
         }
-        return false;
+        along = at + 0.5;
     }
     true
 }
 
+/// A surface the explosion's sphere touches (one of its phantom's closest
+/// points): the body it belongs to, the point, and the unit normal from
+/// the surface toward the explosion.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Contact {
+    pub body: u32,
+    pub point: [f32; 3],
+    pub normal: [f32; 3],
+}
+
+/// The explosion's `ClosestPoint` and `ClosestPointNormal` (Xbox PDB,
+/// `+0xe8`/`+0xf4`), set as it finds its targets (`009ae6e0`): for each
+/// contact not on an actor, a ray from the explosion along twice the way
+/// to the point (or, when that is shorter than 1 unit, from 16 units back
+/// along the normal, 32 along it) must meet that same body before any
+/// other that isn't an actor's; the first that does gives the point and
+/// the normal. `first_body(from, vector)` gives the first non-actor body
+/// met along the vector.
+// Translated from 009ae6e0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn closest_surface(
+    center: [f32; 3],
+    contacts: &[Contact],
+    first_body: &mut dyn FnMut([f32; 3], [f32; 3]) -> Option<u32>,
+) -> Option<([f32; 3], [f32; 3])> {
+    for c in contacts {
+        let mut from = center;
+        let mut ray = scale(sub(c.point, center), 2.0);
+        if length(ray) < 1.0 {
+            from = sub(from, scale(c.normal, 16.0));
+            ray = scale(c.normal, 32.0);
+        }
+        if first_body(from, ray) == Some(c.body) {
+            return Some((c.point, c.normal));
+        }
+    }
+    None
+}
 /// Someone an explosion reaches.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BlastTarget {
@@ -1244,8 +1313,17 @@ mod tests {
             .any(|e| matches!(e, FlightEvent::Explode { .. })));
     }
 
+    fn pick(normal: [f32; 3]) -> LosPick {
+        LosPick {
+            normal,
+            buffer_distance: 24.0,
+            buffer: 6.0,
+            owner_passes: false,
+        }
+    }
+
     #[test]
-    fn walls_hide_targets_but_the_floor_under_the_blast_does_not() {
+    fn walls_hide_targets_and_the_pick_starts_off_the_surface() {
         // A wall at x = 100.
         let mut wall = |from: [f32; 3], dir: [f32; 3], len: f32| {
             if dir[0] <= 0.0 {
@@ -1254,37 +1332,127 @@ mod tests {
             let d = (100.0 - from[0]) / dir[0];
             (d >= 0.0 && d <= len).then_some(d)
         };
+        let none = pick([0.0; 3]);
         assert!(!los_clear(
             [0.0; 3],
             [200.0, 0.0, 0.0],
             None,
-            6.0,
+            &none,
             &mut wall
         ));
-        assert!(los_clear([0.0; 3], [50.0, 0.0, 0.0], None, 6.0, &mut wall));
-        // A floor 3 units under the blast, a target straight below it.
-        let mut floor = |from: [f32; 3], dir: [f32; 3], len: f32| {
-            if dir[2] >= 0.0 {
-                return None;
-            }
-            let d = (-3.0 - from[2]) / dir[2];
-            (d >= 0.0 && d <= len).then_some(d)
+        assert!(los_clear(
+            [0.0; 3],
+            [50.0, 0.0, 0.0],
+            None,
+            &none,
+            &mut wall
+        ));
+        // An owner with flag 0x01000000: nothing blocks the first point.
+        let owned = LosPick {
+            owner_passes: true,
+            ..none
         };
         assert!(los_clear(
             [0.0; 3],
-            [0.0, 0.0, -40.0],
+            [200.0, 0.0, 0.0],
             None,
-            6.0,
+            &owned,
+            &mut wall
+        ));
+        // A floor (z = 0, two-sided) under a grenade lying on it: the
+        // normal points up, so the pick starts 24 above it and a target
+        // 200 away, 1 above the floor, is seen.
+        let mut floor = |from: [f32; 3], dir: [f32; 3], len: f32| {
+            if dir[2] == 0.0 {
+                return None;
+            }
+            let d = -from[2] / dir[2];
+            (d >= 0.0 && d <= len).then_some(d)
+        };
+        let up = pick([0.0, 0.0, 1.0]);
+        assert!(los_clear(
+            [0.0; 3],
+            [200.0, 0.0, 1.0],
+            None,
+            &up,
             &mut floor
         ));
-        // Farther than the buffer below, it blocks.
+        // Without a surface found the start is the floor itself: hit at 0.
         assert!(!los_clear(
-            [0.0, 0.0, 10.0],
-            [0.0, 0.0, -40.0],
+            [0.0; 3],
+            [200.0, 0.0, 1.0],
             None,
-            6.0,
+            &none,
             &mut floor
         ));
+    }
+
+    #[test]
+    fn under_a_ceiling_the_near_surfaces_are_let_through() {
+        // A ceiling at z = 0 touched by the blast: its normal points down,
+        // the pick starts 24 below. A ceiling slab hit 4 units from the
+        // start (within fExplosionLOSBuffer) doesn't block; one 10 away
+        // does.
+        let at = |d0: f32| move |_: [f32; 3], _: [f32; 3], len: f32| (d0 <= len).then_some(d0);
+        let down = pick([0.0, 0.0, -1.0]);
+        let near = at(4.0);
+        let mut seen = 0;
+        let mut once = |f: [f32; 3], d: [f32; 3], l: f32| {
+            seen += 1;
+            if seen == 1 {
+                near(f, d, l)
+            } else {
+                None
+            }
+        };
+        assert!(los_clear(
+            [0.0; 3],
+            [100.0, 0.0, -24.0],
+            None,
+            &down,
+            &mut once
+        ));
+        let mut far = at(10.0);
+        assert!(!los_clear(
+            [0.0; 3],
+            [100.0, 0.0, -24.0],
+            None,
+            &down,
+            &mut far
+        ));
+    }
+
+    #[test]
+    fn the_closest_surface_is_the_first_one_the_explosion_meets() {
+        // 009ae6e0: two contacts; the first is behind another body, the
+        // second is met directly.
+        let contacts = [
+            Contact {
+                body: 1,
+                point: [10.0, 0.0, 0.0],
+                normal: [-1.0, 0.0, 0.0],
+            },
+            Contact {
+                body: 2,
+                point: [0.0, 0.0, -0.2],
+                normal: [0.0, 0.0, 1.0],
+            },
+        ];
+        let mut first = |from: [f32; 3], ray: [f32; 3]| {
+            if ray[0] > 0.0 {
+                Some(3)
+            } else if ray[2] > 0.0 {
+                // Under 1 unit away: from 16 below, 32 up.
+                assert_eq!(from, [0.0, 0.0, -16.0]);
+                Some(2)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            closest_surface([0.0; 3], &contacts, &mut first),
+            Some(([0.0, 0.0, -0.2], [0.0, 0.0, 1.0]))
+        );
     }
 
     #[test]
@@ -1301,10 +1469,10 @@ mod tests {
         };
         let center = [0.0, 0.0, 60.0];
         let target = [200.0, 0.0, 0.0];
-        assert!(!los_clear(center, target, None, 6.0, &mut low));
-        assert!(los_clear(center, target, Some(40.0), 6.0, &mut low));
+        let none = pick([0.0; 3]);
+        assert!(!los_clear(center, target, None, &none, &mut low));
+        assert!(los_clear(center, target, Some(40.0), &none, &mut low));
     }
-
     #[test]
     fn blast_targets_are_those_within_the_radius_nearest_first() {
         let t = blast_targets(

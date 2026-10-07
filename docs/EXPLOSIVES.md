@@ -104,11 +104,21 @@ Addresses are PC function entries; Xbox names where the prototype has them.
 - **GetDamage**: (`fDamageGunWeapCondBase` + `…Mult`) × record damage;
   with an actor cause and weapon × (`fDamageSkillBase` + `fDamageSkillMult`
   × skill × 0.01).
-- **Line of sight** (`009b1810`): skipped with flag 0x10. A cast from the
-  explosion to the target; each hit blocks unless (component 2 of a vector
-  built from the hit, read here as the ray's z, < −0.98 and the hit is
-  within `fExplosionLOSBuffer`) or it belongs to the source. Actors with
-  3D get six more points ±2 × a radius (`0084d030`, `+0xc`) on each axis.
+- **Line of sight** (`Explosion::RunLOSPick` (Xbox PDB), `009b1810`):
+  skipped with flag 0x10. A pick on layer 0x27 (all hits) that leaves out
+  the target's own collision, from the explosion + its
+  `ClosestPointNormal` (`+0xf4`) × `fExplosionLOSBufferDistance` (24)
+  to the target; every hit blocks unless that normal's z < −0.98 and the
+  hit is nearer than `fExplosionLOSBuffer` (6) to the start; on the first
+  point an owner (`pOwner` `+0xc8`) with reference flag 0x01000000 lets
+  everything through (projectiles and mines have none, `009c3190`).
+  Actors with 3D get six more points ±2 × a radius (`0084d030`, `+0xc`)
+  on each axis, under the normal's rule only. The normal and
+  `ClosestPoint` (`+0xe8`) are set while finding targets (`009ae6e0`):
+  for each of the phantom's contacts not on an actor, a ray from the
+  explosion along twice the way to it (from 16 back along the normal, 32
+  long, when under 1 unit) must meet that body before any other non-actor;
+  the first that does gives them.
 - **After the hit** (`009b00a0`): the explosion's object effect (`EITM`,
   the form's `+0x68`) is cast on the target by the actor cause's caster
   (`+0x88`), else the explosion's own (`+0x37`); then, for the living, the
@@ -274,9 +284,8 @@ the rocket flew straight 1015 units into the house; damage 57.5 (100 ×
 - The grenade is a point with a simple contact response, not Havok's rigid
   body (shape, spin, the surface's friction, the model's own restitution
   when a setting is 0). It collides with the world only, not with actors.
-- The LOS vector's identity in `009b1810` and `fExplosionLOSBufferDistance`
-  (24)'s use are not resolved; the target point is its position (feet);
-  bodies use the people's controller radius for the offsets.
+- The target point is its position (feet); bodies use the people's
+  controller radius for the offsets.
 - Throw origin (eye for the player, 60 units up for people), immediate
   release (no throw animation timing), target height 128 for the aim.
 - Not done: models (projectile, explosion), light, image space, decals,
@@ -305,8 +314,12 @@ the rocket flew straight 1015 units into the house; damage 57.5 (100 ×
   running (the projectile's `+0xe4` below `FLT_MAX`; the viewer marks
   `MineStates::fuse_running` when one is set off) or it reacting to them.
   The running fuse isn't saved.
-- The line of sight of an explosion on the floor ignores the surface the
-  ray starts on (the collider's triangles are two-sided; a hit at 0).
+- Line of sight: the closest surface is the collider's nearest triangle
+  first (Havok's contact order isn't traced), the normal points from its
+  closest point to the centre (up when the centre lies on it: unresolved);
+  a placed mine's own collision is left out of the casts (the exploding
+  projectile's removal isn't traced); the pick's layer 0x27 filter isn't
+  applied (every collider triangle counts).
 - Explosion hit reports carry the thrower's weapon, so the hit sounds are
   the weapon's impact set (which set the game uses for blasts isn't
   traced).

@@ -157,6 +157,103 @@ fn facing_normal(collider: &physics::Collider, tri: u32, dir: [f32; 3]) -> [f32;
     }
 }
 
+/// The explosion's closest surface and its normal (`009ae6e0`,
+/// `world::explosions::closest_surface`): the collider's triangles within
+/// the blast's sphere (its phantom's contacts), each at its closest point
+/// to the centre with the normal from that point toward the centre (the
+/// triangle's own normal facing up when the centre lies on it: unresolved).
+/// The contacts are tried nearest first: unresolved, the order Havok's
+/// collector gives isn't traced. People aren't triangles here, so every
+/// contact and every body met counts as a non-actor's.
+fn closest_surface(
+    collider: &physics::Collider,
+    center: [f32; 3],
+    radius: f32,
+    skip: &dyn Fn(u32) -> bool,
+) -> Option<([f32; 3], [f32; 3])> {
+    let lo = center.map(|c| c - radius);
+    let hi = center.map(|c| c + radius);
+    let mut contacts: Vec<(f32, explosions::Contact)> = collider
+        .near(lo, hi)
+        .into_iter()
+        .filter(|&tri| !skip(tri))
+        .filter_map(|tri| {
+            let point = closest_on_triangle(center, collider.triangle(tri));
+            let to = [0, 1, 2].map(|k| center[k] - point[k]);
+            let d = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+            if d > radius {
+                return None;
+            }
+            let normal =
+                normalize(to).unwrap_or_else(|| facing_normal(collider, tri, [0.0, 0.0, -1.0]));
+            Some((
+                d,
+                explosions::Contact {
+                    body: collider.owner(tri),
+                    point,
+                    normal,
+                },
+            ))
+        })
+        .collect();
+    contacts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let contacts: Vec<explosions::Contact> = contacts.into_iter().map(|(_, c)| c).collect();
+    explosions::closest_surface(center, &contacts, &mut |from, ray| {
+        let len = (ray[0] * ray[0] + ray[1] * ray[1] + ray[2] * ray[2]).sqrt();
+        let dir = normalize(ray)?;
+        let mut along = 0.0;
+        loop {
+            let start = [0, 1, 2].map(|k| from[k] + dir[k] * along);
+            let (d, tri) = collider.raycast(start, dir, len - along)?;
+            if !skip(tri) {
+                return Some(collider.owner(tri));
+            }
+            along += d + 0.5;
+            if along >= len {
+                return None;
+            }
+        }
+    })
+}
+
+/// The point of a triangle nearest `p` (Ericson, Real-Time Collision
+/// Detection, 5.1.5).
+fn closest_on_triangle(p: [f32; 3], [a, b, c]: [[f32; 3]; 3]) -> [f32; 3] {
+    let sub = |x: [f32; 3], y: [f32; 3]| [x[0] - y[0], x[1] - y[1], x[2] - y[2]];
+    let dot = |x: [f32; 3], y: [f32; 3]| x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+    let at = |o: [f32; 3], d: [f32; 3], t: f32| [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t];
+    let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(p, a));
+    let (d1, d2) = (dot(ab, ap), dot(ac, ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = sub(p, b);
+    let (d3, d4) = (dot(ab, bp), dot(ac, bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return at(a, ab, d1 / (d1 - d3));
+    }
+    let cp = sub(p, c);
+    let (d5, d6) = (dot(ab, cp), dot(ac, cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return at(a, ac, d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        return at(b, sub(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    let (v, w) = (vb * denom, vc * denom);
+    [0, 1, 2].map(|k| a[k] + ab[k] * v + ac[k] * w)
+}
+
 fn normalize(v: [f32; 3]) -> Option<[f32; 3]> {
     let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
     (l > 1e-6).then(|| v.map(|x| x / l))
@@ -493,18 +590,15 @@ fn explode(
     if !state.dead.contains(&PLAYER_REF) {
         candidates.push((PLAYER_REF, player_feet));
     }
-    let buffer = world::scripting::game_setting(order, "fExplosionLOSBuffer").unwrap_or(6.0);
-    // The line of sight passes the source's own body (`009b1810`): a
-    // placed mine's collision, where it went off. A surface the ray starts
-    // on (a hit at 0: the mine lies on the floor) doesn't block it either
-    // (the collider's triangles are two-sided).
+    // A placed mine's own collision is left out of the casts: unresolved,
+    // the exploding projectile's removal isn't traced.
+    let own = |tri: u32| collider.owner(tri) == reporter.0 && thrower.is_none();
     let mut cast = |from: [f32; 3], dir: [f32; 3], len: f32| {
         let mut along = 0.0;
         loop {
             let start = [0, 1, 2].map(|k| from[k] + dir[k] * along);
             let (d, tri) = collider.raycast(start, dir, len - along)?;
-            let own = collider.owner(tri) == reporter.0 && thrower.is_none();
-            if !own && (d > 0.01 || along > 0.0) {
+            if !own(tri) {
                 return Some(along + d);
             }
             along += d + 0.5;
@@ -512,6 +606,17 @@ fn explode(
                 return None;
             }
         }
+    };
+    // The pick's start (`009b1810`): off the surface the blast touches
+    // (`009ae6e0`, `world::explosions::closest_surface`).
+    let normal = closest_surface(collider, at, radius, &own).map_or([0.0; 3], |(_, n)| n);
+    let pick = explosions::LosPick {
+        normal,
+        buffer_distance: world::scripting::game_setting(order, "fExplosionLOSBufferDistance")
+            .unwrap_or(24.0),
+        buffer: world::scripting::game_setting(order, "fExplosionLOSBuffer").unwrap_or(6.0),
+        // Projectiles' and mines' explosions have no owner (`009c3190`).
+        owner_passes: false,
     };
     for t in explosions::blast_targets(at, radius, &candidates) {
         let Some(&(_, position)) = candidates.iter().find(|c| c.0 == t.reference) else {
@@ -522,7 +627,7 @@ fn explode(
                 at,
                 position,
                 Some(world::combat_ai::PERSON_RADIUS),
-                buffer,
+                &pick,
                 &mut cast,
             );
         if !sees {
@@ -576,6 +681,24 @@ fn explode(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_grenade_on_the_floor_finds_the_floor_below_it() {
+        let mut c = physics::Collider::new();
+        c.add(
+            &[
+                [-100.0, -100.0, 0.0],
+                [100.0, -100.0, 0.0],
+                [0.0, 100.0, 0.0],
+            ],
+            &[[0, 1, 2]],
+        );
+        let (point, normal) = closest_surface(&c, [0.0, 0.0, 3.0], 50.0, &|_| false).unwrap();
+        assert_eq!(point, [0.0, 0.0, 0.0]);
+        assert_eq!(normal, [0.0, 0.0, 1.0]);
+        // Out of the sphere: none.
+        assert!(closest_surface(&c, [0.0, 0.0, 80.0], 50.0, &|_| false).is_none());
+    }
 
     #[test]
     fn normals_face_the_ray() {
