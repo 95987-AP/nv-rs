@@ -99,6 +99,23 @@ fn the_farewell_follows_up_to_a_goodbye_that_closes_the_menu() {
     assert!(dialogue::pick(&order, FormId(GREETING), &doc, &state).is_none());
 }
 
+/// Activating someone (`005fa330`): a greeting flagged Goodbye with a
+/// single response is only said; anything else opens the dialogue menu.
+#[test]
+fn a_one_response_goodbye_greeting_is_said_without_the_menu() {
+    let (_data, order) = order("dialogue-flow-activation");
+    let bye = info(&order, BYE);
+    assert_eq!(bye.responses.len(), 1);
+    assert!(dialogue::activation_says_a_line(&bye));
+    // The doctor's ordinary greeting opens the menu.
+    assert!(!dialogue::activation_says_a_line(&info(&order, WELCOME)));
+    // A Goodbye line of two responses opens it too (`0083c7e0` finds a
+    // next response).
+    let mut two = bye.clone();
+    two.responses.push(two.responses[0].clone());
+    assert!(!dialogue::activation_says_a_line(&two));
+}
+
 /// A Goodbye line takes no follow-up (`00762ff0` skips it for `+0x2c` 2);
 /// a line answering `GOODBYE` without the flag closes the menu after its
 /// follow-ups are looked for; a "run immediately" line takes none.

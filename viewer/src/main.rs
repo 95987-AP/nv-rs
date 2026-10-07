@@ -274,6 +274,7 @@ fn main() {
         .init_resource::<BroughtIn>()
         .init_resource::<ai::Chats>()
         .init_resource::<ai::Starts>()
+        .init_resource::<ai::PlayerHello>()
         .init_resource::<chatter::Lines>()
         .init_resource::<anim_library::AnimLibrary>()
         .init_resource::<menus::Menus>()

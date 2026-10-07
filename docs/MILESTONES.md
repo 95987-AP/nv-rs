@@ -608,6 +608,8 @@ objects, HUD and Grab; live in Doc's house and the Prospector Saloon
 ([PLAYER_ACTIONS.md](PLAYER_ACTIONS.md)). **Next action:** compare the
 pick's fuzzy cases with the original game.
 
+B10 (`claude/b10-greetings`): greetings traced (`008eeec0`, `008bc3d0`): one GREET line to the player at a time, a 30 s player-wide `fHelloCooldownTime` after any greeting (`008bc520`/`008bc560`, player update `00944179`), the greeter's 20 s counted from the line's end, the package's hello/chatter flags; activating someone whose greeting is a one-response Goodbye line only says it (`005fa330`), and saying stops the speech in progress (`00934250`). Verified live: settler says a line without the menu, Easy Pete opens it, greetings 30+ s apart; not compared with the original ([DIALOGUE.md](DIALOGUE.md)). **Next action:** record a Goodsprings walk in the original and count greetings.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

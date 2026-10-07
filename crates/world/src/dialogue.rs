@@ -245,6 +245,20 @@ pub const HIGH_INTELLIGENCE: u8 = 0x20;
 /// `0061a2d0(1, 2)`).
 pub const GOODBYE_TOPIC: FormId = crate::social::topics::GOODBYE;
 
+/// Whether the player activating someone has them just say their greeting,
+/// with no dialogue menu (an NPC's `Activate`, `005fa330` at `005faa3f`):
+/// the `GREETING` line found for them (`0061a2d0(0, 0)`, `0061b320`) is
+/// flagged Goodbye (`00619df0`: `INFO+0x25 & 1`) and has a single response
+/// (`0083c7b0` finds a first, `0083c7e0` no next). Then the actor says the
+/// topic to the player through `0057b7c0` (the speech in progress stopped,
+/// the listener set to the player, the GREET procedure, `008dbe30`), which
+/// picks the line again; otherwise the dialogue menu opens (`00709470(4,
+/// …)`). No line at all: nothing happens.
+// Translated from 005fa330 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn activation_says_a_line(info: &Info) -> bool {
+    info.flags & GOODBYE != 0 && info.responses.len() == 1
+}
+
 fn global(rr: &RecordRef<'_>, data: &[u8]) -> FormId {
     rr.plugin.to_global(FormId(le_u32(data, 0)))
 }

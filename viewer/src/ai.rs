@@ -599,6 +599,8 @@ pub struct Around<'w> {
     swing_doors: Res<'w, crate::doors::SwingDoors>,
     paths: ResMut<'w, PathQueue>,
     menus: Option<Res<'w, crate::menus::Menus>>,
+    hello: ResMut<'w, PlayerHello>,
+    real: Res<'w, Time<Real>>,
 }
 
 /// The game settings fights ask for, looked up once
@@ -662,6 +664,8 @@ pub fn move_actors(
         swing_doors,
         mut paths,
         menus,
+        mut hello,
+        real,
     } = around;
     let mut came = paths.take_done();
     let order = &game.0.order;
@@ -759,6 +763,24 @@ pub fn move_actors(
     let mut movers = Vec::new();
     let interior = state.player_world.is_none();
     let mut starts = std::mem::take(&mut starts.0);
+    // Greetings this frame (`world::social`): the player's update lets the
+    // greeting cooldown go once `fHelloCooldownTime` has passed on the
+    // real clock (`GetTickCount`, which wraps at 2^32 ms).
+    let now_ms = (real.elapsed().as_millis() % (1u128 << 32)) as u32;
+    hello.0.update(now_ms, &moves.social);
+    let mut greeter = Greeter {
+        interior,
+        cooldown: &mut hello.0,
+        now_ms,
+        line_speaker: speaker.filter(|_| !in_menu),
+        player_trespassing: state
+            .player_cell
+            .is_some_and(|c| world::crime::trespassing(order, state, c)),
+        player_in_combat: state
+            .combat
+            .iter()
+            .any(|(who, target)| *target == PLAYER_REF && !state.dead.contains(who)),
+    };
     // How many chose whom to look at this frame (`011df674`).
     let mut head_track_choices = 0;
     for (mut walker, mut life, mut rig, mut transform, mut visibility) in &mut actors {
@@ -1186,7 +1208,13 @@ pub fn move_actors(
             crate::sitting::idles_frame(&mut ctx, walker, &mut life, &mut rig);
             if !rig.fighting {
                 social_frame(
-                    &mut ctx, walker, &mut chats, &mut lines, moves, &others, interior,
+                    &mut ctx,
+                    walker,
+                    &mut chats,
+                    &mut lines,
+                    moves,
+                    &others,
+                    &mut greeter,
                 );
             }
             place(walker, &mut transform, state, &mut talkers);
@@ -1452,7 +1480,13 @@ pub fn move_actors(
         rig.speed = if walking { speed } else { 0.0 };
         // Greeting the player, idle chatter, starting to talk with others.
         social_frame(
-            &mut ctx, walker, &mut chats, &mut lines, moves, &others, interior,
+            &mut ctx,
+            walker,
+            &mut chats,
+            &mut lines,
+            moves,
+            &others,
+            &mut greeter,
         );
         // Looking at whom they spoke to: the body turns past 80° off
         // (`008a3100`).
@@ -2331,7 +2365,7 @@ fn dialogue_frame(
             // (`008dbe30` ends a "Say To" dialogue package, step 3).
             let topic = topic.unwrap_or(world::social::topics::HELLO);
             if let Some(info) = pick_line(order, ctx.state, me, target, topic) {
-                lines.say(me, target, info);
+                lines.say_to(me, target, info);
                 walker.head_track.set(Slot::Action, Some(target));
             }
             if let Some(s) = walker.social.as_mut() {
@@ -2650,9 +2684,28 @@ fn chat_frame(
     chats.0.insert(me, chat);
 }
 
+/// What greetings this frame share (`world::social`): the place, the
+/// player's state as the player's update leaves it, the player's greeting
+/// cooldown (`PlayerCharacter` +0xe24) with the real clock it counts on
+/// (`GetTickCount`), and who says a line to the player without the menu
+/// (an activated person's greeting or a script's `SayTo`, both the GREET
+/// procedure).
+pub(crate) struct Greeter<'a> {
+    pub interior: bool,
+    pub cooldown: &'a mut world::social::HelloCooldown,
+    pub now_ms: u32,
+    pub line_speaker: Option<FormId>,
+    pub player_trespassing: bool,
+    pub player_in_combat: bool,
+}
+
+/// The player's greeting cooldown (`world::social::HelloCooldown`).
+#[derive(Resource, Default)]
+pub struct PlayerHello(pub world::social::HelloCooldown);
+
 /// Greeting the player, idle chatter, and starting conversations with
-/// others (`008eeec0`, `00904800`; `world::social`), for someone free to
-/// (not fighting, not in a conversation or saying a line).
+/// others (`008eeec0`, `00904800`; `world::social`), for someone not in a
+/// conversation with another.
 fn social_frame(
     ctx: &mut Ctx,
     walker: &mut Walker,
@@ -2660,11 +2713,21 @@ fn social_frame(
     lines: &mut Lines,
     moves: &Moves,
     others: &[crate::fighting::Seen],
-    interior: bool,
+    greeter: &mut Greeter,
 ) {
     let order = &ctx.game.order;
     let me = walker.reference;
-    if chats.0.contains_key(&me) || lines.is_saying(me) || world::combat::is_creature(order, me) {
+    let interior = greeter.interior;
+    // Saying a GREET line to someone holds their greeting timer at
+    // `fAIGreetingTimer` (`008dbe30` sets process +0x330 on each update
+    // while the line lasts): it runs out that long after the line.
+    let line_to_player = greeter.line_speaker == Some(me);
+    if lines.greeting(me) || line_to_player {
+        if let Some(s) = walker.social.as_mut() {
+            s.greeted(&moves.social);
+        }
+    }
+    if chats.0.contains_key(&me) || world::combat::is_creature(order, me) {
         return;
     }
     let Some(mut social) = walker.social.take() else {
@@ -2676,67 +2739,95 @@ fn social_frame(
         .player_position
         .map(|p| distance(p, walker.position));
     let detected = walker.detected_player;
-    let near_player =
-        player_distance.is_some_and(|d| detected > 0 && d <= moves.social.greeting_distance);
-    if near_player {
-        // A greeting: `HELLO`, said to the player, no dialogue menu.
-        if social.greets(
-            detected,
-            true,
-            player_distance.unwrap_or(f32::MAX),
-            &moves.social,
-        ) {
-            social.greeted(&moves.social);
-            let line = pick_line(
-                order,
-                ctx.state,
-                me,
-                PLAYER_REF,
-                world::social::topics::HELLO,
+    let check = world::social::GreetingCheck {
+        in_combat: ctx.state.combat.contains_key(&me),
+        fleeing: walker.fleeing.is_some() || package_kind == Some(world::ai::kinds::FLEE),
+        unconscious: ctx.state.unconscious.contains(&me),
+        knocked: walker.fallen || ctx.state.more.down.contains_key(&me),
+        // A line of their own being said (its voice), and the GREET flag.
+        speaking: lines.is_saying(me) || line_to_player,
+        greeting_line: lines.greeting(me) || line_to_player,
+        player_spoken_to: greeter.line_speaker.is_some() || lines.spoken_to(PLAYER_REF),
+        detection: detected,
+        asleep: crate::sitting::sit_state(ctx.state, me) == 9,
+        player_sneaking: ctx.state.player_sneaking,
+        player_trespassing: greeter.player_trespassing,
+        distance: player_distance.unwrap_or(f32::MAX),
+        player_in_combat: greeter.player_in_combat,
+        hellos_forbidden: walker
+            .package
+            .is_some_and(|p| world::social::package_forbids_hellos(order, p)),
+        alarm_package: package_kind == Some(world::ai::kinds::ALARM),
+        still_in_made_dialogue: walker.talk_run.conversation_package_made()
+            && !walker.walking_now(),
+    };
+    // Busy: neither a greeting nor chatter (`008ef6cc`), but the
+    // conversation check below still runs.
+    let greeting = social.greeting(&check, &moves.social);
+    // A greeting (`008bc3d0`): only when nobody has greeted the player for
+    // `fHelloCooldownTime`; then `HELLO` said to the player through the
+    // GREET procedure, no dialogue menu (none found for them: nothing
+    // said, but their timer and the cooldown are set all the same).
+    if greeting == world::social::Greeting::Greet && greeter.cooldown.free() {
+        social.greeted(&moves.social);
+        greeter.cooldown.greeted(greeter.now_ms);
+        let line = pick_line(
+            order,
+            ctx.state,
+            me,
+            PLAYER_REF,
+            world::social::topics::HELLO,
+        );
+        println!(
+            "{:.1} s: {me} greets the player{}.",
+            ctx.now,
+            if line.is_some() {
+                ""
+            } else {
+                " (no HELLO line for them)"
+            }
+        );
+        if let Some(info) = line {
+            lines.say_to(me, PLAYER_REF, info);
+            walker.head_track.set(Slot::Action, Some(PLAYER_REF));
+            // They turn to the player standing, unless their package is
+            // one that keeps them busy (GREET, `008dbe30`).
+            let busy = matches!(
+                package_kind,
+                Some(k) if [
+                    world::ai::kinds::TRAVEL,
+                    world::ai::kinds::ESCORT,
+                    world::ai::kinds::FOLLOW,
+                    world::ai::kinds::ACCOMPANY,
+                    world::ai::kinds::PATROL,
+                    world::ai::kinds::SANDBOX,
+                    8,
+                    16,
+                    0,
+                ]
+                .contains(&k)
             );
-            println!(
-                "{:.1} s: {me} greets the player{}.",
-                ctx.now,
-                if line.is_some() {
-                    ""
-                } else {
-                    " (no HELLO line for them)"
-                }
-            );
-            if let Some(info) = line {
-                lines.say(me, PLAYER_REF, info);
-                walker.head_track.set(Slot::Action, Some(PLAYER_REF));
-                // They turn to the player standing, unless their package is
-                // one that keeps them busy (GREET, `008dbe30`).
-                let busy = matches!(
-                    package_kind,
-                    Some(k) if [
-                        world::ai::kinds::TRAVEL,
-                        world::ai::kinds::ESCORT,
-                        world::ai::kinds::FOLLOW,
-                        world::ai::kinds::ACCOMPANY,
-                        world::ai::kinds::PATROL,
-                        world::ai::kinds::SANDBOX,
-                        8,
-                        16,
-                        0,
-                    ]
-                    .contains(&k)
-                );
-                if !busy && !walker.on_path() && !ctx.state.sitters.contains_key(&me) {
-                    if let Some(p) = ctx.state.player_position {
-                        walker.turn.request(
-                            walker.heading,
-                            mv::heading_to(walker.position, p),
-                            ctx.moves,
-                        );
-                    }
+            if !busy && !walker.on_path() && !ctx.state.sitters.contains_key(&me) {
+                if let Some(p) = ctx.state.player_position {
+                    walker.turn.request(
+                        walker.heading,
+                        mv::heading_to(walker.position, p),
+                        ctx.moves,
+                    );
                 }
             }
         }
-    } else {
+    } else if greeting == world::social::Greeting::Away {
+        // Idle chatter (`008ef8ee`): their package must allow it.
+        let package = walker.package.map(|p| {
+            (
+                package_kind.unwrap_or(u8::MAX),
+                world::social::package_allows_chatter(order, p),
+            )
+        });
+        let made = walker.talk_run.conversation_package_made();
         let mut dice = crate::fighting::Dice::new(ctx.state);
-        if social.chatter_due(ctx.dt, package_kind, &moves.social, &mut || dice.unit()) {
+        if social.chatter_due(ctx.dt, package, made, &moves.social, &mut || dice.unit()) {
             if let Some(info) = pick_line(
                 order,
                 ctx.state,
@@ -2751,7 +2842,13 @@ fn social_frame(
     // Conversations with others (`00904800`): not while asleep or in sleep,
     // use item at, ambush, guard, dialogue or use weapon packages; a
     // sandbox only if it allows them; follow, escort and accompany only
-    // with their target.
+    // with their target. Not looked for while their GREET flag is up or
+    // someone says a line to the player (`008eeec0` at `008efa4e`), nor
+    // (as before, inferred) while they say a line.
+    if check.greeting_line || check.player_spoken_to || lines.is_saying(me) {
+        walker.social = Some(social);
+        return;
+    }
     let allowed = match package_kind {
         Some(4) | Some(8) | Some(9) | Some(14) | Some(15) | Some(16) => false,
         Some(12) => walker.package.is_some_and(|p| {
@@ -4662,6 +4759,110 @@ mod tests {
         assert!(walker.on_path() && !walker.partial);
         let end = *walker.path.last().unwrap();
         assert!(distance(end, [19000.0, 3000.0, 0.0]) < 1.0, "{end:?}");
+    }
+
+    /// B10: people greeted too often. While one greets the player nobody
+    /// else greets (the player is being spoken to, +0x6cc, `008eeec0`), and
+    /// after a greeting nobody greets the player for `fHelloCooldownTime`
+    /// (`008bc520`/`008bc560`, the player's update at `00944179`); the one
+    /// who greeted waits `fAIGreetingTimer` after their line.
+    #[test]
+    fn one_greeting_at_a_time_and_none_till_the_cooldown_is_over() {
+        use testdata::ai::ids as fixture;
+        let data = testdata::ai::world("greeting-cooldown");
+        let game = cellview::Game::open(
+            data.path(),
+            &cellview::Options {
+                official: true,
+                ..default()
+            },
+        )
+        .unwrap();
+        // The player between the greeter (0, 0) and Chatty (0, 200); the
+        // talk quest running (start-game enabled).
+        let mut state = world::scripting::GameState {
+            player_cell: Some(FormId(fixture::CELL)),
+            player_position: Some([0.0, 100.0, 0.0]),
+            ..world::scripting::GameState::new(&game.order)
+        };
+        assert!(state.running.contains(&FormId(fixture::QUEST)));
+        let mut seats = Seats::new(&game.order);
+        let mesh = world::ai::NavMesh::load(&game.order, FormId(fixture::CELL));
+        let moves = Moves::new(&game);
+        let settings = MoveSettings::defaults();
+        let person = |r: u32, at: [f32; 3]| {
+            let mut w = Walker::at(FormId(r), at, 0.0, 1.0, false);
+            w.social = Some(world::social::Social::new(&moves.social, &mut || 0.5));
+            w.detected_player = 50;
+            w
+        };
+        let mut greeter_walker = person(fixture::GREETER_REF, [0.0, 0.0, 0.0]);
+        let mut chatty = person(fixture::CHATTY_REF, [0.0, 200.0, 0.0]);
+        let (mut chats, mut lines) = (Chats::default(), Lines::default());
+        let mut cooldown = world::social::HelloCooldown::default();
+        let mut frame = |state: &mut world::scripting::GameState,
+                         walker: &mut Walker,
+                         lines: &mut Lines,
+                         cooldown: &mut world::social::HelloCooldown,
+                         now_ms: u32| {
+            cooldown.update(now_ms, &moves.social);
+            let mut ctx = Ctx {
+                game: &game,
+                state,
+                seats: &mut seats,
+                mesh: &mesh,
+                moves: &settings,
+                now: now_ms as f32 / 1000.0,
+                dt: 0.1,
+                fighting: false,
+                talking: false,
+            };
+            let mut greeter = Greeter {
+                interior: true,
+                cooldown,
+                now_ms,
+                line_speaker: None,
+                player_trespassing: false,
+                player_in_combat: false,
+            };
+            social_frame(
+                &mut ctx,
+                walker,
+                &mut chats,
+                lines,
+                &moves,
+                &[],
+                &mut greeter,
+            );
+        };
+        // The greeter says "Hi there." to the player.
+        frame(
+            &mut state,
+            &mut greeter_walker,
+            &mut lines,
+            &mut cooldown,
+            1_000,
+        );
+        assert!(lines.greeting(FormId(fixture::GREETER_REF)));
+        assert!(lines.spoken_to(PLAYER_REF));
+        assert!(!cooldown.free());
+        // Chatty, on the same frame: the player is being spoken to.
+        frame(&mut state, &mut chatty, &mut lines, &mut cooldown, 1_000);
+        assert!(!lines.is_saying(FormId(fixture::CHATTY_REF)));
+        assert_eq!(chatty.social.as_ref().unwrap().greeting, 0.0);
+        // The line over, still within the cooldown: nobody greets.
+        let mut lines = Lines::default();
+        frame(&mut state, &mut chatty, &mut lines, &mut cooldown, 20_000);
+        assert_eq!(chatty.social.as_ref().unwrap().greeting, 0.0);
+        assert!(lines.queue.is_empty());
+        // 30 s after the greeting the cooldown is over: Chatty greets (it
+        // has no line for the player, but its timer and the cooldown are
+        // set all the same).
+        frame(&mut state, &mut chatty, &mut lines, &mut cooldown, 31_001);
+        assert_eq!(chatty.social.as_ref().unwrap().greeting, 20.0);
+        assert!(!cooldown.free());
+        // The greeter's own timer was set by its greeting.
+        assert_eq!(greeter_walker.social.as_ref().unwrap().greeting, 20.0);
     }
 
     /// B12: leaving Doc Mitchell's door conversation started another at
