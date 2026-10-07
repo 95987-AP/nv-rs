@@ -1749,9 +1749,9 @@ pub(crate) fn load_line(state: &mut GameState, raw: &str) -> Option<Result<(), S
 }
 
 /// A reference's name now: as `SetActorFullName` renamed its base, else
-/// the base's `FULL`.
+/// the base's `FULL` (for references made at run time too).
 pub fn full_name(order: &LoadOrder, state: &GameState, reference: FormId) -> Option<String> {
-    let base = base_of(order, reference)?;
+    let base = crate::more_functions::placed::base_now(order, state, reference)?;
     if let Some(n) = state.set_by_scripts.names.get(&base) {
         return Some(n.clone());
     }

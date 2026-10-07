@@ -427,6 +427,14 @@ fn use_object(
             .and_then(|rec| rec.full_name())
             .unwrap_or_else(|| id.to_string())
     };
+    // An ash or goo pile passes the activation on to its corpse
+    // (`TESObjectREFR::Activate`, `00573170`): the corpse is searched.
+    let corpse = world::activation::stands_for(order, state, r.reference);
+    if corpse != r.reference {
+        let label = world::script_functions::full_name(order, state, corpse)
+            .unwrap_or_else(|| corpse.to_string());
+        return Some(Used::Container(corpse, label));
+    }
     let counted = |item: FormId, n: i32| {
         if n > 1 {
             format!("{} ({n})", name(item))
@@ -545,8 +553,13 @@ fn object_in_view(
         if d > world::activation::PICK_LENGTH || best.is_some_and(|(bd, _)| d >= bd) {
             continue;
         }
-        let usable =
-            r.is_item() || r.is_container() || r.is_furniture() || has_on_activate(order, cache, r);
+        // An ash or goo pile standing for a corpse is used to search it.
+        let pile = world::activation::stands_for(order, state, r.reference) != r.reference;
+        let usable = r.is_item()
+            || r.is_container()
+            || r.is_furniture()
+            || pile
+            || has_on_activate(order, cache, r);
         if usable && world::enabled_now(order, r.reference, &state.disabled) {
             best = Some((d, r));
         }
@@ -574,7 +587,16 @@ fn object_in_view(
         );
     let steal =
         || world::scripting::game_setting_text(order, "sSteal").unwrap_or_else(|| "Steal".into());
-    let prompt = if r.is_item() {
+    let pile = world::activation::stands_for(order, state, r.reference) != r.reference;
+    let prompt = if pile {
+        // The pile's own words (an activator with a name: "Activate",
+        // `world::activation::info`).
+        let info = world::activation::info(order, state, r.reference);
+        match info.and_then(|i| i.action) {
+            Some(action) => format!("{action} {name}"),
+            None => name,
+        }
+    } else if r.is_item() {
         let verb = if owned { steal() } else { "Take".into() };
         if r.count > 1 {
             format!("{verb} {name} ({})", r.count)

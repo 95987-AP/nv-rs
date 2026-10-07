@@ -124,9 +124,14 @@ fn is_actor(order: &LoadOrder, reference: FormId) -> bool {
             .is_some_and(|r| matches!(r.entry.header.kind.as_bytes(), b"ACHR" | b"ACRE"))
 }
 
-/// A base record's type and record.
-fn base_record(order: &LoadOrder, reference: FormId) -> Option<(FormId, FourCC, esm::Record)> {
-    let base = base_of(order, reference)?;
+/// A base record's type and record (a reference scripts or the player
+/// made too: dropped items, ash piles).
+fn base_record(
+    order: &LoadOrder,
+    state: &GameState,
+    reference: FormId,
+) -> Option<(FormId, FourCC, esm::Record)> {
+    let base = crate::more_functions::placed::base_now(order, state, reference)?;
     let rr = order.get(base)?;
     let record = rr.record().ok()?;
     Some((base, rr.entry.header.kind, record))
@@ -147,7 +152,7 @@ pub fn action_class(order: &LoadOrder, state: &GameState, reference: FormId) -> 
     if !actor && state.destroyed.contains(&reference) {
         return class::NONE;
     }
-    let Some((_, kind, record)) = base_record(order, reference) else {
+    let Some((base, kind, record)) = base_record(order, state, reference) else {
         return class::NONE;
     };
     let named = || record.full_name().is_some_and(|n| !n.is_empty());
@@ -201,7 +206,7 @@ pub fn action_class(order: &LoadOrder, state: &GameState, reference: FormId) -> 
         b"TERM" => class::ACTIVATE,
         b"PWAT" => class::DRINK,
         b"FURN" => {
-            let flags = crate::furniture::marker_flags(order, base_of(order, reference).unwrap());
+            let flags = crate::furniture::marker_flags(order, base);
             if flags & crate::furniture::SIT_FURNITURE != 0 {
                 class::SIT
             } else if flags & crate::furniture::BED != 0 {
@@ -217,7 +222,6 @@ pub fn action_class(order: &LoadOrder, state: &GameState, reference: FormId) -> 
             if dead {
                 return class::OPEN;
             }
-            let base = base_of(order, reference).unwrap();
             if actor_flags(order, base) & ALLOW_PC_DIALOGUE == 0 {
                 class::NONE
             } else if state.player_sneaking {
@@ -352,7 +356,7 @@ fn holds_nothing(order: &LoadOrder, state: &GameState, holder: FormId) -> bool {
 /// (statics, trees, nameless things without an action).
 // Translated from 00775a00 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn info(order: &LoadOrder, state: &GameState, reference: FormId) -> Option<Info> {
-    let (base, kind, _) = base_record(order, reference)?;
+    let (base, kind, _) = base_record(order, state, reference)?;
     let k = *kind.as_bytes();
     // Statics, static collections and trees: nothing (the type switch's
     // 0x20, 0x21, 0x25 case); a light that can't be carried leaves the
@@ -454,6 +458,13 @@ pub fn info(order: &LoadOrder, state: &GameState, reference: FormId) -> Option<I
     // shows.
     let holder = k == *b"CONT" || (actor && dead);
     if holder && out.lock.is_none() && holds_nothing(order, state, reference) {
+        out.empty = Some(text(order, "sEmpty", "Empty"));
+    }
+    // An ash or goo pile standing for a corpse (`ExtraAshPileRef`,
+    // `0041e310`): "Empty" when the corpse holds nothing (`00775a00`'s
+    // `local_99`).
+    let corpse = stands_for(order, state, reference);
+    if corpse != reference && holds_nothing(order, state, corpse) {
         out.empty = Some(text(order, "sEmpty", "Empty"));
     }
     // Weight and value for the item kinds the type switch flags (0xfc):

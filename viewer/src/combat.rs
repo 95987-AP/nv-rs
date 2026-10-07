@@ -362,6 +362,9 @@ pub(crate) fn meetable(
     r.script.is_some()
         && r.trigger.is_none()
         && world::enabled_now(order, r.reference, &state.disabled)
+        // A body its critical stage culled (`00450f90(1)` on its 3D,
+        // `world::more_functions::body_gone`) has nothing left to meet.
+        && !world::more_functions::body_gone(state, r.reference)
 }
 
 /// The player's critical on someone alive (`0089a760`): "Sneak Attack

@@ -438,7 +438,9 @@ pub fn drop_item(
 /// The made item references (dropped items) lying in a place (an interior
 /// cell or a worldspace) and not taken, as things E can take: what the
 /// placed items of a cell give ([`crate::scripting::Interactive`]), with the
-/// base's script, bounds and name.
+/// base's script, bounds and name. With them, the ash and goo piles
+/// standing for a corpse (`AttachAshPile`; E on one searches the corpse,
+/// [`crate::activation::stands_for`]).
 pub fn dropped_items(
     order: &LoadOrder,
     state: &GameState,
@@ -453,7 +455,7 @@ pub fn dropped_items(
             continue;
         };
         let kind = brr.entry.header.kind;
-        if !crate::scripting::is_item(kind) {
+        if !crate::scripting::is_item(kind) && !state.more.ash_piles.contains_key(&reference) {
             continue;
         }
         let Ok(record) = brr.record() else { continue };

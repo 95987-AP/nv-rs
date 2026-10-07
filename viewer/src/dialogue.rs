@@ -685,6 +685,11 @@ pub fn talk(
     let dir = [f.x, -f.z, f.y];
     let mut best: Option<(f32, Talker)> = None;
     for t in &talkers.0 {
+        // A body whose critical stage culled it (disintegrated, gooified)
+        // isn't there to search: its ash or goo pile is (`scripts`).
+        if world::more_functions::body_gone(&state.0, t.reference) {
+            continue;
+        }
         if let Some(d) = ray_person(eye, dir, t.position) {
             if d <= ACTIVATE_REACH && best.is_none_or(|(bd, _)| d < bd) {
                 best = Some((d, *t));

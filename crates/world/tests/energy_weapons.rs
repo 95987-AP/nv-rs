@@ -147,6 +147,20 @@ fn a_laser_critical_that_kills_disintegrates_the_body_into_an_ash_pile() {
     // Searching the pile searches the corpse.
     assert_eq!(world::activation::stands_for(&order, &state, pile), t);
     assert_eq!(world::activation::stands_for(&order, &state, t), t);
+    // The pile is among the made references E can use in the room, and
+    // the crosshair names it as an activator: "Activate Ash Pile", "Empty"
+    // while the corpse holds nothing (`00775a00`).
+    let space = FormId(ROOM);
+    let usable = world::more_functions::placed::dropped_items(&order, &state, space);
+    assert!(usable.iter().any(|i| i.reference == pile));
+    let info = world::activation::info(&order, &state, pile).unwrap();
+    assert_eq!(info.action.as_deref(), Some("Activate"));
+    assert_eq!(info.target, "Ash Pile");
+    assert_eq!(info.empty.as_deref(), Some("Empty"));
+    state.items.insert((t, FormId(CELL)), 3);
+    state.stocked.insert(t);
+    let info = world::activation::info(&order, &state, pile).unwrap();
+    assert_eq!(info.empty, None);
     // Then the body goes, and it counts as the player's disintegration.
     run(&order, &scripts, &mut state, 0.5);
     assert_eq!(stage(&state), Some(4));
