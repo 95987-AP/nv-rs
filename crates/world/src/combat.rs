@@ -971,6 +971,13 @@ pub fn hurt(
         }
         state.more.down.remove(&who);
         state.dead.insert(who);
+        state.deaths.insert(
+            who,
+            DeathStart {
+                killer: Some(by),
+                hit: true,
+            },
+        );
         // The dead stop fighting, and nobody fights them any more.
         state.combat.remove(&who);
         state.combat.retain(|_, target| *target != who);
@@ -1129,6 +1136,9 @@ pub fn land(order: &LoadOrder, state: &mut GameState, who: FormId, fall: f32) ->
         return 0.0;
     }
     hurt(order, state, who, damage, who);
+    // Fall damage goes to the damage virtual (`0089d6f0`) directly, not
+    // through the hit handler: no killing hit's push.
+    not_a_hit(state, who);
     if who == PLAYER_REF {
         let chance = game_setting(order, "iFallLegDamageChance").unwrap_or(50.0);
         let share = f64::from(game_setting(order, "fFallLegDamageMult").unwrap_or(0.5));
@@ -1192,6 +1202,69 @@ pub fn death_push_origin(struck: [f32; 3], direction: [f32; 3]) -> [f32; 3] {
         .sqrt()
         .max(1e-6);
     [0, 1, 2].map(|i| struck[i] - 2048.0 * direction[i] / len)
+}
+
+/// A death just begun wasn't dealt by a hit (fall damage, effects,
+/// `KillActor`): no killing hit's push follows.
+pub fn not_a_hit(state: &mut GameState, who: FormId) {
+    if let Some(d) = state.deaths.get_mut(&who) {
+        d.hit = false;
+    }
+}
+
+/// How a death began, for handing the body to its ragdoll
+/// ([`GameState::deaths`]): who killed (none when `KillActor` names nobody:
+/// `005be2a0` passes no attacker to the death routine `0089d900`), and
+/// whether a killing hit's push follows (the hit handler `0089a760` calls
+/// `008ae000` after a hit that killed; `KillActor` deals no hit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeathStart {
+    pub killer: Option<FormId>,
+    pub hit: bool,
+}
+
+/// The velocity every ragdoll body gains as the body goes limp, before any
+/// killing hit's push (game units a second). Translated from `0089d900`
+/// (`Actor::Kill`, Xbox PDB; FalloutNV.exe 1.4.0.525, `0089ee31`…
+/// `0089f05c`), for an actor in the high process with its 3D, knock state 0
+/// or 6, and a ragdoll (`Actor` +0x1b0 clear, set by `CreateRagdollInstance`
+/// `0087e130` when there's none): after the character controller is taken
+/// away (`RemoveCharController`, vtable +0x2a0) every body is made dynamic
+/// (`00c6a350(root, 1, …)`) and gets, added to its own (`0062b8d0` →
+/// `0062b930`, mass-independent, `004a3e90` turning game units into
+/// Havok's), a direction × `fDeathForceForceMin` (`011cf724`; 20 in
+/// FalloutNV.esm, the exe's default 35): the controller's last velocity
+/// made a unit vector (`004a0c10`: nothing under 1e-6), or, standing
+/// still, the way the actor faces (`GetHeading`, vtable +0x2bc, turning
+/// (0, 1, 0): (sin h, cos h, 0)); killed by the player (and not the player
+/// itself), from the player's controller to the victim's instead.
+/// `player_line` is (victim, player) positions in that case.
+// Translated from 0089d900 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn death_nudge(
+    order: &LoadOrder,
+    moving: [f32; 3],
+    heading: f32,
+    player_line: Option<([f32; 3], [f32; 3])>,
+) -> [f32; 3] {
+    let unit = |v: [f32; 3]| {
+        let len = v.iter().map(|c| c * c).sum::<f32>().sqrt();
+        if len <= 1e-6 {
+            [0.0; 3]
+        } else {
+            v.map(|c| c / len)
+        }
+    };
+    let moving_len = moving.iter().map(|c| c * c).sum::<f32>().sqrt();
+    let direction = if let Some((victim, player)) = player_line {
+        unit([0, 1, 2].map(|i| victim[i] - player[i]))
+    } else if moving_len != 0.0 {
+        unit(moving)
+    } else {
+        let (s, c) = heading.sin_cos();
+        [s, c, 0.0]
+    };
+    let force = game_setting(order, "fDeathForceForceMin").unwrap_or(35.0);
+    direction.map(|c| c * force)
 }
 
 /// Someone's damage threshold as the Pip-Boy shows it (`00782a90`): their

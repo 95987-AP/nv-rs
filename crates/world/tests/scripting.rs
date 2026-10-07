@@ -219,6 +219,15 @@ fn the_killing_blow_is_kept_for_how_the_body_falls() {
     assert_eq!(state.globals[&FormId(GLOBAL)], before + 100.0);
     let (by, damage) = state.last_blow[&FormId(GECKO_REF)];
     assert_eq!(by, PLAYER_REF);
+    // `KillActor` deals no hit: the body goes limp with the death
+    // routine's nudge only, the attacker named.
+    assert_eq!(
+        state.deaths[&FormId(GECKO_REF)],
+        world::combat::DeathStart {
+            killer: Some(PLAYER_REF),
+            hit: false
+        }
+    );
     // Without a weapon, `fDeathForce…`: 20 to 60 Havok units a second as
     // the damage goes from 0.1 to 40, at most past it (shots: 20 to 40 over
     // 0.1 to 10).
@@ -249,6 +258,51 @@ fn the_killing_blow_is_kept_for_how_the_body_falls() {
     assert_eq!(world::combat::death_push_share(2), 1.0);
     assert_eq!(world::combat::death_push_share(7), 0.5);
     assert_eq!(world::combat::death_push_share(16), 0.25);
+}
+
+#[test]
+fn a_death_nudges_the_body_along_its_way() {
+    let (_data, order) = order("scripting-nudge");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    // `KillActor` with nobody named: no attacker (`005be2a0`), no hit.
+    Runner::new(&order, &scripts, &mut state).run_source("GeckoRef.KillActor", None, None);
+    assert_eq!(
+        state.deaths[&FormId(GECKO_REF)],
+        world::combat::DeathStart {
+            killer: None,
+            hit: false
+        }
+    );
+    // `0089d900`: a unit direction × `fDeathForceForceMin` (the exe's 35
+    // here; the fixture doesn't set it), game units a second.
+    use world::combat::death_nudge;
+    let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-3);
+    // Standing still: the way it faces (heading clockwise from north).
+    let east = std::f32::consts::FRAC_PI_2;
+    assert!(close(
+        death_nudge(&order, [0.0; 3], east, None),
+        [35.0, 0.0, 0.0]
+    ));
+    assert!(close(
+        death_nudge(&order, [0.0; 3], 0.0, None),
+        [0.0, 35.0, 0.0]
+    ));
+    // Moving: along the controller's velocity, whatever its speed.
+    assert!(close(
+        death_nudge(&order, [3.0, -4.0, 0.0], east, None),
+        [21.0, -28.0, 0.0]
+    ));
+    // Killed by the player: away from the player, moving or not.
+    assert!(close(
+        death_nudge(
+            &order,
+            [3.0, -4.0, 0.0],
+            east,
+            Some(([0.0, 100.0, 0.0], [0.0, 0.0, 0.0]))
+        ),
+        [0.0, 35.0, 0.0]
+    ));
 }
 
 #[test]
