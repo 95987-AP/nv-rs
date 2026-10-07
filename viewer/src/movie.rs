@@ -189,7 +189,7 @@ fn fill_tile(image: &mut Image, frame: &[u8], fw: u32, fh: u32, t: &Tile) {
         let src = ((sy * fw + t.x) * 4) as usize;
         let dst = (row * t.w * 4) as usize;
         data[dst..dst + w * 4].copy_from_slice(&frame[src..src + w * 4]);
-        for px in data[dst..dst + w * 4].chunks_exact_mut(4) {
+        for px in data[dst..dst + w * 4].as_chunks_mut::<4>().0 {
             px[3] = 255;
         }
     }

@@ -119,11 +119,7 @@ impl Rates {
 
 /// Milliseconds a character: `1000 / rate`, whole; 1000 for a rate of 0.
 fn per_char(rate: u32) -> f64 {
-    if rate == 0 {
-        1000.0
-    } else {
-        f64::from(1000 / rate)
-    }
+    1000u32.checked_div(rate).map_or(1000.0, f64::from)
 }
 
 /// One screen of a terminal: what the world says it lists now.
