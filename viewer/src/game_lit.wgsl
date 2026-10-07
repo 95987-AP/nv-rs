@@ -419,7 +419,7 @@ fn sample_normal(uv: vec2<f32>) -> vec4<f32> {
     return textureSample(normal_texture, normal_sampler, uv);
 }
 fn sample_environment(along: vec3<f32>) -> vec4<f32> {
-    return sample_environment(along);
+    return textureSample(environment_texture, environment_sampler, along);
 }
 fn sample_environment_mask(uv: vec2<f32>) -> vec4<f32> {
     return textureSample(environment_mask, environment_mask_sampler, uv);

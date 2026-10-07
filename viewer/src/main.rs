@@ -1956,7 +1956,10 @@ impl Spawner<'_, '_> {
         self.commands
             .spawn((
                 Mesh3d(self.meshes.add(mesh)),
-                MeshMaterial3d(self.lit_materials.add(GameLitMaterial { base, extension })),
+                MeshMaterial3d(self.lit_materials.add(GameLitMaterial {
+                    base,
+                    extension: extension.into(),
+                })),
                 Transform::from_scale(Vec3::splat(scale)),
                 bevy::render::view::NoFrustumCulling,
                 daylight::SkyWeights(dome.weights.clone()),
@@ -2068,7 +2071,10 @@ impl Spawner<'_, '_> {
         self.commands
             .spawn((
                 Mesh3d(self.meshes.add(mesh)),
-                MeshMaterial3d(self.lit_materials.add(GameLitMaterial { base, extension })),
+                MeshMaterial3d(self.lit_materials.add(GameLitMaterial {
+                    base,
+                    extension: extension.into(),
+                })),
                 Transform::from_scale(Vec3::splat(scale * 0.99)),
                 bevy::render::view::NoFrustumCulling,
                 daylight::SunDisk { half_size, glare },
@@ -2147,7 +2153,10 @@ impl Spawner<'_, '_> {
         self.commands
             .spawn((
                 Mesh3d(self.meshes.add(mesh)),
-                MeshMaterial3d(self.lit_materials.add(GameLitMaterial { base, extension })),
+                MeshMaterial3d(self.lit_materials.add(GameLitMaterial {
+                    base,
+                    extension: extension.into(),
+                })),
                 Transform::from_scale(Vec3::splat(scale)),
                 bevy::render::view::NoFrustumCulling,
                 daylight::Stars { fade },
@@ -2214,7 +2223,10 @@ impl Spawner<'_, '_> {
         self.commands
             .spawn((
                 Mesh3d(self.meshes.add(mesh)),
-                MeshMaterial3d(self.lit_materials.add(GameLitMaterial { base, extension })),
+                MeshMaterial3d(self.lit_materials.add(GameLitMaterial {
+                    base,
+                    extension: extension.into(),
+                })),
                 Transform::from_scale(Vec3::splat(scale * 0.98)),
                 bevy::render::view::NoFrustumCulling,
                 CloudScroll {
@@ -2520,7 +2532,10 @@ fn lit_material(
         }
     };
     extension.lighting.draw = draw;
-    GameLitMaterial { base, extension }
+    GameLitMaterial {
+        base,
+        extension: extension.into(),
+    }
 }
 
 /// Where decals sort among blended surfaces (Bevy's depth bias, added to

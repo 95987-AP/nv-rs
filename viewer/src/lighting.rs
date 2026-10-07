@@ -19,6 +19,10 @@ use bevy::render::render_resource::{
     AsBindGroup, CompareFunction, RenderPipelineDescriptor, ShaderRef, ShaderType,
     SpecializedMeshPipelineError, VertexFormat,
 };
+use bevy::render::render_resource::{
+    AsBindGroupError, BindGroupLayout, BindGroupLayoutEntry, UnpreparedBindGroup,
+};
+use bevy::render::renderer::RenderDevice;
 
 const SHADER: Handle<Shader> = weak_handle!("3b8e2f41-7c95-4d1a-b06e-9f4a2c7d5e18");
 
@@ -40,7 +44,7 @@ pub const ATTRIBUTE_CORNER_C: MeshVertexAttribute =
 pub const MAX_LIGHTS: usize = 64;
 
 /// A lit surface's material.
-pub type GameLitMaterial = ExtendedMaterial<StandardMaterial, GameLit>;
+pub type GameLitMaterial = ExtendedMaterial<StandardMaterial, LitExtension>;
 
 /// A point light, as the shader reads it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType, Reflect)]
@@ -208,7 +212,89 @@ impl From<&GameLit> for GameLighting {
     }
 }
 
-impl MaterialExtension for GameLit {
+/// Whether the lit surfaces' materials are bindless: the device takes
+/// bindless materials (the standard material's and [`GameLit`]'s own
+/// checks) and filters 32-bit float textures (the shared light's texture,
+/// in Bevy's bindless texture array). Set once the device is known
+/// ([`GameLightingPlugin::finish`]), before the material's pipeline is made.
+static BINDLESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn bindless() -> bool {
+    BINDLESS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// [`GameLit`] as the lit material's extension, bindless only where
+/// [`BINDLESS`] says. Bevy 0.16's `ExtendedMaterial` asks the device
+/// whether bindless works when it lays out its parts' bind groups but not
+/// when it makes its pipeline, so a device without it (DX12 here) would
+/// get bindless pipelines over plain bind groups; answering "no slots"
+/// there keeps both plain.
+#[derive(Asset, Reflect, Debug, Clone)]
+pub struct LitExtension(pub GameLit);
+
+impl From<GameLit> for LitExtension {
+    fn from(lit: GameLit) -> Self {
+        Self(lit)
+    }
+}
+
+impl std::ops::Deref for LitExtension {
+    type Target = GameLit;
+    fn deref(&self) -> &GameLit {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for LitExtension {
+    fn deref_mut(&mut self) -> &mut GameLit {
+        &mut self.0
+    }
+}
+
+impl AsBindGroup for LitExtension {
+    type Data = <GameLit as AsBindGroup>::Data;
+    type Param = <GameLit as AsBindGroup>::Param;
+
+    fn bindless_slot_count() -> Option<bevy::render::render_resource::BindlessSlabResourceLimit> {
+        GameLit::bindless_slot_count().filter(|_| bindless())
+    }
+
+    fn bindless_supported(render_device: &RenderDevice) -> bool {
+        bindless() && GameLit::bindless_supported(render_device)
+    }
+
+    fn label() -> Option<&'static str> {
+        GameLit::label()
+    }
+
+    fn unprepared_bind_group(
+        &self,
+        layout: &BindGroupLayout,
+        render_device: &RenderDevice,
+        param: &mut bevy::ecs::system::SystemParamItem<'_, '_, Self::Param>,
+        force_no_bindless: bool,
+    ) -> Result<UnpreparedBindGroup<Self::Data>, AsBindGroupError> {
+        self.0.unprepared_bind_group(
+            layout,
+            render_device,
+            param,
+            force_no_bindless || !bindless(),
+        )
+    }
+
+    fn bind_group_layout_entries(
+        render_device: &RenderDevice,
+        force_no_bindless: bool,
+    ) -> Vec<BindGroupLayoutEntry> {
+        GameLit::bind_group_layout_entries(render_device, force_no_bindless || !bindless())
+    }
+
+    fn bindless_descriptor() -> Option<bevy::render::render_resource::BindlessDescriptor> {
+        GameLit::bindless_descriptor().filter(|_| bindless())
+    }
+}
+
+impl MaterialExtension for LitExtension {
     fn vertex_shader() -> ShaderRef {
         SHADER.into()
     }
@@ -276,6 +362,28 @@ impl Plugin for GameLightingPlugin {
     fn build(&self, app: &mut App) {
         load_internal_asset!(app, SHADER, "game_lit.wgsl", Shader::from_wgsl);
         app.add_plugins(MaterialPlugin::<GameLitMaterial>::default());
+    }
+
+    /// Before the material plugin's own (it was added after this): whether
+    /// its materials are bindless ([`BINDLESS`]).
+    fn finish(&self, app: &mut App) {
+        let Some(render) = app.get_sub_app(bevy::render::RenderApp) else {
+            return;
+        };
+        let Some(device) = render.world().get_resource::<RenderDevice>() else {
+            return;
+        };
+        // `NVRS_NO_BINDLESS`: the plain way regardless (to compare).
+        let on = std::env::var_os("NVRS_NO_BINDLESS").is_none()
+            && GameLit::bindless_supported(device)
+            && StandardMaterial::bindless_supported(device)
+            && device
+                .features()
+                .contains(bevy::render::settings::WgpuFeatures::FLOAT32_FILTERABLE);
+        BINDLESS.store(on, std::sync::atomic::Ordering::Relaxed);
+        if !on {
+            println!("  lit surfaces: the device takes no bindless materials; one bind group each");
+        }
     }
 }
 
