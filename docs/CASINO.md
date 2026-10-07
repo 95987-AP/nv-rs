@@ -108,10 +108,33 @@ states; the tiles, the 3D and the viewer follow Caravan's layout
 
 - `world::casino`: the record, the player's list (saved as `casino`
   lines), levels, the script functions, `open_check` and the lock,
-  `settle`, the texts; `Event::Casino` from the three commands.
-- Checks: `crates/world/tests/casino.rs`, the module tests.
+  `settle` (with its corner message), the texts; `Event::Casino` from the
+  three commands.
+- `ui::menus::slots` (the tiles), `cellview::slots` (the 3D).
+- The viewer: `Event::Casino` runs `Create`'s checks where the script asks
+  (`game_menus::casino::create`: a refusal is a corner message with
+  `UIPopUpMessageGeneral`), then `menus::Menu::Casino` opens the game's
+  menu (`game_menus::slots`); `casino_scene` draws the machine with the
+  lockpicking menu's camera into the HUD's picture, under the menu's
+  tiles (the HUD's camera blends over any menu's 3D:
+  `game_menus::scene_open`). The anti-cheat lock (`CasinoLock`) runs on
+  the real clock, stamped as a menu closes and armed by F9's load.
+- Checks: `crates/world/tests/casino.rs`, the module tests, the viewer's
+  `game_menus::casino` test.
+
+## Trying it
+
+```
+nv-viewer <Data> VikkiAndVance --freeze-ai --run "player.additem VikkiVanceChip 100" --run "0016202A.Activate player 1"
+```
+
+(`0016202A` is one of Vikki & Vance's slot machines, `vVikkiVanceSlotScript`;
+`--freeze-ai` keeps people from starting a conversation that would hold the
+second line back.) W spins, E and Q change the bet, F shows the payout card,
+S bets the most, R leaves: the chips are settled with a corner message.
 
 ## Not done
 
-- The games on screen (tiles, 3D, the viewer); blackjack's and roulette's
-  rules.
+- Blackjack's and roulette's rules and screens.
+- The corner messages' own Vault Boy icons (the viewer's HUD messages
+  have one icon for all).

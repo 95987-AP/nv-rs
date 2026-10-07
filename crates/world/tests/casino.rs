@@ -143,19 +143,23 @@ fn settling() {
         s,
         Settled::Added {
             count: 15,
-            banned_message: None
+            message: "15 Test Chip(s) added".into(),
+            banned: false
         }
     );
+    // One: the name alone (`"%s %s"`).
+    let s = casino::settle(&order, &mut state, &c, 46, false);
+    assert!(matches!(s, Settled::Added { message, .. } if message == "Test Chip added"));
     // At the limit: given with the ban, and the level's quest started.
     casino::data_mut(&mut state, FormId(CASINO)).winnings = 9000;
     let s = casino::settle(&order, &mut state, &c, 50, true);
     assert_eq!(
         s,
         Settled::Added {
-            count: 5,
-            banned_message: Some(
-                "5 Test Chip(s) added\nYou have been banned from gambling at this casino.".into()
-            )
+            count: 4,
+            message: "4 Test Chip(s) added\nYou have been banned from gambling at this casino."
+                .into(),
+            banned: true
         }
     );
     assert!(state.running.contains(&FormId(QUEST)));

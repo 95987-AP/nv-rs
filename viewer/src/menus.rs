@@ -58,6 +58,15 @@ pub enum Menu {
         difficulty: i32,
         share: f32,
     },
+    /// A casino game (`ShowSlotMachineMenuParams`, `ShowBlackJackMenuParams`,
+    /// `ShowRouletteMenuParams`), its `Create` checks passed
+    /// (`game_menus::casino`): the casino, the bets' limits.
+    Casino {
+        game: world::casino::Game,
+        casino: FormId,
+        min_bet: i32,
+        max_bet: i32,
+    },
     /// A computer terminal used (`world::terminal`): its record and the
     /// placed terminal.
     Terminal(FormId, FormId),
@@ -247,6 +256,7 @@ fn open(
         | Menu::Teammate(..)
         | Menu::CompanionWheel(..)
         | Menu::Caravan { .. }
+        | Menu::Casino { .. }
         | Menu::LevelUp(..)
         | Menu::Character(CharacterMenu::Traits { .. })
         | Menu::Character(CharacterMenu::TagSkills { .. })

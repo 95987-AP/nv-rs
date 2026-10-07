@@ -17,6 +17,7 @@
 pub mod asks;
 pub mod barter;
 pub mod caravan;
+pub mod casino;
 pub mod chargen;
 pub mod companion_wheel;
 pub mod computers;
@@ -28,6 +29,7 @@ pub(crate) mod message;
 pub mod recipe;
 pub mod repair;
 pub mod sleepwait;
+pub mod slots;
 pub mod start;
 pub mod textedit;
 pub mod traits;
@@ -104,6 +106,7 @@ pub enum OpenMenu {
     Repair(Box<repair::RepairScreen>),
     CompanionWheel(Box<companion_wheel::WheelScreen>),
     Caravan(Box<caravan::CaravanScreen>),
+    Slots(Box<slots::SlotsScreen>),
     Quantity(ui::menus::quantity::QuantityMenu),
     LevelUp(Box<ui::menus::levelup::LevelUpMenu>),
     Traits(Box<ui::menus::traits::TraitMenu>),
@@ -127,6 +130,7 @@ impl OpenMenu {
             OpenMenu::Repair(r) => &mut r.menu,
             OpenMenu::CompanionWheel(w) => &mut w.menu,
             OpenMenu::Caravan(c) => &mut c.menu,
+            OpenMenu::Slots(s) => &mut s.menu,
             OpenMenu::Quantity(m) => m,
             OpenMenu::LevelUp(m) => &mut **m,
             OpenMenu::Traits(m) => &mut **m,
@@ -150,6 +154,7 @@ impl OpenMenu {
             OpenMenu::Repair(r) => r.menu.menu,
             OpenMenu::CompanionWheel(w) => w.menu.menu,
             OpenMenu::Caravan(c) => c.menu.menu,
+            OpenMenu::Slots(s) => s.menu.menu,
             OpenMenu::Quantity(m) => m.menu,
             OpenMenu::LevelUp(m) => m.menu,
             OpenMenu::Traits(m) => m.menu,
@@ -173,6 +178,7 @@ impl OpenMenu {
             OpenMenu::Repair(r) => r.menu.closed,
             OpenMenu::CompanionWheel(w) => w.menu.closed,
             OpenMenu::Caravan(c) => c.closed,
+            OpenMenu::Slots(s) => s.closed,
             OpenMenu::Quantity(m) => m.closed,
             OpenMenu::LevelUp(m) => m.closed,
             OpenMenu::Traits(m) => m.closed,
@@ -203,6 +209,7 @@ impl Plugin for GameMenusPlugin {
             .init_resource::<FixedClicks>()
             .init_resource::<FixedKeys>()
             .init_resource::<hacking::HackingSounds>()
+            .init_resource::<casino::CasinoLock>()
             .init_resource::<companion_wheel::WheelVoices>()
             .add_systems(
                 Update,
@@ -518,6 +525,17 @@ fn screen<'a>(menus: &'a mut GameMenus, game: &Game, size: UVec2) -> Option<&'a 
     menus.screen.as_deref_mut()
 }
 
+/// Whether a menu with a 3D scene drawn under the menus' pictures is open
+/// (Caravan's table, the slot machine): the HUD's camera then blends its
+/// pictures over the scene's (`caravan_table`).
+pub fn scene_open(menus: &GameMenus) -> bool {
+    menus.screen.as_deref().is_some_and(|s| {
+        s.open
+            .iter()
+            .any(|m| matches!(m, OpenMenu::Caravan(_) | OpenMenu::Slots(_)))
+    })
+}
+
 /// Whether the game's own menus show a request (the rest are the viewer's
 /// panel, `menus`).
 pub fn takes(m: &crate::menus::Menu) -> bool {
@@ -528,6 +546,7 @@ pub fn takes(m: &crate::menus::Menu) -> bool {
         || repair::takes(m)
         || companion_wheel::takes(m)
         || caravan::takes(m)
+        || slots::takes(m)
         || levelup::takes(m)
         || traits::takes(m)
         || chargen::takes(m)
@@ -607,6 +626,8 @@ fn open_menus(
             companion_wheel::open(screen, &game.0, &scripts.0, &mut state.0, request);
         } else if caravan::takes(&request) {
             caravan::open(screen, &game.0, &mut state.0, request);
+        } else if slots::takes(&request) {
+            slots::open(screen, &game.0, &mut state.0, request);
         } else {
             sounds
                 .0
@@ -683,6 +704,7 @@ pub(crate) fn run_open_menus(
     mut hacking_sounds: ResMut<hacking::HackingSounds>,
     mut hud_messages: ResMut<crate::hud::HudMessages>,
     mut wheel_voices: ResMut<companion_wheel::WheelVoices>,
+    mut casino_lock: ResMut<casino::CasinoLock>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         input.typed.clear();
@@ -939,6 +961,18 @@ pub(crate) fn run_open_menus(
     sounds
         .0
         .extend(caravan::after(screen, &game.0, &mut state.0, now * 1000.0));
+    let (played, said) = slots::after(
+        screen,
+        &game.0,
+        &mut state.0,
+        &mut casino_lock.0,
+        now * 1000.0,
+    );
+    sounds.0.extend(played);
+    for m in said {
+        println!("{m}");
+        hud_messages.queue.push(m);
+    }
     sounds
         .0
         .extend(levelup::after(screen, &game.0, &mut state.0));

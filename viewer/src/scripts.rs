@@ -884,6 +884,11 @@ fn queue_reload_cleanup(commands: &mut Commands, result: &Result<bool, String>) 
 }
 
 fn discard_reloaded_dialogue(world: &mut World) {
+    // A game loaded arms the casinos' anti-cheat lock if a casino menu
+    // closed before (`00956f70` → `00969ac0`).
+    if let Some(mut lock) = world.get_resource_mut::<crate::game_menus::casino::CasinoLock>() {
+        lock.0.loaded();
+    }
     world.resource_mut::<Conversation>().discard();
     world.resource_mut::<ScriptedTalk>().0 = None;
     world
@@ -1005,6 +1010,9 @@ pub struct HereNow<'w> {
     object_bounds: Option<Res<'w, ObjectBounds>>,
     player_seat: ResMut<'w, crate::sitting::PlayerSeat>,
     later: ResMut<'w, LaterCommands>,
+    /// The casinos' anti-cheat lock, on the real clock (`game_menus::casino`).
+    casino_lock: ResMut<'w, crate::game_menus::casino::CasinoLock>,
+    real_time: Res<'w, Time<bevy::time::Real>>,
 }
 
 /// The start-up state and requests `run_scripts` works with.
@@ -1067,6 +1075,8 @@ pub fn run_scripts(
         object_bounds,
         mut player_seat,
         mut later,
+        mut casino_lock,
+        real_time,
     } = here_now;
     let order = &game.0.order;
     let now = time.elapsed_secs();
@@ -1410,15 +1420,46 @@ pub fn run_scripts(
                 waiting.push(crate::menus::Menu::Teammate(who));
                 None
             }
+            // `Create`'s checks as the command runs (`005cf040` and the
+            // others call it at once): the menu, or the refusal's corner
+            // message with `UIPopUpMessageGeneral`.
             Event::Casino {
                 game,
                 casino,
                 min_bet,
                 max_bet,
-                ..
+                min_winnings,
             } => {
-                println!("{game:?} at {casino} (bets {min_bet} to {max_bet}): not shown yet.");
-                None
+                let created = crate::game_menus::casino::create(
+                    order,
+                    state,
+                    &mut casino_lock.0,
+                    game,
+                    casino,
+                    min_bet,
+                    max_bet,
+                    min_winnings,
+                    real_time.elapsed_secs_f64(),
+                );
+                // The scripts' `MenuMode` for the game (the Sierra Madre's
+                // and the base game's tables alike) once it's open.
+                menus.extend(crate::game_menus::casino::menu_mode(game, &created));
+                match created {
+                    Some(Ok(menu)) => {
+                        waiting.push(menu);
+                        None
+                    }
+                    Some(Err(why)) => {
+                        if let Some(s) = order.form_by_editor_id(crate::lockpick::POPUP_SOUND) {
+                            sound_requests.0.push(s);
+                        }
+                        Some(why)
+                    }
+                    None => {
+                        println!("{game:?}: {casino} isn't a casino.");
+                        None
+                    }
+                }
             }
             Event::Caravan {
                 npc,
@@ -1621,7 +1662,11 @@ pub fn run_scripts(
                 None
             }
             Event::Menu(menu) => {
-                menus.push(menu);
+                // A casino game's number is counted once its menu opens
+                // (`Event::Casino`, `game_menus::casino::menu_mode`).
+                if !(1080..=1082).contains(&menu) {
+                    menus.push(menu);
+                }
                 match menu {
                     world::scripting::RACE_SEX_MENU => {
                         Some("(The face and body menu would open here; kept as it is.)".to_string())

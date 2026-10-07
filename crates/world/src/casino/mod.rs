@@ -440,12 +440,15 @@ pub enum Settled {
         count: i32,
         message: String,
     },
-    /// Given: under the limit the game's usual "added" notice for them
-    /// (`004821a0`); at the limit given quietly with a message ending in
-    /// the ban (very happy Vault Boy).
+    /// Given: under the limit with the game's usual "added" notice for
+    /// them (`004821a0(player, 0)`: "%s %s" for one, "%i %s%s %s" for
+    /// more, the gift box); at the limit given quietly (`004821a0(player,
+    /// 1)`) with a message ending in the ban (very happy Vault Boy):
+    /// `banned`.
     Added {
         count: i32,
-        banned_message: Option<String>,
+        message: String,
+        banned: bool,
     },
 }
 
@@ -485,16 +488,19 @@ pub fn settle(
         *state.items.entry((PLAYER_REF, casino.chip)).or_insert(0) += diff;
         state.added(order, PLAYER_REF, casino.chip, diff);
         let winnings = data(state, casino.form).map_or(0, |d| d.winnings);
-        let banned_message = (winnings >= casino.max_winnings).then(|| {
-            format!(
-                "{diff} {name}{plural} {}\n{}",
-                text(order, "sAddItemtoInventory", "added"),
-                banned_text(order)
-            )
-        });
+        let added = text(order, "sAddItemtoInventory", "added");
+        let banned = winnings >= casino.max_winnings;
+        let message = if banned {
+            format!("{diff} {name}{plural} {added}\n{}", banned_text(order))
+        } else if diff < 2 {
+            format!("{name} {added}")
+        } else {
+            format!("{diff} {name}{plural} {added}")
+        };
         Settled::Added {
             count: diff,
-            banned_message,
+            message,
+            banned,
         }
     } else {
         Settled::Nothing

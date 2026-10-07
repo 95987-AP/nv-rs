@@ -147,8 +147,10 @@ fn show_table(
     mut hud_cameras: Query<&mut Camera, With<HudCamera>>,
 ) {
     let open = caravan(&menus);
-    // While the table's drawn the HUD's camera lays its pictures over it
-    // (blended) instead of replacing the picture.
+    // While a menu's 3D is drawn (this table, the casino games':
+    // `casino_scene`) the HUD's camera lays its pictures over it (blended)
+    // instead of replacing the picture.
+    let blend = crate::game_menus::scene_open(&menus);
     for mut c in &mut hud_cameras {
         let blends = matches!(
             c.output_mode,
@@ -157,8 +159,8 @@ fn show_table(
                 ..
             }
         );
-        if blends != open.is_some() {
-            c.output_mode = if open.is_some() {
+        if blends != blend {
+            c.output_mode = if blend {
                 CameraOutputMode::Write {
                     blend_state: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     clear_color: ClearColorConfig::None,
