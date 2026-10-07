@@ -232,6 +232,15 @@ cargo run -p testdata --bin mod-cases -- <folder> [case ...]
   name line.
 - `nvse-scripts`: a plugin whose script calls xNVSE functions and an
   NVSE plugin's opcode.
+- `doc-house-override`: `DocHouseOverride.esp` for the real game's data,
+  changing the model of Doc Mitchell's lit wall lamps (STAT `000F1E85`)
+  to the cave chandelier; it names form IDs and a model path only.
+
+Checked in the viewer (2026-10-07): a Data folder of hard links to the
+game's files plus `DocHouseOverride.esp`, opened with
+`--plugins <case>\plugins.txt` on GSDocMitchellHouse, shows the hall's
+two wall lamps as chandeliers; the same view of the unmodified Data
+folder is unchanged.
 
 The cases use a small stand-in FalloutNV.esm, so they show the rules,
 not the game's content; to try a load order with the real game data,

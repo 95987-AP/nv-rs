@@ -187,7 +187,10 @@ nvinspect "<Data folder>" show 0000000F
 
 The active list comes from `%LOCALAPPDATA%\FalloutNV\plugins.txt`. Use
 `--plugins FILE` to read a different list, or `--official` for just the base
-game and official DLC. **Mod Organizer 2 users:** MO2 keeps mods outside the
+game and official DLC. Which plugins load and in what order follows the game's
+rules (file dates, not the list's order; see [MODS.md](MODS.md)). To see
+which script extender (NVSE) functions a mod's scripts call, run
+`nvinspect "<Data folder>/SomeMod.esp" coverage nvse`. **Mod Organizer 2 users:** MO2 keeps mods outside the
 `Data` folder, so only the files physically in `Data` are found.
 
 ### One plugin
