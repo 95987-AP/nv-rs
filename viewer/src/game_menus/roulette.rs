@@ -344,3 +344,20 @@ pub fn after(
     screen.open = open;
     (sounds, messages)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The meshes hidden at the start are the spots' own faces.
+    #[test]
+    fn spot_faces_match_the_spots() {
+        let text = |_: &str, d: &str| d.to_string();
+        let spots = roulette::spots(&text);
+        let faces: Vec<String> = spot_faces().collect();
+        assert_eq!(faces.len(), spots.len());
+        for (f, s) in faces.iter().zip(&spots) {
+            assert_eq!(*f, s.face.to_ascii_lowercase());
+        }
+    }
+}
