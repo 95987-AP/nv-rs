@@ -2104,3 +2104,40 @@ fn scripted_items_see_their_onadd() {
     Runner::new(&order, &scripts, &mut state).update(0.1);
     assert_eq!(global(&mut state), Some(7.0));
 }
+
+/// `RemoveMe` on an actor wearing the item (`005b53d0` → `00575400`,
+/// `004bfda0`): the worn one goes, taken off first, and the one left isn't
+/// worn. `TestVanishingHat`'s `OnEquip Player` removes it; with two, the
+/// player puts one on and is left with the other in their bag.
+#[test]
+fn removeme_takes_the_worn_one() {
+    let (_data, order) = order("scripting-removeme-worn");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let hat = FormId(VANISHING_HAT);
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.AddItem TestVanishingHat 2",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.EquipItem TestVanishingHat",
+        None,
+        None,
+    );
+    assert!(state.is_equipped(PLAYER_REF, hat));
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(state.item_count(&order, PLAYER_REF, hat), 1);
+    assert!(!state.is_equipped(PLAYER_REF, hat));
+    // The other one's script is still there; the worn one's went with it.
+    assert_eq!(
+        state
+            .item_scripts
+            .iter()
+            .filter(|s| s.holder == PLAYER_REF && s.item == hat)
+            .count(),
+        1
+    );
+    assert!(state.unhandled.is_empty(), "{:?}", state.unhandled_first);
+}

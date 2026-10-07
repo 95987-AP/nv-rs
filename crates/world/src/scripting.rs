@@ -4267,9 +4267,17 @@ impl<'a> Runner<'a> {
                 self.state.drop_item(self.order, holder, item, count);
             }
             // `005b53d0`: the holder's remove-item (vtable +0x17c) for one,
-            // into the container given if any (its fifth argument).
+            // into the container given if any (its fifth argument). On an
+            // actor wearing the item (`00575400`: `004bfda0(item, 0)` finds
+            // a worn instance, extra data 0x16 or 0x17) the worn instance
+            // is the one taken, which takes it off first (`004c37d0` on a
+            // worn list: `0088d7d0` for the player, the actor's +0x188
+            // otherwise); else one of the others goes.
             "RemoveMe" => {
                 if let Some((holder, item)) = self.item.filter(|_| !self.removed) {
+                    if self.state.is_equipped(holder, item) {
+                        self.state.unequip_item(self.order, holder, item);
+                    }
                     if let Some(n) = self.state.items.get_mut(&(holder, item)) {
                         *n -= 1;
                         if *n <= 0 {

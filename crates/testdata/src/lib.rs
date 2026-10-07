@@ -1461,6 +1461,10 @@ pub mod quest_ids {
     /// on and 7 when they take it off (as the faction outfits' warnings).
     pub const SCRIPTED_HAT: u32 = 0xAF4;
     pub const SCRIPTED_HAT_SCRIPT: u32 = 0xAF5;
+    /// A hat whose script removes it as it's put on (`OnEquip Player`,
+    /// `RemoveMe`): which of two is taken, the worn one or the other.
+    pub const VANISHING_HAT: u32 = 0xB70;
+    pub const VANISHING_HAT_SCRIPT: u32 = 0xB71;
     /// The pistol's repair list (`REPL`: `TestPistolRepairList`, the
     /// rifle), the game data's repair settings (`fRepairSkillMax` 10,
     /// `fItemRepairCostMult` 2; two forms from here), `JuryRigging` (entry
@@ -1671,6 +1675,11 @@ End
         LATE_BUNDLE_SCRIPT,
         "TestLateBundleScript",
         "scn TestLateBundleScript\nint killme\nBegin OnAdd Player\n\tset killme to 1\nEnd\nBegin GameMode\n\tif killme == 1\n\t\tPlayer.AddItem TestCase 5\n\t\tRemoveMe\n\tendif\nEnd\n",
+    ));
+    scripts.extend(script(
+        VANISHING_HAT_SCRIPT,
+        "TestVanishingHatScript",
+        "scn TestVanishingHatScript\nBegin OnEquip Player\n\tRemoveMe\nEnd\n",
     ));
     scripts.extend(script(
         SCRIPTED_HAT_SCRIPT,
@@ -2115,6 +2124,11 @@ End
     hat.extend(sub(b"SCRI", &SCRIPTED_HAT_SCRIPT.to_le_bytes()));
     hat.extend(sub(b"BMDT", &[0, 4, 0, 0, 0, 0, 0, 0]));
     apparel.extend(record(b"ARMO", SCRIPTED_HAT, &hat));
+    let mut vanishing = edid("TestVanishingHat");
+    vanishing.extend(sub(b"FULL", &zstr("Vanishing Hat")));
+    vanishing.extend(sub(b"SCRI", &VANISHING_HAT_SCRIPT.to_le_bytes()));
+    vanishing.extend(sub(b"BMDT", &[0, 4, 0, 0, 0, 0, 0, 0]));
+    apparel.extend(record(b"ARMO", VANISHING_HAT, &vanishing));
     let armour = |id: u32, name: &str, slots: u32, value: i32, health: i32, dt: f32| {
         let mut d = edid(name);
         d.extend(sub(b"FULL", &zstr(name)));

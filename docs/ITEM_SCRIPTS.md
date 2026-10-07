@@ -34,7 +34,11 @@ Event bits set by the code (`005ac750`'s callers): 1 `OnAdd`, 2 `OnEquip`,
 - `RemoveMe` (`005b53d0`): the container the script runs in removes one of
   the item (`RemoveItem`, vtable `+0x17C`, the item's own stack), and the
   inventory run stops (`00952c30`). `DropMe` drops it into the world the
-  same way.
+  same way. On an actor wearing the item (`00575400`: `004bfda0(item, 0)`
+  finds an instance with extra data 0x16 or 0x17, worn) that worn instance
+  is the one removed, and removing a worn instance takes it off first
+  (`004c37d0`: `0088d7d0` for the player, the actor's `+0x188` otherwise);
+  otherwise one of the others goes.
 
 ## Here (`world::scripting`)
 
@@ -54,7 +58,9 @@ waiting; a run takes the script's blocks in order: `GameMode`, and the
 event blocks whose events wait and whose argument is empty or names the
 event's reference; the holder is the reference it runs on; the events are
 then cleared. `RemoveMe` takes one of the item from its holder, and its
-script with it.
+script with it; when the holder wears the item it's taken off first
+(`OnUnequip` flagged), so what's left isn't worn. Check:
+`removeme_takes_the_worn_one` (`crates/world/tests/scripting.rs`).
 
 Check: `scripted_items_see_their_onadd` (`crates/world/tests/scripting.rs`):
 a bundle giving 25 cases added twice to the player (50 cases, no bundle);
@@ -133,6 +139,10 @@ removes it (as `PrimerShotshellAddScript`); a hat whose `OnEquip` /
 - The free spot the game's physics finds for the player's drop
   (`009614b0`) and the fall; the inventory run stopping after `RemoveMe`
   or `DropMe`.
+- `RemoveMe` on a worn item removes the running script with it; the game
+  removes the worn instance's own script, which is another one when a
+  second, unworn instance's script called it (the instances aren't kept
+  apart here).
 - Items held by others run only for their events; the game runs them with
   their holder's script run (`00565870`) when it's processed.
 - A crippled arm dropping its weapon doesn't send `OnUnequip`.
