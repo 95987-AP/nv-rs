@@ -120,6 +120,21 @@ fn bucket(v: f32) -> i32 {
 }
 
 /// The buckets a triangle's x-y box overlaps.
+/// Whether a triangle's box is further than `reach` (and a margin, for
+/// rounding) from a segment's box along some axis: then no point of it is
+/// within `reach` of the segment, and the exact test can be skipped.
+fn surely_beyond(t: [Vec3; 3], a: Vec3, b: Vec3, reach: f32) -> bool {
+    const MARGIN: f32 = 0.05;
+    (0..3).any(|k| {
+        let (t0, t1) = (
+            t[0][k].min(t[1][k]).min(t[2][k]),
+            t[0][k].max(t[1][k]).max(t[2][k]),
+        );
+        let (s0, s1) = (a[k].min(b[k]), a[k].max(b[k]));
+        t0 - s1 > reach + MARGIN || s0 - t1 > reach + MARGIN
+    })
+}
+
 /// [`bucket_keys`] without making a list: each key in the same order.
 fn for_bucket(a: Vec3, b: Vec3, c: Vec3, mut f: impl FnMut((i32, i32))) {
     let (x0, x1) = (a[0].min(b[0]).min(c[0]), a[0].max(b[0]).max(c[0]));
@@ -1134,13 +1149,16 @@ impl Character {
         let steps = (distance / INCREMENT).ceil().max(1.0) as usize;
         let piece = distance / steps as f32;
         let mut feet = self.feet;
+        // The triangles near it are the same at every step (the grid is
+        // across x and y, which the sweep keeps): found once.
+        let candidates = self.touch_candidates(collider, shape);
         for _ in 0..steps {
             let next = [feet[0], feet[1], feet[2] - piece];
             if let Some(support) = (Character {
                 feet: next,
                 ..*self
             })
-            .touching(collider, shape)
+            .touching_among(collider, shape, &candidates)
             {
                 return (feet, Some(support));
             }
@@ -1151,6 +1169,12 @@ impl Character {
 
     /// The face the capsule overlaps most, turned toward it, if any.
     fn touching(&self, collider: &Collider, shape: &CharacterShape) -> Option<Support> {
+        let candidates = self.touch_candidates(collider, shape);
+        self.touching_among(collider, shape, &candidates)
+    }
+
+    /// The triangles [`Character::touching`] looks at.
+    fn touch_candidates(&self, collider: &Collider, shape: &CharacterShape) -> Vec<u32> {
         let r = shape.radius;
         let lo = [
             self.feet[0] - r - 1.0,
@@ -1162,10 +1186,24 @@ impl Character {
             self.feet[1] + r + 1.0,
             self.feet[2] + shape.lift + shape.height + 1.0,
         ];
+        collider.near(lo, hi)
+    }
+
+    /// [`Character::touching`] among `candidates` (in their order).
+    fn touching_among(
+        &self,
+        collider: &Collider,
+        shape: &CharacterShape,
+        candidates: &[u32],
+    ) -> Option<Support> {
+        let r = shape.radius;
         let (bottom, top) = shape.axis(self.feet);
         let mut best: Option<Support> = None;
-        for t in collider.near(lo, hi) {
+        for &t in candidates {
             let [a, b, c] = collider.triangle(t);
+            if surely_beyond([a, b, c], bottom, top, r + collider.shell(t)) {
+                continue;
+            }
             let (on_axis, on_triangle) = segment_triangle_closest(bottom, top, a, b, c);
             let gap = sub(on_axis, on_triangle);
             let d = length(gap);
@@ -1229,6 +1267,9 @@ impl Character {
             let mut deepest: Option<(f32, Vec3, Support)> = None;
             for &t in &candidates {
                 let [a, b, c] = collider.triangle(t);
+                if surely_beyond([a, b, c], bottom, top, r + collider.shell(t)) {
+                    continue;
+                }
                 let (on_axis, on_triangle) = segment_triangle_closest(bottom, top, a, b, c);
                 let gap = sub(on_axis, on_triangle);
                 let d = length(gap);
@@ -1899,6 +1940,36 @@ mod tests {
         all.extend(&c);
         all.move_owner(0x904, &turn, [0.0, 1000.0, 0.0]);
         assert!(north(&all).is_none());
+    }
+
+    /// The box test only skips triangles the exact test finds out of reach.
+    #[test]
+    fn surely_beyond_never_skips_a_triangle_within_reach() {
+        let mut seed = 12345u64;
+        let mut unit = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 33) as f32) / (1u64 << 31) as f32 * 2.0 - 1.0
+        };
+        let mut skipped = 0;
+        for _ in 0..200_000 {
+            let mut p = || [unit() * 120.0, unit() * 120.0, unit() * 120.0];
+            let (a, b, c) = (p(), p(), p());
+            let bottom = [unit() * 60.0, unit() * 60.0, unit() * 60.0];
+            let top = add(bottom, [0.0, 0.0, unit().abs() * 80.0]);
+            let reach = 20.0 + unit().abs() * 20.0;
+            if surely_beyond([a, b, c], bottom, top, reach) {
+                skipped += 1;
+                let (on_axis, on_triangle) = segment_triangle_closest(bottom, top, a, b, c);
+                let d = length(sub(on_axis, on_triangle));
+                assert!(
+                    d.is_nan() || d >= reach,
+                    "{a:?} {b:?} {c:?} {bottom:?} {top:?} {reach} {d}"
+                );
+            }
+        }
+        assert!(skipped > 10_000);
     }
 
     /// Moving an owner leaves every bucket's list as taking its triangles
