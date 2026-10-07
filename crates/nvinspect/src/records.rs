@@ -150,7 +150,8 @@ impl Command {
                 | Command::Pipboy(..)
                 | Command::Collision
                 | Command::Particles(_)
-        ) || matches!(self, Command::Coverage(what) if what == "files")
+                | Command::Coverage(_)
+        )
     }
 }
 
@@ -510,11 +511,6 @@ pub fn run_plugin(
         },
     })?;
     let order = LoadOrder::single(file_name_of(path), Some(path.to_path_buf()), plugin)?;
-    if let Command::Coverage(what) = &command {
-        // Everything but `files` reads the records only.
-        let folder = path.parent().unwrap_or(Path::new("."));
-        return crate::coverage_cmd::run(out, &order, folder, what);
-    }
     let source = Source::Plugin {
         path,
         elapsed: started.elapsed(),
@@ -718,7 +714,7 @@ fn execute(
         | Command::Collision
         | Command::Particles(_)
         | Command::Coverage(_) => {
-            unreachable!("handled by run_folder (and run_plugin for coverage)")
+            unreachable!("handled by run_folder")
         }
     }
 }

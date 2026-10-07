@@ -120,8 +120,7 @@ search are the AI's (the maintainer's), not done.
 The base game's calls (`VHDKimballSpeechSCRIPT`, `VHDKimballMP01SCRIPT`,
 `VHDRangerKimballGuard01SCRIPT` on Kimball at the Hoover Dam speech;
 `VCFHPrivateStoneScript` in its `OnStartCombat` after `StopCombat`) pass
-nothing. Quests whose scripts call it (`docs/QUEST_COVERAGE.md` on
-`claude/quest-coverage-int`): VFreeformNellis, VHDKimballSpeech,
+nothing. Quests whose scripts call it: VFreeformNellis, VHDKimballSpeech,
 VMQ03a, VMQ03b, VMQ05, VMQHouse6, VMQNCRFail, VMQYesMan03, VMS31.
 
 ## Combat groups (`GetGroupMemberCount`, `GetGroupTargetCount`)

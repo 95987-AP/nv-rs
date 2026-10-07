@@ -249,7 +249,13 @@ fn set_target_len(data: &[u8]) -> usize {
 fn stored_expression<'a>(
     s: &script::compiled::Statement<'a>,
 ) -> Option<Vec<script::compiled::Token<'a>>> {
-    script::compiled::statement_expression(s)
+    let start = match s.code {
+        0x16 | 0x18 => 2,
+        0x15 => set_target_len(s.data),
+        _ => return None,
+    };
+    let len = u16_in(s.data, start)?;
+    script::compiled::expression(s.data.get(start + 2..start + 2 + len)?)
 }
 
 /// An `if`'s, `elseif`'s or `set`'s expression as text, in the order the
