@@ -225,6 +225,12 @@ type OverlayAssets<'w> = (
 /// (`viewmodel::Scoped`), the overlay built for the weapon and shown or
 /// hidden, its frustum.
 #[allow(clippy::too_many_arguments)]
+/// The overlay's camera and the HUD's.
+type ScopeCameras<'w, 's> = (
+    Query<'w, 's, (&'static mut Projection, &'static mut Camera), With<ScopeCamera>>,
+    Query<'w, 's, &'static mut Camera, (With<crate::hud::HudCamera>, Without<ScopeCamera>)>,
+);
+
 pub fn update_scope(
     mut commands: Commands,
     game: Res<GameFiles>,
@@ -235,10 +241,7 @@ pub fn update_scope(
     mut overlay: ResMut<ScopeOverlay>,
     (mut meshes, mut materials, mut images): OverlayAssets,
     mut visibility: Query<&mut Visibility>,
-    (mut cameras, mut hud): (
-        Query<(&mut Projection, &mut Camera), With<ScopeCamera>>,
-        Query<&mut Camera, (With<crate::hud::HudCamera>, Without<ScopeCamera>)>,
-    ),
+    (mut cameras, mut hud): ScopeCameras,
 ) {
     let order = &game.0.order;
     let weapon = world::combat::weapon_in_hand(order, &state.0, PLAYER_REF);
