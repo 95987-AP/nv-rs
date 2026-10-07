@@ -217,9 +217,9 @@ struct Built {
     images: HashMap<(String, bool, bool), Option<Handle<Image>>>,
     /// Font pictures by font (1 to 8) and picture number.
     font_images: HashMap<(usize, u32), Option<Handle<Image>>>,
-    /// The draw list on screen, and its entities and assets.
+    /// The draw list on screen, and each item's entities and assets.
     last: Vec<DrawItem>,
-    drawn: Vec<(Entity, Handle<Mesh>, Handle<TileMaterial>)>,
+    drawn: Vec<Vec<(Entity, Handle<Mesh>, Handle<TileMaterial>)>>,
     /// V.A.T.S.'s menu (`ui::vats`), laid out with the HUD, and what the
     /// HUD's mask hid while V.A.T.S. is on.
     vats: Option<ui::vats::VatsMenu>,
@@ -934,7 +934,7 @@ fn update_hud(
     if built.as_ref().is_none_or(|b| b.size != size) {
         // A new size lays everything out again.
         if let Some(old) = built.take() {
-            for (e, mesh, material) in old.drawn {
+            for (e, mesh, material) in old.drawn.into_iter().flatten() {
                 commands.entity(e).despawn();
                 meshes.remove(&mesh);
                 materials.remove(&material);
@@ -1073,17 +1073,35 @@ fn update_hud(
         return;
     }
 
-    // Something changed: the pieces again.
-    for (e, mesh, material) in b.drawn.drain(..) {
-        commands.entity(e).despawn();
-        meshes.remove(&mesh);
-        materials.remove(&material);
+    // Something changed. With as many items as before, the pieces of
+    // those that changed are made again, each in its place in the list (a
+    // meter or marker moving doesn't make the rest again every frame);
+    // otherwise all of them.
+    let changed: Option<Vec<bool>> = (items.len() == b.last.len() && b.drawn.len() == items.len())
+        .then(|| items.iter().zip(&b.last).map(|(a, l)| a != l).collect());
+    if changed.is_none() {
+        for (e, mesh, material) in b.drawn.drain(..).flatten() {
+            commands.entity(e).despawn();
+            meshes.remove(&mesh);
+            materials.remove(&material);
+        }
+        b.drawn = vec![Vec::new(); items.len()];
     }
     let compressed = device
         .as_ref()
         .is_none_or(|d| d.features().contains(WgpuFeatures::TEXTURE_COMPRESSION_BC));
     let k = 1.0 / b.ui.screen_size.resolution_converter();
     for (i, item) in items.iter().enumerate() {
+        if let Some(changed) = &changed {
+            if !changed[i] {
+                continue;
+            }
+            for (e, mesh, material) in b.drawn[i].drain(..) {
+                commands.entity(e).despawn();
+                meshes.remove(&mesh);
+                materials.remove(&material);
+            }
+        }
         let tint = Vec4::from_array(item.color);
         let mut pieces: Vec<Piece> = Vec::new();
         match &item.kind {
@@ -1239,7 +1257,7 @@ fn update_hud(
                     RenderLayers::layer(HUD_LAYER),
                 ))
                 .id();
-            b.drawn.push((entity, mesh, material));
+            b.drawn[i].push((entity, mesh, material));
         }
     }
     b.last = items;
