@@ -1527,6 +1527,13 @@ pub fn run_scripts(
                 text, completed, ..
             } => {
                 if hud_on {
+                    // Printed as the notice was (the acceptance routes
+                    // read it).
+                    if completed {
+                        println!("Completed: {text}");
+                    } else {
+                        println!("{text}");
+                    }
                     objective_lines.push(ui::quest_text::Objective {
                         text,
                         completed,
