@@ -2320,6 +2320,16 @@ fn fire(
     }
     let was_dead = |state: &GameState, r: FormId| state.dead.contains(&r);
     let mut struck: Vec<(FormId, bool)> = Vec::new();
+    // The move's group (`world::vats::attack_group`: Uppercut `Attack6`,
+    // Cross `Attack7`) and what it does to the one hit
+    // (`world::melee::special_of`).
+    let blow = world::melee::Blow {
+        power: false,
+        special: vats::attack_group(a.kind, state.player_sneaking)
+            .map_or(world::melee::Special::None, |g| {
+                world::melee::special_of(weapon.as_ref(), g)
+            }),
+    };
     if melee {
         // A queued hit lands on its part; a miss swings as an ordinary blow,
         // reaching × `fVATSMeleeReachMult`.
@@ -2327,11 +2337,12 @@ fn fire(
         if hit {
             struck.push((a.target, was_dead(state, a.target)));
             let part = u8::try_from(a.slot).ok();
-            let result = Runner::new(order, scripts, state).hit_at(
+            let result = Runner::new(order, scripts, state).blow_at(
                 PLAYER_REF,
                 a.target,
                 weapon.as_ref(),
                 part,
+                blow,
             );
             if let Some(h) = result {
                 let d = distance(eye, node);
@@ -2360,11 +2371,12 @@ fn fire(
                     part,
                 } => {
                     struck.push((reference, was_dead(state, reference)));
-                    if let Some(h) = Runner::new(order, scripts, state).hit_at(
+                    if let Some(h) = Runner::new(order, scripts, state).blow_at(
                         PLAYER_REF,
                         reference,
                         weapon.as_ref(),
                         part,
+                        blow,
                     ) {
                         println!(
                             "  (missed) {}.",

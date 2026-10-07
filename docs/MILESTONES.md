@@ -619,6 +619,19 @@ Goodsprings, the mined corridor in `NorthVegasHouseTools`); not compared
 with the original. Evidence, gaps and next action:
 [EXPLOSIVES.md](EXPLOSIVES.md).
 
+M4 weapon class batch `claude/melee-unarmed` (2026-10-07): melee and
+unarmed. Inventory against the exe, then traced and implemented: reach
+of hand-to-hand weapons, what a swing hits (`FindMeleeTarget`: combat
+target, else nearest the hit cone's middle; the player's cone by the
+attack, dead targets ×2), fists' power attack bonus after the armour,
+unarmed uppercut/cross outside V.A.T.S. by the Unarmed skill and their
+effects (stagger and disarm, ×2.5 limb damage), the stagger rules,
+Super Slam's knockdown chance, V.A.T.S. specials' names (`VANM`),
+thresholds and spells (Mauler's knockdown). Generated-data tests; live
+check in Doc Mitchell's house; not compared with the original. Evidence,
+gaps (fatigue damage, the stagger/knockdown animations, NPC specials)
+and next action: [MELEE_UNARMED.md](MELEE_UNARMED.md).
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,
