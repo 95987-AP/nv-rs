@@ -44,8 +44,8 @@ mod radio;
 mod report;
 mod scope;
 mod scripts;
-mod sight;
 mod shared_light;
+mod sight;
 mod sitting;
 mod sounds;
 mod swaps;
@@ -75,7 +75,7 @@ use bevy::render::render_resource::{
 };
 use bevy::render::renderer::RenderDevice;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
-use bevy::window::{CursorGrabMode, PrimaryWindow, WindowResolution};
+use bevy::window::WindowResolution;
 use cellview::{space, Blend, Game, GpuFormat, TextureData, ViewerScene};
 use exterior::{ExteriorStart, PendingExterior};
 use grade::{GradePlugin, ImageSpaceGrade};
@@ -2629,7 +2629,7 @@ fn help_text(ev100: f32, speed: f32, walking: bool) -> String {
             .to_string()
     } else {
         format!(
-            "Flying: the mouse looks; WASD, Space/Ctrl up/down, Shift faster, \
+            "Flying: hold a mouse button to look; WASD, Space/Ctrl up/down, Shift faster, \
              wheel: speed ({speed:.1} m/s), E to use things"
         )
     };

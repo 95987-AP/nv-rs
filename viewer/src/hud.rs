@@ -1230,7 +1230,7 @@ fn update_hud(
                         RenderLayers::layer(HUD_LAYER),
                     ))
                     .id();
-                b.drawn.push((entity, mesh, material));
+                b.drawn[i].push((entity, mesh, material));
             }
         }
         for Piece {

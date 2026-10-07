@@ -81,6 +81,8 @@ pub fn spawn_camera(commands: &mut Commands, layer: Handle<Image>) {
         }),
         Tonemapping::None,
         DebandDither::Disabled,
+        // No light clusters: nothing here is lit by Bevy's lights.
+        bevy::pbr::ClusterConfig::None,
         Msaa::Off,
         Transform::IDENTITY,
         RenderLayers::layer(SCOPE_LAYER),
