@@ -929,6 +929,11 @@ pub struct Mouse<'w, 's> {
     keyboard: EventReader<'w, 's, bevy::input::keyboard::KeyboardInput>,
     /// The view, for the player's facing (drops land in front of it).
     view: Query<'w, 's, &'static Transform, With<FlyCamera>>,
+    /// `--menu-pointer` and `--menu-click` (for testing: screenshots have
+    /// no mouse), which the Pip-Boy takes while it's up and no game menu
+    /// is over it.
+    fixed: Res<'w, crate::game_menus::FixedPointer>,
+    clicks: ResMut<'w, crate::game_menus::FixedClicks>,
 }
 
 /// The view's heading on the ground (radians clockwise from north, game
@@ -1294,13 +1299,31 @@ fn pipboy_keys(
     .round() as i32;
     mouse.buttons.reset_all();
     mouse.scroll.delta = Vec2::ZERO;
+    // `--menu-pointer` / `--menu-click`: the pointer at that pixel of the
+    // 1920 × 1080 picture, the left button pressed one frame and let go
+    // the next.
+    let mut button = button;
+    if mouse.fixed.0.is_some() {
+        let release = std::mem::take(&mut mouse.clicks.release);
+        let due = mouse.clicks.at.iter().position(|&t| t <= f64::from(now));
+        let press = due.map(|i| mouse.clicks.at.remove(i)).is_some();
+        mouse.clicks.release = press;
+        button.pressed |= press;
+        button.down |= press;
+        button.released |= release;
+    }
+    let fixed = mouse.fixed.0;
     // Where the pointer is on the screen and on the model's buttons
     // (`007f8720`), while the arm is up and posed.
     let ray = mouse
         .windows
         .single()
         .ok()
-        .and_then(|w| w.cursor_position())
+        .and_then(|w| {
+            fixed
+                .map(|(x, y)| Vec2::new(x, y) / w.scale_factor())
+                .or_else(|| w.cursor_position())
+        })
         .zip(mouse.camera.single().ok())
         .and_then(|(at, (camera, global))| camera.viewport_to_world(global, at).ok());
     let mut at = None;
@@ -1405,7 +1428,9 @@ fn pipboy_keys(
                 .push(crate::hud::HudMessage::with_icon(text, icon));
         }
     };
-    for action in actions {
+    // A queue: what the repair and mod screens answer is carried out too.
+    let mut actions: std::collections::VecDeque<Action> = actions.into();
+    while let Some(action) = actions.pop_front() {
         match action {
             Action::Sound(name) => sound(order, &mut requests, &name),
             Action::Equip(form) => {
@@ -1607,7 +1632,7 @@ fn pipboy_keys(
             Action::OpenRepair(form) => {
                 let input = ui::pipboy::gather::repair_input(order, state, FormId(form));
                 if let Some(b) = pipboy.built.as_mut() {
-                    b.pipboy.open_repair(&mut b.ui, input);
+                    actions.extend(b.pipboy.open_repair(&mut b.ui, input));
                 }
             }
             // Mending with a part (`007b5d80`), then the screen again or
@@ -1617,14 +1642,14 @@ fn pipboy_keys(
                 println!("Repaired {chosen:08X} with {part:08X}: {:.0}%.", to * 100.0);
                 let input = ui::pipboy::gather::repair_input(order, state, FormId(chosen));
                 if let Some(b) = pipboy.built.as_mut() {
-                    b.pipboy.repaired(&mut b.ui, input);
+                    actions.extend(b.pipboy.repaired(&mut b.ui, input));
                 }
             }
             // The weapon mod screen (ITEMS' Mod, `00784710`).
             Action::OpenItemMod(form) => {
                 let input = ui::pipboy::gather::item_mod_input(order, state, FormId(form));
                 if let Some(b) = pipboy.built.as_mut() {
-                    b.pipboy.open_item_mod(&mut b.ui, input);
+                    actions.extend(b.pipboy.open_item_mod(&mut b.ui, input));
                 }
             }
             // `ShowMessage` (`00718630`): ITEMS' tab buttons.
@@ -1641,7 +1666,7 @@ fn pipboy_keys(
                 }
                 let input = ui::pipboy::gather::item_mod_input(order, state, weapon);
                 if let Some(b) = pipboy.built.as_mut() {
-                    b.pipboy.item_modded(&mut b.ui, input);
+                    actions.extend(b.pipboy.item_modded(&mut b.ui, input));
                 }
             }
         }

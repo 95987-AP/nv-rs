@@ -172,7 +172,7 @@ pub fn damage_text(damage: f32, projectiles: u32) -> String {
 
 /// `004bd510` with a step of 1: the whole part, plus one when what's left
 /// is at least a half.
-fn round_half_up(v: f32) -> i32 {
+pub(crate) fn round_half_up(v: f32) -> i32 {
     let whole = v.trunc();
     whole as i32 + i32::from(v - whole >= 0.5)
 }

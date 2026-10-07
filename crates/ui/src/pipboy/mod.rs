@@ -494,17 +494,33 @@ pub struct Button {
 
 /// The shown menu's code as the interface sees it (the `Menu` vtable's
 /// click, mouse-over and mouse-off slots), with what it asks of the game.
+/// The repair or mod screen, when one is up over ITEMS, is the menu on top
+/// and gets the pointer instead.
 struct Code<'a> {
     section: Section,
     stats: &'a mut StatsMenu,
     items: &'a mut ItemsMenu,
     data: &'a mut DataMenu,
+    repair: Option<&'a mut RepairMenu>,
+    item_mod: Option<&'a mut ItemModMenu>,
     input: &'a PipboyInput,
     actions: Vec<Action>,
+    /// The repair or mod screen's Cancel was clicked (`007b5b40` /
+    /// `007838a0` case 0xc): the Pip-Boy closes it.
+    cancel: bool,
 }
+
+// The classes of the screens over ITEMS (`GetClass`, vtable `+0x34`:
+// `007b54b0` 1035, `007833d0` 1061): `REPAIR_CLASS`, `ITEM_MOD_CLASS` above.
 
 impl MenuCode for Code<'_> {
     fn class(&self) -> i32 {
+        if self.repair.is_some() {
+            return REPAIR_CLASS;
+        }
+        if self.item_mod.is_some() {
+            return ITEM_MOD_CLASS;
+        }
         match self.section {
             Section::Stats => STATS_CLASS,
             Section::Items => ITEMS_CLASS,
@@ -513,6 +529,22 @@ impl MenuCode for Code<'_> {
     }
 
     fn click(&mut self, ui: &mut Ui, id: i32, tile: Option<TileId>, _now: f64) {
+        if let Some(r) = self.repair.as_deref_mut() {
+            if id == repair::CANCEL {
+                self.cancel = true;
+            } else {
+                self.actions.extend(r.click(ui, id, tile));
+            }
+            return;
+        }
+        if let Some(m) = self.item_mod.as_deref_mut() {
+            if id == item_mod::CANCEL {
+                self.cancel = true;
+            } else {
+                self.actions.extend(m.click(ui, id, tile));
+            }
+            return;
+        }
         let input = self.input;
         let out = match self.section {
             Section::Stats => self.stats.click(ui, id, input),
@@ -523,6 +555,14 @@ impl MenuCode for Code<'_> {
     }
 
     fn mouseover(&mut self, ui: &mut Ui, id: i32, tile: TileId) {
+        if let Some(r) = self.repair.as_deref_mut() {
+            self.actions.extend(r.mouseover(ui, id, tile));
+            return;
+        }
+        if let Some(m) = self.item_mod.as_deref_mut() {
+            self.actions.extend(m.mouseover(ui, id, tile));
+            return;
+        }
         let input = self.input;
         let out = match self.section {
             Section::Stats => self.stats.mouseover(ui, tile, input),
@@ -533,6 +573,14 @@ impl MenuCode for Code<'_> {
     }
 
     fn unmouseover(&mut self, ui: &mut Ui, id: i32, tile: TileId) {
+        if let Some(r) = self.repair.as_deref_mut() {
+            r.unmouseover(ui, id, tile);
+            return;
+        }
+        if let Some(m) = self.item_mod.as_deref_mut() {
+            m.unmouseover(ui, id, tile);
+            return;
+        }
         match self.section {
             Section::Items => self.items.unmouseover(ui, id, tile),
             Section::Stats => self.stats.unmouseover(ui, tile),
@@ -540,10 +588,11 @@ impl MenuCode for Code<'_> {
         }
     }
 
-    /// The wheel (`+0x28`): DATA zooms its maps (`0079c530`); STATS' and
-    /// ITEMS' slots are the base menu's (`8d0600`, nothing).
+    /// The wheel (`+0x28`): DATA zooms its maps (`0079c530`); STATS',
+    /// ITEMS', the repair and the mod screen's slots are the base menu's
+    /// (`8d0600`, nothing).
     fn wheel(&mut self, ui: &mut Ui, _id: i32, _tile: TileId, delta: i32) {
-        if self.section == Section::Data {
+        if self.repair.is_none() && self.item_mod.is_none() && self.section == Section::Data {
             let out = self.data.wheel(ui, delta);
             self.actions.extend(out);
         }
@@ -865,17 +914,29 @@ impl Pipboy {
     ) -> (R, Vec<Action>) {
         let menu = self.menu();
         let mut interface = std::mem::take(&mut self.interface);
+        let (repairing, modding) = (self.repairing, self.modding);
         let mut code = Code {
             section: self.section,
             stats: &mut self.stats,
             items: &mut self.items,
             data: &mut self.data,
+            repair: self.repair.as_mut().filter(|_| repairing),
+            item_mod: self.item_mod.as_mut().filter(|_| modding && !repairing),
             input,
             actions: Vec::new(),
+            cancel: false,
         };
         let r = run(&mut interface, &mut code, menu, ui);
-        let actions = std::mem::take(&mut code.actions);
+        let mut actions = std::mem::take(&mut code.actions);
+        let cancel = code.cancel;
         self.interface = interface;
+        if cancel {
+            if repairing {
+                actions.extend(self.cancel_repair(ui));
+            } else if modding {
+                actions.extend(self.cancel_item_mod(ui));
+            }
+        }
         (r, actions)
     }
 
@@ -918,11 +979,10 @@ impl Pipboy {
         now: f64,
         input: &PipboyInput,
     ) -> Vec<Action> {
-        // The repair and mod screens take keys only here (their mouse code,
-        // `RepairMenu` / `ItemModMenu`'s click slots, isn't translated).
-        if self.repairing || self.modding {
-            return Vec::new();
-        }
+        // The repair or mod screen up over ITEMS is the menu on top: it
+        // gets the pointer (`Code`), and ITEMS' every-frame code (the right
+        // button's drop) doesn't run.
+        let over_items = self.repairing || self.modding;
         if button.pressed && self.section == Section::Data {
             self.data.pressed(ui);
         }
@@ -945,7 +1005,7 @@ impl Pipboy {
         if self.section == Section::Data {
             out.extend(self.data.pointer_moved(ui, at, input));
         }
-        if right.pressed && !pipboy_control_down {
+        if right.pressed && !pipboy_control_down && !over_items {
             match self.section {
                 Section::Items => out.extend(self.items.click(ui, items::DROP_ID, None, input)),
                 Section::Data => out.extend(self.data.right_pressed(ui, at)),
@@ -963,9 +1023,6 @@ impl Pipboy {
     /// one under the pointer gets `wheelmoved`, the list boxes' scroll bars
     /// read it).
     pub fn wheel(&mut self, ui: &mut Ui, notches: i32, input: &PipboyInput) -> Vec<Action> {
-        if self.repairing || self.modding {
-            return Vec::new();
-        }
         let before = self.list_index();
         let ((), mut out) = self.with_code(ui, input, |interface, code, menu, ui| {
             interface.wheel(ui, menu, code, notches);
@@ -1008,27 +1065,54 @@ impl Pipboy {
         self.section == Section::Data && self.data.cursor_hidden
     }
 
-    /// Opens the repair screen over ITEMS with what the game worked out.
-    pub fn open_repair(&mut self, ui: &mut Ui, input: repair::RepairInput) {
-        let Some(r) = self.repair.as_mut() else {
-            return;
-        };
-        ui.set_number(self.items.menu, t::VISIBLE, 0.0);
-        r.open(ui, input);
-        self.repairing = true;
-        ui.refresh();
+    /// The pointer's tiles were the menu's under the screen that comes or
+    /// goes: they're let go and picked afresh on the next frame (as
+    /// [`Pipboy::show`] does between the three menus).
+    fn let_pointer_go(&mut self, ui: &mut Ui) {
+        for tile in [self.interface.over, self.interface.focus]
+            .into_iter()
+            .flatten()
+        {
+            ui.set_number(tile, t::MOUSEOVER, 0.0);
+        }
+        self.interface = Interface::default();
     }
 
-    /// After a repair (`007b5b40`): closed when the item reached 99% or
-    /// only it is left, else filled again.
-    pub fn repaired(&mut self, ui: &mut Ui, input: repair::RepairInput) {
+    /// Opens the repair screen over ITEMS with what the game worked out
+    /// (the first line chosen only with a pad, `_Has360Controller`).
+    /// Returns what the game should do (the scroll knob).
+    pub fn open_repair(&mut self, ui: &mut Ui, input: repair::RepairInput) -> Vec<Action> {
+        if self.repair.is_none() {
+            return Vec::new();
+        }
+        self.let_pointer_go(ui);
+        let pad = crate::game::has_pad(ui);
+        ui.set_number(self.items.menu, t::VISIBLE, 0.0);
+        let out = match self.repair.as_mut() {
+            Some(r) => r.open(ui, input, pad),
+            None => Vec::new(),
+        };
+        self.repairing = true;
+        ui.refresh();
+        out
+    }
+
+    /// After a repair (`007b5b40`): closed as Cancel closes it (with
+    /// `UIMenuMode`) when the item reached 99% or only it is left, else
+    /// the lines again ([`RepairMenu::refill`]). Returns what the game
+    /// should do.
+    pub fn repaired(&mut self, ui: &mut Ui, input: repair::RepairInput) -> Vec<Action> {
         if !self.repairing {
-            return;
+            return Vec::new();
         }
         if RepairMenu::done_after(&input) {
-            self.close_repair(ui);
+            self.cancel_repair(ui)
         } else if let Some(r) = self.repair.as_mut() {
-            r.fill(ui, input);
+            let out = r.refill(ui, input);
+            ui.refresh();
+            out
+        } else {
+            Vec::new()
         }
     }
 
@@ -1043,6 +1127,7 @@ impl Pipboy {
             return;
         }
         self.repairing = false;
+        self.let_pointer_go(ui);
         if let Some(r) = self.repair.as_mut() {
             r.hide(ui);
         }
@@ -1052,24 +1137,35 @@ impl Pipboy {
         ui.refresh();
     }
 
-    /// Opens the mod screen over ITEMS with what the game worked out.
-    pub fn open_item_mod(&mut self, ui: &mut Ui, input: item_mod::ItemModInput) {
-        let Some(m) = self.item_mod.as_mut() else {
-            return;
-        };
+    /// Opens the mod screen over ITEMS with what the game worked out (the
+    /// first line chosen only with a pad). Returns what the game should do
+    /// (the scroll knob).
+    pub fn open_item_mod(&mut self, ui: &mut Ui, input: item_mod::ItemModInput) -> Vec<Action> {
+        if self.item_mod.is_none() {
+            return Vec::new();
+        }
+        self.let_pointer_go(ui);
+        let pad = crate::game::has_pad(ui);
         ui.set_number(self.items.menu, t::VISIBLE, 0.0);
-        m.open(ui, input);
+        let out = match self.item_mod.as_mut() {
+            Some(m) => m.open(ui, input, pad),
+            None => Vec::new(),
+        };
         self.modding = true;
         ui.refresh();
+        out
     }
 
-    /// After a mod is fitted (`007838a0`): the list filled again.
-    pub fn item_modded(&mut self, ui: &mut Ui, input: item_mod::ItemModInput) {
+    /// After a mod is fitted (`007838a0`): the list made again
+    /// (`00784710(weapon, 0)`). Returns what the game should do.
+    pub fn item_modded(&mut self, ui: &mut Ui, input: item_mod::ItemModInput) -> Vec<Action> {
         if !self.modding {
-            return;
+            return Vec::new();
         }
-        if let Some(m) = self.item_mod.as_mut() {
-            m.fill(ui, input);
+        let pad = crate::game::has_pad(ui);
+        match self.item_mod.as_mut() {
+            Some(m) => m.fill(ui, input, pad),
+            None => Vec::new(),
         }
     }
 
@@ -1084,6 +1180,7 @@ impl Pipboy {
             return;
         }
         self.modding = false;
+        self.let_pointer_go(ui);
         if let Some(m) = self.item_mod.as_mut() {
             m.hide(ui);
         }
@@ -1186,6 +1283,8 @@ pub(crate) mod tests {
                 STATS_FILE => stats::tests::MENU,
                 ITEMS_FILE => ITEMS,
                 DATA_FILE => DATA,
+                repair::FILE => repair::tests::MENU,
+                item_mod::FILE => item_mod::tests::MENU,
                 _ => return None,
             };
             Some(text.as_bytes().to_vec())
@@ -1325,6 +1424,103 @@ pub(crate) mod tests {
         p.pointer(&mut ui, Some([250.0, 610.0]), PRESS, 0.0, &input);
         let out = p.pointer(&mut ui, Some([250.0, 610.0]), RELEASE, 0.0, &input);
         assert_eq!(out, [apparel_help]);
+    }
+
+    /// The repair and mod screens, up over ITEMS, are the menu on top and
+    /// take the pointer (their `DoEnter`, `DoLeave` and `DoClick`:
+    /// `007b6120`, `007b6a00`, `007b5b40`; `00783ed0`, `00784050`,
+    /// `007838a0`): the pointer's ITEMS tiles let go as one opens, a line
+    /// under the pointer chosen with the knob's turn, a click on it mends
+    /// or fits, the right button drops nothing, a click on Cancel goes back
+    /// to ITEMS with `UIMenuMode`.
+    #[test]
+    fn the_repair_and_mod_screens_take_the_pointer() {
+        let (mut ui, mut p) = load();
+        let input = input();
+        p.fill(&mut ui, &input);
+        p.show(&mut ui, Section::Items);
+        ui.refresh();
+        p.pointer(&mut ui, Some([10.0, 145.0]), UP, 0.0, &input);
+        assert!(p.interface.over.is_some());
+        // No pad: nothing chosen as it opens, so no knob.
+        assert!(p.open_repair(&mut ui, repair::tests::input()).is_empty());
+        assert_eq!(p.interface.over, None);
+        assert_eq!(p.menu(), p.repair.as_ref().unwrap().menu);
+        ui.refresh();
+        // The lines from y 75, 30 high: the third (0x20) at 135 .. 165.
+        let out = p.pointer(&mut ui, Some([10.0, 150.0]), UP, 0.0, &input);
+        assert_eq!(
+            out,
+            [sound("UIPipBoyScroll"), Action::ScrollKnob { down: true }]
+        );
+        assert_eq!(p.repair.as_ref().unwrap().list.selected, Some(2));
+        p.pointer(&mut ui, Some([10.0, 150.0]), PRESS, 0.0, &input);
+        let out = p.pointer(&mut ui, Some([10.0, 150.0]), RELEASE, 0.0, &input);
+        assert_eq!(
+            out,
+            [
+                Action::Repair {
+                    chosen: 0x10,
+                    part: 0x20
+                },
+                sound("UIRepairWeapon")
+            ]
+        );
+        // ITEMS' every-frame code isn't on top: the right button drops
+        // nothing.
+        let out = p.pointer_with_right(&mut ui, Some([10.0, 150.0]), UP, PRESS, false, 0.0, &input);
+        assert!(out.is_empty());
+        // The wheel over the list: only its scroll bar reads it.
+        assert!(p.wheel(&mut ui, -1, &input).is_empty());
+        // Cancel, by the mouse.
+        p.pointer(&mut ui, Some([920.0, 710.0]), UP, 0.0, &input);
+        p.pointer(&mut ui, Some([920.0, 710.0]), PRESS, 0.0, &input);
+        let out = p.pointer(&mut ui, Some([920.0, 710.0]), RELEASE, 0.0, &input);
+        assert_eq!(out, [sound("UIMenuMode")]);
+        assert!(!p.repairing);
+        assert_eq!(ui.number(p.items.menu, t::VISIBLE), 1.0);
+        assert_eq!(p.menu(), p.items.menu);
+
+        // The mod screen: the second line (0x21, not fitted) under the
+        // pointer at 130 .. 160 from y 100.
+        assert!(p
+            .open_item_mod(&mut ui, item_mod::tests::input())
+            .is_empty());
+        ui.refresh();
+        let out = p.pointer(&mut ui, Some([10.0, 145.0]), UP, 0.0, &input);
+        assert_eq!(
+            out,
+            [sound("UIPipBoyScroll"), Action::ScrollKnob { down: true }]
+        );
+        p.pointer(&mut ui, Some([10.0, 145.0]), PRESS, 0.0, &input);
+        let out = p.pointer(&mut ui, Some([10.0, 145.0]), RELEASE, 0.0, &input);
+        assert_eq!(
+            out,
+            [Action::FitMod {
+                weapon: 0x10,
+                item: 0x21
+            }]
+        );
+        p.pointer(&mut ui, Some([920.0, 710.0]), UP, 0.0, &input);
+        p.pointer(&mut ui, Some([920.0, 710.0]), PRESS, 0.0, &input);
+        let out = p.pointer(&mut ui, Some([920.0, 710.0]), RELEASE, 0.0, &input);
+        assert_eq!(out, [sound("UIMenuMode")]);
+        assert!(!p.modding);
+    }
+
+    /// After a repair that brings the item to 99% the screen closes as
+    /// Cancel closes it (`007b5b40`: click 0xc, `UIMenuMode`).
+    #[test]
+    fn a_repair_to_99_percent_closes_with_the_menu_sound() {
+        let (mut ui, mut p) = load();
+        let input = input();
+        p.fill(&mut ui, &input);
+        p.show(&mut ui, Section::Items);
+        p.open_repair(&mut ui, repair::tests::input());
+        let mut done = repair::tests::input();
+        done.condition = 99.5;
+        assert_eq!(p.repaired(&mut ui, done), [sound("UIMenuMode")]);
+        assert!(!p.repairing);
     }
 
     /// `007f8720` / `0070c4a0`: the model's DATA button shows DATA with

@@ -30,10 +30,16 @@
 //!   as many as can be made), then the making (`007284f0`), which closes
 //!   the menu; Exit (8): closes it (`00727430`).
 //!
-//! Not here: the item card (`RecipeMenu::PopulateItemStatsDisplay`,
-//! `00728da0`), the ingredient list's own pointer (an ingredient's
-//! picture), the controller's list switching (special 0xd, 0xe) and the
-//! accept button's cross-fade (`00728a70`).
+//! * the item card (10, `item_stats_display.xml`; `00728da0`,
+//!   `RecipeMenu::PopulateItemStatsDisplay` (Xbox PDB)), after the details,
+//!   for the recipe's first product (the recipe's +0x44 output list, its
+//!   first component's item): [`Card`] and [`RecipeMenu::show_card`]; the
+//!   card then shown.
+//!
+//! Not here: the ingredient list's own pointer (an ingredient's card and
+//! picture, `00727b10` with the list switched, `011d8ea5`), the
+//! controller's list switching (special 0xd, 0xe) and the accept button's
+//! cross-fade (`00728a70`).
 
 use crate::list::ListBox;
 use crate::menu::{self, MenuCode};
@@ -97,6 +103,76 @@ pub struct Details {
     pub can_make: bool,
     /// The first product's picture.
     pub icon: Option<String>,
+    /// The first product's item card (none without a product).
+    pub card: Option<Card>,
+}
+
+/// The item card's numbers for a recipe's first product, worked out by
+/// the caller (`ui::pipboy::gather::recipe_card`) as `00728da0` does for
+/// the base item: no instance, so a full condition and no mods.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Card {
+    pub kind: CardKind,
+    /// Its value (`0048e8a0`, -1 without one) through `00647c00` with 1
+    /// for the condition in percent (the exe passes 1.0 there), as written
+    /// on the card.
+    pub value: f32,
+    /// Its weight (`0048ebc0`, -1 for none).
+    pub weight: f32,
+    /// Its effects' text (`00406620`; empty for none).
+    pub effects: String,
+}
+
+/// What kind of card (`00728da0` by the item's form type).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum CardKind {
+    /// Anything else: weight and value (0xc).
+    #[default]
+    Other,
+    /// Armour and clothing (form types 0x18, 0x1a): its damage resistance
+    /// at full condition (`004be060(1.0)`, whole, rounded up; mask 0x1d).
+    Armour { resistance: i32 },
+    /// A weapon (0x28, mask 0xc3e): its DPS (`00645380`; none: not worked
+    /// out, left empty), damage (`006450f0` at full condition) and
+    /// projectiles a shot (`00525b20`), the strength it needs (`00663b60`)
+    /// and its ammunition's card title ("--" without).
+    Weapon {
+        dps: Option<f32>,
+        damage: f32,
+        projectiles: u32,
+        strength: i32,
+        ammo: String,
+    },
+}
+
+/// The card's children by their place in `item_stats_display.xml`
+/// (`00728da0` takes the first 12 in order; the 13th, the damage
+/// threshold card, is left alone).
+mod card {
+    pub const DR: usize = 0;
+    pub const DPS: usize = 1;
+    pub const WEIGHT: usize = 2;
+    pub const VALUE: usize = 3;
+    pub const CONDITION: usize = 4;
+    pub const AMMO: usize = 5;
+    pub const EFFECTS: usize = 6;
+    pub const MOD_ONE: usize = 7;
+    pub const MOD_TWO: usize = 8;
+    pub const MOD_THREE: usize = 9;
+    pub const STRENGTH: usize = 10;
+    pub const DAMAGE: usize = 11;
+}
+
+/// A weight or value as the card writes it (`00728da0`): "--" for
+/// nothing, `%.1f` below 1, else `%.0f`.
+fn amount_text(v: f32) -> String {
+    if v <= 0.0 {
+        "--".into()
+    } else if v < 1.0 {
+        format!("{v:.1}")
+    } else {
+        format!("{v:.0}")
+    }
 }
 
 /// What the menu asks of the game.
@@ -284,9 +360,109 @@ impl RecipeMenu {
         self.set_text(ui, SKILL, &d.skill);
         self.set(ui, SKILL, t::ALPHA, if d.skill_dim { DIM } else { BRIGHT });
         self.set(ui, ACCEPT, t::TARGET, if d.can_make { 1.0 } else { 0.0 });
+        if let (Some(card), Some(tile)) = (&d.card, self.tile(CARD)) {
+            Self::show_card(ui, tile, card);
+            ui.set_number(tile, t::VISIBLE, 1.0);
+        }
         if let (Some(icon), Some(tile)) = (&d.icon, self.tile(ICON)) {
             ui.set_string(tile, t::FILENAME, icon);
             ui.set_number(tile, t::VISIBLE, 1.0);
+        }
+        ui.refresh();
+    }
+
+    /// Fills the item card (`00728da0` with the item and the card tile):
+    /// the cards' values by the item's kind, their titles (`sInventory…`
+    /// settings, the first mod card `sModEffects`), each card shown by its
+    /// bit of the mask (DR 0x1, DPS 0x2, weight 0x4, value 0x8, condition
+    /// 0x10, ammunition 0x20, effects 0x40, the mods 0x80 .. 0x200, damage
+    /// 0x800; the strength card 0x400, made opaque, when the file has
+    /// one), and the effects and mod cards' y: half the card's height less
+    /// 20, twice that when the condition or ammunition card shows.
+    pub fn show_card(ui: &mut Ui, tile: TileId, c: &Card) {
+        let children: Vec<TileId> = ui.tiles[tile].children.iter().copied().take(12).collect();
+        let at = |i: usize| children.get(i).copied();
+        let title = ui.names.lookup_or_add("_Title").unwrap_or(0);
+        let value = ui.names.lookup_or_add("_Value").unwrap_or(0);
+        let set_value = |ui: &mut Ui, i: usize, text: &str| {
+            if let Some(t) = at(i) {
+                ui.set_string(t, value, text);
+            }
+        };
+        let mut mask = match &c.kind {
+            CardKind::Armour { resistance } => {
+                set_value(ui, card::DR, &format!("{resistance}"));
+                0x1d
+            }
+            CardKind::Weapon {
+                dps,
+                damage,
+                projectiles,
+                strength,
+                ammo,
+            } => {
+                let dps = dps.map_or(String::new(), |d| {
+                    format!("{}", crate::pipboy::items::round_half_up(d))
+                });
+                set_value(ui, card::DPS, &dps);
+                let dam = crate::pipboy::items::damage_text(*damage, *projectiles);
+                set_value(ui, card::DAMAGE, &dam);
+                // The condition meter reads the card's `user5`: full.
+                if let Some(t) = at(card::CONDITION) {
+                    ui.set_number(t, t::USER0 + 5, 1.0);
+                }
+                set_value(ui, card::STRENGTH, &format!("{strength}"));
+                if let Some(t) = at(card::AMMO) {
+                    ui.set_string(t, title, ammo);
+                }
+                0xc3e
+            }
+            CardKind::Other => 0xc,
+        };
+        if c.effects.is_empty() {
+            mask &= !0x40;
+        } else {
+            set_value(ui, card::EFFECTS, &c.effects);
+            mask |= 0x40;
+        }
+        set_value(ui, card::VALUE, &amount_text(c.value));
+        set_value(ui, card::WEIGHT, &amount_text(c.weight));
+        for (i, name) in [
+            (card::DR, "sInventoryDamageResistance"),
+            (card::DPS, "sInventoryDamagePerSecond"),
+            (card::DAMAGE, "sInventoryDamage"),
+            (card::WEIGHT, "sInventoryWeightUpper"),
+            (card::VALUE, "sInventoryValue"),
+            (card::CONDITION, "sInventoryCondition"),
+            (card::EFFECTS, "sInventoryEffects"),
+            (card::MOD_ONE, "sModEffects"),
+            (card::STRENGTH, "sInventoryStrReq"),
+        ] {
+            if let Some(t) = at(i) {
+                let s = setting(ui, name);
+                ui.set_string(t, title, &s);
+            }
+        }
+        for i in 0..12 {
+            let Some(t) = at(i) else { continue };
+            if i == card::STRENGTH {
+                continue;
+            }
+            let bit = if i == card::DAMAGE { 0x800 } else { 1 << i };
+            ui.set_number(t, t::VISIBLE, if mask & bit != 0 { 1.0 } else { 0.0 });
+        }
+        if let Some(t) = at(card::STRENGTH) {
+            ui.set_number(t, t::VISIBLE, if mask & 0x400 != 0 { 1.0 } else { 0.0 });
+            ui.set_number(t, t::ALPHA, 255.0);
+        }
+        let mut y = ui.number(tile, t::HEIGHT) / 2.0 - 20.0;
+        if mask & 0x30 != 0 {
+            y += y;
+        }
+        for i in [card::EFFECTS, card::MOD_ONE, card::MOD_TWO, card::MOD_THREE] {
+            if let Some(t) = at(i) {
+                ui.set_number(t, t::Y, y);
+            }
         }
         ui.refresh();
     }
@@ -473,6 +649,7 @@ mod tests {
             skill_dim: false,
             can_make: false,
             icon: Some("Interface\\Icons\\Items\\healingpowder.dds".into()),
+            card: None,
         };
         m.show_details(&mut ui, 0, &d);
         let parts: Vec<(String, f32)> = m
@@ -528,7 +705,136 @@ mod tests {
             skill_dim: !skill.is_empty(),
             can_make,
             icon: None,
+            card: None,
         }
+    }
+
+    fn card_texts(ui: &mut Ui, m: &RecipeMenu) -> Vec<(bool, String, String)> {
+        let card = m.tiles[CARD].unwrap();
+        let (title, value) = (
+            ui.names.lookup("_Title").unwrap(),
+            ui.names.lookup("_Value").unwrap(),
+        );
+        ui.tiles[card]
+            .children
+            .clone()
+            .into_iter()
+            .map(|c| {
+                (
+                    ui.number(c, t::VISIBLE) != 0.0,
+                    ui.string(c, title).unwrap_or_default(),
+                    ui.string(c, value).unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+
+    /// `00727b10` → `00728da0`: the first product's card, by its kind: a
+    /// weapon's DPS, weight, value, condition (full), ammunition, strength
+    /// and damage (0xc3e); armour's DR, weight, value and condition (0x1d);
+    /// anything else weight and value (0xc), "%.1f" below 1, "--" for
+    /// none. The damage threshold card (the file's 13th) is left alone.
+    #[test]
+    fn the_item_card_shows_the_first_product() {
+        let (mut ui, mut m) = opened(-1);
+        let weapon = Card {
+            kind: CardKind::Weapon {
+                dps: None,
+                damage: 6.5,
+                projectiles: 1,
+                strength: 2,
+                ammo: "9mm (0/40)".into(),
+            },
+            value: 25.0,
+            weight: 2.0,
+            effects: String::new(),
+        };
+        m.show_details(
+            &mut ui,
+            0,
+            &Details {
+                card: Some(weapon),
+                ..details(true, "")
+            },
+        );
+        let card = m.tiles[CARD].unwrap();
+        assert_eq!(ui.number(card, t::VISIBLE), 1.0);
+        let shown: Vec<(bool, String, String)> = card_texts(&mut ui, &m);
+        let visible: Vec<bool> = shown.iter().map(|s| s.0).collect();
+        assert_eq!(
+            visible,
+            [false, true, true, true, true, true, false, false, false, false, true, true, false]
+        );
+        assert_eq!(shown[1].1, "DPS");
+        assert_eq!(shown[2].2, "2");
+        assert_eq!(shown[3].2, "25");
+        assert_eq!(shown[5].1, "9mm (0/40)");
+        assert_eq!(shown[10].2, "2");
+        assert_eq!(shown[11], (true, "DAM".to_string(), "7".to_string()));
+        let condition = ui.tiles[card].children[4];
+        assert_eq!(ui.number(condition, t::USER0 + 5), 1.0);
+        let strength = ui.tiles[card].children[10];
+        assert_eq!(ui.number(strength, t::ALPHA), 255.0);
+        // The effects card's y: (120 / 2 - 20) × 2 with the condition shown.
+        let effects = ui.tiles[card].children[6];
+        assert_eq!(ui.number(effects, t::Y), 80.0);
+
+        let armour = Card {
+            kind: CardKind::Armour { resistance: 12 },
+            value: 0.5,
+            weight: -1.0,
+            effects: String::new(),
+        };
+        m.show_details(
+            &mut ui,
+            0,
+            &Details {
+                card: Some(armour),
+                ..details(true, "")
+            },
+        );
+        let shown = card_texts(&mut ui, &m);
+        let visible: Vec<bool> = shown.iter().map(|s| s.0).collect();
+        assert_eq!(
+            visible,
+            [
+                true, false, true, true, true, false, false, false, false, false, false, false,
+                false
+            ]
+        );
+        assert_eq!(shown[0].2, "12");
+        assert_eq!(shown[2].2, "--");
+        assert_eq!(shown[3].2, "0.5");
+
+        let other = Card {
+            kind: CardKind::Other,
+            value: 19.0,
+            weight: 0.3,
+            effects: "+20 HP".into(),
+        };
+        m.show_details(
+            &mut ui,
+            0,
+            &Details {
+                card: Some(other),
+                ..details(true, "")
+            },
+        );
+        let shown = card_texts(&mut ui, &m);
+        let visible: Vec<bool> = shown.iter().map(|s| s.0).collect();
+        assert_eq!(
+            visible,
+            [
+                false, false, true, true, false, false, true, false, false, false, false, false,
+                false
+            ]
+        );
+        assert_eq!(shown[2].2, "0.3");
+        assert_eq!(shown[6].2, "+20 HP");
+        assert_eq!(ui.number(ui.tiles[card].children[6], t::Y), 40.0);
+        // No product: the card stays hidden.
+        m.show_details(&mut ui, 0, &details(true, ""));
+        assert_eq!(ui.number(card, t::VISIBLE), 0.0);
     }
 
     fn accept_on(ui: &mut Ui, m: &RecipeMenu) -> f32 {

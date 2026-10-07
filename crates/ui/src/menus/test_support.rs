@@ -477,7 +477,21 @@ pub fn recipe_menu() -> String {
              <image name=\"RM_ButtonB\"><id>8</id><x>1307</x><target>&true;</target>
                <text name=\"button_text\"><font>2</font><string><copy src=\"parent()\" trait=\"string\"/></string></text></image>
              <image name=\"RM_ItemIcon\"><id>9</id><visible>&false;</visible></image>
-             <rect name=\"RM_ItemData\"><id>10</id><visible>&false;</visible></rect>
+             <rect name=\"RM_ItemData\"><id>10</id><visible>&false;</visible><width>530</width><height>120</height>
+               <rect name=\"DamageResistInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"DPSInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"WeightInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"ValueInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"ConditionInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"AmmoInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"EffectsInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"ModInfoOne\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"ModInfoTwo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"ModInfoThree\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"StrengthReqInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"DAMInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"DamageThresholdInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+             </rect>
            </rect>
            <template name=\"RM_list_template\"><hotrect name=\"RM_list_template_container\">{LIST_ITEM}<id>15</id>
              <text name=\"ListItemText\"><font>2</font><string><copy src=\"parent()\" trait=\"string\"/></string></text>

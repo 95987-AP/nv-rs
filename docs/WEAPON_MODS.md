@@ -91,13 +91,34 @@ Doc Mitchell's house: the 9mm pistol's Extended Mags and Scope listed
 ("Adds short-range scope."), Enter fitted the mags, which then showed
 dimmed and first.
 
+The mouse (the menu's `DoEnter` `00783ed0`, `DoLeave` `00784050`,
+`DoClick` `007838a0`; vtable `01073b7c`): the pointer onto a mod makes it
+the list's choice, then its description (13, emptied first), its own
+picture (3, `004be200`) and the button bright; the scroll knob turns a
+notch with `UIPipBoyScroll` when the chosen line's `listindex` isn't the
+one it last turned for (`011d9fd0`). Off it, cards 9 and (with more than
+one line) 8 hide. A click on a line, or Enter on the chosen one, fits the
+chosen mod when the line's text is at full alpha: a fitted mod's text is
+dimmed to 127 (`007836d0` writes it on the line's first child,
+`007b5370`), so it can't be fitted again. Fitting makes the list again
+(`00784710(weapon, 0)`, the weapon's picture back). Without a pad nothing
+is chosen as it opens (`004b71d0`). There's no hold-to-confirm meter: the
+alpha the click tests is that dimming, and `item_mod_menu.xml` has no
+meter but the health cards. Seen in the viewer (Doc Mitchell's house, the
+9mm pistol and its two mods, `--pipboy-keys x --menu-pointer 760,253
+--menu-click ...`): the pointer on Extended Mags showed "Increases
+ammunition capacity (+7)." and the mod's picture; the first click fitted
+it (dimmed, first), the next clicks on it were refused.
+
 Checks: `crates/world/tests/weapon_mods.rs`, `world::weapon_mods::tests`,
-`ui::pipboy::items::tests::row_texts`.
+`ui::pipboy::items::tests::row_texts`,
+`ui::pipboy::item_mod::tests`, `ui::pipboy::tests::the_repair_and_mod_screens_take_the_pointer`.
 
 ## Not done
 
-- The mod screen's hold-to-confirm meter (a controller's), its sort's
-  exact trait (`00783810`), and the weapon taken off while it's modded.
+- The mod screen's sort (`00783810`: a flag on each line's tile list
+  first, not decoded; here the fitted mods first), and the weapon taken
+  off while it's modded.
 - Projectile speed (`009bca60`: the projectile's speed × its value) and
   sights (14, `004ac1e0`, `0095de30`); ammunition regenerating over time
   (effect 6 adds its value to the weapon's rate, `00709430`, which the

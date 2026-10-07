@@ -198,6 +198,11 @@ fn details(
         skill_dim,
         can_make: crafting::can_make(order, state, actor, r, category) > 0,
         icon: r.outputs.first().and_then(|o| icon_of(order, o.item)),
+        // The first product's item card (`00727b10` → `00728da0`).
+        card: r
+            .outputs
+            .first()
+            .map(|o| ui::pipboy::gather::recipe_card(order, state, o.item)),
     }
 }
 
