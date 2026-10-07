@@ -84,9 +84,18 @@ pub mod id {
 /// none), `ComputersMenu` (`00757b70`: terminal, 512), `BarterMenu`
 /// (`0072d250`: barter, 512), `ContainerMenu` (`0075b310`: container,
 /// 512), `DialogMenu` (`00762950`: dialogue), `LevelUpMenu` (`00784c80`:
-/// levelling, 512). (The vanilla barter, container, terminal, dialogue and
-/// levelling messages aren't "Auto Display", so never come up.)
+/// levelling, 512), `VATSMenu::Create` (`007e9200`: V.A.T.S., 512),
+/// `InventoryMenu::Create` (`0077fc10`: weapons, 512) and its tab
+/// buttons (`00780140`: apparel 512, ammo 500), the reputation title's
+/// box (`006155f0`: reputation, any menu, 500). (The vanilla barter,
+/// container, terminal, dialogue and levelling messages aren't "Auto
+/// Display", so never come up.)
 pub mod menu {
+    /// The message box (`MessageMenu`): what "any menu" waits for when no
+    /// message is about to be shown (`007182e0`).
+    pub const MESSAGE: i32 = 1001;
+    pub const INVENTORY: i32 = 1002;
+    pub const VATS: i32 = 1056;
     pub const LOCKPICK: i32 = 1014;
     pub const HACKING: i32 = 1055;
     pub const COMPUTERS: i32 = 1057;
@@ -103,6 +112,12 @@ pub mod menu {
 pub fn message_form(id: u8) -> FormId {
     FormId(0x168 + u32::from(id))
 }
+
+/// The help manual the start menu's Help pages through: the form list
+/// `HelpManual` (0x163; `HelpManualXBox` 0x165 with a pad: `007e8890`,
+/// `007d0770`).
+pub const HELP_MANUAL: FormId = FormId(0x163);
+pub const HELP_MANUAL_XBOX: FormId = FormId(0x165);
 
 /// The message record's "Auto Display" flag (`BGSMessage::iFlags` bit 1,
 /// the `DNAM` flags' 2): only such messages are asked for.
@@ -272,6 +287,16 @@ impl Tutorials {
             }
         }
         None
+    }
+
+    /// The first id whose word waits for a menu (`007d09c0`, for the
+    /// start menu's Help): [`COUNT`] for none. A word that waits for no
+    /// menu (bits 0) counts as waiting for the message box (1001), as the
+    /// game's own sum makes it.
+    pub fn menu_message(&self, class: i32) -> u8 {
+        (0..COUNT)
+            .find(|&i| Self::menu_bits(self.words[i]) + FIRST_MENU == class)
+            .unwrap_or(COUNT) as u8
     }
 
     /// The saved bytes (`007187a0`): bit 1 of each id, eight to a byte, id
@@ -536,5 +561,21 @@ mod tests {
         assert_eq!(message_form(id::CARAVAN_BET), FormId(0x186));
         assert_eq!(message_form(id::HACKING), FormId(0x17B));
         assert_eq!(message_form(id::HARDCORE_NEEDS), FormId(0x190));
+    }
+
+    /// The start menu's Help looks for the first message a menu asked
+    /// for (`007d09c0`), whether or not it's been shown.
+    #[test]
+    fn the_message_a_menu_asked_for() {
+        let mut t = Tutorials::default();
+        assert_eq!(t.menu_message(menu::VATS), COUNT as u8);
+        t.show_message(id::VATS_PC, menu::VATS, 512, true);
+        t.mark_shown(id::VATS_PC);
+        assert_eq!(t.menu_message(menu::VATS), id::VATS_PC);
+        t.show_message(id::AMMO, menu::INVENTORY, 500, true);
+        t.show_message(id::WEAPONS, menu::INVENTORY, 512, true);
+        assert_eq!(t.menu_message(menu::INVENTORY), id::WEAPONS);
+        // No menu: the message box's.
+        assert_eq!(t.menu_message(menu::MESSAGE), 0);
     }
 }

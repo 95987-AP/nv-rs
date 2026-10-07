@@ -858,3 +858,25 @@ fn what_scripts_show_lines_animations_idles_and_textures() {
     run(&order, &scripts, &mut state, "AdultRef.StopLook");
     assert!(state.set_by_scripts.looking.is_empty());
 }
+
+/// `ShowTutorialMenu` (`005da630`) opens the tutorial menu with the
+/// message it names, straight away (not through the tutorial manager);
+/// without one, with none.
+#[test]
+fn show_tutorial_menu_asks_for_the_menu_with_its_message() {
+    let (_data, order) = order("fn-tutorial");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "ShowTutorialMenu TestNameMessage",
+    );
+    assert!(state.unhandled.is_empty(), "{:?}", state.unhandled);
+    assert_eq!(
+        state.events,
+        vec![Event::TutorialMenu(FormId(NAME_MESSAGE))]
+    );
+    assert!(state.tutorials == Default::default());
+}

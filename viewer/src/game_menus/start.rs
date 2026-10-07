@@ -374,6 +374,8 @@ pub fn open(
 pub struct Outcome {
     pub resume: Option<bool>,
     pub exit: bool,
+    /// Help asked for (`007d0770`): the help manual, for the caller.
+    pub help: bool,
     pub save: Option<SaveFile>,
     pub applied: Vec<(Setting, f32)>,
     pub sounds: Vec<String>,
@@ -416,7 +418,14 @@ pub fn frame(screen: &mut Screen, game: &Game, settings: &mut GameSettings, now:
                 Request::MainMenu => {
                     println!("Main Menu: the main menu isn't made here (not implemented).")
                 }
-                Request::Help => println!("Help: the help menu isn't made here (not implemented)."),
+                // `007d0770`: the version shows (the menu's +0x50, tile
+                // 10), then the help manual opens over it (the caller).
+                Request::Help => {
+                    if let Some(v) = s.menu.tiles[start::id::VERSION as usize] {
+                        ui.set_number(v, t::VISIBLE, 1.0);
+                    }
+                    out.help = true;
+                }
                 Request::Apply {
                     setting,
                     value,

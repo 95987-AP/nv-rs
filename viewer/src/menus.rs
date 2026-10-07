@@ -81,6 +81,9 @@ pub enum Menu {
     /// A level gained (`world::experience::level_up`): its skill points to
     /// share out, then a perk on perk levels.
     LevelUp(world::experience::LevelUp),
+    /// A script's `ShowTutorialMenu`: the tutorial menu with this message
+    /// (`game_menus::tutorial::show_form`).
+    Tutorial(FormId),
 }
 
 /// A menu on screen, with what's been chosen so far.
@@ -262,7 +265,8 @@ fn open(
         | Menu::Character(CharacterMenu::TagSkills { .. })
         | Menu::Character(CharacterMenu::Name)
         | Menu::Character(CharacterMenu::Special { .. })
-        | Menu::SleepWait { .. } => {
+        | Menu::SleepWait { .. }
+        | Menu::Tutorial(..) => {
             println!("That menu can't be opened: the game's menus aren't available.");
             return None;
         }

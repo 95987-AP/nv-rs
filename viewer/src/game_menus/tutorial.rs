@@ -3,7 +3,8 @@
 //! over the menus on screen (`007182e0`, from the interface manager's
 //! update `0070c4a0`) and a message it picks opens in the tutorial menu
 //! and is marked shown; Caravan and the crafting menu open theirs directly
-//! ([`show`]).
+//! ([`show`]), as does a script's `ShowTutorialMenu` ([`show_form`]); the
+//! start menu's Help opens the help manual ([`open_manual`]).
 //!
 //! The manager is held while the start menu is up as the pause menu
 //! ([`held`]); the name entry and "outside the game" (the main menu) don't
@@ -37,18 +38,15 @@ fn message(game: &Game, form: FormId) -> Option<Message> {
         .map(|s| s.zstring())
         .unwrap_or_default();
     Some(Message {
+        form: form.0,
         title: record.full_name().unwrap_or_default(),
         text,
     })
 }
 
-/// Opens the tutorial menu with a message (`TutorialMenu::Create`,
-/// `007e8890`): one already open is closed first. False when it can't be
-/// (no record, no menu file), as the game's `Create` answers.
-pub fn show(screen: &mut Screen, game: &Game, id: u8, form: FormId) -> bool {
-    let Some(m) = message(game, form) else {
-        return false;
-    };
+/// Loads the tutorial menu's file (a tutorial menu already open closed
+/// first, `007e8890`).
+fn load(screen: &mut Screen, game: &Game, id: u8) -> Option<TutorialMenu> {
     for open in screen.open.iter_mut() {
         if let OpenMenu::Tutorial(t) = open {
             t.close(&mut screen.ui);
@@ -59,9 +57,88 @@ pub fn show(screen: &mut Screen, game: &Game, id: u8, form: FormId) -> bool {
         Ok(tile) => menu.menu = tile,
         Err(e) => {
             println!("The tutorial menu can't be opened: {e}");
-            return false;
+            return None;
         }
     }
+    Some(menu)
+}
+
+/// A script's `ShowTutorialMenu` (`005da630`): the menu with the message
+/// it names (`TutorialMenu::Create(message, 0)`, not through the
+/// manager); with none it doesn't stay open.
+pub fn show_form(screen: &mut Screen, game: &Game, form: FormId) {
+    let id = form
+        .0
+        .checked_sub(world::tutorial::message_form(0).0)
+        .filter(|&i| i < world::tutorial::COUNT as u32)
+        .map_or(world::tutorial::COUNT as u8, |i| i as u8);
+    let Some(mut menu) = load(screen, game, id) else {
+        return;
+    };
+    match message(game, form) {
+        Some(m) => {
+            menu.open(&mut screen.ui, &m);
+            println!("Tutorial menu: {} ({form}).", m.title);
+            screen.open.push(OpenMenu::Tutorial(Box::new(menu)));
+        }
+        None => {
+            println!("Warning:  Unable to find valid starting message for Tutorial Menu.");
+            screen.ui.detach(menu.menu);
+        }
+    }
+}
+
+/// The message the start menu's Help opens the manual on (`007d0770`):
+/// going up the menus under the start menu, the first whose class a
+/// tutorial word waits for (`007d09c0`) with that message in the manual.
+/// (The game also looks at the Pip-Boy's page, class 1: the viewer's
+/// start menu doesn't open over the Pip-Boy.)
+pub fn manual_start(screen: &mut Screen, state: &GameState, manual: &[FormId]) -> Option<FormId> {
+    for m in screen.open.iter_mut() {
+        if let OpenMenu::Start(_) = m {
+            break;
+        }
+        let id = state.tutorials.menu_message(m.code().class());
+        if usize::from(id) >= world::tutorial::COUNT {
+            continue;
+        }
+        let form = world::tutorial::message_form(id);
+        if manual.contains(&form) {
+            return Some(form);
+        }
+    }
+    None
+}
+
+/// The start menu's Help (`007d0770`): the help manual (`HelpManual`)
+/// in the tutorial menu, on the page [`manual_start`] picks or its
+/// first.
+pub fn open_manual(screen: &mut Screen, game: &Game, state: &GameState) {
+    let order = &game.order;
+    let forms = world::script_functions::form_list(order, state, world::tutorial::HELP_MANUAL);
+    let start = manual_start(screen, state, &forms).and_then(|f| message(game, f));
+    let pages: Vec<Message> = forms.iter().filter_map(|&f| message(game, f)).collect();
+    let Some(mut menu) = load(screen, game, world::tutorial::COUNT as u8) else {
+        return;
+    };
+    if menu.open_manual(&mut screen.ui, start, pages) {
+        println!("Help manual: page {} of {}.", menu.page + 1, menu.pages);
+        screen.open.push(OpenMenu::Tutorial(Box::new(menu)));
+    } else {
+        screen.ui.detach(menu.menu);
+    }
+}
+
+/// Opens the tutorial menu with a message (`TutorialMenu::Create`,
+/// `007e8890`): one already open is closed first. False when it can't be
+/// (no record, no menu file), as the game's `Create` answers.
+pub fn show(screen: &mut Screen, game: &Game, id: u8, form: FormId) -> bool {
+    let Some(m) = message(game, form) else {
+        return false;
+    };
+    let Some(mut menu) = load(screen, game, id) else {
+        return false;
+    };
     menu.open(&mut screen.ui, &m);
     println!("Tutorial: {} ({form}).", m.title);
     screen.open.push(OpenMenu::Tutorial(Box::new(menu)));

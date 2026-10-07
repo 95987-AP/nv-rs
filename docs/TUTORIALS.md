@@ -71,16 +71,43 @@ the text, Next, Previous, Close, title, page, scrollbar and `TM_VDSG_text`;
 page are hidden; `SetTitleAndText` (`007e9060`) puts the message's `FULL`
 and `DESC` (HTML when it starts with `<`) and the scrollbar back to the top;
 `UpdatePrevNext` (`007e9010`) makes Next and Previous clickable by page.
-Close (id 3, E) and the cancel code (10, `007e8e80`) close it. With
-`manual` true (the start menu's help) it pages through the help manual's
-list (FLST 0x163, 0x165 with a pad); not done here.
+Close (id 3, E) and the cancel code (10, `007e8e80`) close it.
+
+With `manual` true (the start menu's Help) it is the help manual: the form
+list `HelpManual` (FLST 0x163, 37 messages; `HelpManualXBox` 0x165 with a
+pad), and no message means its first. Next and Previous keep the file's
+visibility and get `sNext` / `sPrevious`; the message's place in the list
+is the page, shown "n/N" on the page tile (a message not in the list, and
+every single message, has no pages: the page tile hidden). Next and
+Previous (`007e8e20` / `007e8e40` → `007e8ed0`) turn to the page after or
+before (nothing past either end), with its message and `UpdatePrevNext`.
+No message at all: "Warning:  Unable to find valid starting message for
+Tutorial Menu." and the menu closes again.
+
+The start menu's Help (`007d0770`) shows the version (the start menu's
+tile 10), then goes up the menu stack under the start menu (`+0x114`,
+ten entries) for the first menu with a tutorial word waiting for it
+(`007d09c0`: the first id whose menu bits + 1001 are its class, so a
+word with no menu counts as the message box's) whose message is in the
+manual; the Pip-Boy (class 1) counts as its page shown (stats 1003,
+repair 1035, inventory 1002, map 1023). It opens the manual on that
+message, or on its first page.
+
+A script's `ShowTutorialMenu <message>` (`005da630`; vanilla's
+`CGTutorial` quest shows `HelpHealingLimbs` this way) opens the tutorial
+menu with that message at once, not through the manager, and doesn't mark
+anything shown.
 
 ## Here
 
 `world::tutorial` (`Tutorials` in `GameState::tutorials`, saved as a
 `tutorials` line; `ask` reads the record's flag), `ui::menus::tutorial`
 (`TutorialMenu`), the viewer's `game_menus::tutorial` (the update each
-frame over the open menus, `show` / `show_once`). Hooked: Caravan's four,
+frame over the open menus, `show` / `show_once`; `show_form` for
+`ShowTutorialMenu`, `Event::TutorialMenu`; `open_manual` for the start
+menu's Help, which the viewer's start menu can only open over the game,
+so on the manual's first page). The manager waits while the start menu
+is up as the pause menu. Hooked: Caravan's four,
 crafting, hacking, the terminal menu and lockpicking (`world::lockpick`'s
 `Effect::Tutorial` and `tutorial_wait`; the viewer now draws the
 lockpicking menu's scene and pictures before the HUD's camera, which lays

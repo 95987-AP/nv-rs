@@ -582,6 +582,7 @@ pub fn takes(m: &crate::menus::Menu) -> bool {
         || vigor::takes(m)
         || hacking::takes(m)
         || computers::takes(m)
+        || matches!(m, crate::menus::Menu::Tutorial(_))
 }
 
 /// The world's requests become menus.
@@ -613,6 +614,8 @@ fn open_menus(
     while let Some(request) = queue.take_next(takes) {
         if message::takes(&request) {
             message::open(screen, &game.0, request);
+        } else if let crate::menus::Menu::Tutorial(form) = request {
+            tutorial::show_form(screen, &game.0, form);
         } else if hacking::takes(&request) {
             hacking::open(screen, &game.0, &mut state.0, request, &hacking_sounds);
         } else if computers::takes(&request) {
@@ -1203,11 +1206,15 @@ pub(crate) fn start_menu_frame(
     mut exit: EventWriter<AppExit>,
     mut music: ResMut<crate::music::Music>,
     mut sounds: ResMut<crate::sounds::SoundRequests>,
+    state: Res<crate::dialogue::DialogueState>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         return;
     };
     let out = start::frame(screen, &game.0, &mut settings, time.elapsed_secs_f64());
+    if out.help {
+        tutorial::open_manual(screen, &game.0, &state.0);
+    }
     for s in out.sounds {
         if let Some(id) = game.0.order.form_by_editor_id(&s) {
             sounds.0.push(id);

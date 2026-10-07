@@ -1426,6 +1426,10 @@ pub fn run_scripts(
                 waiting.push(crate::menus::Menu::RepairServices(vendor));
                 None
             }
+            Event::TutorialMenu(message) => {
+                waiting.push(crate::menus::Menu::Tutorial(message));
+                None
+            }
             Event::TeammateContainer(who) => {
                 waiting.push(crate::menus::Menu::Teammate(who));
                 None

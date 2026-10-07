@@ -1155,6 +1155,7 @@ pub fn play(
             Event::RepairServices(m) => {
                 format!("{}'s repair services", describe_id(order, *m))
             }
+            Event::TutorialMenu(m) => format!("the tutorial menu: {}", describe_id(order, *m)),
             Event::Casino {
                 game,
                 casino,

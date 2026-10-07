@@ -1174,6 +1174,9 @@ pub enum Event {
     },
     /// `ShowRepairMenu`: this merchant's repairs (`world::repair`).
     RepairServices(FormId),
+    /// `ShowTutorialMenu` (`005da630`): the tutorial menu with this help
+    /// message (0 when none was given), not through the tutorial manager.
+    TutorialMenu(FormId),
     /// `OpenTeammateContainer`: trading things with a companion (the
     /// container menu's mode 3).
     TeammateContainer(FormId),
@@ -3796,6 +3799,9 @@ impl<'a> Runner<'a> {
                     });
                 }
             }
+            // `005da630`: `TutorialMenu::Create(message, 0)` (the shared
+            // `005d4a40` check is the PC's `return 1`).
+            "ShowTutorialMenu" => events.push(Event::TutorialMenu(arg(0).form())),
             "ShowRepairMenu" => {
                 let vendor = target?;
                 if crate::script_functions::is_actor(self.order, vendor) {
@@ -4622,6 +4628,7 @@ pub const HANDLED: &[&str] = &[
     "SetItemValue",
     "AddCardToPlayer",
     "ShowCaravanMenu",
+    "ShowTutorialMenu",
     "ShowSlotMachineMenuParams",
     "ShowBlackJackMenuParams",
     "ShowRouletteMenuParams",
