@@ -978,6 +978,8 @@ fn show_lockpicking(
                     },
                     Tonemapping::None,
                     DebandDither::Disabled,
+                    // No light clusters: nothing here is lit by Bevy's lights.
+                    bevy::pbr::ClusterConfig::None,
                     Projection::from(PerspectiveProjection {
                         fov: camera.vertical_fov(),
                         near: camera.near * space::METERS_PER_UNIT,

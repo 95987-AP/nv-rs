@@ -95,3 +95,75 @@ test's only finding in the worktree is the worktree's own `.git` file).
 - Mouse for the Repair and Mod screens.
 - `RemoveMe` on an equipped instance (`004bfda0`).
 - Crafting: the item card (`00728da0`) and the tutorial help.
+
+# PR #12 (performance)
+
+Merged 2026-10-07 on `claude/contrib-chazm-perf` (from the integration tip
+`4cbf570`, which already holds PR #11) with a real `git merge --no-ff` of
+`pr/12` (18 commits by `chazmm` on `22d3461`). Performance only: each
+commit was reviewed for giving the same results and drawing the same
+picture.
+
+## Commits
+
+| Commit | What | Verdict |
+| --- | --- | --- |
+| `793def9` lighting hitch, NPC pathing, mouse look | the same change as `eb8ff21`, already merged with PR #11 | **kept integration's** (identical files; in `main.rs` integration's cursor handling, Windows confine-and-centre, stays) |
+| `8888abb` NPC upkeep, wander spots | `move_offstage` skips anyone not due at MiddleLow (0.3 h) before reading records: the only levels used there are MiddleLow and Low (1 h), so `due(Low)` implies `due(MiddleLow)`; `triangles_near` / `nearest_middle` | **taken**. Conflict with integration's `TriangleIndex` (islands): both kept, the squares' extent is a third slot. The two grid tests merged into one (Chazm's wider range). The low list's 2 ms wall-clock budget now gets further per frame: timing-dependent before as well. |
+| `113786f` lit materials bindless | `GameLit` bindless, shared light also as a 5×1 float texture, pieces with identical material data share one material | **taken**. `lit_material` reads only `data.material` and whether tangents exist (the key); per-piece mutations (animated materials, texture swaps) already get their own material; the rest (emittance, relighting, daylight) are the same for equal material data. |
+| `a3cc5ba` no light clusters | `ClusterConfig::None` on every 3D camera | **taken** (no Bevy lights exist: `AmbientLight::NONE`, every surface lit in its own shader) |
+| `64c8497`, `79fb009` HUD rebuilds only changed items | | **taken**: pieces of an unchanged item keep their entity; each item is one piece except text (one piece per font picture, not overlapping), so the order within a depth doesn't matter |
+| `0d8f2e9` plain lit materials without bindless | `LitExtension`, `NVRS_NO_BINDLESS` | **taken** |
+| `951f446` onto the latest build | | **taken** |
+| `5a89dda` records read once | `RecordRef::subrecord`, `record_shared` | **taken**: same bytes (tested on every record of the sample plugin); records never change after loading. Only differs for a corrupt record (a later subrecord unreadable), which the game data has none of. |
+| `8926a8c` present by mailbox | | **taken**: game logic doesn't depend on frame rate (screenshots wait real seconds; `--run-at` and the routes are timed in seconds; acceptance passes) |
+| `d4f091a` moving clutter's buckets | | **taken** (tested against the one-at-a-time way) |
+| `79ca016`, `e1dc68f`, `6129778` scope camera only while scoped | | **taken**. Integration already had a `hud::HudCamera` (the Caravan table blends the HUD over its picture through its `output_mode`); the PR's duplicate marker removed, the two uses touch different fields (`clear_color` vs `output_mode`). |
+| `1668d10` shared GPU textures | keyed by (path, linear, layers, compressed, anisotropy) | **taken**. Every `TextureData` path names its contents: files by their path, made ones by their inputs (`a x b` glow products, `<base> + FaceGen <tint file>`, `<base> + layer <layer file>`); tints are shipped `facemods` files (no texture is generated at run time; the race menu reshapes meshes, not textures). A cached id handed out again with `get_strong_handle` is safe against a place being dropped in the same frame (Bevy 0.16 counts duplicate handles before removing an asset). |
+| `52a29b2`, `6802e74` character controller | candidates once per downward sweep; box pre-check | **taken** with two tests added: the pre-check at Goodsprings' coordinates (f32 steps of 1/128) just past the margin never skips a triangle either exact test keeps, and the sweep with one candidate list equals looking them up at every step (random scenes there). A misplaced doc comment fixed. |
+| `01d0358` no reflection without water in view | `--key-at mouse-y=` | **taken**: the reflection camera keeps choosing the same water and only stops drawing while no water surface is in the frustum (tested with this frame's view). |
+
+Nothing was reverted.
+
+## Frame times (release, 1920×1080 `--screenshot` window, `--fps`)
+
+Mean ms per frame after the first two 2-second reports (loading), three
+runs each, before and after interleaved; the machine was shared with other
+agents' builds, so single runs vary by up to half. "Before" is the
+integration tip; "before + mailbox" is it with only `8926a8c`.
+
+| Scene | Before | Before + mailbox | After |
+| --- | --- | --- | --- |
+| Doc's house (`GSDocMitchellHouse`, still, `--freeze-ai`) | 6.3 / 10.9 / 10.9 | 14.1 / 13.2 / 11.6 | 9.9 / 12.2 / 9.9 |
+| Goodsprings (`--at -68250,5800,8480,180`, still) | 18.6 / 23.7 / 17.1 | 17.3 / 24.1 / 18.3 | 14.4 / 20.7 / 15.0 |
+| Route doc (Doc's walk) | 12.4 / 16.0 / 13.6 | | 9.6 / 12.2 / 10.6 |
+| Route vcg02 (Back in the Saddle) | 33.0 / 53.7 / 38.5 | | 20.6 / 30.9 / 20.3 |
+| Route vms16 (Ghost Town Gunfight) | 22.3 / 30.3 / 22.2 | | 21.5 / 21.3 / 17.6 |
+| Creek water (square -19,11, looking down at it) | 9.1 / 12.5 | | 9.8 / 10.2 |
+
+Goodsprings and the routes are 15-45% faster; the still interior is the
+same within the noise. Windows sometimes holds a window behind others to
+60 fps whatever the present mode (one mailbox run in Doc's house fell to
+17 ms halfway), so these are not clean GPU numbers. The longest frame is
+250 ms (Bevy's clamp) in every route run before and after: loading.
+
+## Screenshots
+
+Same command lines before and after: Doc's house is pixel-identical in all
+three pairs (and between the two builds before). Goodsprings and the creek
+differ by small amounts spread over the picture (grass and trees in the
+wind, water ripples, the sun's position at the moment of capture), as much
+as two runs of the same build do: Goodsprings before/after 6-10% of pixels
+changed, mean 0.03-0.19 levels, while two runs before differ by 12%, mean
+0.63; the creek's reflection is drawn in both.
+
+## Checks (2026-10-07)
+
+- Root: `cargo test --workspace` (1402 passed), clippy and fmt clean.
+- Viewer: `cargo test` (144 passed), clippy and fmt clean, release build.
+- Routes: every frame-time run above passed its success lines (doc, vcg02,
+  vms16 three times before and after); `scripts/acceptance.ps1` on the
+  merged build: doc, vcg02 and vms16 pass (first run; 59, 443, 341 s).
+- Only by screenshots and scripts: the scope overlay, the Caravan table and
+  the lockpicking menu with the HUD camera's new clearing were not opened
+  live in this merge.

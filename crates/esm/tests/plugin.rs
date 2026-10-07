@@ -206,6 +206,37 @@ fn decompresses_records_and_reads_large_subrecords() {
 }
 
 #[test]
+fn reads_one_subrecord_as_the_whole_record_does() {
+    let plugin = Plugin::from_bytes(sample_plugin()).unwrap();
+    for entry in plugin.records() {
+        let record = plugin.record(entry).unwrap();
+        let mut kinds: Vec<FourCC> = record.subrecords.iter().map(|s| s.kind).collect();
+        kinds.push(FourCC::new(b"ZZZZ"));
+        for kind in kinds {
+            let one = plugin.subrecord_of(entry, kind).unwrap();
+            assert_eq!(
+                one.as_deref(),
+                record.get(kind).map(|s| s.data.as_slice()),
+                "{:?} {kind:?}",
+                entry.header.form_id
+            );
+        }
+    }
+    // The compressed record's large subrecord, and the one after it.
+    let trader = plugin.get(FormId(0x0000_1234)).unwrap();
+    let dnam = plugin
+        .subrecord_of(trader, FourCC::new(b"DNAM"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(dnam.len(), 70_000);
+    let snam = plugin
+        .subrecord_of(trader, FourCC::new(b"SNAM"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(&*snam, &[1, 2, 3, 4]);
+}
+
+#[test]
 fn finds_records_by_editor_id_case_insensitively() {
     let plugin = Plugin::from_bytes(sample_plugin()).unwrap();
     let found = plugin

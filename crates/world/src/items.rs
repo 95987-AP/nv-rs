@@ -366,7 +366,7 @@ pub fn weight(order: &LoadOrder, item: FormId, hardcore: bool) -> f32 {
     let Some(rr) = order.get(item) else {
         return NONE;
     };
-    let Ok(record) = rr.record() else {
+    let Ok(record) = rr.record_shared() else {
         return NONE;
     };
     let data = record

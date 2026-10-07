@@ -63,7 +63,9 @@ const HUD_LAYER: usize = 23;
 pub struct HudLayer(pub Handle<Image>);
 
 /// The HUD's camera (it writes the HUD's picture each frame; while a menu's
-/// 3D scene is drawn into it first it blends over it: `caravan_table`).
+/// 3D scene is drawn into it first it blends over it: `caravan_table`). It
+/// clears its picture first, except while a scope is up, when the scope's
+/// overlay camera has cleared it (`scope::update_scope`).
 #[derive(Component)]
 pub struct HudCamera;
 
@@ -209,6 +211,9 @@ impl Material2d for TileMaterial {
     }
 }
 
+/// A piece on screen: its entity and assets.
+type Drawn = (Entity, Handle<Mesh>, Handle<TileMaterial>);
+
 /// The HUD as built for the window's size, and what's on screen of it.
 struct Built {
     ui: ui::Ui,
@@ -222,9 +227,9 @@ struct Built {
     images: HashMap<(String, bool, bool), Option<Handle<Image>>>,
     /// Font pictures by font (1 to 8) and picture number.
     font_images: HashMap<(usize, u32), Option<Handle<Image>>>,
-    /// The draw list on screen, and its entities and assets.
+    /// The draw list on screen, and each item's entities and assets.
     last: Vec<DrawItem>,
-    drawn: Vec<(Entity, Handle<Mesh>, Handle<TileMaterial>)>,
+    drawn: Vec<Vec<Drawn>>,
     /// V.A.T.S.'s menu (`ui::vats`), laid out with the HUD, and what the
     /// HUD's mask hid while V.A.T.S. is on.
     vats: Option<ui::vats::VatsMenu>,
@@ -272,7 +277,8 @@ fn setup_hud_layer(
     let layer = images.add(image);
     commands.insert_resource(HudLayer(layer.clone()));
     // The scope's overlay is drawn onto the picture first and clears it
-    // (`scope`); the HUD's pieces go over it.
+    // while a scope is up (`scope`); the HUD's pieces go over it. The rest
+    // of the time the HUD's camera clears it.
     crate::scope::spawn_camera(&mut commands, layer.clone());
     commands.spawn((
         Camera2d,
@@ -283,9 +289,10 @@ fn setup_hud_layer(
             // (`lockpick`).
             order: -4,
             // A float picture: stored values kept as they are, blended as
-            // they are. The scope's camera cleared it (`scope`).
+            // they are. Cleared here, or by the scope's camera while it's
+            // on (`scope::update_scope`).
             hdr: true,
-            clear_color: ClearColorConfig::None,
+            clear_color: ClearColorConfig::Custom(Color::NONE),
             ..default()
         },
         Tonemapping::None,
@@ -940,7 +947,7 @@ fn update_hud(
     if built.as_ref().is_none_or(|b| b.size != size) {
         // A new size lays everything out again.
         if let Some(old) = built.take() {
-            for (e, mesh, material) in old.drawn {
+            for (e, mesh, material) in old.drawn.into_iter().flatten() {
                 commands.entity(e).despawn();
                 meshes.remove(&mesh);
                 materials.remove(&material);
@@ -1079,17 +1086,35 @@ fn update_hud(
         return;
     }
 
-    // Something changed: the pieces again.
-    for (e, mesh, material) in b.drawn.drain(..) {
-        commands.entity(e).despawn();
-        meshes.remove(&mesh);
-        materials.remove(&material);
+    // Something changed. With as many items as before, the pieces of
+    // those that changed are made again, each in its place in the list (a
+    // meter or marker moving doesn't make the rest again every frame);
+    // otherwise all of them.
+    let changed: Option<Vec<bool>> = (items.len() == b.last.len() && b.drawn.len() == items.len())
+        .then(|| items.iter().zip(&b.last).map(|(a, l)| a != l).collect());
+    if changed.is_none() {
+        for (e, mesh, material) in b.drawn.drain(..).flatten() {
+            commands.entity(e).despawn();
+            meshes.remove(&mesh);
+            materials.remove(&material);
+        }
+        b.drawn = vec![Vec::new(); items.len()];
     }
     let compressed = device
         .as_ref()
         .is_none_or(|d| d.features().contains(WgpuFeatures::TEXTURE_COMPRESSION_BC));
     let k = 1.0 / b.ui.screen_size.resolution_converter();
     for (i, item) in items.iter().enumerate() {
+        if let Some(changed) = &changed {
+            if !changed[i] {
+                continue;
+            }
+            for (e, mesh, material) in b.drawn[i].drain(..) {
+                commands.entity(e).despawn();
+                meshes.remove(&mesh);
+                materials.remove(&material);
+            }
+        }
         let tint = Vec4::from_array(item.color);
         let mut pieces: Vec<Piece> = Vec::new();
         match &item.kind {
@@ -1215,7 +1240,7 @@ fn update_hud(
                         RenderLayers::layer(HUD_LAYER),
                     ))
                     .id();
-                b.drawn.push((entity, mesh, material));
+                b.drawn[i].push((entity, mesh, material));
             }
         }
         for Piece {
@@ -1245,7 +1270,7 @@ fn update_hud(
                     RenderLayers::layer(HUD_LAYER),
                 ))
                 .id();
-            b.drawn.push((entity, mesh, material));
+            b.drawn[i].push((entity, mesh, material));
         }
     }
     b.last = items;

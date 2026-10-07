@@ -86,9 +86,14 @@ pub const USE_BASE_DATA: u16 = 0x80;
 /// The record an actor takes some of its data from: its template's
 /// (following `TPLT` and leveled lists) when its template flags have
 /// `flag`, else its own.
-pub fn data_record(order: &LoadOrder, base: FormId, flag: u16) -> Option<(RecordRef<'_>, Record)> {
+/// (Decoded once and shared: asked for every frame.)
+pub fn data_record(
+    order: &LoadOrder,
+    base: FormId,
+    flag: u16,
+) -> Option<(RecordRef<'_>, std::sync::Arc<Record>)> {
     let rr = order.get(base)?;
-    let record = rr.record().ok()?;
+    let record = rr.record_shared().ok()?;
     match template_for(order, &rr, &record, flag, 0) {
         Some(t) => Some(t),
         None => Some((rr, record)),
@@ -596,7 +601,7 @@ fn template_for<'a>(
     record: &Record,
     flag: u16,
     depth: u8,
-) -> Option<(RecordRef<'a>, Record)> {
+) -> Option<(RecordRef<'a>, std::sync::Arc<Record>)> {
     if depth > MAX_DEPTH {
         return None;
     }
@@ -614,12 +619,16 @@ fn template_for<'a>(
 }
 
 /// An actor record, following leveled actor lists to their first entry.
-fn first_actor(order: &LoadOrder, id: FormId, depth: u8) -> Option<(RecordRef<'_>, Record)> {
+fn first_actor(
+    order: &LoadOrder,
+    id: FormId,
+    depth: u8,
+) -> Option<(RecordRef<'_>, std::sync::Arc<Record>)> {
     if depth > MAX_DEPTH {
         return None;
     }
     let rr = order.get(id)?;
-    let record = rr.record().ok()?;
+    let record = rr.record_shared().ok()?;
     let kind = rr.entry.header.kind;
     if kind == LVLN || kind == LVLC {
         let entry = record.get_all(LVLO).find(|s| s.data.len() >= 8)?;
@@ -674,12 +683,12 @@ fn npc_look_dressed(
 ) -> Option<ActorLook> {
     let base = rr.form_id;
     let traits = template_for(order, rr, record, USE_TRAITS, 0);
-    let (trr, traits_record) = match &traits {
+    let (trr, traits_record): (&RecordRef<'_>, &Record) = match &traits {
         Some((r, rec)) => (r, rec),
         None => (rr, record),
     };
     let inventory = template_for(order, rr, record, USE_INVENTORY, 0);
-    let (irr, inventory_record) = match &inventory {
+    let (irr, inventory_record): (&RecordRef<'_>, &Record) = match &inventory {
         Some((r, rec)) => (r, rec),
         None => (rr, record),
     };

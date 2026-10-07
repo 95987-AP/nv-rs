@@ -656,6 +656,8 @@ fn setup_water(
         }),
         // Stored values, as the scene's: no tone mapping or dithering.
         Tonemapping::None,
+        // No light clusters: nothing here is lit by Bevy's lights.
+        bevy::pbr::ClusterConfig::None,
         DebandDither::Disabled,
         msaa,
         Exposure::default(),
@@ -1049,6 +1051,17 @@ fn place_reflection_camera(
         }
         return;
     };
+    // Only water on screen shows the reflection: with none of it in the
+    // view this frame (as the view is now, after this frame's turn), the
+    // reflection isn't drawn. Looking down, the mirror camera sits below
+    // the ground looking up through everything above the water's plane;
+    // drawing that for no water was most of the frame.
+    if !water_in_view(eye, main_projection, &surfaces) {
+        if *layers != RenderLayers::none() {
+            *layers = RenderLayers::none();
+        }
+        return;
+    }
     let Projection::Perspective(main_perspective) = main_projection else {
         return;
     };
@@ -1073,6 +1086,39 @@ fn place_reflection_camera(
     if exposure.ev100 != main_exposure.ev100 {
         exposure.ev100 = main_exposure.ev100;
     }
+}
+
+/// Whether any water surface shown is in the view from `eye`: its extent at
+/// its height, as a box, against the view's frustum.
+fn water_in_view(
+    eye: &Transform,
+    projection: &Projection,
+    surfaces: &Query<(&WaterSurface, &Visibility)>,
+) -> bool {
+    use bevy::render::camera::CameraProjection;
+    use bevy::render::primitives::{Aabb, Frustum};
+    let clip_from_world = projection.get_clip_from_view() * eye.compute_matrix().inverse();
+    let frustum = Frustum::from_clip_from_world(&clip_from_world);
+    surfaces.iter().any(|(s, visibility)| {
+        if *visibility == Visibility::Hidden {
+            return false;
+        }
+        let corners = [
+            [s.lo.x, s.lo.y],
+            [s.hi.x, s.lo.y],
+            [s.lo.x, s.hi.y],
+            [s.hi.x, s.hi.y],
+        ]
+        .map(|[x, y]| Vec3::from(space::point([x, y, s.height])));
+        let lo = corners.iter().fold(Vec3::INFINITY, |a, c| a.min(*c)) - Vec3::splat(0.5);
+        let hi = corners.iter().fold(Vec3::NEG_INFINITY, |a, c| a.max(*c)) + Vec3::splat(0.5);
+        frustum.intersects_obb(
+            &Aabb::from_min_max(lo, hi),
+            &bevy::math::Affine3A::IDENTITY,
+            true,
+            true,
+        )
+    })
 }
 
 /// Distant water: the pieces of the distant-land chunks around the player

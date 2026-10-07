@@ -130,7 +130,7 @@ pub fn opens_and_closes(base_type: FourCC) -> bool {
 pub fn flags(order: &LoadOrder, door_base: FormId) -> u8 {
     order
         .get(door_base)
-        .and_then(|r| r.record().ok())
+        .and_then(|r| r.record_shared().ok())
         .and_then(|r| r.get(FNAM).and_then(|s| s.data.first().copied()))
         .unwrap_or(0)
 }
@@ -153,7 +153,7 @@ pub fn is_swing_door(order: &LoadOrder, reference: FormId) -> bool {
 pub fn open_by_default(order: &LoadOrder, reference: FormId) -> bool {
     order
         .get(reference)
-        .and_then(|r| r.record().ok())
+        .and_then(|r| r.record_shared().ok())
         .is_some_and(|r| {
             r.get(ONAM).is_some()
                 || r.get(XACT)
