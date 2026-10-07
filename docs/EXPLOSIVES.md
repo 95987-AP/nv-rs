@@ -252,6 +252,13 @@ standing among the rest, three are set off (0.65 s fuse: Explosives 15 ×
 at 5, 86.9 at 69); the one 97 units away that had spared the player under
 Light Step stays quiet (flag 0x4000).
 
+A frag mine the player lays at their feet in Doc Mitchell's house
+(`--weapon WeapMineFrag`, looking down) stays quiet: the data lets a
+layer set off their own mine (`iProjectileMineShooterCanTrigger` 1), but
+`PlayerFaction` lists itself as an ally (its own `XNAM`, reaction 2), so
+the player's mines react to neither the player nor their allies; Doc's
+factions are no enemy either.
+
 Launchers (Goodsprings, `WastelandNV --at -68250,5800,8480,180,0 --walk
 --freeze-ai --weapon WeapNVGrenadeRifle|WeapMissileLauncher --key-at 5
 mouse-left --wait 9`): the 40 mm grenade fired level struck the ground
