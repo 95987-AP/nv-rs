@@ -1341,6 +1341,51 @@ fn game_lights(list: &[cellview::LightData], brightness: f32) -> [GameLight; MAX
     lights
 }
 
+/// A material lit by placed lights.
+trait PlaceLit: Asset {
+    fn lighting(&self) -> &GameLighting;
+    fn lighting_mut(&mut self) -> &mut GameLighting;
+}
+
+impl PlaceLit for GameLitMaterial {
+    fn lighting(&self) -> &GameLighting {
+        &self.extension.lighting
+    }
+    fn lighting_mut(&mut self) -> &mut GameLighting {
+        &mut self.extension.lighting
+    }
+}
+
+impl PlaceLit for TerrainMaterial {
+    fn lighting(&self) -> &GameLighting {
+        &self.extension.lighting
+    }
+    fn lighting_mut(&mut self) -> &mut GameLighting {
+        &mut self.extension.lighting
+    }
+}
+
+/// Gives these materials placed lights (`count` of them used), leaving
+/// alone those that have them already: changing a material (`get_mut`)
+/// has the render world prepare it again, the same as it was.
+fn give_lights<M: PlaceLit>(
+    materials: &mut Assets<M>,
+    handles: &[Handle<M>],
+    lights: [GameLight; MAX_LIGHTS],
+    count: f32,
+) {
+    for handle in handles {
+        let has = |l: &GameLighting| l.lights == lights && l.scale.y == count;
+        if materials.get(handle).is_some_and(|m| !has(m.lighting())) {
+            if let Some(m) = materials.get_mut(handle) {
+                let l = m.lighting_mut();
+                l.lights = lights;
+                l.scale.y = count;
+            }
+        }
+    }
+}
+
 /// A fade by viewing angle that never fades: opacity 1 at every angle.
 const NO_FALLOFF: Vec4 = Vec4::new(0.0, 0.0, 1.0, 1.0);
 
@@ -1605,22 +1650,14 @@ impl Spawner<'_, '_> {
         self.spawn_parts(scene, None, Some((here, noise)))
     }
 
-    /// Gives the materials of a spawned place these lights.
+    /// Gives the materials of a spawned place these lights. Outdoors this
+    /// is redone for every loaded square whenever one comes or goes, and
+    /// most keep the lights they had ([`give_lights`]).
     fn relight(&mut self, spawned: &Spawned, lights: &[cellview::LightData]) {
         let list = game_lights(lights, self.settings.brightness);
         let count = lights.len().min(MAX_LIGHTS) as f32;
-        for m in &spawned.lit {
-            if let Some(m) = self.lit_materials.get_mut(m) {
-                m.extension.lighting.lights = list;
-                m.extension.lighting.scale.y = count;
-            }
-        }
-        for m in &spawned.terrain {
-            if let Some(m) = self.terrain_materials.get_mut(m) {
-                m.extension.lighting.lights = list;
-                m.extension.lighting.scale.y = count;
-            }
-        }
+        give_lights(&mut self.lit_materials, &spawned.lit, list, count);
+        give_lights(&mut self.terrain_materials, &spawned.terrain, list, count);
     }
 
     /// `land_blend`: outdoors, the player's square and the distant land's
@@ -3372,5 +3409,60 @@ mod tests {
             panic!("no corners");
         };
         assert_eq!(a[0], [2.0, -1.0, 0.0]);
+    }
+
+    #[derive(Resource, Default)]
+    struct Changed(Vec<AssetId<GameLitMaterial>>);
+
+    fn note_changed(
+        mut events: EventReader<AssetEvent<GameLitMaterial>>,
+        mut changed: ResMut<Changed>,
+    ) {
+        for e in events.read() {
+            if let AssetEvent::Modified { id } = e {
+                changed.0.push(*id);
+            }
+        }
+    }
+
+    /// Outdoors every loaded square is given its lights again whenever a
+    /// square comes or goes: only the materials whose lights differ are
+    /// changed (and prepared again by the render world).
+    #[test]
+    fn only_materials_whose_lights_differ_are_changed() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<GameLitMaterial>()
+            .init_resource::<Changed>()
+            .add_systems(Last, note_changed);
+        let lighting = place_lighting(1.0);
+        let lit = |l: GameLighting| {
+            lit_material_of(&piece(Blend::Opaque, [0.0; 3]).material, false, &[], l)
+        };
+        let (lights, count) = (lighting.lights, lighting.scale.y);
+        let mut other = lighting;
+        other.lights[1].color.x += 1.0;
+        let mut fewer = lighting;
+        fewer.scale.y -= 1.0;
+        let handles = {
+            let mut assets = app.world_mut().resource_mut::<Assets<GameLitMaterial>>();
+            [lighting, other, fewer].map(|l| assets.add(lit(l)))
+        };
+        app.update();
+        app.world_mut().resource_mut::<Changed>().0.clear();
+        give_lights(
+            &mut app.world_mut().resource_mut::<Assets<GameLitMaterial>>(),
+            &handles,
+            lights,
+            count,
+        );
+        app.update();
+        let changed = &app.world().resource::<Changed>().0;
+        assert_eq!(changed, &[handles[1].id(), handles[2].id()]);
+        let assets = app.world().resource::<Assets<GameLitMaterial>>();
+        for h in &handles {
+            let l = assets.get(h).unwrap().lighting();
+            assert_eq!((l.lights, l.scale.y), (lights, count));
+        }
     }
 }
