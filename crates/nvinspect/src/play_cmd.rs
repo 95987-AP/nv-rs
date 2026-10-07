@@ -1133,6 +1133,14 @@ pub fn play(
             Event::Barter(m) => format!("trading with {}", describe_id(order, *m)),
             Event::KnockedOut { who } => format!("{} is down", describe_id(order, *who)),
             Event::GotUp { who } => format!("{} gets up", describe_id(order, *who)),
+            Event::Flees { who, to } => match to {
+                Some(to) => format!(
+                    "{} flees to {}",
+                    describe_id(order, *who),
+                    describe_id(order, *to)
+                ),
+                None => format!("{} flees", describe_id(order, *who)),
+            },
             Event::RecipeMenu { actor, category } => format!(
                 "crafting ({}) for {}",
                 describe_id(order, *category),

@@ -355,6 +355,10 @@ pub struct Hit {
     /// The attacker's "Knockdown Chance" perk knocked them down
     /// (`world::melee::knocks_down`).
     pub knocked_down: bool,
+    /// The fatigue damage it did (`world::fatigue`): bare fists' half of
+    /// their damage, a bean bag's; 0 when the target's fatigue was already
+    /// at `fMinimumFatigue` or below.
+    pub fatigue: f32,
 }
 
 /// The damage one of the attacker's hits with a weapon (or fists, `None`)

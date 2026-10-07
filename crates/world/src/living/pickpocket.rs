@@ -2,7 +2,8 @@
 //! `005fa330`, `0075dc80`, `0075e240`, `0075e0b0`, `00643400`, the crime
 //! `008c00e0`, live grenades `0075d510`).
 //!
-//! **Using a person** (`005fa330`): someone unconscious (`SetUnconscious`)
+//! **Using a person** (`005fa330`): someone unconscious (`SetUnconscious`),
+//! knocked down or essential and down (`world::fatigue::knocked`)
 //! answers "<name> is unconscious." (`sNoTalkUnConscious`), someone
 //! fleeing "<name> is fleeing." (`sNoTalkFleeing`); the dead are searched
 //! (their inventory opens as a container); a living person who isn't the
@@ -81,9 +82,14 @@ pub fn use_person(order: &LoadOrder, state: &GameState, who: FormId, fleeing: bo
     let joined = |setting: &str, exe: &str| {
         Use::Refused(format!("{} {}", name(), super::text(order, setting, exe)))
     };
-    if state.unconscious.contains(&who) {
+    // Unconscious (life state 3), knocked down (vtable +0x230: any knock
+    // state, `world::fatigue`) or essential and down (life state 6).
+    if state.unconscious.contains(&who) || crate::fatigue::knocked(state, who) {
         return joined("sNoTalkUnConscious", " is unconscious.");
     }
+    // Fleeing: the viewer's running away, or the engine's flee package
+    // (`ForceFlee`, `Actor::IsFleeing` (Xbox PDB)).
+    let fleeing = fleeing || crate::ai::flee::forced(state, who);
     if fleeing && !state.dead.contains(&who) {
         return joined("sNoTalkFleeing", " is fleeing for their life.");
     }
