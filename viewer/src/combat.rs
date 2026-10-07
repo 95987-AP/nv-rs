@@ -969,8 +969,18 @@ pub fn player_attack(
     } else {
         state.power_attacking.remove(&PLAYER_REF);
     }
-    if let Some(s) = weapon.as_ref().and_then(|w| w.sound) {
-        sounds.0.push(s);
+    // A gun's firing sound and muzzle flash (`weapon_fx`, `00523150` →
+    // `0083ac30`; melee attacks have none: a swing that meets no one plays
+    // its `TNAM`, below). Thrown weapons keep their `SNAM` as before (not
+    // traced: `00523150` doesn't play it for them).
+    match weapon.as_ref() {
+        Some(w) if world::explosions::is_thrown(w) => sounds.0.extend(w.sound),
+        Some(w) if !w.is_melee() => crate::weapon_fx::fired(crate::weapon_fx::Fired {
+            shooter: PLAYER_REF,
+            weapon: w.form_id,
+            from: None,
+        }),
+        _ => {}
     }
     // What the attack meets first along the view.
     let Ok(camera) = cameras.single() else {
@@ -1048,6 +1058,10 @@ pub fn player_attack(
         } = met
         else {
             let wall = matches!(met, Met::Nothing(true));
+            // A melee swing that meets no one (`00899200`).
+            if let Some(w) = weapon.as_ref().filter(|w| w.is_melee()) {
+                crate::weapon_fx::swung(PLAYER_REF, w.form_id);
+            }
             if let (Some(s), Some(g)) = (struck, gun) {
                 hits.shot_on_world(&collision.0, (eye, dir), s, PLAYER_REF, g);
             }
@@ -1336,7 +1350,6 @@ pub fn object_shots(
     mut state: ResMut<DialogueState>,
     mut shots: ResMut<ObjectShots>,
     collision: Res<CellCollision>,
-    mut sounds: ResMut<SoundRequests>,
     rigs: Query<(&Walker, &ActorRig)>,
     mut nodes: Local<HashMap<String, Option<nif::math::Transform>>>,
 ) {
@@ -1369,9 +1382,13 @@ pub fn object_shots(
             w.damage /= count.max(1) as f32;
             w
         };
-        if let Some(s) = w.sound {
-            sounds.0.push(s);
-        }
+        // Its firing sound, from the object (`weapon_fx`; `0083ac30` with
+        // no fire node: the object's place).
+        crate::weapon_fx::fired(crate::weapon_fx::Fired {
+            shooter: from,
+            weapon: w.form_id,
+            from: Some(origin),
+        });
         let heading = aim[0].atan2(aim[1]);
         let pitch = aim[2].clamp(-1.0, 1.0).asin();
         // Who can be met: the player and the people about, by their bounds.

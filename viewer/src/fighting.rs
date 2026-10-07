@@ -924,9 +924,12 @@ fn ranged(
             aim: crate::explosives::Aim::At(goal),
         });
     } else if shoots {
-        if let Some(sound) = w.sound {
-            c.sounds.0.push(sound);
-        }
+        // Its firing sound and muzzle flash (`weapon_fx`, `0083ac30`).
+        crate::weapon_fx::fired(crate::weapon_fx::Fired {
+            shooter: walker.reference,
+            weapon: w.form_id,
+            from: None,
+        });
         // The shot flies once everyone has moved ([`resolve_shots`]).
         c.shots.0.push(NpcShot {
             shooter: walker.reference,
@@ -1024,9 +1027,8 @@ fn melee(
                 dice.roll(),
             );
             fight.attack_until = now + kit.attack_seconds(weapon);
-            if let Some(sound) = weapon.and_then(|w| w.sound) {
-                c.sounds.0.push(sound);
-            }
+            // Melee attacks play no firing sound (`0083ac30` is the guns'):
+            // a swing that meets no one plays its `TNAM` (below).
             if let Some(w) = weapon {
                 world::noise::attacked(order, state, walker.reference, w);
             }
@@ -1051,6 +1053,9 @@ fn melee(
                     walker.reference,
                     if power { "power-attacks" } else { "hits" }
                 );
+            } else if let Some(w) = weapon {
+                // Met no one (`00899200`).
+                crate::weapon_fx::swung(walker.reference, w.form_id);
             }
             FightFrame {
                 gait: None,

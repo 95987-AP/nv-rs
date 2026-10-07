@@ -107,12 +107,24 @@ pub(crate) fn play(
     pick: u64,
     looping: bool,
 ) -> Option<Entity> {
-    let (path, bytes) = game.sound_file(sound, pick)?;
     let settings = if looping {
         PlaybackSettings::LOOP
     } else {
         PlaybackSettings::DESPAWN
     };
+    play_with(commands, game, wavs, sound, pick, settings)
+}
+
+/// [`play`] with these playback settings (a volume of its own).
+pub(crate) fn play_with(
+    commands: &mut Commands,
+    game: &cellview::Game,
+    wavs: &mut Assets<PcmSound>,
+    sound: &Sound,
+    pick: u64,
+    settings: PlaybackSettings,
+) -> Option<Entity> {
+    let (path, bytes) = game.sound_file(sound, pick)?;
     let pcm = read_sound(&path, &bytes)
         .map_err(|e| println!("  couldn't play {path}: {e}"))
         .ok()?;
