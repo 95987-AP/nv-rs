@@ -25,6 +25,13 @@ branch green.
   - `claude/contrib-chazm`: merging Chazm's PR #11 (terminals, hacking,
     item scripts, repair, weapon mods, companions, Caravan, casinos,
     crafting, Bink intro). Read docs/CONTRIB_CHAZM.md when it exists.
+  The computer was restarted while all three were running, so their
+  agents stopped mid-task. Their worktrees are
+  `%USERPROFILE%\nv-re\work\wt-death`, `wt-radio-unify` and
+  `wt-contrib-chazm`: check `git status` there for uncommitted work
+  (keep it; it's the agent's progress) and `git log` for commits, then
+  restart each as a new agent told what is already done. Chazm's PR is
+  fetched as `pr/11` (`git fetch origin pull/11/head:refs/remotes/pr/11`).
   If one is finished (report in its docs, checks pass), merge it into
   integration, run acceptance, publish. If one has stalled with no
   commits, finish it or restart it as a new agent from where it stopped.
