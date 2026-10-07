@@ -171,8 +171,15 @@ and `broken_things_come_off_and_stay_off` (`crates/world/tests/repair.rs`).
 Seen in the viewer at Mick & Ralph's (`--open-menu
 repair:FreesideMickREF`): Repair 75, mending to 85%; a 9mm pistol at 30%
 for 110 caps; clicking it paid 110 caps and left it at 85%, "CANNOT
-REPAIR PAST 85%". The Pip-Boy in Doc Mitchell's house with three 9mm
-pistols at 30% and Repair 15 (`--pipboy items:0 --pipboy-keys r,down,enter`):
+REPAIR PAST 85%". The merchant's menu takes the mouse through the
+game menus' interface (its `DoEnter` / `DoLeave` / `DoClick`, `007b82f0`,
+`007b8ae0`, `007b7d80`, were already translated): checked again on
+2026-10-07 with `--menu-pointer 520,255 --menu-click ...`, the pointer
+on the pistol's line showed its card and a click paid 110 caps (500 →
+390). The Pip-Boy in Doc Mitchell's house with three 9mm
+pistols at 30% and Repair 15 (`--pipboy items:0 --pipboy-keys r,down,down,enter`;
+without a pad nothing is chosen as the screen opens, so the first Down
+chooses the item's own line):
 the screen lists the pistol in brackets and its two spares, "CHOOSE ITEM TO
 REPAIR WITH"; on a spare "+9%" (3.875 → 38.75%) and DAM 6 → 7; Enter mends
 it, one spare left.

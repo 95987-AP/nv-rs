@@ -82,6 +82,19 @@ original game. Triage and what was rejected:
 `claude/contrib-chazm` into the integration branch after reviewing the
 acceptance results.
 
+Follow-ups for Chazm's areas, 2026-10-07 (branch
+`claude/repair-mod-followups`, from the integration branch): the Pip-Boy's
+Repair and Mod screens take the mouse (their `DoEnter` / `DoLeave` /
+`DoClick`, the scroll knob turning with their lists, the brackets' exact
+place; [REPAIR.md](REPAIR.md), [WEAPON_MODS.md](WEAPON_MODS.md)),
+`RemoveMe` on a worn item takes the worn one off first
+([ITEM_SCRIPTS.md](ITEM_SCRIPTS.md)), and the crafting menu's item card
+([CRAFTING.md](CRAFTING.md)); the merchants' repair menu already took
+the mouse (checked again). Unit-tested, seen in the viewer, acceptance
+routes pass (doc, vcg02, vms16); not compared with the original game. **Next action:** keep an item's
+condition and mods per instance (what it needs: [REPAIR.md](REPAIR.md),
+"Not done").
+
 Look-IK batch, 2026-10-06 (local session, branch `claude/m1-look-ik`).
 Corrections: ADR-0004 (restructure) was rejected on 2026-10-06 and the
 layout stays; `codex/m1-reload-update-order` was dropped unmerged; Codex is
