@@ -2458,9 +2458,11 @@ impl<'a> Runner<'a> {
 
     /// Time passes: each running quest's script runs (its `GameMode`
     /// blocks) once its delay has gone by (one a script set, else its
-    /// own, else [`QUEST_SCRIPT_DELAY`]). A quest's script first runs as soon as it's
-    /// running (a guess), with `GetSecondsPassed` the time since its last
-    /// run.
+    /// own, else [`QUEST_SCRIPT_DELAY`]). A quest's script first runs as
+    /// soon as it's running (traced for quests with their own delay,
+    /// `005ab400`; a guess for the rest, whose countdowns the game
+    /// staggers), with `GetSecondsPassed` the time since its last run (on
+    /// an own-delay quest's first run, the frame's).
     pub fn update(&mut self, seconds: f32) {
         self.state.roll();
         self.state.seconds += f64::from(seconds.max(0.0));
@@ -2483,18 +2485,31 @@ impl<'a> Runner<'a> {
             if quest.script.is_none() {
                 continue;
             }
-            let delay = match self.state.quest_delays.get(&q) {
-                Some(&d) if d > 0.0 => d,
-                _ if quest.delay > 0.0 => quest.delay,
-                _ => QUEST_SCRIPT_DELAY,
+            let own = match self.state.quest_delays.get(&q) {
+                Some(&d) if d > 0.0 => Some(d),
+                _ if quest.delay > 0.0 => Some(quest.delay),
+                _ => None,
             };
+            let delay = own.unwrap_or(QUEST_SCRIPT_DELAY);
+            let first = !self.state.quest_timers.contains_key(&q);
             let timer = self.state.quest_timers.entry(q).or_insert(delay);
             *timer += seconds;
             if *timer < delay {
                 continue;
             }
             let passed = std::mem::take(timer);
-            self.seconds_passed = passed;
+            // A quest with its own delay starts with its countdown at 0
+            // (`005ab400`), so it runs at once, and `GetSecondsPassed`
+            // gives the time gathered since its last run, or this frame's
+            // when there's none (`0059c430`, `005ac1e0`): on the first run,
+            // the frame's. (`VGenericTimer`, delay 0.1, so counts Doc
+            // Mitchell's farewell timer down over its second and third
+            // runs.)
+            self.seconds_passed = if first && own.is_some() {
+                seconds
+            } else {
+                passed
+            };
             self.run_blocks(q, None, "gamemode", |_| true);
         }
     }

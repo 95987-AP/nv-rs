@@ -138,14 +138,11 @@ pub struct Walker {
     /// The player's detection value at their last detection run.
     pub(crate) detected_player: i32,
     pub(crate) social: Option<Social>,
-    /// A dialogue package's talk (or line) given: nothing more until the
-    /// package is looked at again.
-    dialogue_done: bool,
-    /// A dialogue package's travel step is over: its procedures go on from
-    /// there (walking up to the target may take them off the place; the
-    /// game doesn't go back to the travel, only a restart of the package
-    /// does).
-    travelled: bool,
+    /// A dialogue package's steps (`world::ai::talk`): its travel over
+    /// (walking up to the target may take them off the place; the game
+    /// doesn't go back to the travel, only a new start of the package
+    /// does), the conversation package made, the talk under way.
+    talk_run: world::ai::talk::DialogueRun,
     /// Whom they look at (and so turn the body to, `008a3100`): the head-
     /// track target slots (`world::head_track`).
     pub(crate) head_track: HeadTrack,
@@ -250,8 +247,7 @@ impl Walker {
         self.target = None;
         self.target_ref = None;
         self.path_target = None;
-        self.dialogue_done = false;
-        self.travelled = false;
+        self.talk_run = world::ai::talk::DialogueRun::begin();
         self.door = None;
         self.long = None;
         self.pending = None;
@@ -304,8 +300,7 @@ impl Walker {
             velocity: [0.0; 3],
             detected_player: i32::MIN,
             social: None,
-            dialogue_done: false,
-            travelled: false,
+            talk_run: world::ai::talk::DialogueRun::begin(),
             head_track: HeadTrack::default(),
             head_tracking_off: false,
             kit: None,
@@ -603,6 +598,7 @@ pub struct Around<'w> {
     shots: ResMut<'w, crate::fighting::NpcShots>,
     swing_doors: Res<'w, crate::doors::SwingDoors>,
     paths: ResMut<'w, PathQueue>,
+    menus: Option<Res<'w, crate::menus::Menus>>,
 }
 
 /// The game settings fights ask for, looked up once
@@ -665,6 +661,7 @@ pub fn move_actors(
         mut shots,
         swing_doors,
         mut paths,
+        menus,
     } = around;
     let mut came = paths.take_done();
     let order = &game.0.order;
@@ -683,7 +680,13 @@ pub fn move_actors(
     // turns to face the player. With the AI held still (`--freeze-ai`)
     // people only take the places scripts put them in.
     let in_menu = conversation.0.as_ref().is_some_and(|t| !t.is_line_only());
-    let frozen = frozen_ai.0 || in_menu;
+    // Any other menu up (a script's message box, the Pip-Boy, a container,
+    // the game's own menus) is menu mode too: the main loop doesn't update
+    // the process lists then (`0086e650`, `00702360`), as the scripts'
+    // time stands still in them (`scripts`). The hardcore question after
+    // Doc Mitchell's farewell is one.
+    let menu_mode = menus.as_deref().is_some_and(crate::menus::Menus::is_open);
+    let frozen = frozen_ai.0 || in_menu || menu_mode;
     let speaker = conversation.0.as_ref().map(|t| t.speaker());
     let menu_speaker = speaker.filter(|_| in_menu);
     // The dialogue menu closed: the speaker's package is looked at again at
@@ -764,6 +767,11 @@ pub fn move_actors(
         rig.turning = turning_of(walker, rig.fighting);
         if Some(me) == ended {
             crate::sitting::dialogue_over(state, &mut life, me);
+            // `EndDialogue` puts their dialogue package back at its saved
+            // step (`008b1070` → `00913250`), DONE once it has talked
+            // (`005fa330`); the close then asks for their package
+            // (`00762160` → `008da670`).
+            walker.talk_run.conversation_over();
             walker.evaluate = true;
             if let Some(s) = walker.social.as_mut() {
                 s.greeted(&moves.social);
@@ -966,7 +974,7 @@ pub fn move_actors(
         if frozen {
             // The game stops the world in the dialogue menu: everyone else
             // holds still where they are, mid-stride included.
-            if in_menu && !walker.paused && !state.dead.contains(&me) {
+            if (in_menu || menu_mode) && !walker.paused && !state.dead.contains(&me) {
                 walker.paused = true;
                 rig.still = true;
             }
@@ -1260,10 +1268,10 @@ pub fn move_actors(
                     .clock
                     .due(dt, game_hour, forced, walker.package.is_some());
             if due && !life.getting_up {
-                rethink(&mut ctx, walker, &mut life, forced, &mut ask);
+                rethink(&mut ctx, walker, &mut life, &mut ask);
             }
             // A dialogue package: walk up and talk (`008e8600`).
-            if walker.package_kind == Some(world::ai::kinds::DIALOGUE) && !walker.dialogue_done {
+            if walker.package_kind == Some(world::ai::kinds::DIALOGUE) && !walker.talk_run.waiting {
                 dialogue_frame(&mut ctx, walker, (&mut chats, &mut lines, &mut talk), moves);
             }
             // A sandbox: the game's choices (`sitting`).
@@ -1558,9 +1566,9 @@ fn place(
 /// Looks at the person's package again: a new place to go gets a new path
 /// (getting up from any seat first: the game's `StandUp`, and this again
 /// once they're up). A travel to furniture uses it; a sandbox package gets
-/// its area (`sitting`). The same package goes on as it was, unless
-/// `restart` (forced: a dialogue package then starts again).
-fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool, ask: &mut Asking) {
+/// its area (`sitting`). The same package goes on as it was, even when the
+/// look is forced (`0090a1a0`).
+fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, ask: &mut Asking) {
     let game = ctx.game;
     let order = &game.order;
     let me = walker.reference;
@@ -1605,15 +1613,15 @@ fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool, a
         .filter(|l| l.kind == 0)
         .map(|l| l.form)
         .or_else(|| package.as_ref().and_then(world::ai::followed).map(|f| f.0));
-    // The same package: carry on (a new walk only if its place moved off
-    // while they were idle, which `follow_target` sees to).
-    if package_id == walker.package
-        && !(restart && walker.package_kind == Some(world::ai::kinds::DIALOGUE))
-    {
+    // The same package: carry on, forced or not (`0090a1a0`: the package
+    // chosen is the current one, so no new start and its step is kept; a
+    // new walk only if its place moved off while they were idle, which
+    // `follow_target` sees to). A dialogue package that has talked stays
+    // done (`world::ai::talk`).
+    if package_id == walker.package {
         return;
     }
-    walker.dialogue_done = false;
-    walker.travelled = false;
+    walker.talk_run = world::ai::talk::DialogueRun::begin();
     // Something new: up first if seated (or sitting down).
     let using = state.furniture.get(&me).copied();
     if let Some(sitter) = state.sitters.get_mut(&me) {
@@ -1628,8 +1636,6 @@ fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool, a
     if using.is_some() && using != target_ref {
         state.stand(me);
     }
-    // The same package again: a forced restart (a dialogue package's).
-    let restarted = package_id == walker.package;
     walker.door = way;
     walker.long = None;
     walker.package = package_id;
@@ -1639,7 +1645,7 @@ fn rethink(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, restart: bool, a
     // The package begins: its begin action (`0090a1a0` → +0x598), unless
     // `AddScriptPackage` already began it.
     if let Some(id) = package_id.filter(|id| id.0 != 0) {
-        world::ai::actions::begin(state, me, id, restarted);
+        world::ai::actions::begin(state, me, id, false);
     }
     walker.target = goal.map(|g| g.0);
     walker.target_ref = target_ref;
@@ -1790,7 +1796,7 @@ fn rethink_queued_package_before_furniture(
         .clock
         .due(ctx.dt, game_hour, true, walker.package.is_some());
     if due {
-        rethink(ctx, walker, life, true, ask);
+        rethink(ctx, walker, life, ask);
     }
     due
 }
@@ -2183,12 +2189,12 @@ fn dialogue_frame(
     };
     // The travel step, until it's over (then not again: the procedures
     // only go on, `008e8600`'s list).
-    let at_place = walker.travelled
+    let at_place = walker.talk_run.travelled
         || match destination(order, ctx.state, me, &package) {
             Some((to, radius)) => mv::arrived(walker.position, to, radius),
             None => true,
         };
-    walker.travelled = at_place;
+    walker.talk_run.travelled = at_place;
     if !at_place {
         // The travel: walking there (set up by `rethink`).
         if !walker.on_path() {
@@ -2252,17 +2258,21 @@ fn dialogue_frame(
             if let Some(s) = walker.social.as_mut() {
                 s.greeted(&moves.social);
             }
-            walker.dialogue_done = true;
+            walker.talk_run.said();
         }
         DialogueStep::Talk => {
             walker.clear_path();
-            walker.dialogue_done = true;
+            // `InitiateDialogue` makes the conversation package on one
+            // update; its ACTIVATE activates on the next (`world::ai::talk`).
+            if walker.talk_run.talk() == world::ai::talk::TalkUpdate::Initiate {
+                return;
+            }
             if target == PLAYER_REF {
                 // The player is activated: the dialogue menu, about the
                 // package's topic.
                 if talk.0.is_some() {
                     // Another's talk opens this frame: try again.
-                    walker.dialogue_done = false;
+                    walker.talk_run.retry();
                     return;
                 }
                 println!("{:.1} s: {me} starts talking to the player.", ctx.now);
@@ -2270,6 +2280,10 @@ fn dialogue_frame(
             } else {
                 start_chat(ctx, walker, chats, target, topic, false);
             }
+            // The one activated finishes the dialogue package (`005fa330`:
+            // saved at DONE, `PackageDone`): its end action, and no more
+            // talk after the conversation.
+            package_done(ctx.state, walker);
         }
     }
 }
@@ -2456,6 +2470,9 @@ fn chat_frame(
         || ctx.state.place(order, other).map(|p| p.0) != ctx.state.place(order, me).map(|p| p.0);
     let Some((_, _, at, their_heading)) = ctx.state.place(order, other).filter(|_| !gone) else {
         end_chat(chats, me);
+        // The DIALOGUE procedure's `EndDialogue` (`008ec460` → `008b1070` →
+        // `00913250`): a dialogue package is back at its saved step.
+        walker.talk_run.conversation_over();
         walker.evaluate = true;
         return;
     };
@@ -2533,6 +2550,9 @@ fn chat_frame(
             ctx.now
         );
         end_chat(chats, me);
+        // The DIALOGUE procedure's `EndDialogue` (`008ec460` → `008b1070` →
+        // `00913250`): a dialogue package is back at its saved step.
+        walker.talk_run.conversation_over();
         walker.evaluate = true;
         return;
     }
@@ -4398,7 +4418,6 @@ mod tests {
             &mut ctx,
             &mut walker,
             &mut life,
-            true,
             &mut Asking {
                 queue: &mut PathQueue::default(),
                 mesh: Default::default(),
@@ -4416,7 +4435,6 @@ mod tests {
             &mut ctx,
             &mut walker,
             &mut life,
-            true,
             &mut Asking {
                 queue: &mut PathQueue::default(),
                 mesh: Default::default(),
@@ -4433,7 +4451,6 @@ mod tests {
             &mut ctx,
             &mut walker,
             &mut life,
-            true,
             &mut Asking {
                 queue: &mut PathQueue::default(),
                 mesh: Default::default(),
@@ -4549,5 +4566,107 @@ mod tests {
         assert!(walker.on_path() && !walker.partial);
         let end = *walker.path.last().unwrap();
         assert!(distance(end, [19000.0, 3000.0, 0.0]) < 1.0, "{end:?}");
+    }
+
+    /// B12: leaving Doc Mitchell's door conversation started another at
+    /// once, forever: the forced look at the package when the menu closed
+    /// restarted the dialogue package, which talked again in that update.
+    /// In the game the same package goes on (`0090a1a0`), restored at the
+    /// step it was saved at (`00913250`), which talking to the player made
+    /// DONE (`005fa330`); the menu opens an update after the conversation
+    /// package is made (`008b19c0`, `008e9640`).
+    #[test]
+    fn a_dialogue_package_talks_once() {
+        use testdata::ai::ids as fixture;
+        let data = testdata::ai::world("dialogue-package-close");
+        let game = cellview::Game::open(
+            data.path(),
+            &cellview::Options {
+                official: true,
+                ..default()
+            },
+        )
+        .unwrap();
+        let me = FormId(fixture::TALKER_REF);
+        // The player stands next to the talker (-500, 0).
+        let mut state = world::scripting::GameState {
+            player_cell: Some(FormId(fixture::CELL)),
+            player_position: Some([-450.0, 0.0, 0.0]),
+            ..Default::default()
+        };
+        let mut seats = Seats::new(&game.order);
+        let mesh = world::ai::NavMesh::load(&game.order, FormId(fixture::CELL));
+        let moves = Moves::new(&game);
+        let settings = MoveSettings::defaults();
+        let mut life = Life::default();
+        let mut walker = Walker::at(me, [-500.0, 0.0, 0.0], 0.0, 1.0, false);
+        let (mut chats, mut lines, mut talk) = (
+            Chats::default(),
+            Lines::default(),
+            crate::scripts::ScriptedTalk::default(),
+        );
+        let mut ctx = Ctx {
+            game: &game,
+            state: &mut state,
+            seats: &mut seats,
+            mesh: &mesh,
+            moves: &settings,
+            now: 1.0,
+            dt: 0.1,
+            fighting: false,
+            talking: false,
+        };
+        let mut queue = PathQueue::default();
+        let mut look = |ctx: &mut Ctx, walker: &mut Walker, life: &mut Life| {
+            rethink(
+                ctx,
+                walker,
+                life,
+                &mut Asking {
+                    queue: &mut queue,
+                    mesh: Default::default(),
+                },
+            )
+        };
+        look(&mut ctx, &mut walker, &mut life);
+        assert_eq!(walker.package, Some(FormId(fixture::TALK_PACKAGE)));
+        // The conversation package is made on one update; the menu opens on
+        // the next.
+        let mut update =
+            |ctx: &mut Ctx, walker: &mut Walker, talk: &mut crate::scripts::ScriptedTalk| {
+                dialogue_frame(ctx, walker, (&mut chats, &mut lines, talk), &moves)
+            };
+        update(&mut ctx, &mut walker, &mut talk);
+        assert!(talk.0.is_none());
+        update(&mut ctx, &mut walker, &mut talk);
+        assert_eq!(talk.0.map(|t| t.0), Some(me));
+        // The menu is open: the package waits for it (`move_actors` runs no
+        // more of it).
+        assert!(walker.talk_run.waiting);
+        // The player leaves: `EndDialogue`, then the forced look at the
+        // package; on that same update no new conversation starts.
+        talk.0 = None;
+        walker.talk_run.conversation_over();
+        look(&mut ctx, &mut walker, &mut life);
+        assert_eq!(walker.package, Some(FormId(fixture::TALK_PACKAGE)));
+        // The package was finished when it activated the player
+        // (`005fa330`: saved at DONE, its end action): it doesn't talk
+        // again, on this update or later.
+        assert!(walker.talk_run.waiting && walker.talk_run.done);
+        assert!(walker.ended);
+        for _ in 0..3 {
+            if !walker.talk_run.waiting {
+                update(&mut ctx, &mut walker, &mut talk);
+            }
+            assert!(talk.0.is_none(), "a new conversation");
+        }
+        // A different package (Doc's sandbox, once VCG01 is completed)
+        // starts anew.
+        ctx.state
+            .script_packages
+            .insert(me, FormId(fixture::TO_MARKER));
+        look(&mut ctx, &mut walker, &mut life);
+        assert_eq!(walker.package_kind, Some(world::ai::kinds::TRAVEL));
+        assert!(!walker.talk_run.travelled && !walker.talk_run.waiting);
     }
 }
