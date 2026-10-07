@@ -67,8 +67,36 @@ branch green.
    Check with `gh issue list`; create any missing ones with `gh issue
    create` (title and body from TASKS.md, plus the claiming rules from
    CONTRIBUTING.md). Never post the maintainer's list (B-items) as issues.
-3. Resume the three stopped branches above (at most 3–4 agents at once).
-4. Then the maintainer's list.
+3. Ghidra MCP trial (one agent, about an hour, in parallel with step 4).
+   https://github.com/bethington/ghidra-mcp (Apache 2.0) serves a loaded
+   Ghidra program to agents over MCP, so they wouldn't each start a fresh
+   8 GB `analyzeHeadless` through `ghidra.ps1` (the main cause of running
+   out of memory with several agents, and of the 36 project copies).
+   - Pin one release; read its setup script before running it. It targets
+     Ghidra 12.1.3; ours is 12.1.4
+     (`%USERPROFILE%\nv-re\tools\ghidra_12.1.4_PUBLIC`): check it builds
+     and loads.
+   - Run its **headless** server on a fresh copy of the analyzed project
+     (e.g. copy `ghidra_1` to `%USERPROFILE%\nv-re\ghidra_mcp`), bound to
+     127.0.0.1, `GHIDRA_MCP_ALLOW_SCRIPTS` off, and **read-only use only**:
+     no renames, types or comments through it (they would change the
+     database every agent relies on, with its own naming conventions).
+     Naming work (e.g. importing the Xbox prototype names) stays on a
+     separate copy.
+   - Register it for this project in Claude Code's MCP settings (project
+     `.mcp.json` or user settings; don't commit machine paths).
+   - Compare: re-trace `00c78610` and `00c755e0` (look-IK) and one
+     function from today's batches through it, check the output matches
+     our existing exports, and run 2–3 agents against the one server at
+     once. Record memory use and time per query against `ghidra.ps1`.
+   - Write the result in docs/RESEARCH_WORKFLOW.md. If it holds up, tell
+     later agents to use it for Ghidra queries (keeping `ghidra.ps1` and
+     the committed `research/` tools as the documented, reproducible
+     method contributors can check provenance with), and run fewer project
+     copies. If it doesn't, say why and stop.
+4. Resume the stopped branches above (at most 3–4 agents at once).
+5. Then the maintainer's list.
+
 ## Choosing work
 
 1. Work the **maintainer's list** in TASKS.md (B1–B21: the build-11
