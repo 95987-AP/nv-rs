@@ -216,6 +216,7 @@ pub fn release_voices(
             continue;
         }
         if let Some(sink) = sink {
+            println!("  voice playing: {entity}");
             sink.play();
             commands.entity(entity).remove::<VoiceDelay>();
         }

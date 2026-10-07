@@ -1103,18 +1103,35 @@ pub fn after_line(
 }
 
 /// The quest and topic parts of a voice file's name: whole when together
-/// they're at most 25 letters, else the quest's first 10 and the topic's
-/// first 15 (`vfreeformgoodsprings_hit_00126f2b_1.ogg`, Sunny Smiles' hurt
-/// line, but `vfreeformg_greeting_00107220_1.ogg`; every one of the 16,293
-/// voice files in `Fallout - Voices1.bsa` with a part longer than 10 or 15
-/// letters has the two together at most 25).
+/// they're at most 25 letters; else, with a quest of at most 10 letters,
+/// the quest whole and the topic cut to the rest of the 25; with a longer
+/// quest, the quest's first 10 and the topic's first 15
+/// (`vfreeformgoodsprings_hit_00126f2b_1.ogg`, Sunny Smiles' hurt line,
+/// but `vfreeformg_greeting_00107220_1.ogg`; Doc Mitchell's psych test
+/// answers, quest `VCG01`, are `vcg01_vcg01docmitchelltopi_…`).
+// Translated from 006172c0 (decompiled, FalloutNV.exe 1.4.0.525; called by
+// the response's file name builder 00617400, "%s_%08X_%u"): strlen of
+// both; over 0x19, the topic is cut at 0x19 - quest length when the quest
+// is shorter than 0xb, else the quest at 10 and the topic at 0xf.
 pub fn voice_name_parts(quest: &str, topic: &str) -> (String, String) {
-    let (q, t) = (quest.to_ascii_lowercase(), topic.to_ascii_lowercase());
-    if q.chars().count() + t.chars().count() <= 25 {
-        (q, t)
-    } else {
-        (q.chars().take(10).collect(), t.chars().take(15).collect())
+    // Byte lengths, as strlen counts; cut on a character boundary.
+    fn cut(s: &mut String, mut at: usize) {
+        while !s.is_char_boundary(at) {
+            at -= 1;
+        }
+        s.truncate(at);
     }
+    let (mut q, mut t) = (quest.to_ascii_lowercase(), topic.to_ascii_lowercase());
+    if q.len() + t.len() > 25 {
+        let topic_len = if q.len() < 11 {
+            25 - q.len()
+        } else {
+            cut(&mut q, 10);
+            15
+        };
+        cut(&mut t, topic_len);
+    }
+    (q, t)
 }
 
 /// The voice file for a response: `sound\voice\<plugin>\<voice type>\

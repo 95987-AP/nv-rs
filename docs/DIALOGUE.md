@@ -275,6 +275,54 @@ sandbox walk after the farewell sticks at (2292, 2311) behind the player
 in the doorway (not part of this fix). Not carried out: "once a day"
 packages' day note (actor +0x28c), whether DONE runs the end action a
 second time (`008eeec0` case 0x36 with `IsPackageDoneOnce`).
+## Silent lines after skipping: the voice file's name (B11)
+
+Branch `claude/b11-voice-skip`, 2026-10-07. Playtest bug: after skipping
+some lines, the next lines showed their text but played no voice. Private
+exports in `%USERPROFILE%\nv-re\work\b11`.
+
+### What was wrong
+
+Not the skip. Reproduced in the release viewer on Doc's psych test: the
+skipped `GREETING` line's voices played and were cut, then every answer
+(`House.`, `Night.`, ...) and later the Pip-Boy line 001057E4 were silent,
+skipped or not. Their voice files are `vcg01_vcg01docmitchelltopi_…` in
+`Fallout - Voices1.bsa`; nv-rs looked for `vcg01_vcg01docmitchel_…`. The
+game's name rule (`006172c0`, called by the response's file name builder
+`00617400`, `"%s_%08X_%u"`): quest and topic editor IDs whole when
+together at most 25 bytes; else, with a quest under 11 bytes, the quest
+whole and the topic cut to 25 − the quest's length; else the quest cut to
+10 and the topic to 15. nv-rs always cut 10 + 15, so every line of a
+short-named quest with a long topic name (the psych test's
+`VCG01DocMitchellTopic0xx` topics: Doc's answers and follow-ups) was
+silent. The skip itself already matched the game: a click moves the menu
+to state 1 (`007624f0`), which stops the voice 500 ms later (`00762950`
+case 1, `008bc590`), and the next response starts once the speaker is done
+(`00762ff0`).
+
+### Fixed and tested
+
+- `world::dialogue::voice_name_parts` translated from `006172c0`; used by
+  the dialogue menu and by NPC chatter (`chatter.rs`).
+- Test: `crates/world/tests/impacts.rs`
+  `a_short_quest_leaves_the_topic_the_rest_of_25_letters` (the old rule
+  gave `vcg01docmitchel`).
+- The viewer now logs `voice started`/`playing`/`stopped`/`ended`, `line
+  skipped` and `no voice file` for each response.
+
+### Verified live (release viewer, installed data)
+
+`GSDocMitchellHouse --stage VCG01 110 --run "SetObjectiveCompleted VCG01
+40 1" --run-at 3 "DocMitchellREF.StartConversation player"`, fourteen
+`--say e`, `--menu-keys` Enter each second from 38 to 85 s (skipping every
+line): every response from the psych test through 001057E8, 001057E4
+(three) and 001057E6 logged `voice started` and `voice playing` with their
+`vcg01_vcg01docmitchelltopi_…` or `vcg01_greeting_…` file, and each skipped
+one `voice stopped`. Before the fix the same route logged no voice for
+any answer after the first skipped greeting. Not compared with the
+original game; Sunny's lines weren't run (her quest, `VCG02`, names are
+also short, so the same rule applies).
+
 ## Remaining gaps
 
 - The head's bound: the game merges the face node's skinned pieces'
