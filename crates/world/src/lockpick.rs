@@ -402,6 +402,9 @@ pub struct Frame {
     /// Right, Forward or Back, controls 2, 3, 0, 1).
     pub turn_pressed: bool,
     pub turn_held: bool,
+    /// The lockpicking tutorial (`world::tutorial`, id 0x14; 0x1C with a
+    /// pad) hasn't been shown yet.
+    pub tutorial_unseen: bool,
 }
 
 /// What the menu does as it goes, for the caller to carry out.
@@ -431,6 +434,10 @@ pub enum Effect {
     LockBroken,
     /// The menu closes.
     Close,
+    /// Ask for the lockpicking tutorial (`ShowMessage(id, 1014, 0)`, the
+    /// "ready" stage of `0078eb50`): the answer goes in
+    /// [`Picking::tutorial_wait`].
+    Tutorial,
 }
 
 /// The surprised Vault Boy (the menu's messages, `01049638`).
@@ -471,6 +478,9 @@ pub struct Picking {
     last_move: f32,
     pub sequences: Sequences,
     pub scene: Scene,
+    /// Waiting on the tutorial asked for (`+0x99`): nothing happens until
+    /// the menu is on top and the tutorial has been shown.
+    pub tutorial_wait: bool,
 }
 
 /// Why the menu doesn't open (`0078db00`).
@@ -527,6 +537,7 @@ impl Picking {
                 pin: (Shows::Forward, pin_begin),
                 pin_x: meter_width / 2.0,
             },
+            tutorial_wait: false,
         })
     }
 
@@ -593,6 +604,14 @@ impl Picking {
         };
         self.last_stage = Some(self.stage);
         let turned = (ms * 90) as f32;
+        // Waiting on the tutorial: the stage isn't run until the menu is on
+        // top again and the tutorial has been shown.
+        if self.tutorial_wait {
+            if !frame.active || frame.tutorial_unseen {
+                return effects;
+            }
+            self.tutorial_wait = false;
+        }
         match self.stage {
             Stage::Entering => {
                 let (Some(lock), Some(pin)) =
@@ -634,6 +653,12 @@ impl Picking {
                 }
             }
             Stage::Ready => {
+                // The tutorial first, if it hasn't been shown (asked for
+                // every frame until it has).
+                if frame.tutorial_unseen {
+                    effects.push(Effect::Tutorial);
+                    return effects;
+                }
                 if !frame.active {
                     return effects;
                 }
@@ -1017,6 +1042,47 @@ mod tests {
 
     fn run(p: &mut Picking, f: Frame) -> Vec<Effect> {
         p.update(&f, &mut || 5)
+    }
+
+    #[test]
+    fn ready_asks_for_the_tutorial_and_waits_on_it() {
+        let s = Settings::default();
+        let mut p = Picking::open(FormId(1), 2, 50, 3, s, 1000.0, 0.5, sequences()).unwrap();
+        let unseen = |ms| Frame {
+            tutorial_unseen: true,
+            ..frame(ms)
+        };
+        // Entering isn't held up by it.
+        while p.stage == Stage::Entering {
+            assert!(!run(&mut p, unseen(16)).contains(&Effect::Tutorial));
+        }
+        // Ready: asked for, nothing else (a turn key does nothing).
+        let mut f = unseen(16);
+        f.turn_pressed = true;
+        f.turn_held = true;
+        assert_eq!(run(&mut p, f), vec![Effect::Tutorial]);
+        assert_eq!(p.stage, Stage::Ready);
+        // Asked for (`ShowMessage` said yes): the menu waits while the
+        // tutorial is up (not on top) and until it has been shown.
+        p.tutorial_wait = true;
+        let mut f = frame(16);
+        f.active = false;
+        f.turn_pressed = true;
+        f.turn_held = true;
+        assert!(run(&mut p, f).is_empty());
+        let mut f = unseen(16);
+        f.turn_pressed = true;
+        f.turn_held = true;
+        assert!(run(&mut p, f).is_empty());
+        assert!(p.tutorial_wait);
+        // Shown and back on top: it goes on.
+        let mut f = frame(16);
+        f.turn_pressed = true;
+        f.turn_held = true;
+        let e = run(&mut p, f);
+        assert!(!p.tutorial_wait);
+        assert!(e.contains(&Effect::Sound("UILockpickingCylinderTurn")));
+        assert_eq!(p.stage, Stage::Turning);
     }
 
     #[test]

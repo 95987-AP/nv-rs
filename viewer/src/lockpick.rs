@@ -73,6 +73,9 @@ const CLEAR_LAYER: usize = 26;
 
 /// The straining sound (`0078eb50`), kept to fade it.
 const TENSION_SOUND: &str = "UILockpickingPickTensionLPM";
+/// The lockpicking tutorial (`00790290`: 0x14, 0x1C with a pad, which
+/// this menu doesn't take).
+const TUTORIAL: u8 = world::tutorial::id::LOCKPICKING_PC;
 /// Refusals' sound when the skill is too low (`0078db00`).
 pub const POPUP_SOUND: &str = "UIPopUpMessageGeneral";
 
@@ -509,6 +512,9 @@ pub fn pick_locks(
     let Some(open) = lockpicking.open.as_mut() else {
         return;
     };
+    // A game menu over it (its tutorial) hands the player back when it
+    // closes; the lockpicking menu keeps them.
+    player.ready = false;
 
     // The game's frame time in whole milliseconds (a millisecond clock's
     // steps, so nothing is lost between frames).
@@ -517,10 +523,12 @@ pub fn pick_locks(
     let turn = turn_keys(&game.0);
     let frame = Frame {
         ms,
-        active: true,
+        // On top unless one of the game's menus (its tutorial) is over it.
+        active: !menus.game_open,
         mouse: motion.delta.x * open.ui.screen_size.resolution_converter(),
         turn_pressed: turn.iter().any(|&k| keys.just_pressed(k)),
         turn_held: turn.iter().any(|&k| keys.pressed(k)),
+        tutorial_unseen: !state.tutorials.is_shown(TUTORIAL),
     };
     let mut effects = Vec::new();
     // F and E click the buttons the menu names (`HandleClick`, `00790330`).
@@ -587,6 +595,20 @@ pub fn pick_locks(
                 println!("The lock is broken: only its key opens it now.");
             }
             Effect::Close => close = true,
+            // `ShowMessage(id, 1014, 0)`: the menu waits if it was asked
+            // for (`+0x99`).
+            Effect::Tutorial => {
+                let wait = world::tutorial::ask(
+                    order,
+                    &mut state.tutorials,
+                    TUTORIAL,
+                    world::tutorial::menu::LOCKPICK,
+                    0,
+                );
+                if let Some(open) = lockpicking.open.as_mut() {
+                    open.picking.tutorial_wait = wait;
+                }
+            }
         }
     }
     if close {
@@ -940,6 +962,30 @@ fn show_lockpicking(
         .is_none_or(|d| d.features().contains(WgpuFeatures::TEXTURE_COMPRESSION_BC));
 
     if shown.is_none() {
+        // Into the HUD's picture: before the HUD's camera, which then lays
+        // the game's menus (the tutorial box) over it, blended
+        // (`caravan_table`'s toggle), the scene's camera writing the
+        // picture afresh. Into a picture of its own (no HUD): after its
+        // clearing camera.
+        let (scene_order, pictures_order, scene_output) = if hud_layer.is_some() {
+            (
+                -6,
+                -5,
+                CameraOutputMode::Write {
+                    blend_state: None,
+                    clear_color: ClearColorConfig::Custom(Color::NONE),
+                },
+            )
+        } else {
+            (
+                -3,
+                -2,
+                CameraOutputMode::Write {
+                    blend_state: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    clear_color: ClearColorConfig::None,
+                },
+            )
+        };
         let target = menu_layer(
             &mut commands,
             hud_layer.as_deref(),
@@ -970,10 +1016,10 @@ fn show_lockpicking(
                     Camera3d::default(),
                     Camera {
                         target: RenderTarget::from(target.clone()),
-                        order: -3,
+                        order: scene_order,
                         hdr: true,
                         clear_color: ClearColorConfig::Custom(Color::NONE),
-                        output_mode: blend_over,
+                        output_mode: scene_output,
                         ..default()
                     },
                     Tonemapping::None,
@@ -1000,7 +1046,7 @@ fn show_lockpicking(
                     Camera2d,
                     Camera {
                         target: RenderTarget::from(target),
-                        order: -2,
+                        order: pictures_order,
                         hdr: true,
                         clear_color: ClearColorConfig::Custom(Color::NONE),
                         output_mode: blend_over,

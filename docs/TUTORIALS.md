@@ -81,12 +81,26 @@ list (FLST 0x163, 0x165 with a pad); not done here.
 `tutorials` line; `ask` reads the record's flag), `ui::menus::tutorial`
 (`TutorialMenu`), the viewer's `game_menus::tutorial` (the update each
 frame over the open menus, `show` / `show_once`). Hooked: Caravan's four,
-crafting, hacking and the terminal menu. Seen live: Caravan's betting and
-deck-building messages against Ringo, closed with E, and the hacking
-message over a frozen hacking screen (GSSchoolTerminal01Ref).
+crafting, hacking, the terminal menu and lockpicking (`world::lockpick`'s
+`Effect::Tutorial` and `tutorial_wait`; the viewer now draws the
+lockpicking menu's scene and pictures before the HUD's camera, which lays
+the game's menus over them). Seen live: Caravan's betting and
+deck-building messages against Ringo, closed with E; the hacking message
+over a waiting hacking screen (GSSchoolTerminal01Ref); the lockpicking
+message over the lock (DinoBiteStorageDoorREF, NovacGiftShop), closed
+with E, the lock then picked as usual.
 
-Not done: the lockpicking menu's (the viewer draws that menu above the
-game's menus), V.A.T.S.'s, the Pip-Boy's (weapons, apparel, ammo; the
+The lockpicking message names the controls (`&-sUActnForward;` …): the
+game's text pass (`00a12fb0`) first asks `007070c0`, which reads the 28
+actions' settings (`sUActn…`, `011d51d0`) as the name of the key or mouse
+button bound to them (`007039b0`: mouse button below 9 by `sMouse…`,
+else key by `sKB…`, the DirectInput key number's setting, `011d52f0`).
+`ui::controls` has the tables and the exe's default bindings
+(`00a24b70`); `ui::game::new_ui` puts the names in the text settings, so
+the box reads "WSAD: Apply torque…" and "F: Force Lock" as in the game.
+A player's own bindings aren't read.
+
+Not done: V.A.T.S.'s, the Pip-Boy's (weapons, apparel, ammo; the
 Pip-Boy isn't one of the game menus here), the reputation message (no
 reputation message box here), the start menu's help manual and
 `ShowTutorialMenu`; the "held" and "outside the game" states (the viewer

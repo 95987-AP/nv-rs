@@ -183,8 +183,9 @@ pub fn prepare(
 /// character that many places back isn't `;` or a line end, then
 /// shortened by that many characters, so a name ending the text loses its
 /// last characters (as in the game). Names the setting lookup doesn't
-/// know leave the `&` as it is. (The game also asks `007070c0` first, not
-/// traced: control names, presumably.)
+/// know leave the `&` as it is. (The game asks `007070c0` first: the
+/// actions' settings read as their bindings' names, which `game::new_ui`
+/// puts in the settings, `controls`; the player's name and race aren't.)
 pub fn substitute(text: &[u8], setting: &dyn Fn(&str) -> Option<String>) -> Vec<u8> {
     let mut out = Vec::with_capacity(text.len());
     let at = |i: usize| text.get(i).copied().unwrap_or(0);

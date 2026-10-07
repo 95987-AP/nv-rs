@@ -145,12 +145,13 @@ fn show_table(
     mut pieces: Query<(&TablePiece, &mut Transform, &mut Visibility)>,
     mut cameras: Query<&mut Transform, (With<Camera3d>, Without<TablePiece>)>,
     mut hud_cameras: Query<&mut Camera, With<HudCamera>>,
+    queue: Res<crate::menus::Menus>,
 ) {
     let open = caravan(&menus);
     // While a menu's 3D is drawn (this table, the casino games':
-    // `casino_scene`) the HUD's camera lays its pictures over it (blended)
-    // instead of replacing the picture.
-    let blend = crate::game_menus::scene_open(&menus);
+    // `casino_scene`; the lockpicking menu's, `lockpick`) the HUD's camera
+    // lays its pictures over it (blended) instead of replacing the picture.
+    let blend = crate::game_menus::scene_open(&menus) || queue.lockpicking;
     for mut c in &mut hud_cameras {
         let blends = matches!(
             c.output_mode,

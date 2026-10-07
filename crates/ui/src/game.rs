@@ -548,10 +548,23 @@ pub fn new_ui(
         .into_iter()
         .map(|(k, v)| (k.to_ascii_lowercase(), v))
         .collect();
-    for (name, value) in EXE_TEXT_SETTINGS {
+    for (name, value) in EXE_TEXT_SETTINGS
+        .iter()
+        .copied()
+        .chain(crate::controls::KEYS.iter().map(|&(_, n, v)| (n, v)))
+        .chain(crate::controls::MOUSE_BUTTONS.iter().copied())
+    {
         settings
             .entry(name.to_ascii_lowercase())
             .or_insert_with(|| value.to_string());
+    }
+    // The actions' settings read as their bindings' names (`007070c0`
+    // before the settings themselves).
+    for (control, (name, _)) in crate::controls::ACTIONS.iter().enumerate() {
+        let text = crate::controls::action_text(control, &|s| {
+            settings.get(&s.to_ascii_lowercase()).cloned()
+        });
+        settings.insert(name.to_ascii_lowercase(), text);
     }
     let mut ui = Ui::new(
         screen(ini, width_px, height_px),
@@ -630,6 +643,26 @@ mod tests {
         assert_eq!(ui.setting_text("sOK").as_deref(), Some("Ok"));
         assert_eq!(ui.setting_text("sPCMenuHintA").as_deref(), Some("A)"));
         assert_eq!(ui.setting_text("sNothing"), None);
+    }
+
+    #[test]
+    fn controls_read_as_their_keys() {
+        let ini = |_: &str, _: &str| -> Option<String> { None };
+        let mut plugin = HashMap::new();
+        // FalloutNV.esm renames Caps Lock.
+        plugin.insert("sKBCapital".to_string(), "Caps Lock".to_string());
+        let ui = new_ui(&mut |_| None, &ini, plugin, 1920, 1080);
+        assert_eq!(ui.setting_text("sKBF").as_deref(), Some("F"));
+        assert_eq!(ui.setting_text("sUActnForward").as_deref(), Some("W"));
+        assert_eq!(ui.setting_text("sUActnUse").as_deref(), Some("Mouse1"));
+        assert_eq!(
+            ui.setting_text("sUActnTogglerun").as_deref(),
+            Some("Caps Lock")
+        );
+        let text = crate::text::substitute(b"&-sUActnForward;&-sUActnBack;: Apply", &|n| {
+            ui.setting_text(n)
+        });
+        assert_eq!(text, b"WS: Apply");
     }
 
     #[test]
