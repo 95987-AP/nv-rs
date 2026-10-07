@@ -54,6 +54,11 @@ original game**.
   (`claude/m2-third-person`), NPC weapon choice/reloads/GetShouldAttack/
   OnStartCombat (`claude/m2-npc-combat`), Back in the Saddle and Ghost Town
   Gunfight route fixes (`claude/m2-vcg02-route`, `claude/m2-vms16-route`).
+- M11 (2026-10-07, `claude/factions-crime`): reputation clamps, notices and
+  the title box, karma for owned terminals and notes, assault/murder
+  making the victim's factions enemies, hacking alarms, and the faction
+  armour disguises' engine side (form-list `GetEquipped`, area pulses)
+  traced and tested ([FACTIONS_CRIME.md](FACTIONS_CRIME.md)).
 - Acceptance evidence ([GOODSPRINGS_ROUTE.md](GOODSPRINGS_ROUTE.md)): with
   dialogue choices replayed by `--run` lines, Ghost Town Gunfight reaches
   stage 100 (XP +50) on the integration build; Back in the Saddle completes
