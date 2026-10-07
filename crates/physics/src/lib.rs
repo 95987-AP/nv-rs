@@ -1699,7 +1699,7 @@ mod tests {
                 tri.corners.map(|i| i + base),
                 tri.shell,
                 tri.owner,
-                (tri.material, surface, tri.layer),
+                (tri.material, surface, tri.layer, tri.reference),
             );
         }
         c.live.hidden.extend(other.live.hidden.iter().copied());
@@ -1786,6 +1786,7 @@ mod tests {
         assert_eq!(fast.triangles, slow.triangles);
         assert_eq!(fast.grid, slow.grid);
         assert_eq!(fast.live.owned, slow.live.owned);
+        assert_eq!(fast.live.placed, slow.live.placed);
         assert_eq!(fast.live.surfaces, slow.live.surfaces);
         assert_eq!(fast.live.hidden, slow.live.hidden);
         assert_eq!(fast.live.rest.len(), slow.live.rest.len());
@@ -1800,6 +1801,7 @@ mod tests {
         assert_eq!(twice.triangles, twice_slow.triangles);
         assert_eq!(twice.grid, twice_slow.grid);
         assert_eq!(twice.live.owned, twice_slow.live.owned);
+        assert_eq!(twice.live.placed, twice_slow.live.placed);
     }
 
     /// The shell the game's models have around their collision.
