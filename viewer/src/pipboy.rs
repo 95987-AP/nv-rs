@@ -225,7 +225,7 @@ pub struct LightOnSurfaces {
     last: Option<GameLight>,
     lit: HashMap<AssetId<GameLitMaterial>, usize>,
     terrain: HashMap<AssetId<crate::terrain::TerrainMaterial>, usize>,
-    counts: (usize, usize),
+    counts: (usize, usize, u64),
 }
 
 /// Adds the light to (or takes it from) one surface's lights; true when
@@ -268,6 +268,7 @@ fn pipboy_light(
     pieces: Query<(&MeshMaterial3d<GameLitMaterial>, &RenderLayers)>,
     mut lit: ResMut<Assets<GameLitMaterial>>,
     mut terrain: ResMut<Assets<crate::terrain::TerrainMaterial>>,
+    remade: Res<crate::daylight::RemadeLit>,
     mut on: Local<LightOnSurfaces>,
 ) {
     let data = *on
@@ -289,8 +290,9 @@ fn pipboy_light(
             color: Vec4::new(r, g, b, 0.0),
         })
     })();
-    // Moved little and nothing new to light: left as it is.
-    let counts = (lit.len(), terrain.len());
+    // Moved little and nothing new to light (no surface added, none made
+    // again): left as it is.
+    let counts = (lit.len(), terrain.len(), remade.times);
     let near = match (light, on.last) {
         (Some(a), Some(b)) => a.position_radius.distance(b.position_radius) < 0.05,
         (None, None) => true,

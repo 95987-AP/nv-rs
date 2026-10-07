@@ -40,6 +40,18 @@ pub struct Stars {
 /// The weathers the light last followed (current, fading out), the hour
 /// last applied, and whether every lit surface outdoors takes the shared
 /// light.
+/// Lit materials made again in place (a lone actor lit again for another
+/// place, `crate::LitPieces::relight`): taken up as newly put on screen
+/// ones are, as they would be had the actor been rebuilt (here, and by the
+/// Pip-Boy light, `crate::pipboy`).
+#[derive(Resource, Default)]
+pub struct RemadeLit {
+    /// Not yet taken up here.
+    pub ids: Vec<AssetId<GameLitMaterial>>,
+    /// How many times some were made again.
+    pub times: u64,
+}
+
 #[derive(Resource, Default)]
 pub struct Daylight {
     shown: Option<(Option<FormId>, Option<FormId>)>,
@@ -69,6 +81,7 @@ pub struct Lit<'w, 's> {
     meshes: ResMut<'w, Assets<Mesh>>,
     all_lit: Query<'w, 's, &'static MeshMaterial3d<GameLitMaterial>, Outdoors>,
     new_lit: Query<'w, 's, &'static MeshMaterial3d<GameLitMaterial>, NewLit>,
+    remade: ResMut<'w, RemadeLit>,
     domes: Query<'w, 's, (&'static Mesh3d, &'static SkyWeights)>,
     new_domes: Query<'w, 's, (), NewSky>,
     stars: Query<'w, 's, (&'static Mesh3d, &'static Stars)>,
@@ -92,6 +105,8 @@ pub fn follow_the_clock(
     mut lit: Lit,
 ) {
     let daylight = &mut *daylight;
+    // Like the `Added` filter, seen once.
+    let remade = std::mem::take(&mut lit.remade.ids);
     let Some(mut exterior) = exterior else {
         daylight.applied = None;
         daylight.switched = false;
@@ -118,7 +133,7 @@ pub fn follow_the_clock(
     let all = daylight
         .applied
         .is_none_or(|h| (h - hour).abs() >= MINUTE || lit.new_domes.iter().next().is_some());
-    let newcomers = !lit.new_lit.is_empty() || !daylight.switched;
+    let newcomers = !lit.new_lit.is_empty() || !remade.is_empty() || !daylight.switched;
     if !all && !newcomers {
         return;
     }
@@ -162,7 +177,7 @@ pub fn follow_the_clock(
     // Lit surfaces onto it: every one the first time outdoors, else the
     // new ones (their own copy kept up to date with it too).
     let lit_handles: Vec<AssetId<GameLitMaterial>> = if daylight.switched {
-        lit.new_lit.iter().map(|m| m.0.id()).collect()
+        lit.new_lit.iter().map(|m| m.0.id()).chain(remade).collect()
     } else {
         lit.all_lit.iter().map(|m| m.0.id()).collect()
     };

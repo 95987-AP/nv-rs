@@ -632,6 +632,32 @@ pick's fuzzy cases with the original game.
 B10 (`claude/b10-greetings`): greetings traced (`008eeec0`, `008bc3d0`): one GREET line to the player at a time, a 30 s player-wide `fHelloCooldownTime` after any greeting (`008bc520`/`008bc560`, player update `00944179`), the greeter's 20 s counted from the line's end, the package's hello/chatter flags; activating someone whose greeting is a one-response Goodbye line only says it (`005fa330`), and saying stops the speech in progress (`00934250`). Verified live: settler says a line without the menu, Easy Pete opens it, greetings 30+ s apart; not compared with the original ([DIALOGUE.md](DIALOGUE.md)). **Next action:** record a Goodsprings walk in the original and count greetings.
 
 B11 (`claude/b11-voice-skip`): lines after a skip were silent because the voice file name was wrong for short quest names with long topics (Doc's psych test, his Pip-Boy line), not because of the skip: the name rule is now translated from `006172c0` (a quest under 11 bytes keeps whole, the topic gets the rest of 25). Verified live: every response of Doc's psych test and farewell plays its voice with every line skipped; not compared with the original ([DIALOGUE.md](DIALOGUE.md)). **Next action:** check all voice file names against the voice archives.
+## M4: PR #12 review and streaming hitches (`claude/perf-streaming`, 2026-10-07)
+
+Merge notes for PR #12 (performance), stacked on `claude/perf-latest`;
+details and method in [PERFORMANCE.md](PERFORMANCE.md). The maintainer's
+three review points:
+- **Shared textures:** tinted faces and hair are keyed by what they were
+  made from (`"<base> + FaceGen <tint>"`, `"<base> + layer <file>"`, per-NPC
+  tint files), so they don't mix. The cache's lifetime was wrong instead
+  (textures freed while held, re-uploads across frames); fixed in
+  `ba8e864`.
+- **Screenshots** of Doc's house, faces (Doc, Trudy, Sunny, Chet, Pete) and
+  Goodsprings before/after: differences within the noise of two runs of
+  the same build (idle poses, grass, tumbleweeds).
+- **Acceptance-route frame rates** (median fps before → after, busy
+  machine, re-measure on a quiet one): doc 252–264 → 474–504, vcg02 132 →
+  273, vms16 113 → 240; all routes pass in both.
+
+Commits that should go into PR #12: `ba8e864` (texture lifetime). Follow-ups
+on the same branch: `d0bbcc0` (player body/view relit, not rebuilt),
+`1fe77bf` (outdoor collider gathered without re-measuring), `5e7f8eb`
+(materials kept when their lights don't change): flying out of
+Goodsprings, each 2 s window's longest frame 130–230 ms before
+`d0bbcc0`, 45–115 ms after it (median 75 ms), median 36–39 ms after
+`5e7f8eb`. Not fixable here: a minimized window held to 60 fps (bevy_winit
+redraw pacing). **Next action:** re-measure the route table on a quiet
+machine.
 
 ## Deferred
 

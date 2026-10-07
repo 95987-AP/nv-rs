@@ -316,6 +316,7 @@ fn main() {
         .insert_resource(walk::CellCollision(physics::Collider::new()))
         .insert_resource(walk::Doors(Vec::new()))
         .init_resource::<UploadedTextures>()
+        .init_resource::<daylight::RemadeLit>()
         .insert_resource(PendingScene(scene))
         .insert_resource(PendingExterior(outdoors))
         .insert_resource(grading)
@@ -1383,6 +1384,51 @@ fn game_lights(list: &[cellview::LightData], brightness: f32) -> [GameLight; MAX
     lights
 }
 
+/// A material lit by placed lights.
+trait PlaceLit: Asset {
+    fn lighting(&self) -> &GameLighting;
+    fn lighting_mut(&mut self) -> &mut GameLighting;
+}
+
+impl PlaceLit for GameLitMaterial {
+    fn lighting(&self) -> &GameLighting {
+        &self.extension.lighting
+    }
+    fn lighting_mut(&mut self) -> &mut GameLighting {
+        &mut self.extension.lighting
+    }
+}
+
+impl PlaceLit for TerrainMaterial {
+    fn lighting(&self) -> &GameLighting {
+        &self.extension.lighting
+    }
+    fn lighting_mut(&mut self) -> &mut GameLighting {
+        &mut self.extension.lighting
+    }
+}
+
+/// Gives these materials placed lights (`count` of them used), leaving
+/// alone those that have them already: changing a material (`get_mut`)
+/// has the render world prepare it again, the same as it was.
+fn give_lights<M: PlaceLit>(
+    materials: &mut Assets<M>,
+    handles: &[Handle<M>],
+    lights: [GameLight; MAX_LIGHTS],
+    count: f32,
+) {
+    for handle in handles {
+        let has = |l: &GameLighting| l.lights == lights && l.scale.y == count;
+        if materials.get(handle).is_some_and(|m| !has(m.lighting())) {
+            if let Some(m) = materials.get_mut(handle) {
+                let l = m.lighting_mut();
+                l.lights = lights;
+                l.scale.y = count;
+            }
+        }
+    }
+}
+
 /// A fade by viewing angle that never fades: opacity 1 at every angle.
 const NO_FALLOFF: Vec4 = Vec4::new(0.0, 0.0, 1.0, 1.0);
 
@@ -1550,18 +1596,55 @@ pub struct Spawner<'w, 's> {
     water: water::WaterSpawn<'w>,
     particle_materials: ResMut<'w, Assets<particles::ParticleMaterial>>,
     uploaded: ResMut<'w, UploadedTextures>,
+    remade_lit: ResMut<'w, daylight::RemadeLit>,
 }
 
-/// The places' textures on the GPU by what they are (the file, read as
-/// data or colour, its layers, compressed or not, the anisotropy), so a
+/// What a place's texture on the GPU is: the file (or what it was made
+/// from: a face's tint and a hair's layer map are in the name, see
+/// `cellview::TextureData::plus_face_tint`), read as data or colour, its
+/// layers, compressed or not, the anisotropy.
+type TextureKey = (String, bool, u32, bool, u16);
+
+/// The places' textures on the GPU by what they are ([`TextureKey`]), so a
 /// texture another loaded place already has isn't converted and sent
-/// again (outdoor squares share most of theirs). Only ids: a texture
-/// goes when no place holds it any more, as before, and is sent again
-/// if it's wanted after.
+/// again (outdoor squares share most of theirs). Only weak references to
+/// the handles the places hold: a texture goes when no place holds it any
+/// more, as before, and is sent again if it's wanted after.
+///
+/// The handle given out is the one the places already hold (the same
+/// `Arc`), not a new strong handle from `Assets::get_strong_handle`: the
+/// places' images are the render world's only (`RenderAssetUsages::
+/// RENDER_WORLD`), so the main world's copy is gone a frame after it's
+/// added, and Bevy 0.16 forgets a new handle's count then; the first
+/// place to go would free the texture under the others' feet.
 #[derive(Resource, Default)]
-pub struct UploadedTextures(
-    std::collections::HashMap<(String, bool, u32, bool, u16), AssetId<Image>>,
-);
+pub struct UploadedTextures {
+    held: std::collections::HashMap<TextureKey, std::sync::Weak<bevy::asset::StrongHandle>>,
+    /// Entries kept before the gone ones are swept out.
+    sweep_at: usize,
+}
+
+impl UploadedTextures {
+    /// The texture still held by some place, else `upload`'s (remembered).
+    fn get_or_upload(
+        &mut self,
+        key: TextureKey,
+        upload: impl FnOnce() -> Option<Handle<Image>>,
+    ) -> Option<Handle<Image>> {
+        if let Some(held) = self.held.get(&key).and_then(std::sync::Weak::upgrade) {
+            return Some(Handle::Strong(held));
+        }
+        let handle = upload()?;
+        if let Handle::Strong(strong) = &handle {
+            if self.held.len() >= self.sweep_at {
+                self.held.retain(|_, w| w.strong_count() > 0);
+                self.sweep_at = (2 * self.held.len()).max(1024);
+            }
+            self.held.insert(key, Arc::downgrade(strong));
+        }
+        Some(handle)
+    }
+}
 
 impl Spawner<'_, '_> {
     /// A place's texture: the one already on the GPU when a loaded place
@@ -1579,17 +1662,10 @@ impl Spawner<'_, '_> {
             compressed,
             anisotropy,
         );
-        if let Some(handle) = self
-            .uploaded
-            .0
-            .get(&key)
-            .and_then(|&id| self.images.get_strong_handle(id))
-        {
-            return Some(handle);
-        }
-        let handle = upload_texture(&mut self.images, texture, compressed, anisotropy)?;
-        self.uploaded.0.insert(key, handle.id());
-        Some(handle)
+        let images = &mut self.images;
+        self.uploaded.get_or_upload(key, || {
+            upload_texture(images, texture, compressed, anisotropy)
+        })
     }
 
     /// Puts a loaded place's textures, models and terrain on screen, and
@@ -1617,22 +1693,14 @@ impl Spawner<'_, '_> {
         self.spawn_parts(scene, None, Some((here, noise)))
     }
 
-    /// Gives the materials of a spawned place these lights.
+    /// Gives the materials of a spawned place these lights. Outdoors this
+    /// is redone for every loaded square whenever one comes or goes, and
+    /// most keep the lights they had ([`give_lights`]).
     fn relight(&mut self, spawned: &Spawned, lights: &[cellview::LightData]) {
         let list = game_lights(lights, self.settings.brightness);
         let count = lights.len().min(MAX_LIGHTS) as f32;
-        for m in &spawned.lit {
-            if let Some(m) = self.lit_materials.get_mut(m) {
-                m.extension.lighting.lights = list;
-                m.extension.lighting.scale.y = count;
-            }
-        }
-        for m in &spawned.terrain {
-            if let Some(m) = self.terrain_materials.get_mut(m) {
-                m.extension.lighting.lights = list;
-                m.extension.lighting.scale.y = count;
-            }
-        }
+        give_lights(&mut self.lit_materials, &spawned.lit, list, count);
+        give_lights(&mut self.terrain_materials, &spawned.terrain, list, count);
     }
 
     /// `land_blend`: outdoors, the player's square and the distant land's
@@ -1891,6 +1959,26 @@ pub struct Spawned {
     pub terrain: Vec<Handle<TerrainMaterial>>,
 }
 
+/// A lone actor's lit pieces (`Spawner::spawn_lone_actor_lit`): its
+/// textures, and each piece's material with what it was made from (its
+/// surface and whether it has tangents), to light them again.
+#[derive(Default)]
+pub struct LitPieces {
+    textures: Vec<Option<Handle<Image>>>,
+    lit: Vec<(Handle<GameLitMaterial>, cellview::MaterialData, bool)>,
+}
+
+impl LitPieces {
+    /// Each piece's material made again with `lighting`.
+    fn relight(&self, materials: &mut Assets<GameLitMaterial>, lighting: GameLighting) {
+        for (handle, material, tangents) in &self.lit {
+            if let Some(m) = materials.get_mut(handle) {
+                *m = lit_material_of(material, *tangents, &self.textures, lighting);
+            }
+        }
+    }
+}
+
 impl Spawner<'_, '_> {
     /// One actor on its own (the first-person view) under `parent`, lit by
     /// `lighting`, drawn by the first-person camera alone: its root, its
@@ -1913,6 +2001,19 @@ impl Spawner<'_, '_> {
         parent: Entity,
         layer: usize,
     ) -> Option<(Entity, Vec<Entity>, Vec<Entity>)> {
+        self.spawn_lone_actor_lit(scene, lighting, parent, layer)
+            .map(|(root, joints, pieces, _)| (root, joints, pieces))
+    }
+
+    /// [`Self::spawn_lone_actor_on`], also giving what it takes to light its
+    /// pieces again ([`Self::relight_lone_actor`]).
+    fn spawn_lone_actor_lit(
+        &mut self,
+        scene: &ViewerScene,
+        lighting: GameLighting,
+        parent: Entity,
+        layer: usize,
+    ) -> Option<(Entity, Vec<Entity>, Vec<Entity>, LitPieces)> {
         let actor = scene.actors.first()?;
         let compressed = self
             .device
@@ -1939,6 +2040,7 @@ impl Spawner<'_, '_> {
             })
             .collect();
         let mut pieces = Vec::new();
+        let mut lit = Vec::new();
         for draw in &scene.draws {
             let data = &scene.meshes[draw.mesh];
             let Some((mesh, bind)) = actors::skinned_mesh(data) else {
@@ -1949,6 +2051,11 @@ impl Spawner<'_, '_> {
             let material = self
                 .lit_materials
                 .add(lit_material(data, &textures, lighting));
+            lit.push((
+                material.clone(),
+                data.material.clone(),
+                data.tangents.is_some(),
+            ));
             let skin_joints = actors::skin_joints(data, &joints);
             pieces.push(
                 self.commands
@@ -1964,7 +2071,21 @@ impl Spawner<'_, '_> {
                     .id(),
             );
         }
-        Some((root, joints, pieces))
+        Some((root, joints, pieces, LitPieces { textures, lit }))
+    }
+
+    /// Lights a lone actor's pieces with `lighting`: each material made
+    /// again as [`Self::spawn_lone_actor_lit`] would make it now, and
+    /// handed to the daylight as a new one is (`daylight::RemadeLit`; it's
+    /// the only thing that changes a lone actor's materials after), without
+    /// rebuilding the actor.
+    fn relight_lone_actor(&mut self, pieces: &LitPieces, lighting: GameLighting) {
+        pieces.relight(&mut self.lit_materials, lighting);
+        // Outdoors the hour's light goes onto them as onto new ones.
+        self.remade_lit
+            .ids
+            .extend(pieces.lit.iter().map(|(handle, _, _)| handle.id()));
+        self.remade_lit.times += 1;
     }
 }
 
@@ -2508,7 +2629,17 @@ fn lit_material(
     textures: &[Option<Handle<Image>>],
     lighting: GameLighting,
 ) -> GameLitMaterial {
-    let m = &data.material;
+    lit_material_of(&data.material, data.tangents.is_some(), textures, lighting)
+}
+
+/// [`lit_material`] from the piece's material and whether it has tangents
+/// (all it reads of the piece).
+fn lit_material_of(
+    m: &cellview::MaterialData,
+    tangents: bool,
+    textures: &[Option<Handle<Image>>],
+    lighting: GameLighting,
+) -> GameLitMaterial {
     let [r, g, b, a] = m.color;
     let base = StandardMaterial {
         base_color: Color::linear_rgba(r, g, b, a),
@@ -2570,7 +2701,7 @@ fn lit_material(
         let glow = m.glow.and_then(|i| textures[i].clone());
         let normal_map = m
             .normal_map
-            .filter(|_| data.tangents.is_some())
+            .filter(|_| tangents)
             .and_then(|i| textures[i].clone());
         let [er, eg, eb] = m.emissive;
         let specular = m.specular.map_or(Vec4::ZERO, |s| {
@@ -2938,6 +3069,91 @@ fn adjust_exposure(keys: Res<ButtonInput<KeyCode>>, mut cameras: Query<&mut Expo
 mod tests {
     use super::*;
 
+    /// The images Bevy is told no handle holds any more (the render world
+    /// then drops their GPU copies).
+    #[derive(Resource, Default)]
+    struct Freed(Vec<AssetId<Image>>);
+
+    fn note_freed(mut events: EventReader<AssetEvent<Image>>, mut freed: ResMut<Freed>) {
+        for e in events.read() {
+            if let AssetEvent::Unused { id } = e {
+                freed.0.push(*id);
+            }
+        }
+    }
+
+    fn texture_app() -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>()
+            .init_resource::<Freed>()
+            .add_systems(Last, note_freed);
+        app
+    }
+
+    fn render_world_image(app: &mut App) -> Option<Handle<Image>> {
+        let image = Image {
+            asset_usage: RenderAssetUsages::RENDER_WORLD,
+            ..default()
+        };
+        Some(app.world_mut().resource_mut::<Assets<Image>>().add(image))
+    }
+
+    /// What `bevy_render`'s extraction does with a render-world-only image
+    /// at the end of the frame it was added in.
+    fn extract(app: &mut App, id: AssetId<Image>) {
+        app.world_mut().resource_mut::<Assets<Image>>().remove(id);
+    }
+
+    fn key() -> TextureKey {
+        ("textures\\rock.dds".into(), false, 1, true, 16)
+    }
+
+    /// Two places loaded in one frame share a texture; the first one going
+    /// mustn't free it while the second still draws with it.
+    #[test]
+    fn a_texture_shared_in_one_frame_stays_while_a_place_holds_it() {
+        let mut app = texture_app();
+        let mut cache = UploadedTextures::default();
+        let first = cache.get_or_upload(key(), || render_world_image(&mut app));
+        let second = cache.get_or_upload(key(), || panic!("sent again"));
+        let id = first.as_ref().unwrap().id();
+        assert_eq!(second.as_ref().map(Handle::id), Some(id));
+        extract(&mut app, id);
+        app.update();
+        drop(first);
+        app.update();
+        app.update();
+        assert!(app.world().resource::<Freed>().0.is_empty());
+        drop(second);
+        app.update();
+        assert_eq!(app.world().resource::<Freed>().0, vec![id]);
+    }
+
+    /// A place loaded frames later takes the texture already on the GPU
+    /// (not a copy), and keeps it after the first place goes.
+    #[test]
+    fn a_texture_is_shared_across_frames() {
+        let mut app = texture_app();
+        let mut cache = UploadedTextures::default();
+        let first = cache.get_or_upload(key(), || render_world_image(&mut app));
+        let id = first.as_ref().unwrap().id();
+        extract(&mut app, id);
+        app.update();
+        app.update();
+        let later = cache.get_or_upload(key(), || panic!("sent again"));
+        assert_eq!(later.as_ref().map(Handle::id), Some(id));
+        drop(first);
+        app.update();
+        assert!(app.world().resource::<Freed>().0.is_empty());
+        // Once no place holds it, it goes, and is sent again when wanted.
+        drop(later);
+        app.update();
+        assert_eq!(app.world().resource::<Freed>().0, vec![id]);
+        let again = cache.get_or_upload(key(), || render_world_image(&mut app));
+        assert_ne!(again.map(|h| h.id()), Some(id));
+    }
+
     /// Sunny Smiles walking out of the saloon (`VCG02`) must join the
     /// outdoor people, once, so trigger volumes see her.
     #[test]
@@ -3140,6 +3356,84 @@ mod tests {
         }
     }
 
+    /// A place's lighting with every value set from `k`, so two differ
+    /// everywhere.
+    fn place_lighting(k: f32) -> GameLighting {
+        let v = |i: f32| Vec4::splat(k + 0.1 * i);
+        GameLighting {
+            ambient: v(0.0),
+            directional_color: v(1.0),
+            directional_direction: v(2.0),
+            emissive: v(3.0),
+            scale: v(4.0),
+            fog_color: v(5.0),
+            fog_range: v(6.0),
+            specular: v(7.0),
+            surface: v(8.0),
+            falloff: v(9.0),
+            environment: v(10.0),
+            draw: v(11.0),
+            lights: [lighting::GameLight {
+                position_radius: v(12.0),
+                color: v(13.0),
+            }; MAX_LIGHTS],
+            actor: v(14.0),
+            hair_tint: v(15.0),
+        }
+    }
+
+    /// The player's body and first-person view are lit again, not rebuilt,
+    /// when the place's lighting changes: their materials must come out as
+    /// a rebuild in the new light would make them.
+    #[test]
+    fn a_lone_actor_lit_again_is_as_if_built_in_that_light() {
+        let (before, after) = (place_lighting(1.0), place_lighting(2.0));
+        let mut skin = piece(Blend::Opaque, [0.0; 3]);
+        skin.material.shading = preview::cell::Shading::Skin;
+        skin.material.texture = Some(0);
+        skin.material.normal_map = Some(1);
+        skin.material.specular = Some(cellview::Specular {
+            color: [0.5; 3],
+            glossiness: 10.0,
+        });
+        skin.tangents = Some(vec![[1.0, 0.0, 0.0, 1.0]; 3]);
+        let mut hair = piece(Blend::Mask(0.5), [0.0; 3]);
+        hair.material.shading = preview::cell::Shading::Hair;
+        hair.material.hair_tint = Some([0.3, 0.2, 0.1]);
+        let mut decal = piece(Blend::Blend, [1.0; 3]);
+        decal.material.decal = true;
+        let mut unlit = piece(Blend::Add, [1.0; 3]);
+        unlit.material.unlit = true;
+        let all = [skin, hair, decal, unlit];
+        let textures = vec![Some(Handle::default()), Some(Handle::default())];
+        let mut materials = Assets::<GameLitMaterial>::default();
+        let pieces = LitPieces {
+            textures: textures.clone(),
+            lit: all
+                .iter()
+                .map(|d| {
+                    let m = materials.add(lit_material(d, &textures, before));
+                    (m, d.material.clone(), d.tangents.is_some())
+                })
+                .collect(),
+        };
+        pieces.relight(&mut materials, after);
+        for ((handle, _, _), data) in pieces.lit.iter().zip(&all) {
+            let got = materials.get(handle).unwrap();
+            let want = lit_material(data, &textures, after);
+            let old = lit_material(data, &textures, before);
+            assert_ne!(old.extension.lighting, want.extension.lighting);
+            assert_eq!(got.extension.lighting, want.extension.lighting);
+            assert_eq!(got.extension.key, want.extension.key);
+            assert_eq!(got.extension.normal_map, want.extension.normal_map);
+            assert_eq!(got.base.base_color, want.base.base_color);
+            assert_eq!(got.base.base_color_texture, want.base.base_color_texture);
+            assert_eq!(got.base.alpha_mode, want.base.alpha_mode);
+            assert_eq!(got.base.depth_bias, want.base.depth_bias);
+            assert_eq!(got.base.unlit, want.base.unlit);
+        }
+    }
+
     #[test]
     fn cut_outs_are_tested_in_the_shader_and_tested_glass_blends() {
         // The alpha test is the shader's (the game's exact comparison), so
@@ -3173,5 +3467,60 @@ mod tests {
             panic!("no corners");
         };
         assert_eq!(a[0], [2.0, -1.0, 0.0]);
+    }
+
+    #[derive(Resource, Default)]
+    struct Changed(Vec<AssetId<GameLitMaterial>>);
+
+    fn note_changed(
+        mut events: EventReader<AssetEvent<GameLitMaterial>>,
+        mut changed: ResMut<Changed>,
+    ) {
+        for e in events.read() {
+            if let AssetEvent::Modified { id } = e {
+                changed.0.push(*id);
+            }
+        }
+    }
+
+    /// Outdoors every loaded square is given its lights again whenever a
+    /// square comes or goes: only the materials whose lights differ are
+    /// changed (and prepared again by the render world).
+    #[test]
+    fn only_materials_whose_lights_differ_are_changed() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<GameLitMaterial>()
+            .init_resource::<Changed>()
+            .add_systems(Last, note_changed);
+        let lighting = place_lighting(1.0);
+        let lit = |l: GameLighting| {
+            lit_material_of(&piece(Blend::Opaque, [0.0; 3]).material, false, &[], l)
+        };
+        let (lights, count) = (lighting.lights, lighting.scale.y);
+        let mut other = lighting;
+        other.lights[1].color.x += 1.0;
+        let mut fewer = lighting;
+        fewer.scale.y -= 1.0;
+        let handles = {
+            let mut assets = app.world_mut().resource_mut::<Assets<GameLitMaterial>>();
+            [lighting, other, fewer].map(|l| assets.add(lit(l)))
+        };
+        app.update();
+        app.world_mut().resource_mut::<Changed>().0.clear();
+        give_lights(
+            &mut app.world_mut().resource_mut::<Assets<GameLitMaterial>>(),
+            &handles,
+            lights,
+            count,
+        );
+        app.update();
+        let changed = &app.world().resource::<Changed>().0;
+        assert_eq!(changed, &[handles[1].id(), handles[2].id()]);
+        let assets = app.world().resource::<Assets<GameLitMaterial>>();
+        for h in &handles {
+            let l = assets.get(h).unwrap().lighting();
+            assert_eq!((l.lights, l.scale.y), (lights, count));
+        }
     }
 }

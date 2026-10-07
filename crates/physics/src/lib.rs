@@ -58,7 +58,7 @@ pub struct Collider {
     live: Box<Live>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Triangle {
     corners: [u32; 3],
     /// How far its surface stands out (game units).
@@ -399,8 +399,16 @@ impl Collider {
     /// Adds every triangle of another collider (the squares of an outdoor
     /// area, gathered into one), with its shells, owners and switched-off
     /// objects.
+    ///
+    /// Its triangles were checked as they went into it and its buckets are
+    /// those of its triangles where they are now, so they're taken over as
+    /// they are, renumbered (each bucket and owner's list in triangle
+    /// order, as pushing them in one at a time puts them), rather than
+    /// measured again one by one: outdoors this is redone for every loaded
+    /// square whenever one comes or goes.
     pub fn extend(&mut self, other: &Collider) {
         let base = self.vertices.len() as u32;
+        let first = self.triangles.len() as u32;
         self.vertices.extend_from_slice(&other.vertices);
         let surfaces: Vec<u16> = other
             .live
@@ -408,17 +416,44 @@ impl Collider {
             .iter()
             .map(|&s| self.surface_index(s))
             .collect();
-        for tri in &other.triangles {
-            let surface = match tri.surface {
-                0 => 0,
-                s => surfaces.get(usize::from(s) - 1).copied().unwrap_or(0),
-            };
-            self.push_triangle(
-                tri.corners.map(|i| i + base),
-                tri.shell,
-                tri.owner,
-                (tri.material, surface, tri.layer, tri.reference),
-            );
+        self.triangles
+            .extend(other.triangles.iter().map(|tri| Triangle {
+                corners: tri.corners.map(|i| i + base),
+                surface: match tri.surface {
+                    0 => 0,
+                    s => surfaces.get(usize::from(s) - 1).copied().unwrap_or(0),
+                },
+                ..*tri
+            }));
+        let renumbered = |list: &[u32]| {
+            let mut list: Vec<u32> = list.iter().map(|&t| t + first).collect();
+            list.sort_unstable();
+            list
+        };
+        for (&key, list) in &other.grid {
+            if !list.is_empty() {
+                self.grid.entry(key).or_default().extend(renumbered(list));
+            }
+        }
+        for (&owner, list) in &other.live.owned {
+            if !list.is_empty() {
+                self.live
+                    .owned
+                    .entry(owner)
+                    .or_default()
+                    .extend(renumbered(list));
+            }
+        }
+        // The placed objects' lists (the crosshair's view caster) the same
+        // way.
+        for (&reference, list) in &other.live.placed {
+            if !list.is_empty() {
+                self.live
+                    .placed
+                    .entry(reference)
+                    .or_default()
+                    .extend(renumbered(list));
+            }
         }
         self.live.hidden.extend(other.live.hidden.iter().copied());
         for (&owner, rest) in &other.live.rest {
@@ -1643,6 +1678,129 @@ pub(crate) fn segment_segment_closest(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`Collider::extend`] as it was: every triangle pushed in again, its
+    /// buckets measured again.
+    fn extend_one_at_a_time(c: &mut Collider, other: &Collider) {
+        let base = c.vertices.len() as u32;
+        c.vertices.extend_from_slice(&other.vertices);
+        let surfaces: Vec<u16> = other
+            .live
+            .surfaces
+            .iter()
+            .map(|&s| c.surface_index(s))
+            .collect();
+        for tri in &other.triangles {
+            let surface = match tri.surface {
+                0 => 0,
+                s => surfaces.get(usize::from(s) - 1).copied().unwrap_or(0),
+            };
+            c.push_triangle(
+                tri.corners.map(|i| i + base),
+                tri.shell,
+                tri.owner,
+                (tri.material, surface, tri.layer),
+            );
+        }
+        c.live.hidden.extend(other.live.hidden.iter().copied());
+        for (&owner, rest) in &other.live.rest {
+            c.live
+                .rest
+                .entry(owner)
+                .or_default()
+                .extend(rest.iter().map(|&(i, v)| (i + base, v)));
+        }
+    }
+
+    /// Squares of ground and objects, some owned, some with surfaces, some
+    /// triangles without area or with a corner that isn't a number, one
+    /// owner moved after.
+    fn square(seed: u32, at: [f32; 2]) -> Collider {
+        let mut rng = seed.wrapping_mul(2654435761) | 1;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            (rng % 10_000) as f32 / 10_000.0
+        };
+        let mut c = Collider::new();
+        for part in 0..12u32 {
+            let mut vertices = Vec::new();
+            let mut tris = Vec::new();
+            for t in 0..20u32 {
+                let x = at[0] + next() * 4096.0;
+                let y = at[1] + next() * 4096.0;
+                let size = 10.0 + next() * 900.0;
+                vertices.push([x, y, next() * 100.0]);
+                vertices.push([x + size, y + next() * size, next() * 100.0]);
+                vertices.push([x + next() * size, y + size, next() * 100.0]);
+                let b = 3 * t;
+                tris.push(match t % 9 {
+                    // Without area, then out of range.
+                    4 => [b, b, b + 1],
+                    8 => [b, b + 1, 9999],
+                    _ => [b, b + 1, b + 2],
+                });
+            }
+            if part == 5 {
+                vertices[0] = [f32::NAN, 0.0, 0.0];
+            }
+            let owner = if part % 3 == 0 { 0 } else { 0x100 + part % 4 };
+            let surface = (part % 2 == 0).then_some(Surface {
+                friction: 0.1 * (part % 3) as f32,
+                restitution: 0.5,
+            });
+            c.add_layered(
+                &vertices,
+                &tris,
+                (part as f32, owner, part),
+                surface,
+                (part % 5) as u8,
+            );
+        }
+        c.set_hidden(0x101, true);
+        let turn = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        c.move_owner(0x102, &turn, [500.0, -300.0, 0.0]);
+        c
+    }
+
+    /// Gathering the outdoor squares into one collider takes their
+    /// triangles and buckets over as they are: the same collider as putting
+    /// every triangle in again.
+    #[test]
+    fn gathered_squares_are_as_if_put_in_one_at_a_time() {
+        let squares: Vec<Collider> = (0..5)
+            .map(|i| square(i + 1, [4096.0 * (i % 3) as f32, 4096.0 * (i / 3) as f32]))
+            .collect();
+        let mut fast = Collider::new();
+        let mut slow = Collider::new();
+        for s in &squares {
+            fast.extend(s);
+            extend_one_at_a_time(&mut slow, s);
+        }
+        assert!(slow.triangles.len() > 500);
+        assert_eq!(fast.vertices.len(), slow.vertices.len());
+        for (a, b) in fast.vertices.iter().zip(&slow.vertices) {
+            assert!(a == b || (a[0].is_nan() && b[0].is_nan()));
+        }
+        assert_eq!(fast.triangles, slow.triangles);
+        assert_eq!(fast.grid, slow.grid);
+        assert_eq!(fast.live.owned, slow.live.owned);
+        assert_eq!(fast.live.surfaces, slow.live.surfaces);
+        assert_eq!(fast.live.hidden, slow.live.hidden);
+        assert_eq!(fast.live.rest.len(), slow.live.rest.len());
+        // And gathered again from the gathered one (moved owners' buckets
+        // aren't in triangle order there).
+        let mut twice = Collider::new();
+        let mut twice_slow = Collider::new();
+        let turn = [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        fast.move_owner(0x103, &turn, [10.0, 20.0, 0.0]);
+        twice.extend(&fast);
+        extend_one_at_a_time(&mut twice_slow, &fast);
+        assert_eq!(twice.triangles, twice_slow.triangles);
+        assert_eq!(twice.grid, twice_slow.grid);
+        assert_eq!(twice.live.owned, twice_slow.live.owned);
+    }
 
     /// The shell the game's models have around their collision.
     const SHELL: f32 = 0.1 * HAVOK_UNIT;
