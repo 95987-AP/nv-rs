@@ -269,14 +269,16 @@ impl Game {
             None => archive_list_from(&default_ini_candidates(data_dir)),
         };
         let plugins: Vec<String> = order.plugins().iter().map(|p| p.name.clone()).collect();
-        let assets = Assets::open_with(data_dir, &plugins, &list.names)?;
         let mut files = assets::default_settings_files(data_dir);
         files.extend(options.ini.iter().cloned());
+        let settings = assets::IniSettings::load(&files);
+        let archive_settings = assets::ArchiveSettings::from_ini(&settings, list.names);
+        let assets = Assets::open_with_settings(data_dir, &plugins, &archive_settings)?;
         Ok(Game {
             order,
             assets,
             keep_root_transforms: options.keep_root_transforms,
-            settings: assets::IniSettings::load(&files),
+            settings,
         })
     }
 

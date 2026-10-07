@@ -229,13 +229,19 @@ fn lists_every_visible_path_once() {
 }
 
 #[test]
-fn reports_unreadable_archives_by_name() {
+fn leaves_out_unreadable_archives_with_a_warning() {
+    // The game drops an archive it can't open (ArchiveManager::OpenArchive
+    // 00af4be0) and goes on.
     let data = setup("broken");
     data.write("Fallout - Misc.bsa", b"BSA\0 truncated");
-    let err = Assets::open(data.path(), &plugins(&["FalloutNV.esm"]))
-        .err()
-        .unwrap();
-    assert!(err.to_string().contains("Fallout - Misc.bsa"), "{err}");
+    let assets = Assets::open(data.path(), &plugins(&["FalloutNV.esm"])).unwrap();
+    assert_eq!(assets.warnings().len(), 1);
+    assert!(assets.warnings()[0].contains("Fallout - Misc.bsa"));
+    assert!(assets
+        .archives()
+        .iter()
+        .all(|a| a.name != "Fallout - Misc.bsa"));
+    assert!(assets.contains("meshes\\clutter\\crate.nif"));
 }
 
 #[test]
