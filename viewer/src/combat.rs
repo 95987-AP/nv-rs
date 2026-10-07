@@ -1252,6 +1252,7 @@ mod tests {
             base: 0x1235,
             position: [0.0; 3],
             female: false,
+            look: None,
         };
         let rig = ActorRig::new(skeleton, 1.0, 0.0);
         let part = |name: &str, node: &str, kind: u8| {

@@ -99,6 +99,15 @@ original game. Triage and what was rejected:
 `claude/contrib-chazm` into the integration branch after reviewing the
 acceptance results.
 
+NPC gear redraw, 2026-10-07 (`claude/npc-gear-redraw`, unmerged): people
+are redrawn when what they wear or hold changes (`EquipItem`,
+`UnequipItem`, armour or a weapon taken away, a weapon swapped), only the
+parts that changed rebuilt, on a thread (`BipedAnim::LoadBipedParts`
+keeps unchanged slots): [NPC_GEAR.md](NPC_GEAR.md). Unit-tested and
+checked live on Doc Mitchell; not compared with the original game.
+**Next action:** port `InitDefaultWorn`/`GetBestArmor` (on
+`claude/companions-2`) so re-picking uses the whole inventory.
+
 Look-IK batch, 2026-10-06 (local session, branch `claude/m1-look-ik`).
 Corrections: ADR-0004 (restructure) was rejected on 2026-10-06 and the
 layout stays; `codex/m1-reload-update-order` was dropped unmerged; Codex is

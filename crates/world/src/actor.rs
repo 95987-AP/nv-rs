@@ -71,7 +71,7 @@ const FEMALE: u32 = 0x01;
 /// template; take the inventory from it.
 pub const USE_TRAITS: u16 = 0x01;
 const USE_MODEL: u16 = 0x40;
-const USE_INVENTORY: u16 = 0x100;
+pub const USE_INVENTORY: u16 = 0x100;
 /// `ACBS` template flags: take the factions, the AI data (`AIDT`:
 /// aggression…) from the template (a Powder Ganger's 0x03BE has both).
 pub const USE_FACTIONS: u16 = 0x04;
@@ -657,18 +657,88 @@ pub fn player_look(
         &rr,
         &record,
         Some(Dressing {
-            female,
+            female: Some(female),
             worn,
             weapon,
         }),
     )
 }
 
-/// What the game state says the player is and wears ([`player_look`]).
+/// What the game state says someone is and wears ([`player_look`],
+/// [`npc_look_wearing`]): the sex (`None`: the record's), the clothes and
+/// armour worn, in order, and the weapon in hand.
 struct Dressing<'a> {
-    female: bool,
+    female: Option<bool>,
     worn: &'a [FormId],
     weapon: Option<FormId>,
+}
+
+/// A person as drawn when the game state has them wear `worn` (clothes and
+/// armour, in order: the first on a body slot wins, as [`worn_of`]) and
+/// hold `weapon`: assembled as [`actor_look`] assembles them from their
+/// record, with these instead of the record's inventory
+/// (`world::outfit::worn_armour`, `world::combat::weapon_in_hand`). `None`
+/// for creatures and records that can't be read.
+pub fn npc_look_wearing(
+    order: &LoadOrder,
+    base: FormId,
+    worn: &[FormId],
+    weapon: Option<FormId>,
+) -> Option<ActorLook> {
+    let rr = order.get(base).filter(|r| r.entry.header.kind == NPC_)?;
+    let record = rr.record().ok()?;
+    npc_look_dressed(
+        order,
+        &rr,
+        &record,
+        Some(Dressing {
+            female: None,
+            worn,
+            weapon,
+        }),
+    )
+}
+
+/// Whether a person is a woman: their traits' (`ACBS` flag 0x01, from the
+/// template when its flags say the traits come from there).
+pub fn is_female(order: &LoadOrder, base: FormId) -> bool {
+    data_record(order, base, USE_TRAITS).is_some_and(|(_, record)| {
+        record
+            .get(ACBS)
+            .filter(|s| s.data.len() >= 4)
+            .is_some_and(|s| le_u32(&s.data, 0) & FEMALE != 0)
+    })
+}
+
+/// Which of `items` (in order) someone wears, each with its record: the
+/// clothes and armour that have a model for their sex, the first on a body
+/// slot taking it (the slots of its own model and its addons') — the
+/// look's choice, a guess (the game's own, `InventoryChanges::
+/// GetBestArmor` (Xbox PDB), isn't translated here).
+pub fn worn_of(
+    order: &LoadOrder,
+    items: impl IntoIterator<Item = FormId>,
+    female: bool,
+) -> Vec<(FormId, Armor)> {
+    let mut covered = 0u32;
+    let mut out = Vec::new();
+    for item in items {
+        let Some(armor) = Armor::load(order, item) else {
+            continue;
+        };
+        if armor.slots & covered != 0 {
+            continue;
+        }
+        let pieces = armor.pieces(female);
+        if pieces.is_empty() {
+            continue;
+        }
+        for (slots, _) in &pieces {
+            covered |= slots;
+        }
+        out.push((item, armor));
+    }
+    out
 }
 
 fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<ActorLook> {
@@ -699,15 +769,12 @@ fn npc_look_dressed(
         .or_else(|| zstring(record, MODL))
         .unwrap_or_else(|| "Characters\\_Male\\Skeleton.NIF".into());
 
-    let female = dressing.as_ref().map_or_else(
-        || {
-            traits_record
-                .get(ACBS)
-                .filter(|s| s.data.len() >= 4)
-                .is_some_and(|s| le_u32(&s.data, 0) & FEMALE != 0)
-        },
-        |d| d.female,
-    );
+    let female = dressing.as_ref().and_then(|d| d.female).unwrap_or_else(|| {
+        traits_record
+            .get(ACBS)
+            .filter(|s| s.data.len() >= 4)
+            .is_some_and(|s| le_u32(&s.data, 0) & FEMALE != 0)
+    });
     let race = form(trr, traits_record, RNAM).and_then(|id| Race::load(order, id));
     let hair_tint = traits_record
         .get(HCLR)
@@ -723,17 +790,8 @@ fn npc_look_dressed(
         Some(d) => d.worn.iter().map(|&w| (w, 1)).collect(),
         None => inventory_items(order, irr, inventory_record),
     };
-    for &(item, _) in &carried {
-        let Some(armor) = Armor::load(order, item) else {
-            continue;
-        };
-        if armor.slots & covered != 0 {
-            continue;
-        }
+    for (_, armor) in worn_of(order, carried.iter().map(|&(item, _)| item), female) {
         let pieces = armor.pieces(female);
-        if pieces.is_empty() {
-            continue;
-        }
         let facegen = armor.pieces_facegen(female);
         for ((slots, model), facegen) in pieces.into_iter().zip(facegen) {
             covered |= slots;
@@ -941,13 +999,31 @@ fn face(record: &Record, race: Option<&Face>) -> Option<Face> {
 /// everything: Sunny Smiles' `WithAmmoNVVarmintRifleLoot` is the rifle and
 /// its rounds), as a new game first draws them.
 fn inventory_items(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Vec<(FormId, i32)> {
-    let mut out = Vec::new();
-    for entry in record.get_all(CNTO).filter(|s| s.data.len() >= 8) {
-        let id = rr.plugin.to_global(FormId(le_u32(&entry.data, 0)));
-        let count = le_u32(&entry.data, 4) as i32;
-        out.extend(crate::leveled::resolve_first(order, id, count.max(1), 1));
-    }
-    out
+    inventory_entries(order, rr, record)
+        .into_iter()
+        .flat_map(|(_, items)| items)
+        .collect()
+}
+
+/// [`inventory_items`] by the record's entry each came from: the entry
+/// (`CNTO`: an item or a leveled list) and what it gives.
+pub(crate) fn inventory_entries(
+    order: &LoadOrder,
+    rr: &RecordRef<'_>,
+    record: &Record,
+) -> Vec<(FormId, Vec<(FormId, i32)>)> {
+    record
+        .get_all(CNTO)
+        .filter(|s| s.data.len() >= 8)
+        .map(|entry| {
+            let id = rr.plugin.to_global(FormId(le_u32(&entry.data, 0)));
+            let count = le_u32(&entry.data, 4) as i32;
+            (
+                id,
+                crate::leveled::resolve_first(order, id, count.max(1), 1),
+            )
+        })
+        .collect()
 }
 
 /// What a person's base record carries (from its template when its

@@ -341,6 +341,15 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
             line(format!("equipped {} {}", id(*who), id(*item)));
         }
     }
+    let taken_off: BTreeMap<_, _> = state.taken_off.iter().collect();
+    for (who, items) in taken_off {
+        for (item, by) in items {
+            match by {
+                Some(by) => line(format!("takenoff {} {} {}", id(*who), id(*item), id(*by))),
+                None => line(format!("takenoff {} {}", id(*who), id(*item))),
+            }
+        }
+    }
     let ammo_loaded: BTreeMap<_, _> = state.ammo_loaded.iter().collect();
     for (who, ammo) in ammo_loaded {
         line(format!("ammoloaded {} {}", id(*who), id(*ammo)));
@@ -706,6 +715,11 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                     .insert((form(1)?, form(2)?), num(3)? as i8);
             }
             "equipped" => state.equipped.entry(form(1)?).or_default().push(form(2)?),
+            "takenoff" => state
+                .taken_off
+                .entry(form(1)?)
+                .or_default()
+                .push((form(2)?, form(3).ok())),
             "ammoloaded" => {
                 state.ammo_loaded.insert(form(1)?, form(2)?);
             }

@@ -1332,6 +1332,7 @@ fn carry_out(
                 runner.state.stocked.remove(&r);
                 runner.state.items.retain(|(h, _), _| *h != r);
                 runner.state.equipped.remove(&r);
+                runner.state.taken_off.remove(&r);
             }
             // `005c05f0` / `005c0740`: one coordinate of the position.
             "SetPos" => {

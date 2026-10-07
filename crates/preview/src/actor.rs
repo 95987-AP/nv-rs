@@ -98,9 +98,13 @@ impl Loader<'_> {
         );
         let index = pose.and_then(|pose| {
             let mut meshes = Vec::new();
-            for part in &look.parts {
+            for (i, part) in look.parts.iter().enumerate() {
                 let face = look.face.as_ref().filter(|_| part.facegen);
-                meshes.extend(self.posed_part(part, face, &pose, &look.skeleton, &look.idle));
+                let posed = self.posed_part(part, face, &pose, &look.skeleton, &look.idle);
+                meshes.extend(posed.into_iter().map(|mut m| {
+                    m.actor_part = u16::try_from(i).ok();
+                    m
+                }));
             }
             if meshes.is_empty() {
                 return None;
