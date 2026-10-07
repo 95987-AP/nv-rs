@@ -48,6 +48,10 @@ name = "esm"
 version = "0.1.0"
 
 [[package]]
+name = "fos"
+version = "0.1.0"
+
+[[package]]
 name = "mp3"
 version = "0.1.0"
 
@@ -68,6 +72,7 @@ dependencies = [
  "cellview",
  "dds",
  "esm",
+ "fos",
  "mp3",
  "nif",
  "physics",

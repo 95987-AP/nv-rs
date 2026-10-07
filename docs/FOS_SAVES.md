@@ -4,8 +4,9 @@ M7 research (docs/TASKS.md): the layout of Fallout: New Vegas's own save
 files, what nv-rs needs from them to continue a game, and what nv-rs is
 missing to take it. Branch `claude/fos-saves`.
 
-Status: **format researched and checked** against real saves. No reader
-in nv-rs yet and no import into nv-rs state.
+Status: **format researched and checked** against real saves; a
+read-only reader (`crates/fos`) and inspector (`nvinspect fos`) are
+implemented and tested. No import into nv-rs state yet.
 
 - Every structure below was read from the writer (and, where it matters, the
   reader) in FalloutNV.exe 1.4.0.525 (addresses are PC unless marked) and
@@ -284,10 +285,32 @@ What nv-rs is missing to take a `.fos` at all:
    stats, player place, faction crimes, challenges), checked by loading a
    real save in the viewer and comparing with the original game.
 
-## Tools
+## Reader and inspector
 
-Planned: `nvinspect fos <file.fos>`, printing the header, plugins, the location table,
-global data sizes, the change forms counted by type and change flags, and
-the decoded quests and globals; it checks that every part ends where the
-location table says and that each decoded change form uses exactly its
-length.
+`crates/fos` (no dependencies) reads a save read-only: `fos::Save::parse`
+splits it into the parts above and fails unless every part ends where the
+location table says and the history block ends the file, so a parsed save
+accounts for every byte. `fos::decode` reads quests (stages, log dates,
+script locals, objectives), globals, misc statistics, the location data,
+initial data and the Havok block of references, cells (both seen data
+layouts), topics, notes, actor bases (not `NPC_FACE`), factions, classes,
+challenges and reputations; `decode::coverage` says whether a change form
+decodes to exactly its length, is not decoded yet, or fails. Tests build
+synthetic saves with the test-only writer `fos::write` (feature `write`);
+no real save is in the repository.
+
+`nvinspect fos <SAVE> [PLUGIN]` prints the header, plugins, the location
+table, the global data, the change forms counted by type and by change
+flag (with the Xbox names) and how many decode exactly, the quests with
+stages or objectives (current stage, stages done, objectives), the
+globals, the misc statistics, the player's place, and the file's bytes
+part by part. With a plugin (`FalloutNV.esm`) forms from it get their
+editor IDs. It exits with an error if any decodable change form doesn't
+decode to its length.
+
+Run on all nine real saves (2026-10-07): every one parses with every byte
+accounted for, no change form fails, and between 438 and 732 change forms
+per save decode exactly (all quests, cells, topics, actor bases, factions,
+classes and challenges, and the references with no extra data, inventory
+or animation); the rest are references, actors and projectiles whose
+extra data, inventory and actor state aren't decoded yet.

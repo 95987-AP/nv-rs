@@ -1,0 +1,698 @@
+//! Decoders for the parts of a save researched so far (docs/FOS_SAVES.md).
+//! Each reads one change form's or global data entry's pipe buffer and
+//! fails unless it ends exactly where the data does.
+
+use crate::{save_type as t, ChangeForm, Error, GlobalData, Pipe, RefId, Result};
+
+/// `QuestFlag` (Xbox PDB): the quest's run-time flags (`CHANGE_QUEST_FLAGS`).
+pub mod quest_flag {
+    pub const ENABLED: u8 = 0x01;
+    pub const COMPLETED: u8 = 0x02;
+    pub const ALLOW_REPEATS: u8 = 0x04;
+    pub const ALLOW_REPEAT_STAGES: u8 = 0x08;
+    pub const STARTS_ENABLED: u8 = 0x10;
+    pub const DISPLAYED_IN_HUD: u8 = 0x20;
+    pub const FAILED: u8 = 0x40;
+}
+
+/// A quest's change form (`TESQuest::SaveGame` (Xbox PDB), `0060e810`;
+/// read back by `0060eaf0`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Quest {
+    pub form_flags: Option<u32>,
+    /// [`quest_flag`]s.
+    pub flags: Option<u8>,
+    pub script_delay: Option<f32>,
+    pub stages: Option<Vec<Stage>>,
+    pub script: Option<ScriptLocals>,
+    pub objectives: Option<Vec<Objective>>,
+}
+
+impl Quest {
+    /// The stage the game makes current on loading: the highest one done
+    /// (`0060d670`).
+    pub fn current_stage(&self) -> Option<u8> {
+        self.stages
+            .as_ref()?
+            .iter()
+            .filter(|s| s.done)
+            .map(|s| s.index)
+            .max()
+    }
+}
+
+/// `TESQuestStage` (Xbox PDB): `QUEST_STAGE_DATA` (index, done) and its
+/// items.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stage {
+    pub index: u8,
+    pub done: bool,
+    pub items: Vec<StageItem>,
+}
+
+/// `TESQuestStageItem` (Xbox PDB): its index and the date its log entry
+/// was written, if it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StageItem {
+    pub index: u8,
+    pub log_date: Option<Date>,
+}
+
+/// `Date` (Xbox PDB): `sDate` (day of the year) and `sYear`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Date {
+    pub day: u16,
+    pub year: u16,
+}
+
+/// `BGSQuestObjective` (Xbox PDB): index and `QUEST_OBJECTIVE_STATE`
+/// (0 dormant, 1 displayed, 2 completed, 3 completed and displayed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Objective {
+    pub index: u32,
+    pub state: u32,
+}
+
+impl Objective {
+    pub fn completed(&self) -> bool {
+        self.state & 2 != 0
+    }
+
+    pub fn displayed(&self) -> bool {
+        self.state & 1 != 0
+    }
+}
+
+/// `ScriptLocals` (Xbox PDB) as saved (`005a9db0`; read by `005a9f20`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScriptLocals {
+    pub variables: Vec<Variable>,
+    /// The 8 bytes behind `m_pScriptEffectData`, when there are any.
+    pub effect_data: Option<[u8; 8]>,
+    /// The flag 0x1000 byte; the loader reads it only for versions over
+    /// 0x14.
+    pub flag: Option<u8>,
+}
+
+/// A script variable: its index in the script and its value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Variable {
+    pub id: u32,
+    pub value: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Value {
+    Number(f64),
+    /// A reference variable (bit 0x80000000 on the id).
+    Ref(RefId),
+}
+
+fn form_flags(p: &mut Pipe<'_>, flags: u32) -> Result<Option<u32>> {
+    if flags & 1 != 0 {
+        Ok(Some(p.u32()?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn counted<'a, T>(
+    p: &mut Pipe<'a>,
+    mut item: impl FnMut(&mut Pipe<'a>) -> Result<T>,
+) -> Result<Vec<T>> {
+    let n = p.vsval()?;
+    // Every item takes at least one byte and its '|'.
+    if n as usize > p.remaining() / 2 {
+        return Err(Error::new(p.position(), format!("{n} items don't fit")));
+    }
+    (0..n).map(|_| item(p)).collect()
+}
+
+fn pipe<'a>(cf: &ChangeForm<'a>) -> Pipe<'a> {
+    Pipe::new(cf.data, cf.data_offset)
+}
+
+fn expect_type(cf: &ChangeForm<'_>, save_types: &[u8]) -> Result<()> {
+    if save_types.contains(&cf.save_type) {
+        Ok(())
+    } else {
+        Err(Error::new(
+            cf.offset,
+            format!("change form of save type {}", cf.save_type),
+        ))
+    }
+}
+
+/// Script locals (`005a9db0`), version as the change form's.
+pub fn script_locals(p: &mut Pipe<'_>, version: u8) -> Result<ScriptLocals> {
+    let variables = counted(p, |p| {
+        let id = p.u32()?;
+        let value = if id & 0x8000_0000 != 0 {
+            Value::Ref(p.ref_id()?)
+        } else {
+            Value::Number(p.f64()?)
+        };
+        Ok(Variable {
+            id: id & 0x7FFF_FFFF,
+            value,
+        })
+    })?;
+    let effect_data = if p.u8()? != 0 {
+        let mut a = [0; 8];
+        a.copy_from_slice(p.bytes(8)?);
+        Some(a)
+    } else {
+        None
+    };
+    let flag = if version > 0x14 { Some(p.u8()?) } else { None };
+    Ok(ScriptLocals {
+        variables,
+        effect_data,
+        flag,
+    })
+}
+
+/// A `QUST` change form.
+pub fn quest(cf: &ChangeForm<'_>) -> Result<Quest> {
+    expect_type(cf, &[t::QUST])?;
+    let mut p = pipe(cf);
+    let f = cf.flags;
+    let form_flags = form_flags(&mut p, f)?;
+    let flags = if f & 0x2 != 0 { Some(p.u8()?) } else { None };
+    let script_delay = if f & 0x4 != 0 { Some(p.f32()?) } else { None };
+    let stages = if f & 0x8000_0000 != 0 {
+        Some(counted(&mut p, |p| {
+            let index = p.u8()?;
+            let done = p.u8()? != 0;
+            let items = counted(p, |p| {
+                let index = p.u8()?;
+                let log_date = if p.u8()? != 0 {
+                    let b = p.bytes(4)?;
+                    Some(Date {
+                        day: u16::from_le_bytes([b[0], b[1]]),
+                        year: u16::from_le_bytes([b[2], b[3]]),
+                    })
+                } else {
+                    None
+                };
+                Ok(StageItem { index, log_date })
+            })?;
+            Ok(Stage { index, done, items })
+        })?)
+    } else {
+        None
+    };
+    let script = if f & 0x4000_0000 != 0 {
+        Some(script_locals(&mut p, cf.version)?)
+    } else {
+        None
+    };
+    let objectives = if f & 0x2000_0000 != 0 {
+        Some(counted(&mut p, |p| {
+            Ok(Objective {
+                index: p.u32()?,
+                state: p.u32()?,
+            })
+        })?)
+    } else {
+        None
+    };
+    p.finish("quest")?;
+    Ok(Quest {
+        form_flags,
+        flags,
+        script_delay,
+        stages,
+        script,
+        objectives,
+    })
+}
+
+/// Global data 3, `GLOBAL_DATA_GLOBALS` (`0084cc90`): each `GLOB` and its
+/// value. Constant globals aren't saved.
+pub fn globals(g: &GlobalData<'_>) -> Result<Vec<(RefId, f32)>> {
+    let mut p = Pipe::new(g.data, g.offset);
+    let out = counted(&mut p, |p| Ok((p.ref_id()?, p.f32()?)))?;
+    p.finish("globals")?;
+    Ok(out)
+}
+
+/// Global data 0, `GLOBAL_DATA_MISC_STATS` (`004d5fa0`): the misc
+/// statistics in the order of the game's name table (`01189280`).
+pub fn misc_stats(g: &GlobalData<'_>) -> Result<Vec<u32>> {
+    let mut p = Pipe::new(g.data, g.offset);
+    let n = p.u32()?;
+    if n as usize > p.remaining() / 5 {
+        return Err(Error::new(g.offset, format!("{n} misc stats don't fit")));
+    }
+    let out = (0..n).map(|_| p.u32()).collect::<Result<Vec<_>>>()?;
+    p.finish("misc stats")?;
+    Ok(out)
+}
+
+/// Global data 1, `GLOBAL_DATA_LOCATION` (`SaveLocationData` (Xbox PDB),
+/// `0084c490`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Location {
+    /// `TESDataHandler::iNextID` (Xbox PDB): the next created form id.
+    pub next_created_id: u32,
+    /// `TES::pWorldSpace` (Xbox PDB).
+    pub worldspace: RefId,
+    /// `TES::iCurrentGridX`, `iCurrentGridY` (Xbox PDB).
+    pub grid: [i32; 2],
+    /// The player's worldspace, or parent cell when inside.
+    pub player_space: RefId,
+    pub player_position: [f32; 3],
+    /// `LoadingMenu::SaveGame` (Xbox PDB) `0078d6b0`: a refID, three
+    /// 4-byte values and a byte, not interpreted.
+    pub loading_menu: (RefId, [u32; 3], u8),
+}
+
+pub fn location(g: &GlobalData<'_>) -> Result<Location> {
+    let mut p = Pipe::new(g.data, g.offset);
+    let next_created_id = p.u32()?;
+    let worldspace = p.ref_id()?;
+    let grid = [p.i32()?, p.i32()?];
+    let player_space = p.ref_id()?;
+    let b = p.bytes(12)?;
+    let f = |i: usize| f32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+    let player_position = [f(0), f(4), f(8)];
+    let loading_menu = (p.ref_id()?, [p.u32()?, p.u32()?, p.u32()?], p.u8()?);
+    p.finish("location")?;
+    Ok(Location {
+        next_created_id,
+        worldspace,
+        grid,
+        player_space,
+        player_position,
+        loading_menu,
+    })
+}
+
+/// The data written before a reference's or cell's own data
+/// (`BGSSaveLoadInitialData` (Xbox PDB), `0084eb80`; kind from `0084e730`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum InitialData {
+    None,
+    /// An exterior cell: worldspace (index into the worldspace id array),
+    /// grid square and detach time. `short` tells the 10-byte form.
+    ExteriorCell {
+        worldspace: u16,
+        x: i16,
+        y: i16,
+        detach_time: u32,
+        short: bool,
+    },
+    InteriorCell {
+        detach_time: u32,
+    },
+    /// A moved reference: its cell (or worldspace outside), position and
+    /// rotation (radians).
+    Location {
+        space: RefId,
+        position: [f32; 3],
+        rotation: [f32; 3],
+    },
+    /// A reference created in game, with its flags and base object.
+    Created {
+        space: RefId,
+        position: [f32; 3],
+        rotation: [f32; 3],
+        flags: u8,
+        base: RefId,
+    },
+    /// A reference moved to another cell, with where the editor placed it.
+    Moved {
+        space: RefId,
+        position: [f32; 3],
+        rotation: [f32; 3],
+        editor_cell: RefId,
+        editor_grid: [i16; 2],
+    },
+}
+
+impl InitialData {
+    /// Where a reference stands, if this says.
+    pub fn place(&self) -> Option<(RefId, [f32; 3], [f32; 3])> {
+        match *self {
+            InitialData::Location {
+                space,
+                position,
+                rotation,
+            }
+            | InitialData::Created {
+                space,
+                position,
+                rotation,
+                ..
+            }
+            | InitialData::Moved {
+                space,
+                position,
+                rotation,
+                ..
+            } => Some((space, position, rotation)),
+            _ => None,
+        }
+    }
+}
+
+fn le_ref(b: &[u8]) -> RefId {
+    RefId(u32::from(b[0]) << 16 | u32::from(b[1]) << 8 | u32::from(b[2]))
+}
+
+fn le_f32s(b: &[u8]) -> [f32; 3] {
+    let f = |i: usize| f32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+    [f(0), f(4), f(8)]
+}
+
+fn i16_at(b: &[u8], i: usize) -> i16 {
+    i16::from_le_bytes([b[i], b[i + 1]])
+}
+
+fn u32_at(b: &[u8], i: usize) -> u32 {
+    u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]])
+}
+
+/// Whether a save type is a reference (`0084e730` with `00564900`).
+pub fn is_reference(save_type: u8) -> bool {
+    save_type <= t::PFLA
+}
+
+/// Reads the initial data at the start of a change form.
+pub fn initial_data(cf: &ChangeForm<'_>, p: &mut Pipe<'_>) -> Result<InitialData> {
+    let f = cf.flags;
+    if is_reference(cf.save_type) {
+        let size = if cf.ref_id.is_created() {
+            31
+        } else if f & 0x8 != 0 {
+            34
+        } else if f & 0x6 != 0 {
+            27
+        } else {
+            return Ok(InitialData::None);
+        };
+        let b = p.bytes(size)?;
+        let (space, position, rotation) = (le_ref(b), le_f32s(&b[3..]), le_f32s(&b[15..]));
+        return Ok(match size {
+            31 => InitialData::Created {
+                space,
+                position,
+                rotation,
+                flags: b[27],
+                base: le_ref(&b[28..]),
+            },
+            34 => InitialData::Moved {
+                space,
+                position,
+                rotation,
+                editor_cell: le_ref(&b[27..]),
+                editor_grid: [i16_at(b, 30), i16_at(b, 32)],
+            },
+            _ => InitialData::Location {
+                space,
+                position,
+                rotation,
+            },
+        });
+    }
+    if cf.save_type == t::CELL && f & 0x4000_0000 != 0 {
+        if f & 0x3000_0000 != 0 {
+            let short = f & 0x2000_0000 == 0;
+            let b = p.bytes(if short { 10 } else { 8 })?;
+            let worldspace = u16::from_le_bytes([b[0], b[1]]);
+            return Ok(if short {
+                InitialData::ExteriorCell {
+                    worldspace,
+                    x: i16_at(b, 2),
+                    y: i16_at(b, 4),
+                    detach_time: u32_at(b, 6),
+                    short,
+                }
+            } else {
+                InitialData::ExteriorCell {
+                    worldspace,
+                    x: i16::from(b[2] as i8),
+                    y: i16::from(b[3] as i8),
+                    detach_time: u32_at(b, 4),
+                    short,
+                }
+            });
+        }
+        let b = p.bytes(4)?;
+        return Ok(InitialData::InteriorCell {
+            detach_time: u32_at(b, 0),
+        });
+    }
+    Ok(InitialData::None)
+}
+
+/// The start of a reference's change form: initial data and, with
+/// `CHANGE_REFR_HAVOK_MOVE`, the Havok block (`00562de0`), then the rest.
+#[derive(Debug, Clone)]
+pub struct ReferenceStart<'a> {
+    pub initial: InitialData,
+    pub havok: Option<&'a [u8]>,
+    pub rest: Pipe<'a>,
+}
+
+pub fn reference_start<'a>(cf: &ChangeForm<'a>) -> Result<ReferenceStart<'a>> {
+    if !is_reference(cf.save_type) {
+        return Err(Error::new(cf.offset, "not a reference"));
+    }
+    let mut p = pipe(cf);
+    let initial = initial_data(cf, &mut p)?;
+    let havok = if cf.flags & 0x4 != 0 {
+        let n = p.vsval()? as usize;
+        if n > p.remaining() {
+            return Err(Error::new(p.position(), "Havok block runs past the data"));
+        }
+        // The block is the Havok writer's own pipe values; take it whole.
+        let start = p.position();
+        let all = cf.data;
+        let block = &all[start..start + n];
+        p = Pipe::new(&all[start + n..], cf.data_offset + start + n);
+        Some(block)
+    } else {
+        None
+    };
+    Ok(ReferenceStart {
+        initial,
+        havok,
+        rest: p,
+    })
+}
+
+/// How far a change form decodes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Coverage {
+    /// Decoded to exactly its length.
+    Exact,
+    /// Not decoded: the reason.
+    Skipped(&'static str),
+    /// Decoding failed or didn't end with the data.
+    Failed(Error),
+}
+
+/// Reads a `CELL` change form; the seen data's layout depends on whether
+/// the cell is inside (`IntSeenData`) or out (`SeenData`): pass it when
+/// known, else both are tried and exactly one must fit.
+pub fn cell(cf: &ChangeForm<'_>, interior: Option<bool>) -> Result<InitialData> {
+    expect_type(cf, &[t::CELL])?;
+    let attempt = |interior: bool| -> Result<InitialData> {
+        let mut p = pipe(cf);
+        let initial = initial_data(cf, &mut p)?;
+        let f = cf.flags;
+        form_flags(&mut p, f)?;
+        if f & 0x2 != 0 {
+            p.u8()?;
+        }
+        if f & 0x8000_0000 != 0 {
+            if interior {
+                counted(&mut p, |p| {
+                    p.u8()?;
+                    p.u8()?;
+                    p.bytes(32).map(|_| ())
+                })?;
+            } else {
+                p.bytes(32)?;
+            }
+        }
+        if f & 0x4 != 0 {
+            p.wstr()?;
+        }
+        if f & 0x8 != 0 {
+            p.ref_id()?;
+        }
+        p.finish("cell")?;
+        Ok(initial)
+    };
+    match interior {
+        Some(i) => attempt(i),
+        None if cf.flags & 0x8000_0000 == 0 => attempt(false),
+        None => match (attempt(false), attempt(true)) {
+            (Ok(a), Err(_)) | (Err(_), Ok(a)) => Ok(a),
+            (Err(e), Err(_)) => Err(e),
+            (Ok(_), Ok(_)) => Err(Error::new(
+                cf.offset,
+                "cell seen data fits both the interior and exterior layouts",
+            )),
+        },
+    }
+}
+
+/// Reads an `NPC_` or `CREA` change form (`005f1f30`, `00608f00`,
+/// `005fb330`). `NPC_FACE` isn't decoded.
+pub fn actor_base(cf: &ChangeForm<'_>) -> Result<Option<String>> {
+    expect_type(cf, &[t::NPC_, t::CREA])?;
+    let f = cf.flags;
+    if cf.save_type == t::NPC_ && f & 0x800 != 0 {
+        return Err(Error::new(cf.offset, "NPC_FACE isn't decoded"));
+    }
+    let mut p = pipe(cf);
+    form_flags(&mut p, f)?;
+    if f & 0x2 != 0 {
+        p.bytes(24)?;
+    }
+    if f & 0x10 != 0 {
+        counted(&mut p, |p| p.ref_id())?;
+        counted(&mut p, |p| p.ref_id())?;
+    }
+    if f & 0x4 != 0 {
+        p.bytes(7)?;
+    }
+    if f & 0x8 != 0 {
+        p.bytes(20)?;
+    }
+    let name = if f & 0x20 != 0 { Some(p.wstr()?) } else { None };
+    if cf.save_type == t::NPC_ {
+        if f & 0x200 != 0 {
+            p.bytes(28)?;
+        }
+        if f & 0x400 != 0 {
+            p.ref_id()?;
+        }
+        if f & 0x200_0000 != 0 {
+            p.ref_id()?;
+            p.ref_id()?;
+        }
+        if f & 0x100_0000 != 0 {
+            p.u8()?;
+        }
+    } else if f & 0x200 != 0 {
+        p.u8()?;
+        p.u8()?;
+        p.u8()?;
+    }
+    p.finish("actor base")?;
+    Ok(name)
+}
+
+/// A `FACT` change form (`005fd690`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Faction {
+    /// Reactions: faction, modifier, group reaction (`0048c9d0`).
+    pub reactions: Option<Vec<(RefId, i32, i32)>>,
+    pub flags: Option<u32>,
+    /// `iMajorCrime`, `iMinorCrime` (Xbox PDB).
+    pub crimes: Option<(i32, i32)>,
+}
+
+pub fn faction(cf: &ChangeForm<'_>) -> Result<Faction> {
+    expect_type(cf, &[t::FACT])?;
+    let f = cf.flags;
+    let mut p = pipe(cf);
+    form_flags(&mut p, f)?;
+    let reactions = if f & 0x4 != 0 {
+        Some(counted(&mut p, |p| Ok((p.ref_id()?, p.i32()?, p.i32()?)))?)
+    } else {
+        None
+    };
+    let flags = if f & 0x2 != 0 { Some(p.u32()?) } else { None };
+    let crimes = if f & 0x8000_0000 != 0 {
+        Some((p.i32()?, p.i32()?))
+    } else {
+        None
+    };
+    p.finish("faction")?;
+    Ok(Faction {
+        reactions,
+        flags,
+        crimes,
+    })
+}
+
+/// A `CLAS` change form (`005f7150`): the four tag skills (actor values,
+/// -1 unused).
+pub fn class(cf: &ChangeForm<'_>) -> Result<Option<[i32; 4]>> {
+    expect_type(cf, &[t::CLAS])?;
+    let mut p = pipe(cf);
+    form_flags(&mut p, cf.flags)?;
+    let tags = if cf.flags & 0x2 != 0 {
+        Some([p.i32()?, p.i32()?, p.i32()?, p.i32()?])
+    } else {
+        None
+    };
+    p.finish("class")?;
+    Ok(tags)
+}
+
+/// A `CHAL` (`005f5780`, `CHALLENGE_PROGRESS` (Xbox PDB): `iProgress`,
+/// `nProgressFlags`) or `REPU` (`00616660`: fame, infamy as raw bits)
+/// change form: two 4-byte values, always written.
+pub fn pair(cf: &ChangeForm<'_>) -> Result<(u32, u32)> {
+    expect_type(cf, &[t::CHAL, t::REPU])?;
+    let mut p = pipe(cf);
+    form_flags(&mut p, cf.flags)?;
+    let pair = (p.u32()?, p.u32()?);
+    p.finish("challenge or reputation")?;
+    Ok(pair)
+}
+
+/// Change forms that carry only their flags (`TESForm::SaveGame`,
+/// `00484d60`): `INFO` (said once) and `NOTE` (read) among them.
+pub fn flags_only(cf: &ChangeForm<'_>) -> Result<Option<u32>> {
+    let mut p = pipe(cf);
+    let flags = form_flags(&mut p, cf.flags)?;
+    p.finish("form flags")?;
+    Ok(flags)
+}
+
+/// `REFR` change flags that add data in `TESObjectREFR::SaveGame`
+/// (`00562230`) beyond form flags and scale: the extra data list
+/// (0xA4021C40), inventory (0x8000020) and animation (0x10000000).
+const REFR_UNDECODED: u32 = 0xA402_1C40 | 0x0800_0020 | 0x1000_0000;
+
+/// How far this crate decodes a change form, checking the decodable ones
+/// against their length.
+pub fn coverage(cf: &ChangeForm<'_>) -> Coverage {
+    let result = match cf.save_type {
+        t::QUST => quest(cf).map(|_| ()),
+        t::CELL => cell(cf, None).map(|_| ()),
+        t::INFO | t::NOTE => flags_only(cf).map(|_| ()),
+        t::NPC_ if cf.flags & 0x800 != 0 => return Coverage::Skipped("NPC_FACE"),
+        t::NPC_ | t::CREA => actor_base(cf).map(|_| ()),
+        t::FACT => faction(cf).map(|_| ()),
+        t::CLAS => class(cf).map(|_| ()),
+        t::CHAL | t::REPU => pair(cf).map(|_| ()),
+        t::REFR if cf.flags & REFR_UNDECODED != 0 => {
+            return Coverage::Skipped("extra data, inventory or animation")
+        }
+        t::REFR => reference_start(cf).and_then(|mut start| {
+            form_flags(&mut start.rest, cf.flags)?;
+            if cf.flags & 0x10 != 0 {
+                start.rest.f32()?;
+            }
+            start.rest.finish("reference")
+        }),
+        _ if is_reference(cf.save_type) => match reference_start(cf) {
+            Ok(_) => return Coverage::Skipped("actor or projectile data"),
+            Err(e) => Err(e),
+        },
+        _ => return Coverage::Skipped("type not decoded"),
+    };
+    match result {
+        Ok(()) => Coverage::Exact,
+        Err(e) => Coverage::Failed(e),
+    }
+}

@@ -12,6 +12,7 @@ mod dds_cmd;
 mod doors_cmd;
 mod face_cmd;
 mod fmt;
+mod fos_cmd;
 mod grass_cmd;
 mod impacts_cmd;
 mod land_cmd;
@@ -59,6 +60,15 @@ TARGET is one of:
     a Bink movie (.bik)        e.g. Data\\Video\\FNVIntro.bik
     a folder of MP3s           e.g. Data\\Music: every track in it and in
                                the folders below
+
+THE ORIGINAL GAME'S SAVES (.fos), read-only:
+    nvinspect fos <SAVE> [PLUGIN]
+                          the save's header, plugins, location table,
+                          global data, change forms by type and change
+                          flag, quests, globals, misc statistics and the
+                          player's place, checking that every part ends
+                          where it should (docs/FOS_SAVES.md); with a
+                          plugin (FalloutNV.esm) its forms get editor IDs
 
 COMMANDS FOR PLUGINS AND DATA FOLDERS:
     info                  the file header or load order, plus the most
@@ -499,6 +509,13 @@ fn main() -> ExitCode {
 
 fn run(args: &[String]) -> Result<(), CliError> {
     let (positional, options) = parse_args(args)?;
+    if positional[0] == "fos" {
+        let stdout = io::stdout();
+        let mut out = BufWriter::new(stdout.lock());
+        fos_cmd::run(&mut out, &positional[1..])?;
+        out.flush()?;
+        return Ok(());
+    }
     let target = classify(&positional[0])?;
     let command = positional.get(1).map_or("info", String::as_str);
     let rest = positional.get(2..).unwrap_or(&[]);

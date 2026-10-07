@@ -22,6 +22,8 @@ bink = { path = "../bink" }
 cellview = { path = "../cellview" }
 ui = { path = "../ui" }
 speedtree = { path = "../speedtree" }
+fos = { path = "../fos" }
 
 [dev-dependencies]
+fos = { path = "../fos", features = ["write"] }
 testdata = { path = "../testdata" }
