@@ -1139,6 +1139,11 @@ pub fn player_attack(
             weapon: id,
             point: [0, 1, 2].map(|k| eye[k] + dir[k] * d),
             havok: None,
+            normal: None,
+            triangle: None,
+            direction: dir,
+            on_body: true,
+            part,
             damage: hit.dealt,
             killed: state.dead.contains(&target),
         });

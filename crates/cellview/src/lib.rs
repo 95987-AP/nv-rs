@@ -273,6 +273,9 @@ pub struct MeshData {
     /// Drawn into the local map's pictures (`preview::cell::ModelMesh::
     /// local_map`).
     pub local_map: bool,
+    /// Stored as triangle strips: what takes the game's world decals
+    /// (`preview::cell::ModelMesh::strips`).
+    pub strips: bool,
 }
 
 /// How a billboard piece is turned for a camera at `eye` (game units)
@@ -1453,6 +1456,7 @@ fn mesh_data(
         motion: None,
         billboard: mesh.billboard,
         local_map: mesh.local_map,
+        strips: mesh.strips,
     }
 }
 
@@ -1537,7 +1541,7 @@ fn tangent_frame(normal: [f32; 3], along_u: [f32; 3], along_v: [f32; 3]) -> [f32
 
 /// A gamma-encoded (sRGB) channel value as linear light. Values past 1
 /// (hair tints, which brighten) follow the same curve.
-fn linear(c: f32) -> f32 {
+pub fn linear(c: f32) -> f32 {
     let c = c.max(0.0);
     if c <= 0.04045 {
         c / 12.92

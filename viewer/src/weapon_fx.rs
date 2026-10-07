@@ -474,6 +474,39 @@ pub fn start_effects(mut p: StartParams) {
     }
 }
 
+/// Starts a sound record at a fixed point (an impact's: `009c20e0`,
+/// `0088e1e0` play them at the point with flags 0x4102 and the sound's own
+/// distances), as loud as those distances make it from the listener now,
+/// and kept so every frame after (`attenuate`). Its loudness (dB) when it
+/// starts.
+pub(crate) fn play_at(
+    commands: &mut Commands,
+    game: &cellview::Game,
+    wavs: &mut Assets<PcmSound>,
+    sound: FormId,
+    (at, listener): ([f32; 3], [f32; 3]),
+    pick: u64,
+) -> Option<f32> {
+    let levels = SoundLevels::load(&game.order, sound)?;
+    let placed = PlacedSound {
+        shooter: FormId(0),
+        offset: at,
+        follows: false,
+        distances: levels.distances(),
+        curve: levels.curve_mb(),
+        static_attenuation: levels.static_attenuation,
+        volume: 1.0,
+    };
+    let d = (0..3)
+        .map(|k| (at[k] - listener[k]).powi(2))
+        .sum::<f32>()
+        .sqrt();
+    let amp = loudness(&placed, Some(d));
+    let e = start_sound(commands, game, wavs, sound, pick, amp)?;
+    commands.entity(e).insert(placed);
+    Some(20.0 * amp.max(1e-5).log10())
+}
+
 /// How loud a placed sound is `d` units from the listener (`None`: 2D).
 fn loudness(s: &PlacedSound, d: Option<f32>) -> f32 {
     let (min, max) = weapon_fx::buffer_distances(s.distances.0, s.distances.1);
