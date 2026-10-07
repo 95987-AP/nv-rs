@@ -51,10 +51,14 @@ closing over the Pip-Boy no longer makes the player ready to walk.
 | Local map indoors: Doc Mitchell's house laid out from above, unexplored rooms dark, door marker named on hover, the arrow turning with the view (west, then north), wheel zoom | `GSDocMitchellHouse`, `--pipboy data:0`, mouse turns, wheel |
 | Local map outdoors: Goodsprings' ground and objects around the player, the fog of war's edge soft, wheel zoom out shrinks the map round the arrow | `Goodsprings`, Tab, wheel |
 | Escape over the Pip-Boy opens the pause menu on top of it | Tab, Escape ([START_MENU.md](START_MENU.md)) |
+| Scripts drive the same radio: `PipboyRadio on 0016B74C` fills Mojave Music Radio's square in DATA › Radio and its song plays on the radio deck; `PipBoyRadioOff` 6 s later clears the deck and the place's music comes back | `Goodsprings`, `--run`, `--run-at 6`, `--pipboy data:4` |
+| `SunnyREF.SetNPCRadio 1 0016B74C` (Pip-Boy radio off): Sunny plays `mus_lazy_day_blues_mono.ogg`; `0016B74C.StartRadioConversation` restarts her with the new programme's song (`mus_i_m_movin_out_mono.ogg`); `SetNPCRadio 0` and nothing more plays | `Goodsprings`, `--run-at 3/9/14` |
+| The 2 key, weapon out: a tap swaps 9mm Round → Hollow Point, a 1.5 s hold swaps back; no hot key used | `--walk --weapon WeapNV9mmPistol`, `--key-at 6 2`, `--key-at 10 2:1.5` (these inject into `ButtonInput` only, so the HUD hot keys, which read key events, weren't exercised) |
 
 Pictures are kept privately in `%USERPROFILE%\nv-re\work\pipboylive-2026-10-06`,
-`%USERPROFILE%\nv-re\work\pipboycomplete-2026-10-06` and
-`%USERPROFILE%\nv-re\work\startmenu-2026-10-06`.
+`%USERPROFILE%\nv-re\work\pipboycomplete-2026-10-06`,
+`%USERPROFILE%\nv-re\work\startmenu-2026-10-06` and
+`%USERPROFILE%\nv-re\work\radiounify-2026-10-06`.
 
 ## Repair and Mod
 
@@ -92,8 +96,11 @@ and X buttons here stay as they were (lit by `00781680`, no menu).
 | F1/F2/F3 (DIK 0x3B..0x3D, raw keys): open on STATS/ITEMS/DATA, switch, or close on the shown one; Tab release closes | `0070c4a0`, `00a24180`, `0070f4e0`, `0070f690` |
 | Boxes over the Pip-Boy are ordinary menus on the main screen (only files whose `id` is `&pipboymenu;` draw on its screen); the HUD keeps its messages over the Pip-Boy's pages | `menus\*.xml`, `ui::hud::parts_for_menu` mode 3 |
 | Menu class numbers: Stats 0x3eb, Inventory 0x3ea, Map 0x3ff | `00717920`, rtti vtables `0106ffd4`, `010739b4`, `01074d44` |
-| Hot key controls: Hotkey1, Ammo Swap, Hotkey3..8 are controls 0x11..0x18 (names `011a7e60`); their keys from the INI's `[Controls]` lines, else the exe's defaults (the digits 1..8); each control looks its key up on its own, so the 2 key drives both Ammo Swap and the wheel's second slot | `00a24b70`, `00a24660`; `viewer::controls` |
+| Hot key controls: Hotkey1, Ammo Swap, Hotkey3..8 are controls 0x11..0x18 (names `011a7e60`); their keys from the INI's `[Controls]` lines, else the exe's defaults (the digits 1..8); each control looks its key up on its own (`00a24660`) | `00a24b70`, `00a24660`; `viewer::controls` |
+| The 2 key (control 0x12): the player's controls swap ammunition when it goes down (`0093e860`, `fPlayerAmmoSwapTimer`); the HUD's hot keys (`HUDMainMenu::UpdateHotkeysWheel` (Xbox PDB), `0077da60`) treat it as slot 1: down only selects slot 1 on the wheel (`0061cc40(1)`, no name, `00701bd0` not called), held never shows the wheel (`n != 1`), up uses slot 1 (`UseHotkeyItem`, `00701e80`); nothing can be put on slot 1 (the Pip-Boy's wheel skips it on PC and pad: `00781ba0`, `00701bd0(1)` gives −1, `007017b0`), so tap or hold, the 2 key only swaps ammunition | `0077da60`, `00781ba0`; `viewer::pipboy` |
 | Radio stations (`TACT` with flag 0x20000, not 0x10000000): in range by `XRDO` (radius, everywhere, worldspace, linked ref), signal strength truncated, rows sorted in-range first then by name; click (row 0x19) tunes / turns off; the music director held while a station plays; a station's programme from its scripts (`RadioHello` etc.), songs on the radio deck in step, DJ lines through the dialogue voice paths 50 ms apart; static volume ((100 − s)/100)^0.75; plays with the Pip-Boy away; saved (`radio`, `radiofound` lines) | `004ff1a0`, `00833d00`, `0061b440`, `00796fd0` case 0x19, `011dd313`; `world::radio`, `viewer::radio` |
+| One radio for the Pip-Boy and the scripts (`FalloutRadio` (Xbox PDB)): `PipboyRadio` on / off / tune and `PipBoyRadioOff` switch and tune the radio DATA › Radio shows and plays (`008324e0`, `00832240(station, 1)` with a range pass now; no station: the first in range); `StartRadioConversation` replaces a station's programme with one from the topic (default `RadioHello`), 50 ms on, stopping what it played (`00835be0`); `ForceRadioStationUpdate` a range pass (`00832ad0(1)`) | `005d7fb0`, `005dc580`, `005d82a0`, `005d8280`; `world::more_functions::radio` |
+| `SetNPCRadio 1` (`EnableNPCRadio`, `00835810`): a receiver (`FORadioReceiver` (Xbox PDB)) on the station of that base already playing (`00832830`), else the placed one in range of the person (`00832cb0` → `008356e0`); `0` (`DisableNPCRadio`, `00835980`) silences it. A station with receivers runs though the Pip-Boy isn't on it (`00834260`); each receiver starts the line when the player is within hearing (creature: `fCreatureRadioMax` 2000 × 1.1; else the station base's `SNAM` sound, or `AMLRadio`, largest attenuation × 1.1; else 3000), in step with the line; a song as its `_mono` file streamed as `.ogg` (`00af1e00`); in another worldspace / interior than the player it stops for good. Saved: `npcradio`, `radioconversation` (and old saves' `scriptradio` read as the `radio` line) | `00834260` (disassembly), `00553b90`, `0104fca0`, `011dd62c`; `world::radio`, `viewer::radio` |
 | Local map: 5 × 5 tiles of 4096 units (interiors: offset 2048 and turned by the `NorthMarker`), each a 128 × 128 picture from above (outdoors the land's top + 20000, indoors the bound's top + 40000, half-size 2176, outdoors 32 lower), colour the view-space normal × 0.5 + 0.5 (`SLS2084.vso`/`SLS2087.pso`), cleared black; one picture a frame; tiles drawn as 17 × 17 meshes, vertex alpha = seen count / 4, picture × Pip-Boy colour | `0054e830`, `0054ee80`, `0054f500`, `0079ffb0`, `00556870` |
 | Fog of war: 16 × 16 points a cell (256 apart), set within `fSeenDataUpdateRadius` (1024) of the player, fully-seen at 248 points; saved (`seen` lines) | `00555c20`, `00556ef0` |
 | Local map markers: doors (`icon_local_door.dds`, alpha the fog's, name where they lead: cell name, else worldspace), quest targets and the custom marker (`LocalMapQuestMarkerTemplate`), the arrow at −heading − 0.3 − north; zoom `fLocalMapMinZoom` 0.1 .. `MaxZoom` 0.9, marker sizes 20..75 / 40..75 / 40..70 | `0079d410`, `0079dbb0`, `0079e0a0`, `0079c5a0` |
@@ -114,7 +121,13 @@ away left out (the pass's cull mode isn't traced), the normal per vertex,
 the map tile's own square not drawn under the pictures, outdoors the
 camera's height from the square's highest vertex, the pictures made again
 when the place changes. Radio: the ranges are straight-line (no path
-finding).
+finding); script functions take the last frame's audio clock as now; a
+receiver's sound is taken to end with the station's line (its length the
+song's own file, not the mono one); receivers' loudness as the Pip-Boy's
+(their sound's category, flags 0x500102, not traced); vfunc +0x21c read
+as "is a creature" (it picks `fCreatureRadioMax`); `TESSound` +0x45 read
+as the largest attenuation byte; one receiver a person (the game lists
+the same receiver again when a person is given a second station).
 
 ## Tests
 
@@ -132,6 +145,10 @@ finding).
 - `world` `more_functions::the_player_drops_items_in_front`
 - `viewer pipboy::tests::the_pointer_lands_on_the_screens_picture`
 - `viewer pipboy::tests::a_click_finishes_although_the_buttons_are_cleared`
+- `world` `more_functions::the_pipboy_radio_and_its_stations` (script
+  functions on the Pip-Boy's radio, saves old and new),
+  `more_functions::a_person_plays_a_station_near_the_player`,
+  `radio::tests::a_receivers_song_is_its_mono_ogg`
 - `ui::pipboy::tests::number_keys_put_items_on_hot_keys`,
   `ui::pipboy::tests::the_aimed_limb_blinks`,
   `ui::pipboy::data::tests::notes_show_by_kind_and_play`
@@ -164,8 +181,14 @@ live checks above are of the viewer only. Not implemented:
   Radio New Vegas's news lines seen live (only the station's enable path
   is traced), challenges, waypoints on the local map, the custom marker
   on the compass, `OutputLocalMapPictures`, `ToggleFogOfWar`.
-- Hot keys: the shared 2 key (Ammo Swap and the wheel's second slot) is
-  tested, not checked live.
+- Radio receivers: not placed in the world (no distance falloff or
+  direction once started, as the viewer's other voices); the actor
+  saying a line of its own voice with lip sync (`00834260`, vfunc +0x284)
+  isn't done; a station's programme position isn't saved (a conversation
+  a script started begins again after a load); the Pip-Boy tuned to a
+  station mid-line (receivers already playing it) waits for the next line;
+  stations from radio templates (`004fd3c0`) aren't made; the radio's
+  "disabled" flag (`011dd436`) is taken as clear.
 - Buttons moving, the PC button-label textures, held keys repeating,
   swapped mouse buttons (`+0x1b4c`), the game's own cursor speed (the
   system pointer is used).

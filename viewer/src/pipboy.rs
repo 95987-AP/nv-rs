@@ -1028,16 +1028,19 @@ fn pipboy_keys(
     // Scripts can take the Pip-Boy away (`DisablePlayerControls`).
     let allowed = !state.0.controls_off[world::scripting::controls::PIPBOY];
     let free = !menus.others_open() && conversation.0.is_none();
-    // A hot key let go in the game (`0077da60`, PC: control 0x11 + n come
-    // up → `00701e80`): its item taken off when it's equipped, else
-    // equipped or used. The "2" is the ammunition swap there (`0061cc40`),
-    // not a hot key.
+    // A hot key let go in the game (`HUDMainMenu::UpdateHotkeysWheel`
+    // (Xbox PDB), `0077da60`, PC: control 0x11 + n comes up →
+    // `HotKeysWheel::UseHotkeyItem`, `00701e80`): its item taken off when
+    // it's equipped, else equipped or used. Every n, the 2 key's (Ammo
+    // Swap's control, n 1) too: going down it only selects slot 1
+    // (`0061cc40(1)` on the wheel's +0x28, no name shown, `00701bd0(1)`
+    // not called), held it never shows the wheel (`n != 1`), and coming up
+    // it uses slot 1, which nothing can be put on (the Pip-Boy's wheel
+    // skips it, `00781ba0`, `007017b0`): nothing happens. The ammunition
+    // swap itself is the player's controls' (`0093e860`, control 0x12
+    // going down; `combat`).
     if !pipboy.open && free && player.ready {
-        for (n, _) in hotkeys_released
-            .iter()
-            .enumerate()
-            .filter(|&(n, &r)| r && n != ui::pipboy::items::NOT_A_HOTKEY)
-        {
+        for (n, _) in hotkeys_released.iter().enumerate().filter(|&(_, &r)| r) {
             use_hotkey(order, &mut state.0, n);
         }
     }
@@ -3196,8 +3199,9 @@ mod tests {
         assert!(!held[2] && up[2]);
         let up = hotkey_events(&keys, &mut held, [(KeyCode::Digit9, Released)].into_iter());
         assert_eq!(up, [false; 8]);
-        // The 2 key is Ammo Swap's (slot 1, not a hot key); bound by the
-        // INI to R, the 2 key holds nothing and R holds slot 1.
+        // The 2 key is Ammo Swap's (slot 1, which nothing is ever put on,
+        // so using it does nothing); bound by the INI to R, the 2 key
+        // holds nothing and R holds slot 1.
         let up = hotkey_events(&keys, &mut held, [(KeyCode::Digit2, Pressed)].into_iter());
         assert!(held[1] && up == [false; 8]);
         held = [false; 8];

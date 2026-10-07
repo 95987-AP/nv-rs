@@ -222,16 +222,20 @@ start (`ForceRadioStationUpdate`, `ResetPipboyManager`). None of them drives the
 * `ResetPipboyManager` (`005db490`) sets the player's Pip-Boy manager's reset flag
   (+0x16c); its reader isn't traced.
 
-**in code** (`crates/world/src/more_functions/radio.rs`, test
-`the_pipboy_radio_and_its_stations`): the six functions keep the state above (on, tuned
-station, each station's conversation, actors playing a station, the reset flag), saved
-with the game. With them, nvinspect counts 178 of the 199 functions Dead Money uses as
+**in code** (`crates/world/src/more_functions/radio.rs`, tests
+`the_pipboy_radio_and_its_stations`, `a_person_plays_a_station_near_the_player`): since
+2026-10-06 (`claude/m2-radio-unify`) the six functions act on the one radio the Pip-Boy
+shows and plays (`world::radio`, `GameState::radio`; see [PIPBOY.md](PIPBOY.md)): tuning
+plays the station, `PipBoyRadioOff` stops it, `StartRadioConversation` replaces the
+station's programme with the topic's, and `SetNPCRadio` makes the person a receiver who
+plays the station's lines near the player (`00834260`). Saved with the game
+(`radioconversation`, `npcradio`, `pipboyreset`; the old `scriptradio` line loads as the
+Pip-Boy radio). With them, nvinspect counts 178 of the 199 functions Dead Money uses as
 carried out (172 before).
 
-**Not done:** what a station plays (the conversation's lines in turn, `RadioConvTask`,
-`008373a0`), signal range and static (`fRadioStaticAtOuterRadiusPct`), the sound and the
-Pip-Boy Radio list, stations made from activators' or actors' radio templates, tuning with
-no station given, and the default topic. Nothing has been compared in the original game.
+**Not done:** stations made from activators' or actors' radio templates, the receivers
+placed in the world (they play without falloff), a station's place in its programme
+across a save. Nothing has been compared in the original game.
 
 ## Animations playing (`IsAnimPlaying`)
 
