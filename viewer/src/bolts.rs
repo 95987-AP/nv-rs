@@ -38,7 +38,20 @@ use crate::GameFiles;
 pub(crate) struct Bolt {
     pub shooter: FormId,
     pub pellet: Weapon,
+    pub projectile: world::explosions::ProjectileRecord,
     pub missile: Missile,
+}
+
+impl Bolt {
+    /// A projectile that explodes on impact (the plasma caster's: flag
+    /// 0x2 with an explosion, no alt. trigger) goes off where it struck
+    /// (`009c3190`; `explosives`).
+    fn impact(&self, at: [f32; 3]) {
+        let p = &self.projectile;
+        if p.explodes() && !p.alt_trigger() {
+            crate::explosives::detonate(self.shooter, self.pellet.clone(), p.clone(), at);
+        }
+    }
 }
 
 /// Bolts fired this frame: the attacks are in systems that can't take
@@ -51,7 +64,9 @@ pub(crate) fn flies(order: &esm::LoadOrder, weapon: &Weapon) -> bool {
     weapon
         .projectile
         .and_then(|p| world::explosions::ProjectileRecord::load(order, p))
-        .is_some_and(|p| world::projectiles::delivery(&p) == Delivery::Flies)
+        // Outside V.A.T.S. (its playback shoots in `vats`, which keeps
+        // casting at once: bullets flying there aren't done).
+        .is_some_and(|p| world::projectiles::delivery(&p, false) == Delivery::Flies)
 }
 
 /// Fires a bolt of `pellet`'s projectile from `origin` along `dir`
@@ -81,6 +96,7 @@ pub(crate) fn fire(
             shooter,
             pellet: pellet.clone(),
             missile: Missile::launch(origin, dir, speed, range),
+            projectile: record,
         });
     }
 }
@@ -151,7 +167,9 @@ pub fn fly_bolts(
             bolt.shooter,
             now,
         );
+        let at = |d: f32| [0, 1, 2].map(|k| from[k] + dir[k] * d);
         if let Some((d, victim, part)) = first {
+            bolt.impact(at(d));
             strike(
                 order,
                 &scripts,
@@ -164,7 +182,9 @@ pub fn fly_bolts(
             );
             continue;
         }
-        if let Some(at) = wall {
+        if let Some(wall_at) = wall {
+            bolt.impact(at(wall_at.0));
+            let at = wall_at;
             hits.shot_on_world(
                 &collision.0,
                 (from, dir),

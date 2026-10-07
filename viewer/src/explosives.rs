@@ -70,6 +70,19 @@ pub(crate) struct Launch {
 /// more parameters (`fighting` runs inside `ai`'s), so they queue here.
 static QUEUE: Mutex<Vec<Launch>> = Mutex::new(Vec::new());
 
+/// Projectiles that went off where they struck (`bolts`: a missile with
+/// an explosion and no alt. trigger explodes at its impact, `009c3190`):
+/// who fired, with what, the projectile and where.
+type Detonation = (FormId, Weapon, ProjectileRecord, [f32; 3]);
+static DETONATIONS: Mutex<Vec<Detonation>> = Mutex::new(Vec::new());
+
+/// Queues an explosion at an impact for [`fly_thrown`].
+pub(crate) fn detonate(by: FormId, weapon: Weapon, projectile: ProjectileRecord, at: [f32; 3]) {
+    if let Ok(mut q) = DETONATIONS.lock() {
+        q.push((by, weapon, projectile, at));
+    }
+}
+
 /// Queues a throw for [`fly_thrown`].
 pub(crate) fn throw(launch: Launch) {
     if let Ok(mut q) = QUEUE.lock() {
@@ -257,7 +270,11 @@ pub fn fly_thrown(
             settings,
         });
     }
-    if thrown.0.is_empty() {
+    let mut going_off: Vec<Detonation> = DETONATIONS
+        .lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default();
+    if thrown.0.is_empty() && going_off.is_empty() {
         return;
     }
     let dt = time.delta_secs();
@@ -266,7 +283,6 @@ pub fn fly_thrown(
             .raycast(from, dir, len)
             .map(|(d, tri)| (d, facing_normal(collider, tri, dir)))
     };
-    let mut going_off = Vec::new();
     thrown
         .0
         .retain_mut(|f| match f.flight.step(dt, &f.settings, &mut cast) {

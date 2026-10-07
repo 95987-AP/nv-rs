@@ -41,13 +41,16 @@ pub enum Delivery {
     NotTraced,
 }
 
-/// How a projectile is delivered (see [`Delivery`]). `009b7cc0` leaves
-/// flag 0x1 off for a missile whose `0044ddc0` is 4, whatever the record
-/// says (what that value is isn't traced: not modelled).
-pub fn delivery(p: &ProjectileRecord) -> Delivery {
+/// How a projectile is delivered (see [`Delivery`]). While V.A.T.S. plays
+/// its queue (the manager's mode, `[011f2250]+0x08`, is 4,
+/// [`crate::vats::mode::PLAYBACK`]) `009b7cc0` leaves flag 0x1 off for
+/// every missile, so bullets fly too; beams strike at once even then.
+pub fn delivery(p: &ProjectileRecord, vats_playback: bool) -> Delivery {
     match p.kind {
         proj_type::BEAM => Delivery::AtOnce,
-        proj_type::MISSILE if p.flags & proj_flags::HITSCAN != 0 => Delivery::AtOnce,
+        proj_type::MISSILE if p.flags & proj_flags::HITSCAN != 0 && !vats_playback => {
+            Delivery::AtOnce
+        }
         proj_type::MISSILE => Delivery::Flies,
         proj_type::LOBBER => Delivery::Lobbed,
         _ => Delivery::NotTraced,
@@ -140,11 +143,17 @@ mod tests {
     fn beams_and_hitscan_missiles_strike_at_once_plasma_flies() {
         // `BeamLaserProjectile` (0x8C, beam), a 9mm bullet (0x01 hitscan,
         // missile), `PlasmaProjectile` (0x20C, missile), dynamite (lobber).
-        assert_eq!(delivery(&record(0x8C, 4, 10000.0)), Delivery::AtOnce);
-        assert_eq!(delivery(&record(0x01, 1, 23680.0)), Delivery::AtOnce);
-        assert_eq!(delivery(&record(0x20C, 1, 7500.0)), Delivery::Flies);
-        assert_eq!(delivery(&record(0x806, 2, 1200.0)), Delivery::Lobbed);
-        assert_eq!(delivery(&record(0x8D, 8, 12000.0)), Delivery::NotTraced);
+        assert_eq!(delivery(&record(0x8C, 4, 10000.0), false), Delivery::AtOnce);
+        assert_eq!(delivery(&record(0x01, 1, 23680.0), false), Delivery::AtOnce);
+        assert_eq!(delivery(&record(0x20C, 1, 7500.0), false), Delivery::Flies);
+        assert_eq!(delivery(&record(0x806, 2, 1200.0), false), Delivery::Lobbed);
+        assert_eq!(
+            delivery(&record(0x8D, 8, 12000.0), false),
+            Delivery::NotTraced
+        );
+        // V.A.T.S.'s playback: bullets fly, beams don't.
+        assert_eq!(delivery(&record(0x01, 1, 23680.0), true), Delivery::Flies);
+        assert_eq!(delivery(&record(0x8C, 4, 10000.0), true), Delivery::AtOnce);
     }
 
     #[test]
