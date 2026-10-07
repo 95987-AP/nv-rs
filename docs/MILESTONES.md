@@ -605,7 +605,14 @@ game (the combat controller and its procedures), the player
 (`009590f0`: perks, active quest, hot keys, notes), projectiles, the
 small base form types, the weather and the radio decoded: every change
 form in all nine saves (36,322) decodes to its exact length, none skipped.
-**Next action:** import the decoded parts into `GameState`.
+`world::fos_import` builds a `GameState` from a save (globals and game
+time, quests with stages, objectives and variables, said topics, the
+player's place, name, S.P.E.C.I.A.L., experience, perks, inventory and hot
+keys, references moved, disabled, locked, found map markers, containers,
+dead actors and their values, factions, challenges, reputations, local
+map fog, weather, radio); plugin indices are matched by name. Gaps listed
+in FOS_SAVES.md. `nvinspect fos-import` runs it on all nine saves with no
+failures. **Next action:** `--load-fos` in the viewer.
 
 ## Deferred
 

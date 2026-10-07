@@ -300,10 +300,47 @@ fn mover(p: &mut Pipe<'_>, player: bool) -> Result<()> {
     Ok(())
 }
 
+/// Some of the fixed fields `Actor::SaveGame` (`008aaf40`) writes, by
+/// their Xbox names (PC offset + 0x10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ActorFields {
+    /// `bProcessMe` (+0xbc): the AI runs (`SetActorsAI` clears it).
+    pub process_me: bool,
+    /// `bForceSneak` (+0x125).
+    pub force_sneak: bool,
+    /// `bDeadFlag` (+0x118).
+    pub dead_flag: bool,
+    /// `eCriticalStage` (+0x10c).
+    pub critical_stage: u32,
+    /// `bPlayerTeammate` (+0x18d).
+    pub teammate: bool,
+    /// `bIgnoreCrime` (+0x144).
+    pub ignore_crime: bool,
+    /// `iMinorCrimes`, `iMajorCrimes` (+0x13c, +0x140).
+    pub minor_crimes: u32,
+    pub major_crimes: u32,
+}
+
+/// The fixed run `Actor::SaveGame` writes after the mobile object, by
+/// size; [`ActorFields`] picks from it by position.
+const ACTOR_FIXED: [usize; 31] = [
+    4, 1, 1, 1, 1, 4, 1, 4, 1, 1, 1, 1, 1, 1, 4, 4, 4, 1, 1, 1, 4, 4, 1, 1, 4, 1, 4, 1, 4, 4, 4,
+];
+
+/// Reads values of these sizes, each followed by `|`.
+fn values<'a>(p: &mut Pipe<'a>, sizes: &[usize]) -> Result<Vec<&'a [u8]>> {
+    sizes.iter().map(|&n| p.bytes(n)).collect()
+}
+
+fn word(b: &[u8]) -> u32 {
+    u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+}
+
 /// What `Actor::SaveGame` (`008aaf40`) keeps that a game continues from.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Actor<'a> {
     pub mobile: Mobile<'a>,
+    pub fields: ActorFields,
     /// `CHANGE_ACTOR_LIFESTATE`: `ACTOR_LIFE_STATE` (0 alive, 1 dying,
     /// 2 dead, 3 unconscious, ...).
     pub life_state: Option<u8>,
@@ -323,13 +360,22 @@ fn actor<'a>(p: &mut Pipe<'a>, cf: &ChangeForm<'_>, player: bool) -> Result<Acto
         npc: cf.save_type == t::ACHR,
     };
     let mobile = mobile(p, flags, true, cx)?;
-    skip(
-        p,
-        &[
-            4, 1, 1, 1, 1, 4, 1, 4, 1, 1, 1, 1, 1, 1, 4, 4, 4, 1, 1, 1, 4, 4, 1, 1, 4, 1, 4, 1, 4,
-            4, 4,
-        ],
-    )?;
+    // In written order: the time since the last update (+0x114), +0x124
+    // `bForceRun`, +0x125, +0xbc, +0xc4, +0xc8, +0x7d, +0x110, +0x118,
+    // +0x126, +0x145, +0x146, +0x14c, +0x14d, +0x150, +0x154, +0x158,
+    // +0x174, +0x175, +0x18d, +0x1a4, +0x1a8, +0xf0, +0xf1, +0x10c,
+    // +0x134, +0x138, +0x144, +0x13c, +0x140, +0x120.
+    let v = values(p, &ACTOR_FIXED)?;
+    let fields = ActorFields {
+        process_me: v[3][0] != 0,
+        force_sneak: v[2][0] != 0,
+        dead_flag: v[8][0] != 0,
+        critical_stage: word(v[24]),
+        teammate: v[19][0] != 0,
+        ignore_crime: v[27][0] != 0,
+        minor_crimes: word(v[28]),
+        major_crimes: word(v[29]),
+    };
     for _ in 0..3 {
         p.ref_id()?;
     }
@@ -360,6 +406,7 @@ fn actor<'a>(p: &mut Pipe<'a>, cf: &ChangeForm<'_>, player: bool) -> Result<Acto
     }
     Ok(Actor {
         mobile,
+        fields,
         life_state,
         dispositions,
         permanent_modifiers,
@@ -391,15 +438,41 @@ pub struct Player {
     pub crime_counts: [u32; 5],
     /// The hot keys' items as plain form ids (0 none).
     pub hotkeys: [u32; 8],
+    /// `bChargen` (+0x75c).
+    pub chargen: bool,
+    /// `bCanFastTravel` (+0x66d: bit 0 allowed, bit 1 kept as it is when
+    /// the player is moved) and `bCanWait` (+0x66e).
+    pub fast_travel: u8,
+    pub can_wait: bool,
+    /// `iNumberofStealWarnings`, `iNumberofPickpocketWarnings` (+0x228,
+    /// +0x230).
+    pub steal_warnings: u32,
+    pub pickpocket_warnings: u32,
+    /// `iTotalPlayingTime` (+0x790).
+    pub playing_time: u32,
 }
+
+/// The fixed run after `Character::SaveGame` in the player's data, by
+/// size, in written order: +0x64a, +0x64d, +0x651, +0x652, +0x654, +0x660,
+/// +0x664, +0x668, +0x66c, +0x6cc, +0x6d0, +0x6d4, +0x6d8, +0x6dc, +0x6e8,
+/// +0x681, +0x7c5, +0x7c6, +0x6e4, the map marker's position (12 bytes),
+/// +0x698, +0x67c, +0x738, +0x658, +0x65c, +0x674, +0x670, +0x75c,
+/// +0x730, +0x790, +0x680, +0x7c4, +0x63c, +0x640, +0x644, +0x200,
+/// +0x240, +0x64e, +0x66d, +0x794, `011e0b5c`, +0xd6c, +0xd70, +0x228,
+/// +0x22c, +0x230, +0x234, +0x608, +0xdf2, +0x64f, +0x650, +0x7c7,
+/// +0x5f8, +0x1fc, +0x684.
+const PLAYER_FIXED: [usize; 55] = [
+    1, 1, 1, 1, 4, 4, 4, 4, 1, 1, 4, 4, 1, 4, 1, 1, 1, 1, 4, 12, 4, 4, 4, 1, 4, 4, 4, 1, 4, 4, 1,
+    1, 4, 4, 4, 4, 1, 1, 1, 4, 4, 4, 4, 4, 4, 4, 4, 1, 1, 1, 1, 1, 1, 4, 4,
+];
 
 /// Reads the player: [`Player`] around the [`Actor`] data.
 fn player<'a>(p: &mut Pipe<'a>, cf: &ChangeForm<'_>) -> Result<(Actor<'a>, Player)> {
     let mut out = Player::default();
-    let values = |p: &mut Pipe<'_>| -> Result<Vec<f32>> { (0..77).map(|_| p.f32()).collect() };
-    out.temporary_values = values(p)?;
-    out.script_values = values(p)?;
-    out.damage_values = values(p)?;
+    let av_list = |p: &mut Pipe<'_>| -> Result<Vec<f32>> { (0..77).map(|_| p.f32()).collect() };
+    out.temporary_values = av_list(p)?;
+    out.script_values = av_list(p)?;
+    out.damage_values = av_list(p)?;
     out.health_modifier = p.f32()?;
     let actor = actor(p, cf, true)?;
     let cx = Context {
@@ -410,13 +483,12 @@ fn player<'a>(p: &mut Pipe<'a>, cf: &ChangeForm<'_>) -> Result<(Actor<'a>, Playe
         let n = p.vsval()? as usize;
         p.raw(n)?;
     }
-    skip(
-        p,
-        &[
-            1, 1, 1, 1, 4, 4, 4, 4, 1, 1, 4, 4, 1, 4, 1, 1, 1, 1, 4, 12, 4, 4, 4, 1, 4, 4, 4, 1, 4,
-            4, 1, 1, 4, 4, 4, 4, 1, 1, 1, 4, 4, 4, 4, 4, 4, 4, 4, 1, 1, 1, 1, 1, 1, 4, 4,
-        ],
-    )?;
+    let v = values(p, &PLAYER_FIXED)?;
+    out.chargen = v[27][0] != 0;
+    out.playing_time = word(v[29]);
+    out.fast_travel = v[38][0];
+    out.steal_warnings = word(v[43]);
+    out.pickpocket_warnings = word(v[45]);
     for c in &mut out.crime_counts {
         *c = p.u32()?;
     }
@@ -462,7 +534,9 @@ fn player<'a>(p: &mut Pipe<'a>, cf: &ChangeForm<'_>) -> Result<(Actor<'a>, Playe
     effects(p)?;
     skip(p, &[4, 4, 4])?;
     out.companion_perks = counted(p, |p| Ok((p.ref_id()?, p.u8()?)))?;
-    skip(p, &[1, 1, 1])?;
+    // `004d1360`, `005a6050`, then `bCanWait`.
+    skip(p, &[1, 1])?;
+    out.can_wait = p.u8()? != 0;
     for h in &mut out.hotkeys {
         *h = p.u32()?;
     }

@@ -183,11 +183,12 @@ pub enum Extra {
     Teleport(Teleport),
     /// `MapMarkerData::cFlags` (Xbox PDB): 0x1 visible, 0x2 can travel.
     MapMarker(u8),
-    /// The leveled actor's base, the base made from it in game, and that
-    /// base's change flags (its data is read past).
+    /// `ExtraLeveledCreature` (Xbox PDB): `pOriginalBase` (the leveled
+    /// list), `pTemplate` (what it picked), and the change flags of the
+    /// base the reference was given (its data is read past).
     LeveledCreature {
-        base: RefId,
-        created: RefId,
+        original_base: RefId,
+        template: RefId,
         flags: u32,
     },
     Scale(f32),
@@ -389,13 +390,13 @@ fn extra(p: &mut Pipe<'_>, cx: Context) -> Result<Extra> {
             Extra::Other(k)
         }
         LEVELED_CREATURE => {
-            let base = p.ref_id()?;
-            let created = p.ref_id()?;
+            let original_base = p.ref_id()?;
+            let template = p.ref_id()?;
             let flags = p.u32()?;
             super::actor_base_data(p, flags, cx.npc)?;
             Extra::LeveledCreature {
-                base,
-                created,
+                original_base,
+                template,
                 flags,
             }
         }

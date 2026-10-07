@@ -8,7 +8,8 @@ Status: **format researched and checked** against real saves: every
 change form in all nine files decodes to its exact length, references,
 actors, their AI processes and the player included. A read-only reader
 (`crates/fos`) and inspector (`nvinspect fos`) are implemented and
-tested. No import into nv-rs state yet.
+tested, and `world::fos_import` builds nv-rs's `GameState` from a save
+(see [Import](#import); `nvinspect fos-import` shows what it takes).
 
 - Every structure below was read from the writer (and, where it matters, the
   reader) in FalloutNV.exe 1.4.0.525 (addresses are PC unless marked) and
@@ -469,10 +470,78 @@ What nv-rs is missing to take a `.fos` at all:
   flags2, `ACBS` and AI data byte meanings must be checked against the code
   that reads them before they are applied.
 
+## Import
+
+`world::fos_import::import(order, bytes)` builds a `GameState` and the
+player's place from a save: a new game's state (`GameState::new`:
+start-game quests running, the plugins' globals, the player's record
+items) with what the save changed laid over it. `nvinspect fos-import
+<SAVE> <PLUGIN|DATA>` prints what it took (counts, the player's place, the
+game time, the quests' stages). Every mapping is tested on synthetic
+saves (`crates/world/src/fos_import/tests.rs`).
+
+**Form ids.** The save's plugin list is matched to the load order by
+name, ignoring case (as `00847660` and `00846d80` do); a form whose plugin
+isn't loaded is dropped and counted. Forms made in game (`0xFF......`)
+keep their ids. Change forms are applied in file order, references last
+(the player's added values go onto the base's).
+
+| nv-rs state | From | Notes |
+| --- | --- | --- |
+| `globals` | Global data 3 | Game time included. |
+| `misc_stats` | Global data 0 | By `world::stats::NAMES` index. |
+| `weather` | Global data 8 | `current`, `previous` (`pLastWeather`), `picked` (`pDefaultWeather`), `forced` (`pOverrideWeather`), `started` (`fLastWeatherUpdate`), `fade` (`fCurrentWeatherPct`), `sped_up` (`fAccelBeginPct` while fading). The climate and the player's region are worked out again. |
+| `radio` | Global data 10 | On, the station tuned to, the one lost, the stations found. |
+| `running`, `completed`, `failed` | `QUST` 0x2 flags 0x01, 0x02, 0x40 | Quests without a change form keep the new game's state. |
+| `stages_done`, `stages` | `QUST` 0x80000000 | Current = highest done (`0060d670`). |
+| `objectives`, `set_by_scripts.hidden_completed` | `QUST` 0x20000000 | State 1 shown, 3 completed and shown, 2 completed and hidden. |
+| `quest_delays` | `QUST` 0x4 | |
+| `variables` | `QUST` 0x40000000, references' `SCRIPT` extra data | Names from the script's `SCVR` by `SLSD` index; whole numbers by `SLSD` flag 0x01; reference variables as the form id. |
+| `said` | `INFO` 0x80000000 | |
+| `player_name`, `player_female`, S.P.E.C.I.A.L. (`actor_values` 5..11), `player_level`, karma (23) | `NPC_` 0x7 | The header's level when the base data isn't saved. |
+| `tag_skills`, `tag_slots` | The `CLAS` with `CLASS_TAG_SKILLS` | |
+| `faction_crimes`, `faction_relations` | `FACT` 0x80000000, 0x4 | (major, minor) turned into nv-rs's (minor, major); the group reaction (0 neutral, 1 enemy, 2 ally, 3 friend). |
+| `more.challenges` | `CHAL` | Progress and flags. |
+| `reputations` | `REPU` | Fame, infamy. |
+| `seen` | `CELL` 0x80000000 | 256 points per exterior cell (by the record's grid) or interior section, as `world::local_map` keeps them (translated from the game's own `SeenData` code); fully seen when 248 or more are. |
+| `set_by_scripts.cell_owners` | `CELL` 0x8 | |
+| `set_by_scripts.list_additions` | `FLST` 0x80000000 | |
+| `disabled` | The form flags (`CHANGE_FORM_FLAGS`): 0x800 disabled (`00440da0`), 0x20 deleted (picked up) | Only where they differ from the record, so references that follow an enable parent keep following it. |
+| `positions`, `spaces` | Initial data 4 and 6 | Position and z rotation; with a cell change the worldspace and the cell at the position's grid square. |
+| `scales` | `REFR` 0x10 | |
+| `more.placed` | Initial data 5 | References made in game: base (a leveled actor's `pTemplate`), place, `COUNT`; not those whose base is itself made in game. |
+| `locks`, `broken_locks` | `LOCK` extra data | Locked (`cFlags` 0x1) at `cBaseLevel`; `uiNumTries`. |
+| `discovered`, `map_markers` | `MAPMARKER` extra data | Flags 0x3 where the record hasn't them: found; 0x1 alone: shown. |
+| `set_by_scripts.owners` | `OWNERSHIP` with `CHANGE_REFR_EXTRA_OWNERSHIP` | |
+| `more.ghosts`, `faction_changes` | `GHOST`, `FACTION_CHANGES` extra data | |
+| `items`, `stocked`, `equipped`, `weapon_health` | Inventories | The record's items plus the saved changes; the record's leveled lists rolled by nv-rs unless `CHANGE_REFR_LEVELED_INVENTORY` says the game already did (its picks are among the changes); `WORN` stacks equipped; a weapon's `HEALTH` over its `DATA` health. |
+| `dead`, `unconscious`, `set_by_scripts.restrained` | `ACTOR_LIFESTATE` | Dying (1) and dead (2), 3, 5. |
+| `teammates`, `set_by_scripts.ignoring_crime`, `more.forced_sneak`, `more.critical_stage` | Actor fields `bPlayerTeammate`, `bIgnoreCrime`, `bForceSneak`, `eCriticalStage` | |
+| `more.dispositions` | `ACTOR_DISPOSITION_MODIFIERS` toward the player | |
+| `actor_values` | `ACTOR_OVERRIDE_MODIFIERS` (set), `ACTOR_PERMANENT_MODIFIERS` (added onto it or the record's value) | Not the player's skills (nv-rs works them out). |
+| `damage`, `value_damage` | The low process's `ACTOR_DAMAGE_MODIFIERS`; the player's `DamageActorValueModifiers` | Health lost, other values damaged; not radiation and the hardcore needs. |
+| Experience (24), S.P.E.C.I.A.L., karma | The player's `ScriptActorValueModifiers` | Added onto the base. |
+| `perks`, `perk_ranks` | The player's `Perks` | `world::perks::add` once per rank (abilities included); the rank is a count from 1 (`009639e0`). |
+| `active_quest`, `notes`, `topics`, `hotkeys` | The player's data | |
+| `player_crimes`, `steal_warnings`, `more.in_chargen`, `set_by_scripts.fast_travel` | The player's `iMinorCrimes`/`iMajorCrimes`, +0x228, +0x75c, +0x66d/+0x66e | |
+| `player_cell`, `player_world`, `player_position` and the place | The player's initial data (else global data 1) | An interior cell, or the worldspace and the cell at the grid square. |
+
+Not imported (`world::fos_import::GAPS`): active effects (each effect's
+data is a block not interpreted), AI processes, packages, combat and
+pathing (nv-rs re-evaluates AI on loading), which actor a leveled list
+picked for a placed actor (nv-rs picks again), forms made in game other
+than references, projectiles in flight, the Havok poses of moved clutter
+(their place is imported), doors' open state, the player's skills and
+other script-changed values beyond S.P.E.C.I.A.L., experience and karma,
+companion perks, radiation and the hardcore needs, caravan cards and
+casino winnings, terminals, weapon mods, item condition outside weapons,
+placed items' counts, the player's disabled controls, and global data 4 to
+7 and 9.
+
 ## Next steps
 
-1. An importer from the decoded parts into `GameState`, checked by loading
-   a real save in the viewer.
+1. Check the import against the original game: load the same save in
+   both and compare (quest stages, inventories, where things stand).
 2. Global data 4 to 7 and 9 (process lists, combat, interface, effects,
    actor causes) if anything in nv-rs comes to need them.
 3. A save that has the parts read from code only (`NPC_FACE`, created

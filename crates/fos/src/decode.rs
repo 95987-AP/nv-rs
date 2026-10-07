@@ -9,8 +9,8 @@ mod extra;
 mod package;
 
 pub use actor::{
-    actor_form, modifiers, projectile, reference, Actor, ActorForm, Mobile, Player, Process,
-    Reference, ReferenceData, ACTOR_EXTRA, REFR_EXTRA,
+    actor_form, modifiers, projectile, reference, Actor, ActorFields, ActorForm, Mobile, Player,
+    Process, Reference, ReferenceData, ACTOR_EXTRA, REFR_EXTRA,
 };
 pub use extra::{
     active_effects, extra_list, inventory, kind as extra_kind, saved_under, Context, Extra,
@@ -622,38 +622,76 @@ pub enum Coverage {
     Failed(Error),
 }
 
+/// A cell's local map fog (`CELL_SEENDATA`): 256 seen points (32 bytes,
+/// `SeenData` (Xbox PDB) `0087a0c0`) for an exterior cell, or per interior
+/// section its `cSectionX`, `cSectionY` and points (`IntSeenData`,
+/// `0087a4e0`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Seen {
+    Exterior([u8; 32]),
+    Interior(Vec<(i8, i8, [u8; 32])>),
+}
+
+/// A `CELL` change form (`TESObjectCELL::SaveGame` (Xbox PDB),
+/// `00555630`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cell {
+    pub initial: InitialData,
+    pub form_flags: Option<u32>,
+    /// `CELL_FLAGS`: the cell's flags & 0x60 with its second flags.
+    pub flags: Option<u8>,
+    pub seen: Option<Seen>,
+    /// `CELL_FULLNAME`.
+    pub name: Option<String>,
+    /// `CELL_OWNERSHIP`.
+    pub owner: Option<RefId>,
+}
+
+fn bits32(b: &[u8]) -> [u8; 32] {
+    let mut a = [0; 32];
+    a.copy_from_slice(b);
+    a
+}
+
 /// Reads a `CELL` change form; the seen data's layout depends on whether
 /// the cell is inside (`IntSeenData`) or out (`SeenData`): pass it when
 /// known, else both are tried and exactly one must fit.
-pub fn cell(cf: &ChangeForm<'_>, interior: Option<bool>) -> Result<InitialData> {
+pub fn cell_data(cf: &ChangeForm<'_>, interior: Option<bool>) -> Result<Cell> {
     expect_type(cf, &[t::CELL])?;
-    let attempt = |interior: bool| -> Result<InitialData> {
+    let attempt = |interior: bool| -> Result<Cell> {
         let mut p = pipe(cf);
         let initial = initial_data(cf, &mut p)?;
         let f = cf.flags;
-        form_flags(&mut p, f)?;
-        if f & 0x2 != 0 {
-            p.u8()?;
-        }
-        if f & 0x8000_0000 != 0 {
-            if interior {
-                counted(&mut p, |p| {
-                    p.u8()?;
-                    p.u8()?;
-                    p.bytes(32).map(|_| ())
-                })?;
+        let form_flags = form_flags(&mut p, f)?;
+        let flags = if f & 0x2 != 0 { Some(p.u8()?) } else { None };
+        let seen = if f & 0x8000_0000 != 0 {
+            Some(if interior {
+                Seen::Interior(counted(&mut p, |p| {
+                    let x = p.u8()? as i8;
+                    let y = p.u8()? as i8;
+                    Ok((x, y, bits32(p.bytes(32)?)))
+                })?)
             } else {
-                p.bytes(32)?;
-            }
-        }
-        if f & 0x4 != 0 {
-            p.wstr()?;
-        }
-        if f & 0x8 != 0 {
-            p.ref_id()?;
-        }
+                Seen::Exterior(bits32(p.bytes(32)?))
+            })
+        } else {
+            None
+        };
+        let name = if f & 0x4 != 0 { Some(p.wstr()?) } else { None };
+        let owner = if f & 0x8 != 0 {
+            Some(p.ref_id()?)
+        } else {
+            None
+        };
         p.finish("cell")?;
-        Ok(initial)
+        Ok(Cell {
+            initial,
+            form_flags,
+            flags,
+            seen,
+            name,
+            owner,
+        })
     };
     match interior {
         Some(i) => attempt(i),
@@ -667,6 +705,11 @@ pub fn cell(cf: &ChangeForm<'_>, interior: Option<bool>) -> Result<InitialData> 
             )),
         },
     }
+}
+
+/// [`cell_data`]'s initial data.
+pub fn cell(cf: &ChangeForm<'_>, interior: Option<bool>) -> Result<InitialData> {
+    cell_data(cf, interior).map(|c| c.initial)
 }
 
 /// The face's FaceGen coefficients as `NPC_FACE` saves them (`00608f00`):
@@ -693,32 +736,74 @@ fn npc_face(p: &mut Pipe<'_>) -> Result<()> {
     Ok(())
 }
 
-/// An actor base's change data (`TESActorBase::SaveGame` (Xbox PDB),
-/// `005f1f30`, then `TESNPC` `00608f00` or `TESCreature` `005fb330`),
-/// which a leveled actor's extra data also carries. Returns the full name
-/// when saved.
-pub(crate) fn actor_base_data(p: &mut Pipe<'_>, f: u32, npc: bool) -> Result<Option<String>> {
-    form_flags(p, f)?;
+/// What an actor base's change data holds (`TESActorBase::SaveGame` (Xbox
+/// PDB), `005f1f30`, then `TESNPC` `00608f00` or `TESCreature`
+/// `005fb330`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ActorBase {
+    pub form_flags: Option<u32>,
+    /// `ACTOR_BASE_DATA`: the 24 bytes of `ACBS` (level at 8, karma at 16).
+    pub data: Option<[u8; 24]>,
+    /// `ACTOR_BASE_ATTRIBUTES`: S.P.E.C.I.A.L.
+    pub attributes: Option<[u8; 7]>,
+    /// `ACTOR_BASE_FULLNAME`.
+    pub name: Option<String>,
+    /// `NPC_SKILLS`: 14 skill values then 14 offsets.
+    pub skills: Option<[u8; 28]>,
+    /// `NPC_CLASS`.
+    pub class: Option<RefId>,
+    /// `NPC_GENDER`.
+    pub gender: Option<u8>,
+}
+
+impl ActorBase {
+    /// The level in `ACBS`.
+    pub fn level(&self) -> Option<i16> {
+        self.data.map(|d| i16::from_le_bytes([d[8], d[9]]))
+    }
+
+    /// The karma in `ACBS`.
+    pub fn karma(&self) -> Option<f32> {
+        self.data
+            .map(|d| f32::from_le_bytes([d[16], d[17], d[18], d[19]]))
+    }
+}
+
+/// An actor base's change data, which a leveled actor's extra data also
+/// carries.
+pub(crate) fn actor_base_data(p: &mut Pipe<'_>, f: u32, npc: bool) -> Result<ActorBase> {
+    let mut out = ActorBase {
+        form_flags: form_flags(p, f)?,
+        ..ActorBase::default()
+    };
     if f & 0x2 != 0 {
-        p.bytes(24)?;
+        let mut a = [0; 24];
+        a.copy_from_slice(p.bytes(24)?);
+        out.data = Some(a);
     }
     if f & 0x10 != 0 {
         counted(p, |p| p.ref_id())?;
         counted(p, |p| p.ref_id())?;
     }
     if f & 0x4 != 0 {
-        p.bytes(7)?;
+        let mut a = [0; 7];
+        a.copy_from_slice(p.bytes(7)?);
+        out.attributes = Some(a);
     }
     if f & 0x8 != 0 {
         p.bytes(20)?;
     }
-    let name = if f & 0x20 != 0 { Some(p.wstr()?) } else { None };
+    if f & 0x20 != 0 {
+        out.name = Some(p.wstr()?);
+    }
     if npc {
         if f & 0x200 != 0 {
-            p.bytes(28)?;
+            let mut a = [0; 28];
+            a.copy_from_slice(p.bytes(28)?);
+            out.skills = Some(a);
         }
         if f & 0x400 != 0 {
-            p.ref_id()?;
+            out.class = Some(p.ref_id()?);
         }
         if f & 0x200_0000 != 0 {
             p.ref_id()?;
@@ -728,24 +813,28 @@ pub(crate) fn actor_base_data(p: &mut Pipe<'_>, f: u32, npc: bool) -> Result<Opt
             npc_face(p)?;
         }
         if f & 0x100_0000 != 0 {
-            p.u8()?;
+            out.gender = Some(p.u8()?);
         }
     } else if f & 0x200 != 0 {
         p.u8()?;
         p.u8()?;
         p.u8()?;
     }
-    Ok(name)
+    Ok(out)
 }
 
-/// Reads an `NPC_` or `CREA` change form (`005f1f30`, `00608f00`,
-/// `005fb330`).
-pub fn actor_base(cf: &ChangeForm<'_>) -> Result<Option<String>> {
+/// Reads an `NPC_` or `CREA` change form.
+pub fn actor_base_form(cf: &ChangeForm<'_>) -> Result<ActorBase> {
     expect_type(cf, &[t::NPC_, t::CREA])?;
     let mut p = pipe(cf);
-    let name = actor_base_data(&mut p, cf.flags, cf.save_type == t::NPC_)?;
+    let out = actor_base_data(&mut p, cf.flags, cf.save_type == t::NPC_)?;
     p.finish("actor base")?;
-    Ok(name)
+    Ok(out)
+}
+
+/// An `NPC_` or `CREA` change form's full name, when saved.
+pub fn actor_base(cf: &ChangeForm<'_>) -> Result<Option<String>> {
+    actor_base_form(cf).map(|b| b.name)
 }
 
 /// A `FACT` change form (`005fd690`).

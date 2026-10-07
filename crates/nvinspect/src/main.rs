@@ -13,6 +13,7 @@ mod doors_cmd;
 mod face_cmd;
 mod fmt;
 mod fos_cmd;
+mod fos_import_cmd;
 mod grass_cmd;
 mod impacts_cmd;
 mod land_cmd;
@@ -69,6 +70,10 @@ THE ORIGINAL GAME'S SAVES (.fos), read-only:
                           player's place, checking that every part ends
                           where it should (docs/FOS_SAVES.md); with a
                           plugin (FalloutNV.esm) its forms get editor IDs
+    nvinspect fos-import <SAVE> <PLUGIN|DATA FOLDER>
+                          what nv-rs takes from the save
+                          (world::fos_import): counts, the player's
+                          place, the game time and the quests' stages
 
 COMMANDS FOR PLUGINS AND DATA FOLDERS:
     info                  the file header or load order, plus the most
@@ -513,6 +518,13 @@ fn run(args: &[String]) -> Result<(), CliError> {
         let stdout = io::stdout();
         let mut out = BufWriter::new(stdout.lock());
         fos_cmd::run(&mut out, &positional[1..])?;
+        out.flush()?;
+        return Ok(());
+    }
+    if positional[0] == "fos-import" {
+        let stdout = io::stdout();
+        let mut out = BufWriter::new(stdout.lock());
+        fos_import_cmd::run(&mut out, &positional[1..])?;
         out.flush()?;
         return Ok(());
     }

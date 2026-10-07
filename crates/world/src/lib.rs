@@ -45,6 +45,7 @@ pub mod explosions;
 mod exterior;
 pub mod face;
 pub mod factions;
+pub mod fos_import;
 pub mod functions;
 pub mod furniture;
 pub mod grass;

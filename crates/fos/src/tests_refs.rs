@@ -133,8 +133,8 @@ fn leveled_actors_carry_their_base_data() {
     assert_eq!(
         a.actor.mobile.data.extra.unwrap(),
         [Extra::LeveledCreature {
-            base: RefId(2),
-            created: RefId(0x80_0001),
+            original_base: RefId(2),
+            template: RefId(0x80_0001),
             flags: 0x20
         }]
     );
