@@ -1,17 +1,15 @@
-//! The radio's script functions, as the game's radio (`FalloutRadio`,
-//! `0083xxxx`) keeps them: whether the Pip-Boy radio is on and which
-//! station it's tuned to, the conversation each station was told to start,
-//! and the people playing a station through their own speaker
-//! (`SetNPCRadio`). Notes: `docs/DEAD_MONEY.md` "Radio".
+//! The radio's script functions (handlers from the command table at
+//! `01190910`), acting on the one radio the Pip-Boy shows and plays
+//! (`FalloutRadio` (Xbox PDB), [`crate::radio::Radio`], kept in
+//! `GameState::radio`): switching and tuning the Pip-Boy radio, a station's
+//! conversation, people playing a station (`SetNPCRadio`). Notes:
+//! `docs/DEAD_MONEY.md` "Radio", `docs/PIPBOY.md`.
 //!
-//! Kept here is only what the functions change. What a station then plays
-//! (its conversation's lines, one after another, the
-//! `RadioConvTask` at `008373a0`), its range and static, and the sound
-//! itself aren't carried out yet. The radio's "disabled" flag (`011dd436`,
-//! which makes every one of these do nothing) is taken as clear: what
-//! sets it isn't traced.
-
-use std::collections::BTreeMap;
+//! The radio's "disabled" flag (`011dd436`, which makes every one of these
+//! do nothing) is taken as clear: what sets it isn't traced. Stations made
+//! from an activator's or an actor's radio template (`004fd3c0` →
+//! `008356e0`) aren't carried out: such a reference can't be tuned (the
+//! radio goes off, as when no station can be made).
 
 use esm::{FormId, FourCC};
 
@@ -19,26 +17,6 @@ use super::{is_actor, kind_of, placed, st};
 use crate::scripting::{GameState, Runner, Value};
 
 const TACT: FourCC = FourCC::new(b"TACT");
-
-/// What the radio functions keep (`GameState::more.radio`).
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Radio {
-    /// The Pip-Boy radio is on (`011dd434`).
-    pub on: bool,
-    /// The station reference it's tuned to (the station object at
-    /// `011dd42c`, whose +0 is the reference); none when off.
-    pub tuned: Option<FormId>,
-    /// The conversation each station was last told to start
-    /// (`StartRadioConversation`), by station reference: a topic, or
-    /// `None` for the game's default (`0061a2d0(7, 0)`: the first topic
-    /// of its radio dialogue list, not worked out here).
-    pub conversations: BTreeMap<FormId, Option<FormId>>,
-    /// People playing a station (`SetNPCRadio 1`), by person.
-    pub npc_radio: BTreeMap<FormId, FormId>,
-    /// `ResetPipboyManager` asked the player's Pip-Boy manager to reset
-    /// (its +0x16c set to 1; what reads it isn't traced).
-    pub pipboy_reset: bool,
-}
 
 /// The radio's functions, by the game's own names.
 pub const CHANGES: &[&str] = &[
@@ -51,36 +29,36 @@ pub const CHANGES: &[&str] = &[
 ];
 
 /// Whether a reference can be a station by itself: its base is a talking
-/// activator (form type 0x16; `00832cb0`). Activators and actors get
-/// their station another way (their base's radio template, `004fd3c0` →
-/// `008356e0`), not carried out here.
+/// activator (form type 0x16; `00832cb0`).
 fn is_station(runner: &Runner, r: FormId) -> bool {
     placed::base_now(runner.order, runner.state, r).and_then(|b| kind_of(runner.order, b))
         == Some(TACT)
 }
 
-/// Switches the Pip-Boy radio on or off (`008324e0`). Off also forgets
-/// the station it was tuned to.
-fn set_on(runner: &mut Runner, on: bool) {
-    let r = &mut st(runner).radio;
-    r.on = on;
-    if !on {
-        r.tuned = None;
-    }
-}
-
 /// Tunes the Pip-Boy radio (`00832240(station, 1)`): only while it's on.
 /// A reference that can't be a station switches the radio off (the
 /// station object isn't made, `00832cb0` gives none). No station given:
-/// the game picks one the player is in range of, not carried out here.
+/// the first station in range of the player (none: off).
+// Translated from 00832240 (decompiled, FalloutNV.exe 1.4.0.525)
 fn tune(runner: &mut Runner, station: FormId) {
-    if !st(runner).radio.on || station.0 == 0 {
+    if !runner.state.radio.on {
         return;
     }
-    if is_station(runner, station) {
-        st(runner).radio.tuned = Some(station);
+    let station = if station.0 == 0 {
+        let mut radio = std::mem::take(&mut runner.state.radio);
+        let first = radio.first_in_range(runner.order, runner.state);
+        runner.state.radio = radio;
+        match first {
+            Some(s) => s,
+            None => return runner.state.radio.script_enable(false),
+        }
     } else {
-        set_on(runner, false);
+        station
+    };
+    if is_station(runner, station) {
+        runner.state.radio.script_tune(station);
+    } else {
+        runner.state.radio.script_enable(false);
     }
 }
 
@@ -106,16 +84,16 @@ pub(super) fn carry_out(
             };
             let station = arg(1).form();
             if word.starts_with('1') || word == "enable" || word == "on" {
-                set_on(runner, true);
+                runner.state.radio.script_enable(true);
                 tune(runner, station);
             } else if word.starts_with('0') || word == "disable" || word == "off" {
-                set_on(runner, false);
+                runner.state.radio.script_enable(false);
             } else if word == "tune" {
                 tune(runner, station);
             }
         }
         // `005dc580` → `008324e0(0)`.
-        "PipBoyRadioOff" => set_on(runner, false),
+        "PipBoyRadioOff" => runner.state.radio.script_enable(false),
         // `005d82a0` → `00835be0`: on a station, its conversation starts
         // now, replacing whatever it was playing; no topic given, the
         // default one.
@@ -123,7 +101,10 @@ pub(super) fn carry_out(
             let station = target?;
             if is_station(runner, station) {
                 let topic = Some(arg(0).form()).filter(|f| f.0 != 0);
-                st(runner).radio.conversations.insert(station, topic);
+                let (order, scripts) = (runner.order, runner.scripts);
+                let mut radio = std::mem::take(&mut runner.state.radio);
+                radio.start_conversation(order, scripts, runner.state, station, topic);
+                runner.state.radio = radio;
             }
         }
         // `005d8100`: on a person (vtable +0x100) with a station: 1 plays
@@ -135,54 +116,57 @@ pub(super) fn carry_out(
             if station.0 == 0 {
                 return Some(0.0);
             }
-            let r = &mut st(runner).radio;
             match arg(0).number() as i32 {
                 1 => {
-                    r.npc_radio.insert(who, station);
+                    let base = placed::base_now(runner.order, runner.state, station)?;
+                    let order = runner.order;
+                    let mut radio = std::mem::take(&mut runner.state.radio);
+                    radio.enable_npc_radio(order, runner.state, who, base);
+                    runner.state.radio = radio;
                 }
-                0 => {
-                    r.npc_radio.remove(&who);
-                }
+                0 => runner.state.radio.disable_npc_radio(who),
                 _ => {}
             }
         }
         // `005d8280` → `00832ad0(1)`: the stations update now rather than
-        // at their next interval. Nothing here updates stations yet.
-        "ForceRadioStationUpdate" => {}
+        // at their next interval (here at the radio's next frame).
+        "ForceRadioStationUpdate" => runner.state.radio.force_update = true,
         // `005db490`: the player's Pip-Boy manager (`00705990`), when
-        // there is one, gets its reset flag (`005db4c0(1)`, +0x16c).
-        "ResetPipboyManager" => st(runner).radio.pipboy_reset = true,
+        // there is one, gets its reset flag (`005db4c0(1)`, +0x16c; what
+        // reads it isn't traced).
+        "ResetPipboyManager" => st(runner).pipboy_reset = true,
         _ => return None,
     }
     Some(1.0)
 }
 
-/// Saved lines.
+/// Saved lines: a station's conversation a script started, while it
+/// plays; the people playing stations; the Pip-Boy manager's reset. (The
+/// Pip-Boy radio itself is the `radio` line, `crate::radio::save_lines`.)
 pub(crate) fn save_lines(state: &GameState, line: &mut dyn FnMut(String)) {
-    let r = &state.more.radio;
     let id = |f: FormId| format!("{:08X}", f.0);
-    if r.on {
-        line(format!(
-            "scriptradio on {}",
-            r.tuned.map_or("00000000".into(), id)
-        ));
+    for s in &state.radio.stations {
+        if let Some(topic) = s.started {
+            line(format!(
+                "radioconversation {} {}",
+                id(s.reference),
+                topic.map_or("00000000".into(), id)
+            ));
+        }
     }
-    for (station, topic) in &r.conversations {
-        line(format!(
-            "radioconversation {} {}",
-            id(*station),
-            topic.map_or("00000000".into(), id)
-        ));
+    for s in &state.radio.stations {
+        for u in s.users.iter().filter(|u| u.playing) {
+            line(format!("npcradio {} {}", id(u.reference), id(s.reference)));
+        }
     }
-    for (who, station) in &r.npc_radio {
-        line(format!("npcradio {} {}", id(*who), id(*station)));
-    }
-    if r.pipboy_reset {
+    if state.more.pipboy_reset {
         line("pipboyreset".into());
     }
 }
 
-/// A saved line back.
+/// A saved line back. `scriptradio on <station>` (saves from before the
+/// script functions shared the Pip-Boy's radio) is the Pip-Boy radio on
+/// and tuned to it; a conversation starts again from its first line.
 pub(crate) fn load_line(state: &mut GameState, parts: &[&str]) -> Option<Result<(), String>> {
     let form = |i: usize| {
         parts
@@ -192,32 +176,37 @@ pub(crate) fn load_line(state: &mut GameState, parts: &[&str]) -> Option<Result<
     };
     let nonzero = |f: FormId| Some(f).filter(|f| f.0 != 0);
     let bad = || Err(format!("can't read '{}'", parts.join(" ")));
-    let r = &mut state.more.radio;
+    let r = &mut state.radio;
     Some(match *parts.first()? {
         "scriptradio" if parts.get(1) == Some(&"on") => match form(2) {
             Some(t) => {
                 r.on = true;
-                r.tuned = nonzero(t);
+                r.active = nonzero(t);
+                if let Some(t) = r.active {
+                    r.restore_station(t);
+                }
                 Ok(())
             }
             None => bad(),
         },
         "radioconversation" => match (form(1), form(2)) {
             (Some(s), Some(t)) => {
-                r.conversations.insert(s, nonzero(t));
+                let i = r.restore_station(s);
+                r.stations[i].started = Some(nonzero(t));
+                r.stations[i].pending_start = true;
                 Ok(())
             }
             _ => bad(),
         },
         "npcradio" => match (form(1), form(2)) {
             (Some(w), Some(s)) => {
-                r.npc_radio.insert(w, s);
+                r.restore_receiver(w, s);
                 Ok(())
             }
             _ => bad(),
         },
         "pipboyreset" => {
-            r.pipboy_reset = true;
+            state.more.pipboy_reset = true;
             Ok(())
         }
         _ => return None,

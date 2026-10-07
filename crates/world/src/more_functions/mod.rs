@@ -179,8 +179,10 @@ pub struct State {
     pub speakers: HashMap<FormId, FormId>,
     /// Radio stations switched on or off (`SetBroadcastState`), by base.
     pub broadcasting: HashMap<FormId, bool>,
-    /// The Pip-Boy radio and the stations' conversations ([`radio`]).
-    pub radio: radio::Radio,
+    /// `ResetPipboyManager` asked the player's Pip-Boy manager to reset
+    /// (its +0x16c; what reads it isn't traced). The radio functions act
+    /// on `GameState::radio` ([`radio`]).
+    pub pipboy_reset: bool,
     /// People's critical stage (actor +0x10c: 1 goo start, 2 goo end, 3
     /// disintegrate start, 4 disintegrate end).
     pub critical_stage: HashMap<FormId, i32>,

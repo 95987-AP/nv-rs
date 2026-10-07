@@ -6,6 +6,7 @@ use esm::{ActivePlugins, FormId, LoadOrder};
 use testdata::more::ids::*;
 use world::dialogue::PLAYER_REF;
 use world::more_functions::{self as more, movement, SaveKind, Seen, Shown};
+use world::radio::{RadioEvent, RadioFiles};
 use world::scripting::{Event, GameState, Runner, ScriptCache};
 
 fn order(tag: &str) -> (testdata::TempData, LoadOrder) {
@@ -758,28 +759,48 @@ fn the_pipboy_radio_and_its_stations() {
     let (_data, order) = order("more-radio");
     let scripts = ScriptCache::default();
     let mut state = new_game(&order);
-    let radio = |state: &GameState| state.more.radio.clone();
+    // The script functions act on the Pip-Boy's own radio
+    // (`GameState::radio`, what DATA › Radio lists and plays).
+    let tuned = |state: &GameState| (state.radio.on, state.radio.active);
+    let id = |r: u32| Some(FormId(r));
     // Tuning while off does nothing; on with a station tunes to it.
     run(&order, &scripts, &mut state, "PipboyRadio Tune RadioRef");
-    assert!(!radio(&state).on);
+    assert_eq!(tuned(&state), (false, None));
     run(&order, &scripts, &mut state, "PipboyRadio on RadioRef");
-    assert!(radio(&state).on);
-    assert_eq!(radio(&state).tuned, Some(FormId(RADIO_REF)));
+    assert_eq!(tuned(&state), (true, id(RADIO_REF)));
+    // On as a click turns it on: the decks cleared, the music held, and
+    // a range pass asked for now.
+    let asked = std::mem::take(&mut state.radio.pending);
+    assert!(asked.contains(&RadioEvent::ClearDecks));
+    assert!(asked.contains(&RadioEvent::HoldMusic(true)));
+    assert!(state.radio.force_update);
+    assert!(state
+        .radio
+        .stations
+        .iter()
+        .any(|s| s.reference == FormId(RADIO_REF)));
     // Dead Money's words: `Tune` with a capital (compared without case).
     run(&order, &scripts, &mut state, "PipboyRadio Tune TalkerRef");
-    assert_eq!(radio(&state).tuned, Some(FormId(TALKER_REF)));
-    // Something that can't be a station switches the radio off.
+    assert_eq!(tuned(&state), (true, id(TALKER_REF)));
+    // Something that can't be a station switches the radio off: the
+    // music let go.
+    state.radio.pending.clear();
     run(&order, &scripts, &mut state, "PipboyRadio tune BarrelRef");
-    assert!(!radio(&state).on);
-    assert_eq!(radio(&state).tuned, None);
+    assert_eq!(tuned(&state), (false, None));
+    assert!(state.radio.pending.contains(&RadioEvent::HoldMusic(false)));
     // A number starting with 1 is on; off forgets the station.
     run(&order, &scripts, &mut state, "PipboyRadio 1 RadioRef");
-    assert_eq!(radio(&state).tuned, Some(FormId(RADIO_REF)));
+    assert_eq!(tuned(&state), (true, id(RADIO_REF)));
     run(&order, &scripts, &mut state, "PipBoyRadioOff");
-    assert_eq!((radio(&state).on, radio(&state).tuned), (false, None));
+    assert_eq!(tuned(&state), (false, None));
+    // On without a station: the first station in range (RadioRef is heard
+    // everywhere).
+    run(&order, &scripts, &mut state, "PipboyRadio on");
+    assert_eq!(tuned(&state), (true, id(RADIO_REF)));
 
-    // A station's conversation: the topic given, or the default one;
-    // not a station: nothing.
+    // A station's conversation: the topic given (a programme of its song,
+    // starting in 50 ms), or the default one; not a station: nothing.
+    state.radio.clock = 5_000;
     run(
         &order,
         &scripts,
@@ -787,10 +808,20 @@ fn the_pipboy_radio_and_its_stations() {
         "RadioRef.StartRadioConversation TestRadioTopic\nTalkerRef.StartRadioConversation\n\
          BarrelRef.StartRadioConversation TestRadioTopic",
     );
-    let c = radio(&state).conversations;
-    assert_eq!(c.get(&FormId(RADIO_REF)), Some(&Some(FormId(RADIO_TOPIC))));
-    assert_eq!(c.get(&FormId(TALKER_REF)), Some(&None));
-    assert!(!c.contains_key(&FormId(BARREL_REF)));
+    let station = |state: &GameState, r: u32| {
+        state
+            .radio
+            .stations
+            .iter()
+            .find(|s| s.reference == FormId(r))
+            .cloned()
+    };
+    let s = station(&state, RADIO_REF).unwrap();
+    assert_eq!(s.started, Some(id(RADIO_TOPIC)));
+    assert_eq!((s.current, s.start, s.duration), (Some(0), 5_050, 0));
+    assert_eq!(s.items[0].sound(), id(SONG));
+    assert_eq!(station(&state, TALKER_REF).unwrap().started, Some(None));
+    assert!(station(&state, BARREL_REF).is_none());
 
     // A person plays a station and stops; 2 and things that aren't
     // people do nothing.
@@ -801,31 +832,113 @@ fn the_pipboy_radio_and_its_stations() {
         "PersonRef.SetNPCRadio 1 RadioRef\nBarrelRef.SetNPCRadio 1 RadioRef\n\
          HeroRef.SetNPCRadio 1 RadioRef\nHeroRef.SetNPCRadio 2 RadioRef",
     );
-    let n = radio(&state).npc_radio;
-    assert_eq!(n.get(&FormId(PERSON_REF)), Some(&FormId(RADIO_REF)));
-    assert_eq!(n.get(&FormId(HERO_REF)), Some(&FormId(RADIO_REF)));
-    assert!(!n.contains_key(&FormId(BARREL_REF)));
+    let n: Vec<(FormId, FormId)> = state.radio.receivers().collect();
+    assert!(n.contains(&(FormId(PERSON_REF), FormId(RADIO_REF))));
+    assert!(n.contains(&(FormId(HERO_REF), FormId(RADIO_REF))));
+    assert!(!n.iter().any(|&(w, _)| w == FormId(BARREL_REF)));
+    state.radio.pending.clear();
     run(
         &order,
         &scripts,
         &mut state,
         "HeroRef.SetNPCRadio 0 RadioRef",
     );
-    assert!(!radio(&state).npc_radio.contains_key(&FormId(HERO_REF)));
+    assert!(!state.radio.receivers().any(|(w, _)| w == FormId(HERO_REF)));
+    assert!(state
+        .radio
+        .pending
+        .contains(&RadioEvent::ReceiverStop(FormId(HERO_REF))));
 
+    state.radio.force_update = false;
     run(
         &order,
         &scripts,
         &mut state,
         "ForceRadioStationUpdate\nResetPipboyManager\nPipboyRadio enable TalkerRef",
     );
-    assert!(radio(&state).pipboy_reset);
+    assert!(state.radio.force_update && state.more.pipboy_reset);
+    assert_eq!(tuned(&state), (true, id(TALKER_REF)));
 
-    // Kept in a save.
+    // Kept in a save: the Pip-Boy radio, the conversation still playing,
+    // who plays which station.
     let saved = world::save::save(&state, None);
     let (back, _) = world::save::load(&saved).unwrap();
-    assert_eq!(back.more.radio, state.more.radio);
-    assert_eq!(back.more.radio.tuned, Some(FormId(TALKER_REF)));
+    assert_eq!(tuned(&back), (true, id(TALKER_REF)));
+    assert_eq!(
+        back.radio.receivers().collect::<Vec<_>>(),
+        state.radio.receivers().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        station(&back, RADIO_REF).map(|s| (s.started, s.pending_start)),
+        Some((Some(id(RADIO_TOPIC)), true))
+    );
+    assert!(back.more.pipboy_reset);
+    // Saves from before: the scripts' own radio line is the Pip-Boy's.
+    let old = saved.replace("pipboyreset", "scriptradio on 00000E33");
+    let (back, _) = world::save::load(&old).unwrap();
+    assert_eq!(back.radio.active, id(RADIO_REF));
+}
+
+/// `SetNPCRadio`'s receiver plays the station's line through the person
+/// while the Pip-Boy isn't tuned to it (`00834260`): its song's mono file,
+/// in step with the line's start, when the player is within `AMLRadio`'s
+/// largest attenuation distance × 1.1 (2200); a receiver in another
+/// place than the player stops for good.
+#[test]
+fn a_person_plays_a_station_near_the_player() {
+    struct Files;
+    impl RadioFiles for Files {
+        fn voice_ms(&mut self, _: &str) -> Option<u32> {
+            None
+        }
+        fn song_ms(&mut self, _: &str) -> Option<u32> {
+            Some(60_000)
+        }
+    }
+    let (_data, order) = order("more-npcradio");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.SetNPCRadio 1 RadioRef\nRadioRef.StartRadioConversation TestRadioTopic",
+    );
+    let frame = |state: &mut GameState, now: u64| {
+        let mut radio = std::mem::take(&mut state.radio);
+        let place = world::radio::place_of(state);
+        let ev = radio.update(&order, &scripts, state, &place, now, 75, 0.8, &mut Files);
+        state.radio = radio;
+        ev
+    };
+    // Too far (the person is at 0,0,0): nothing starts.
+    state.player_position = Some([3000.0, 0.0, 0.0]);
+    let ev = frame(&mut state, 1_000);
+    assert!(!ev.iter().any(|e| matches!(e, RadioEvent::Receiver { .. })));
+    // Near: the song, 950 ms into the line (it started at 50).
+    state.player_position = Some([2000.0, 0.0, 0.0]);
+    let ev = frame(&mut state, 1_000);
+    assert!(ev.contains(&RadioEvent::Receiver {
+        reference: FormId(PERSON_REF),
+        path: "sound\\radio\\testsong_mono.ogg".into(),
+        song: true,
+        volume: 0.8,
+        offset: 950,
+    }));
+    // Started once; the Pip-Boy (off) plays nothing.
+    let ev = frame(&mut state, 1_100);
+    assert!(!ev
+        .iter()
+        .any(|e| matches!(e, RadioEvent::Receiver { .. } | RadioEvent::Song { .. })));
+    // The player elsewhere: the receiver stops for good.
+    state.player_cell = Some(FormId(0xE99));
+    let ev = frame(&mut state, 1_200);
+    assert!(ev.contains(&RadioEvent::ReceiverStop(FormId(PERSON_REF))));
+    assert!(state
+        .radio
+        .stations
+        .iter()
+        .all(|s| s.users.iter().all(|u| !u.playing)));
 }
 
 #[test]
