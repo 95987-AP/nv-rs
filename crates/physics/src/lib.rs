@@ -120,6 +120,17 @@ fn bucket(v: f32) -> i32 {
 }
 
 /// The buckets a triangle's x-y box overlaps.
+/// [`bucket_keys`] without making a list: each key in the same order.
+fn for_bucket(a: Vec3, b: Vec3, c: Vec3, mut f: impl FnMut((i32, i32))) {
+    let (x0, x1) = (a[0].min(b[0]).min(c[0]), a[0].max(b[0]).max(c[0]));
+    let (y0, y1) = (a[1].min(b[1]).min(c[1]), a[1].max(b[1]).max(c[1]));
+    for bx in bucket(x0)..=bucket(x1) {
+        for by in bucket(y0)..=bucket(y1) {
+            f((bx, by));
+        }
+    }
+}
+
 fn bucket_keys(a: Vec3, b: Vec3, c: Vec3) -> Vec<(i32, i32)> {
     let (x0, x1) = (a[0].min(b[0]).min(c[0]), a[0].max(b[0]).max(c[0]));
     let (y0, y1) = (a[1].min(b[1]).min(c[1]), a[1].max(b[1]).max(c[1]));
@@ -253,14 +264,32 @@ impl Collider {
         let Some(owned) = self.live.owned.get(&owner) else {
             return;
         };
-        // Out of their old buckets first.
+        // Out of their old buckets first: each bucket they're in looked
+        // through once (a triangle is only in its own buckets, so the lists
+        // come out as taking them out one at a time leaves them).
         let owned: Vec<u32> = owned.clone();
+        let lo = owned.iter().copied().min().unwrap_or(0);
+        let hi = owned.iter().copied().max().unwrap_or(0);
+        // An owner's triangles are added together: when they're one run
+        // of numbers, being in the run is being one of them.
+        let run = (hi - lo) as usize + 1 == owned.len();
+        let leaving: HashSet<u32> = if run {
+            HashSet::new()
+        } else {
+            owned.iter().copied().collect()
+        };
+        let mut buckets: Vec<(i32, i32)> = Vec::new();
         for &t in &owned {
             let [a, b, c] = self.triangle(t);
-            for key in bucket_keys(a, b, c) {
-                if let Some(list) = self.grid.get_mut(&key) {
-                    list.retain(|&i| i != t);
+            for_bucket(a, b, c, |key| {
+                if !buckets.contains(&key) {
+                    buckets.push(key);
                 }
+            });
+        }
+        for key in &buckets {
+            if let Some(list) = self.grid.get_mut(key) {
+                list.retain(|&i| i < lo || i > hi || (!run && !leaving.contains(&i)));
             }
         }
         for &(i, p) in rest {
@@ -271,11 +300,20 @@ impl Collider {
             ];
             self.vertices[i as usize] = add(r, translation);
         }
+        // Into their new ones: each bucket's in the owner's order, as
+        // putting them in one at a time does.
+        let mut arriving: Vec<((i32, i32), Vec<u32>)> = Vec::new();
         for &t in &owned {
             let [a, b, c] = self.triangle(t);
-            for key in bucket_keys(a, b, c) {
-                self.grid.entry(key).or_default().push(t);
-            }
+            for_bucket(a, b, c, |key| {
+                match arriving.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, list)) => list.push(t),
+                    None => arriving.push((key, vec![t])),
+                }
+            });
+        }
+        for (key, list) in arriving {
+            self.grid.entry(key).or_default().extend(list);
         }
     }
 
@@ -1861,6 +1899,66 @@ mod tests {
         all.extend(&c);
         all.move_owner(0x904, &turn, [0.0, 1000.0, 0.0]);
         assert!(north(&all).is_none());
+    }
+
+    /// Moving an owner leaves every bucket's list as taking its triangles
+    /// out one at a time and putting them back does (the order queries see
+    /// them in).
+    #[test]
+    fn moving_an_owner_leaves_the_buckets_as_one_at_a_time() {
+        let mut c = Collider::new();
+        // Ground under everything, and an object of many triangles on it.
+        let mut ground = Vec::new();
+        let mut tris = Vec::new();
+        for i in 0..20 {
+            let x = i as f32 * 50.0 - 500.0;
+            let b = ground.len() as u32;
+            ground.extend([[x, -500.0, 0.0], [x + 60.0, -500.0, 0.0], [x, 500.0, 0.0]]);
+            tris.push([b, b + 1, b + 2]);
+        }
+        c.add(&ground, &tris);
+        let mut body = Vec::new();
+        let mut body_tris = Vec::new();
+        for i in 0..12 {
+            let a = i as f32 * 0.5;
+            let b = body.len() as u32;
+            body.extend([
+                [a.cos() * 40.0, a.sin() * 40.0, 10.0],
+                [a.cos() * 90.0, a.sin() * 90.0, 30.0],
+                [0.0, 0.0, 60.0],
+            ]);
+            body_tris.push([b, b + 1, b + 2]);
+        }
+        c.add_solid_surface(&body, &body_tris, (0.0, 0x77, NO_MATERIAL), None);
+        let one_at_a_time = |c: &mut Collider, r: &[[f32; 3]; 3], t: Vec3| {
+            let owned = c.live.owned[&0x77].clone();
+            for &tri in &owned {
+                let [a, b, cc] = c.triangle(tri);
+                for key in bucket_keys(a, b, cc) {
+                    if let Some(list) = c.grid.get_mut(&key) {
+                        list.retain(|&i| i != tri);
+                    }
+                }
+            }
+            for &(i, p) in &c.live.rest[&0x77].clone() {
+                let q = [0, 1, 2].map(|k| r[k][0] * p[0] + r[k][1] * p[1] + r[k][2] * p[2]);
+                c.vertices[i as usize] = add(q, t);
+            }
+            for &tri in &owned {
+                let [a, b, cc] = c.triangle(tri);
+                for key in bucket_keys(a, b, cc) {
+                    c.grid.entry(key).or_default().push(tri);
+                }
+            }
+        };
+        let mut expected = c.clone();
+        let turn = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        for (r, t) in [(turn, [300.0, 20.0, 0.0]), (turn, [-280.0, 500.0, 5.0])] {
+            c.move_owner(0x77, &r, t);
+            one_at_a_time(&mut expected, &r, t);
+            assert_eq!(c.grid, expected.grid);
+            assert_eq!(c.vertices, expected.vertices);
+        }
     }
 
     #[test]

@@ -358,7 +358,10 @@ fn simulate(
             }
         }
     }
-    clutter.disabled_seen = state.disabled.clone();
+    // (Kept only when it changed: it can hold thousands of references.)
+    if recheck {
+        clutter.disabled_seen = state.disabled.clone();
+    }
     // The player and people push what they walk into.
     let c = &player.character;
     let shape = physics::CharacterShape::PLAYER;
