@@ -40,6 +40,7 @@ mod pipboy;
 mod player_body;
 mod player_camera;
 mod player_idle;
+mod present;
 mod radio;
 mod report;
 mod scope;
@@ -336,6 +337,7 @@ fn main() {
         .insert_resource(game_menus::FixedPointer(args.menu_pointer))
         .add_plugins((GradePlugin, GameLightingPlugin, TerrainPlugin, LodPlugin))
         .add_plugins(shared_light::SharedLightPlugin)
+        .add_plugins(present::PresentPlugin)
         // After the default plugins: they load shaders.
         .add_plugins((hud::HudPlugin, pipboy::PipboyPlugin))
         .add_plugins(game_menus::GameMenusPlugin)

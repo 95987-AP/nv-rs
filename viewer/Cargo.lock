@@ -3060,6 +3060,7 @@ dependencies = [
  "speedtree",
  "testdata",
  "ui",
+ "wgpu",
  "world",
 ]
 
