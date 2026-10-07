@@ -155,8 +155,7 @@ him, Luck 100 (every hit critical), people frozen, VCG01 stopped (Doc's
 runs, as in the game), eight shots:
 
 ```powershell
-viewer	argetelease
-v-viewer.exe "<Data>" GSDocMitchellHouse `
+viewer\target\release\nv-viewer.exe "<Data>" GSDocMitchellHouse `
   --at 2288,2100,7360,0 --walk --freeze-ai --weapon WeapPlasmaPistol `
   --run "StopQuest VCG01" --run "player.setav luck 100" `
   --run "player.setav energyweapons 100" `
