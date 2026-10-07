@@ -291,9 +291,7 @@ pub fn best_armour(order: &LoadOrder, state: &GameState, who: FormId, slot: u32)
 /// body's piece is the one later slots are measured against. Returns what
 /// was put on.
 ///
-/// The weapon part (`004c7400`, `InventoryChanges::GetBestWeapon`, which
-/// scores by the damage per second `00645380` works out) and a creature's
-/// (`005f9e00`, weapons only) aren't done.
+/// The weapon part is [`hold_best_weapon`]; [`sort_out_gear`] does both.
 ///
 /// Translated from 006047c0 (decompiled, FalloutNV.exe 1.4.0.525).
 pub fn wear_best_armour(order: &LoadOrder, state: &mut GameState, who: FormId) -> Vec<FormId> {
@@ -318,6 +316,79 @@ pub fn wear_best_armour(order: &LoadOrder, state: &mut GameState, who: FormId) -
         put_on.push(item);
     }
     put_on
+}
+
+/// The package flag "Weapons Unequipped" (`PKDT` flags 0x200000, read by
+/// `00441b00`).
+pub const WEAPONS_UNEQUIPPED: u32 = 0x0020_0000;
+
+/// The weapon part of sorting out what someone holds
+/// (`TESNPC::InitDefaultWorn` (Xbox PDB), `006047c0`, when asked to; a
+/// creature's, `TESCreature::InitDefaultWorn`, `005f9e00`, the same):
+/// what they wear has been taken off first (`004bfe50`, all but what a
+/// script locked on, `004c0cf0`), so the weapon in hand goes unless it's
+/// locked there; then the best weapon (`InventoryChanges::GetBestWeapon`
+/// asked for any kind and to keep a locked one,
+/// [`crate::dps::best_weapon`]) is put in hand (`0088c830`) unless it's
+/// already there. Never the player's (`006047c0` asks the reference's
+/// vtable +0x22c). With nothing to pick they hold nothing. `anims`: the
+/// player's third-person animations, which the rating reads (see
+/// `crate::dps`). Returns the weapon put in hand when it changed.
+///
+/// Translated from 006047c0, 005f9e00 (decompiled, FalloutNV.exe
+/// 1.4.0.525).
+pub fn hold_best_weapon(
+    order: &LoadOrder,
+    state: &mut GameState,
+    who: FormId,
+    anims: Option<&mut dyn crate::animation::pick::Library>,
+    s: crate::combat_ai::Setting,
+) -> Option<FormId> {
+    if who == PLAYER_REF {
+        return None;
+    }
+    let held = crate::dps::equipped_weapon(order, state, who);
+    let best = crate::dps::best_weapon(order, state, who, None, true, anims, s);
+    if best == held {
+        return None;
+    }
+    if let Some(w) = held.filter(|&w| !state.equip_locked.contains(&(who, w))) {
+        state.unequip(who, w);
+    }
+    let b = best?;
+    state.equip(order, who, b);
+    Some(b).filter(|&b| state.is_equipped(who, b))
+}
+
+/// A companion sorting out what they wear and hold after trading (the
+/// container menu closing in mode 3, `0075b750`): a person their armour
+/// ([`wear_best_armour`]) and, unless the package they run now has
+/// "Weapons Unequipped" ([`WEAPONS_UNEQUIPPED`]; `00606540` asks
+/// `00441b00` of it), their weapon ([`hold_best_weapon`]); a creature
+/// (`005f9e00` with the weapon asked for) only their weapon. What was put
+/// on or in hand.
+///
+/// Translated from 0075b750, 00606540 (decompiled, FalloutNV.exe
+/// 1.4.0.525).
+pub fn sort_out_gear(
+    order: &LoadOrder,
+    state: &mut GameState,
+    who: FormId,
+    anims: Option<&mut dyn crate::animation::pick::Library>,
+    s: crate::combat_ai::Setting,
+) -> Vec<FormId> {
+    let creature = crate::combat::is_creature(order, who);
+    let mut out = Vec::new();
+    if !creature {
+        out.extend(wear_best_armour(order, state, who));
+        let unequipped = crate::ai::current_package(order, state, who)
+            .is_some_and(|p| p.flags & WEAPONS_UNEQUIPPED != 0);
+        if unequipped {
+            return out;
+        }
+    }
+    out.extend(hold_best_weapon(order, state, who, anims, s));
+    out
 }
 
 /// How far from the player someone following them must be to be brought
