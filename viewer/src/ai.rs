@@ -963,6 +963,26 @@ pub fn move_actors(
             place(walker, &mut transform, state, &mut talkers);
             continue;
         }
+        // The death routine (`Actor::Kill`, Xbox PDB, `0089d900`) makes the
+        // bodies dynamic as the actor dies, not the AI's update: held still
+        // by `tai` (`--freeze-ai`) or in the dialogue menu, the dead go limp
+        // all the same (the ragdoll then waits for the menu to close:
+        // `actors::animate_actors`).
+        if frozen && dies_while_frozen(state.dead.contains(&me), walker.fallen) {
+            fall(
+                walker,
+                &mut life,
+                &mut rig,
+                &mut transform,
+                state,
+                order,
+                &collision,
+                now,
+            );
+            crate::chatter::hush(&mut commands, &mut lines, me);
+            end_chat(&mut chats, me);
+            continue;
+        }
         if frozen {
             // The game stops the world in the dialogue menu: everyone else
             // holds still where they are, mid-stride included.
@@ -1462,6 +1482,13 @@ fn velocity(before: [f32; 3], after: [f32; 3], dt: f32) -> [f32; 3] {
     [0, 1, 2].map(|k| (after[k] - before[k]) / dt)
 }
 
+/// Whether someone goes limp now though the AI is held still (`tai`, the
+/// dialogue menu): dead and not yet fallen. The death routine `0089d900`
+/// runs from `Kill` and the damage paths, not from the AI's update.
+fn dies_while_frozen(dead: bool, fallen: bool) -> bool {
+    dead && !fallen
+}
+
 /// Someone has just died: limp (their skeleton's ragdoll, thrown as the
 /// game throws the dead), else tipped over.
 #[allow(clippy::too_many_arguments)]
@@ -1478,12 +1505,44 @@ fn fall(
     walker.fallen = true;
     walker.clear_path();
     rig.walking = false;
-    // Thrown as the game throws the dead: by the killer's weapon (or the
-    // damage, without one), away from a point 2048 units back along the
-    // blow from where it struck (the chest).
+    // How the death began (`world::combat::DeathStart`); none for the dead
+    // at load, who already lie where they fell. Essential people going
+    // down aren't dead (no death routine's nudge) but fall as their blow
+    // throws them.
+    let start = state.deaths.remove(&walker.reference);
+    let down = state.more.down.contains_key(&walker.reference);
+    // Every body gains the death routine's nudge (`0089d900`): along the
+    // way they were moving, else the way they face, or away from the
+    // player who killed them.
+    // The nudge is added to what the bodies already move at. Alive, the
+    // skeleton's bodies are keyframed (`00930c70`: motion type 4) and the
+    // blend object (`bhkBlendCollisionObject` `00c81e30` → `00c65b00`)
+    // either places them (vtable +0xe8) or hard-keyframes them, giving
+    // them the velocity that reaches the animation's next pose
+    // (`00c8e160`); which branch the living biped takes isn't traced.
+    // [G] With `NV_GUESSES=1` the actor's own velocity stands for each
+    // body's (the limbs' swing within the animation isn't added).
+    let nudge = start.map(|s| {
+        let player_line = state
+            .player_position
+            .filter(|_| s.killer == Some(PLAYER_REF))
+            .map(|p| (walker.position, p));
+        let n = world::combat::death_nudge(order, walker.velocity, walker.heading, player_line);
+        let carried = if world::guesses::enabled() {
+            walker.velocity
+        } else {
+            [0.0; 3]
+        };
+        [0, 1, 2].map(|i| carried[i] + n[i])
+    });
+    // Then, for a killing hit, thrown as the game throws the dead: by the
+    // killer's weapon (or the damage, without one), away from a point
+    // 2048 units back along the blow from where it struck (the chest).
+    let hit = start.is_some_and(|s| s.hit) || down;
     let push = state
         .last_blow
         .get(&walker.reference)
+        .filter(|_| hit)
         .and_then(|&(by, damage)| {
             let from = if by == PLAYER_REF {
                 state.player_position
@@ -1506,9 +1565,26 @@ fn fall(
             let speed = world::combat::death_push(order, weapon.as_ref(), damage, ranged, across);
             Some((world::combat::death_push_origin(struck, direction), speed))
         });
-    let fresh = push.is_some();
+    let fresh = start.is_some() || down;
+    if let Some(v) = nudge {
+        println!(
+            "{} goes limp at ({:.0}, {:.0}, {:.0}) moving ({:.1}, {:.1}, {:.1}) units/s{}",
+            walker.reference,
+            walker.position[0],
+            walker.position[1],
+            walker.position[2],
+            v[0],
+            v[1],
+            v[2],
+            if push.is_some() {
+                ", then the hit's push"
+            } else {
+                ""
+            }
+        );
+    }
     // From the pose they're in (seated, if sitting).
-    let limp = rig.go_limp(now, walker.placement(), push);
+    let limp = rig.go_limp(now, walker.placement(), nudge, push);
     rig.dynamic_idle = None;
     rig.overlay = None;
     state.stand(walker.reference);
@@ -3754,6 +3830,15 @@ mod tests {
             &MoveSettings::defaults(),
         );
         w
+    }
+
+    #[test]
+    fn the_dead_go_limp_with_the_ai_held_still() {
+        // Killed under `tai` or in the dialogue menu: limp at once, once.
+        assert!(dies_while_frozen(true, false));
+        assert!(!dies_while_frozen(true, true));
+        // The living held still stay as they are.
+        assert!(!dies_while_frozen(false, false));
     }
 
     #[test]
