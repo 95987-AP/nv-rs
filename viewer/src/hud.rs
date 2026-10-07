@@ -204,6 +204,9 @@ impl Material2d for TileMaterial {
     }
 }
 
+/// A piece on screen: its entity and assets.
+type Drawn = (Entity, Handle<Mesh>, Handle<TileMaterial>);
+
 /// The HUD as built for the window's size, and what's on screen of it.
 struct Built {
     ui: ui::Ui,
@@ -219,7 +222,7 @@ struct Built {
     font_images: HashMap<(usize, u32), Option<Handle<Image>>>,
     /// The draw list on screen, and each item's entities and assets.
     last: Vec<DrawItem>,
-    drawn: Vec<Vec<(Entity, Handle<Mesh>, Handle<TileMaterial>)>>,
+    drawn: Vec<Vec<Drawn>>,
     /// V.A.T.S.'s menu (`ui::vats`), laid out with the HUD, and what the
     /// HUD's mask hid while V.A.T.S. is on.
     vats: Option<ui::vats::VatsMenu>,
