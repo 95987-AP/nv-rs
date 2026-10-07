@@ -16,6 +16,7 @@ pub mod compiled;
 pub mod functions;
 pub mod interp;
 mod lexer;
+pub mod nvse;
 mod parser;
 
 pub use parser::{
