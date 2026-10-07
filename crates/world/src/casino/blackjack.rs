@@ -1266,12 +1266,10 @@ impl Blackjack {
                 }
             }
             state::DETERMINE_WINNER => self.determine_winner(&mut fx),
-            state::CLOSING => {
-                if t >= 1.0 {
-                    fx.push(Effect::Close);
-                    // Once: the menu is gone after this.
-                    self.state = u8::MAX;
-                }
+            state::CLOSING if t >= 1.0 => {
+                fx.push(Effect::Close);
+                // Once: the menu is gone after this.
+                self.state = u8::MAX;
             }
             _ => {}
         }

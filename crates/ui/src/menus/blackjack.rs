@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(ui.number(child, t::ALPHA), ALPHA_FULL);
         // F hits (the menu's `_PCButton_F`), R stays (`_PCBUTTON_R`).
         let mut interface = crate::menu::Interface::default();
-        for key in [b'f', b'r'] {
+        for key in *b"fr" {
             interface.key(
                 &mut ui,
                 menu.menu,

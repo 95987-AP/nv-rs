@@ -224,7 +224,7 @@ mod tests {
         assert_eq!(ui.number(chips, x), 42.0);
         // W places, S spins, F removes (the menu's `_PCButton_` traits).
         let mut interface = crate::menu::Interface::default();
-        for key in [b'w', b's', b'f'] {
+        for key in *b"wsf" {
             interface.key(
                 &mut ui,
                 menu.menu,
