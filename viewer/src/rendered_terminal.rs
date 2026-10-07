@@ -27,9 +27,11 @@
 //! Differences from the game: the model is drawn after the image space
 //! pass (the game draws it with the world, before, so it's graded and
 //! bloomed with it, and only the screen after); the fade is laid over the
-//! finished model rather than each piece's own alpha; the menus' own fade
-//! out (`menufade` 0.75 on leaving) isn't done. The game's own cursor
-//! picture is drawn where the system pointer is.
+//! finished model rather than each piece's own alpha. The menus on the
+//! screen fade in and out with every menu's fade (`ui::fade`; 0.75 s when
+//! the player leaves, `menufade` set at `00757ea0`, `00766aa0`), drawn on
+//! the screen while they fade. The game's own cursor picture is drawn
+//! where the system pointer is.
 
 use std::collections::HashMap;
 use std::sync::Arc;

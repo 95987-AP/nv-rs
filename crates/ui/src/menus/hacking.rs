@@ -61,6 +61,7 @@
 use world::grass::Twister;
 use world::hacking::{Game, Outcome, Selection, FILE_CHARS, LINE_CHARS, ROWS};
 
+use super::computers::LEAVE_FADE;
 use super::typed::Line;
 use crate::menu::{self, MenuCode};
 use crate::names::t;
@@ -989,6 +990,8 @@ impl MenuCode for HackingMenu {
         if code == LEAVE {
             self.stage = Stage::Done;
             if !self.closed {
+                // `00766aa0`: the menu fades out over 0.75 s (`menufade`).
+                ui.set_number(self.menu, t::MENUFADE, LEAVE_FADE);
                 self.close(ui, self.now);
                 self.requests.push(Request::Leave);
             }
@@ -1245,6 +1248,8 @@ mod tests {
         assert!(m.special_key(&mut ui, LEAVE, 1.0));
         assert!(m.closed);
         assert_eq!(ui.number(m.menu, menu::LEAVE_STACK), 1.0);
+        // Leaving fades it out over 0.75 s (`00766aa0`).
+        assert_eq!(ui.number(m.menu, t::MENUFADE), LEAVE_FADE);
         let close = m.requests.iter().position(|r| *r == Request::Close);
         let leave = m.requests.iter().position(|r| *r == Request::Leave);
         assert!(close.is_some() && leave > close);

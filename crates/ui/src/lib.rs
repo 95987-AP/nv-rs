@@ -15,6 +15,7 @@ pub mod anim;
 pub mod atlas;
 pub mod compass;
 pub mod draw;
+pub mod fade;
 pub mod font;
 pub mod game;
 pub mod hud;

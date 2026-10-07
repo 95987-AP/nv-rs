@@ -555,6 +555,28 @@ impl Interface {
         }
     }
 
+    /// Lets go of a menu's tiles without telling its code: the pointer is
+    /// over nothing, nothing pressed or dragged there and no keyboard
+    /// choice in it. The interface does this when the menu under the
+    /// pointer isn't shown (fading in or out, `0070c4a0`: the tile under
+    /// the pointer and its menu cleared, no "mouse off" for a menu not
+    /// shown).
+    pub fn let_go_of(&mut self, ui: &Ui, menu: TileId) {
+        let of = |t: Option<TileId>| t.is_some_and(|t| ui.is_under(t, menu));
+        if of(self.over) {
+            self.over = None;
+        }
+        if of(self.focus) {
+            self.focus = None;
+        }
+        if of(self.pressed) {
+            self.pressed = None;
+        }
+        if of(self.dragging) {
+            self.dragging = None;
+        }
+    }
+
     /// The mouse wheel turned by `notches` (up positive) over the menu: the
     /// nearest `wheelable` tile under the pointer gets `wheelmoved` (the
     /// game's count of steps, down positive) and the menu hears of it.
@@ -845,6 +867,23 @@ mod tests {
         assert_eq!(pick(&mut ui, menu, 5.0, 5.0), Some(front));
         assert_eq!(pick(&mut ui, menu, 80.0, 80.0), Some(back));
         assert_eq!(pick(&mut ui, menu, 300.0, 300.0), None);
+    }
+
+    /// A menu not shown lets the pointer go without a "mouse off".
+    #[test]
+    fn letting_go_of_a_menu() {
+        let (mut ui, mut code, menu) = setup();
+        let mut i = Interface::default();
+        i.pointer(
+            &mut ui, menu, &mut code, 80.0, 80.0, false, true, false, 0.0,
+        );
+        assert!(i.over.is_some() && i.held());
+        let other = test_support::load(&mut ui, MENU, &mut Recorder::default());
+        i.let_go_of(&ui, other);
+        assert!(i.over.is_some(), "another menu's tiles stay");
+        i.let_go_of(&ui, menu);
+        assert_eq!((i.over, i.focus, i.held()), (None, None, false));
+        assert_eq!(code.over, vec![1]);
     }
 
     #[test]
