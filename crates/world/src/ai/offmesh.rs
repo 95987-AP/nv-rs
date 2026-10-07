@@ -93,9 +93,21 @@ impl NavMesh {
     /// triangle's height there above the point.
     // Translated from 00696a50 and 006b9cf0 (decompiled, FalloutNV.exe 1.4.0.525).
     pub fn find_triangle(&self, p: [f32; 3]) -> Option<(usize, f32)> {
+        // Only the triangles over the point's grid square can hold it; the
+        // index lists them in the mesh's order, so the first close enough is
+        // the same one as going through them all.
+        let under = self.index().get(&super::grid_square(p[0], p[1]));
+        self.find_triangle_among(p, under.into_iter().flatten().copied())
+    }
+
+    fn find_triangle_among(
+        &self,
+        p: [f32; 3],
+        triangles: impl Iterator<Item = usize>,
+    ) -> Option<(usize, f32)> {
         let near_land = self.land_height(p).is_some_and(|h| p[2] < h + NEAR_LAND);
         let mut best: Option<(usize, f32)> = None;
-        for t in 0..self.triangles.len() {
+        for t in triangles {
             if self.triangles[t].flags & NO_LOCATION != 0 {
                 continue;
             }
@@ -374,6 +386,55 @@ mod tests {
         assert!(mesh.find_triangle([60.0, 20.0, 190.0]).is_none());
         // Outside it from above: not.
         assert!(mesh.find_triangle([160.0, 20.0, 0.0]).is_none());
+    }
+
+    /// Looking only at the triangles indexed over the point's square finds
+    /// what going through every triangle finds: a generated stack of
+    /// overlapping layers of random triangles (bridges over ground) at
+    /// Goodsprings' coordinates, and points over and between them.
+    #[test]
+    fn the_indexed_lookup_finds_what_the_full_scan_finds() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / (1u64 << 24) as f32
+        };
+        let (ox, oy) = (-68000.0, 5000.0);
+        let mut mesh = NavMesh::default();
+        for _ in 0..400 {
+            let (cx, cy, cz) = (
+                ox + next() * 3000.0,
+                oy + next() * 3000.0,
+                8300.0 + next() * 400.0,
+            );
+            let base = mesh.vertices.len();
+            for _ in 0..3 {
+                mesh.vertices.push([
+                    cx + (next() - 0.5) * 600.0,
+                    cy + (next() - 0.5) * 600.0,
+                    cz + (next() - 0.5) * 60.0,
+                ]);
+            }
+            mesh.triangles.push(NavTriangle {
+                vertices: [base, base + 1, base + 2],
+                ..Default::default()
+            });
+        }
+        let mut found = 0;
+        for _ in 0..4000 {
+            let p = [
+                ox + next() * 3000.0,
+                oy + next() * 3000.0,
+                8200.0 + next() * 600.0,
+            ];
+            let indexed = mesh.find_triangle(p);
+            let all = mesh.find_triangle_among(p, 0..mesh.triangles.len());
+            assert_eq!(indexed, all, "{p:?}");
+            found += usize::from(all.is_some());
+        }
+        assert!(found > 500, "{found}");
     }
 
     #[test]

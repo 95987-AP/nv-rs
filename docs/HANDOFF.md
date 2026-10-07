@@ -19,11 +19,11 @@ Updated 2026-10-07 morning (overnight session 2026-10-06 → 07).
 - Landed overnight: one radio state and the 2 key (`claude/m2-radio-unify`),
   death into ragdoll (`claude/m2-death-ragdoll`), Chazm's PR #11
   (`claude/contrib-chazm`) and PR #12 (`claude/contrib-chazm-perf`; both in
-  docs/CONTRIB_CHAZM.md), B3 crosshair pick, B5 firing sounds and muzzle
+  docs/CONTRIB_CHAZM.md), B3 crosshair pick, B4 NPCs on the ground, B5 firing sounds and muzzle
   flashes, B10 greetings, B11 voice file names, B12 Doc's door loop, B13
   barter over dialogue. Details and what each left are in TASKS.md.
 - Still running or unmerged at handoff: see TASKS.md "In progress"
-  (B4 NPCs and the ground, B6 bullet impacts, B16 local map). Each has its
+  (B6 bullet impacts, B16 local map). Each has its
   own worktree `%USERPROFILE%\nv-re\work\wt-b<n>-*`; resume as a new agent
   in that worktree (inspect `git status`/`log`/`diff`, keep the work, finish
   with live checks and acceptance), then merge, check, publish, push.

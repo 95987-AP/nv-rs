@@ -100,10 +100,10 @@ on B1 for the solver, but the spring itself can land first.
 pick"); left: drawn-triangle picking, placeable water, comparison with the
 game.
 
-**B4. NPCs fall through or sink into the ground.** NPCs phase into the
-terrain or fall through it. Trace the character controller's support
-(`bhkCharacterController`, the step and fall states, which layers it
-stands on) and fix NPCs (and check the player).
+**B4. NPCs fall through or sink into the ground.** Done on
+`claude/b4-npc-ground` (docs/PHYSICS.md, "People on the ground"):
+`MobileObject::Move`'s land and far-from-camera rules; left: a ragdoll
+sunk into the land (B1's solver), comparison with the game.
 
 ### Combat effects and damage
 
@@ -210,13 +210,12 @@ untraced guess): Ringo offers two extra replies. Trace or gate it.
 
 ### In progress
 
-- B4 NPCs and the ground: branch `claude/b4-npc-ground`.
 - B6 bullet impacts: branch `claude/b6-impacts`.
 - B16 local map: branch `claude/b16-local-map`.
 
 Landed on the integration branch 2026-10-07: death into ragdoll, one
 radio state and the 2 key, Chazm's PRs #11 and #12 (docs/CONTRIB_CHAZM.md),
-B3, B5, B10, B11, B12, B13.
+B3, B4, B5, B10, B11, B12, B13.
 
 Follow-ups found: creatures without a ragdoll tip onto their side (a
 stand-in, `ai::fallen_transform`, from the original baseline) instead of

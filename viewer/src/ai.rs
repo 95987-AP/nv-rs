@@ -206,6 +206,9 @@ pub struct Walker {
     /// (`physics::Character`), and moves them through the cell's collision
     /// with it ([`move_body`]). `None` until there is collision under them.
     pub(crate) body: Option<physics::Character>,
+    /// An immobile creature (a turret): `MobileObject::Move` never moves
+    /// them without their controller (`world::ground::immobile`).
+    pub(crate) immobile: bool,
     /// This frame's move along the path, in world units (x, y): the path
     /// handler's move vector turned toward the steering point (`009e3560`,
     /// handler +0x1c, its world form at +0xa0 from `009e0a00`), which the
@@ -326,6 +329,7 @@ impl Walker {
             long: None,
             parked: false,
             body: None,
+            immobile: false,
             wanted: None,
             stuck: mv::Stuck::default(),
             last_move: 0.0,
@@ -478,6 +482,19 @@ pub struct CellNav {
     /// The collision the navmesh's ray casts were last given (its triangle
     /// count): a new snapshot when it changes ([`ColliderPick`]).
     pick_key: Option<usize>,
+}
+
+impl CellNav {
+    /// The land's height under a point of the worldspace `world` (the
+    /// attached squares' `LAND`, as the game's `004572e0` asks a loaded
+    /// cell's land); none indoors, in another worldspace, or off the
+    /// squares loaded for it.
+    pub fn land_height(&self, world: Option<FormId>, p: [f32; 3]) -> Option<f32> {
+        match (&self.key, world) {
+            (Some((w, Some(_))), Some(now)) if *w == now => self.mesh.land_height(p),
+            _ => None,
+        }
+    }
 }
 
 /// The cell's collision as the path builder's ray casts see it
@@ -645,6 +662,7 @@ pub fn move_actors(
     mut commands: Commands,
     around: Around,
     mut actors: Query<Person>,
+    cameras: Query<&Transform, (With<crate::FlyCamera>, Without<Walker>)>,
 ) {
     let Around {
         scripts,
@@ -760,6 +778,11 @@ pub fn move_actors(
     last.player = state.player_position;
     let (others, obstacles) = seen(order, state, &attack, now, &actors, player_velocity);
     let bodies = bodies(state, &actors);
+    // The world camera, for `MobileObject::Move`'s far rule (`world::ground`).
+    let camera = cameras
+        .single()
+        .ok()
+        .map(|c| crate::walk::game_point(c.translation));
     let mut movers = Vec::new();
     let interior = state.player_world.is_none();
     let mut starts = std::mem::take(&mut starts.0);
@@ -1097,6 +1120,8 @@ pub fn move_actors(
                 moves.settings.in_place_rate(speed, creature, true),
             ];
             walker.kit = Some(kit);
+            walker.immobile = world::scripting::base_of(order, me)
+                .is_some_and(|b| world::ground::immobile(order, b));
             walker.request_radius = world::ai::request_radius(order, me);
         }
         // A combat style a script gave them (`SetCombatStyle`) is theirs at
@@ -1259,7 +1284,17 @@ pub fn move_actors(
             if frame.attacked {
                 rig.attack_at = Some(now);
             }
-            move_body(walker, &mut collision.0, &bodies, &mut movers, dt);
+            move_body(
+                walker,
+                &mut collision.0,
+                &bodies,
+                &mut movers,
+                &Ground {
+                    mesh: &nav.mesh,
+                    camera,
+                },
+                dt,
+            );
             place(walker, &mut transform, state, &mut talkers);
             walker.velocity = velocity(before, walker.position, dt);
             continue;
@@ -1277,7 +1312,17 @@ pub fn move_actors(
             if walker.fleeing.is_none() {
                 walker.forget_package(now);
             }
-            move_body(walker, &mut collision.0, &bodies, &mut movers, dt);
+            move_body(
+                walker,
+                &mut collision.0,
+                &bodies,
+                &mut movers,
+                &Ground {
+                    mesh: &nav.mesh,
+                    camera,
+                },
+                dt,
+            );
             place(walker, &mut transform, state, &mut talkers);
             walker.velocity = velocity(before, walker.position, dt);
             continue;
@@ -1494,7 +1539,17 @@ pub fn move_actors(
         // Idles (`sitting`): once a second of free time, the idle tree.
         crate::sitting::idles_frame(&mut ctx, walker, &mut life, &mut rig);
         // Turned in place or walked: the controller moves them.
-        move_body(walker, &mut collision.0, &bodies, &mut movers, dt);
+        move_body(
+            walker,
+            &mut collision.0,
+            &bodies,
+            &mut movers,
+            &Ground {
+                mesh: &nav.mesh,
+                camera,
+            },
+            dt,
+        );
         place(walker, &mut transform, state, &mut talkers);
         walker.velocity = velocity(before, walker.position, dt);
     }
@@ -3788,9 +3843,110 @@ fn bodies(
     out
 }
 
+/// `NV_GROUND_LOG=1`: once a second, everyone on screen's feet against the
+/// collision under them (a ray from 600 above) and the land's own height
+/// (`LAND`), with their controller's state. A diagnostic only.
+pub fn ground_log(
+    time: Res<Time>,
+    nav: Res<CellNav>,
+    collision: Res<crate::walk::CellCollision>,
+    state: Res<DialogueState>,
+    mut next: Local<f32>,
+    actors: Query<(&Walker, &Visibility)>,
+) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var("NV_GROUND_LOG").is_ok_and(|v| v == "1")) {
+        return;
+    }
+    let now = time.elapsed_secs();
+    if now < *next {
+        return;
+    }
+    *next = now + 1.0;
+    let state = &state.0;
+    for (w, vis) in actors.iter() {
+        if *vis == Visibility::Hidden || state.dead.contains(&w.reference) || w.fallen {
+            continue;
+        }
+        let p = w.position;
+        let cast = collision
+            .0
+            .raycast([p[0], p[1], p[2] + 600.0], [0.0, 0.0, -1.0], 2000.0);
+        let hit = cast.map(|(t, _)| p[2] + 600.0 - t);
+        let what = cast.map_or(String::new(), |(_, i)| {
+            format!(
+                " [{:08X} layer {}]",
+                collision.0.reference(i),
+                collision.0.layer(i)
+            )
+        });
+        let land = nav.mesh.land_height(p);
+        let body = match &w.body {
+            None => "none".to_string(),
+            Some(b) if b.on_ground => format!("ground {:.1}", b.ground),
+            Some(b) => format!("air vz {:.0}", b.vertical_speed),
+        };
+        println!(
+            "GROUND {now:.1} {} at ({:.0}, {:.0}, {:.1}) collision {}{what} land {} body {} walking {}",
+            w.reference,
+            p[0],
+            p[1],
+            p[2],
+            hit.map_or("-".into(), |h| format!("{h:.1} ({:+.1})", p[2] - h)),
+            land.map_or("-".into(), |h| format!("{h:.1} ({:+.1})", p[2] - h)),
+            body,
+            w.walking_now(),
+        );
+    }
+}
+
 /// How far below their feet collision must be for someone to get a
 /// character controller ([`move_body`]).
 const GROUND_PROBE: f32 = 256.0;
+
+/// What `MobileObject::Move`'s rules around the controller look at
+/// ([`world::ground`]): the attached cells' navmesh (with their land) and
+/// the world camera, in game units.
+pub(crate) struct Ground<'a> {
+    pub mesh: &'a NavMesh,
+    pub camera: Option<[f32; 3]>,
+}
+
+/// Further than `fCharControllerWarpDistSqr` from the camera, someone's
+/// move is added to where they stand and their feet put on the navmesh
+/// under the new spot, without their controller (`0092f260`'s far branch,
+/// [`world::ground::moves_without_controller`]); the controller is put
+/// there too (`SetPosition`, `00931620`). Standing still, the same with no
+/// move. Whether it did: no navmesh there, and the controller moves them.
+fn far_move(walker: &mut Walker, wanted: Option<[f32; 2]>, rules: &Ground) -> bool {
+    let Some(camera) = rules.camera else {
+        return false;
+    };
+    let p = walker.position;
+    let distance_sq: f32 = (0..3).map(|k| (p[k] - camera[k]).powi(2)).sum();
+    let mover = world::ground::Mover {
+        immobile: walker.immobile,
+        ..Default::default()
+    };
+    if !world::ground::moves_without_controller(
+        mover,
+        distance_sq,
+        world::ground::CHAR_CONTROLLER_WARP_DIST_SQR,
+    ) {
+        return false;
+    }
+    let m = wanted.unwrap_or([0.0; 2]);
+    let to = [p[0] + m[0], p[1] + m[1], p[2]];
+    let Some(z) = world::ground::navmesh_height(rules.mesh, to) else {
+        return false;
+    };
+    walker.position = [to[0], to[1], z];
+    if let Some(body) = walker.body.as_mut() {
+        body.feet = walker.position;
+        body.ground = z;
+    }
+    true
+}
 
 /// Moves someone through the cell's collision with their character
 /// controller, wanting this frame's move ([`Walker::wanted`]; none: standing
@@ -3800,6 +3956,12 @@ const GROUND_PROBE: f32 = 256.0;
 /// hands the mover's move vector to the controller each frame, `009ddc00`).
 /// Someone moved by anything else since (a script, furniture, a door)
 /// starts again where they now are.
+///
+/// Around the controller, the two rules of `MobileObject::Move`
+/// (`0092f260`, [`world::ground`]): further than
+/// `fCharControllerWarpDistSqr` from the camera they walk on the navmesh's
+/// height without the controller; after the controller, outdoors, feet more
+/// than 30 under the land are put on it.
 ///
 /// The viewer's collision loads behind the squares people stand in; the
 /// game never has a high-process actor without its cell's collision. So
@@ -3811,9 +3973,14 @@ pub(crate) fn move_body(
     collider: &mut physics::Collider,
     others: &[(FormId, physics::Person)],
     movers: &mut Vec<physics::rigid::Mover>,
+    rules: &Ground,
     dt: f32,
 ) {
     let wanted = walker.wanted.take();
+    if far_move(walker, wanted, rules) {
+        walker.against_someone = false;
+        return;
+    }
     // Walking into moving clutter pushes it (the character proxy's push
     // on the bodies it touches, at the velocity the controller is given;
     // `clutter` and `physics::rigid` carry it out). The controller itself
@@ -3845,6 +4012,11 @@ pub(crate) fn move_body(
             if let Some(m) = wanted {
                 walker.position = [p[0] + m[0], p[1] + m[1], p[2]];
             }
+            // Under the land (back from a walk out of sight, `move_offstage`,
+            // whose rough positions can be under it): on the land, as
+            // `MobileObject::Move` puts anyone the controller left there.
+            let q = walker.position;
+            walker.position[2] = world::ground::kept_above_land(q[2], rules.mesh.land_height(q));
             return;
         }
         walker.body = Some(physics::Character::new(p));
@@ -3872,6 +4044,14 @@ pub(crate) fn move_body(
         dt,
     );
     body.fell = None;
+    // Outdoors, feet left more than 30 under the land are put on it
+    // (`0092f260` at `0093012a`: the land's height under them, `004572e0`,
+    // and `SetPosition`, which moves the controller too, `00931620`).
+    let lifted = world::ground::kept_above_land(body.feet[2], rules.mesh.land_height(body.feet));
+    if lifted != body.feet[2] {
+        body.feet[2] = lifted;
+        body.ground = lifted;
+    }
     walker.position = body.feet;
     // Walked off the collision loaded so far (into a square still loading):
     // no controller till there is ground under them again (the same bridge
@@ -4055,6 +4235,143 @@ mod tests {
         c
     }
 
+    /// A navmesh square (0,0)–(1000,1000) at height `z`, over an exterior
+    /// square whose land (`LAND`, 33 × 33) stands at `land`.
+    fn navmesh_over_land(z: f32, land: f32) -> NavMesh {
+        use world::ai::NavTriangle;
+        let mut mesh = NavMesh {
+            vertices: vec![
+                [0.0, -1000.0, z],
+                [1000.0, -1000.0, z],
+                [1000.0, 1000.0, z],
+                [0.0, 1000.0, z],
+            ],
+            triangles: vec![
+                NavTriangle {
+                    vertices: [0, 1, 2],
+                    ..Default::default()
+                },
+                NavTriangle {
+                    vertices: [0, 2, 3],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        mesh.set_land((0, 0), vec![land; 33 * 33]);
+        mesh.set_land((0, -1), vec![land; 33 * 33]);
+        mesh
+    }
+
+    /// Back from a walk out of sight 64 under the land (Ringo coming into
+    /// the gunfight, run 2026-10-07): no collision within reach below, so
+    /// no controller, and before this they walked on under the ground for
+    /// good. `MobileObject::Move` puts anyone more than 30 under the land
+    /// on it (`0092f260`); then the controller takes them.
+    #[test]
+    fn someone_under_the_land_is_put_on_it_and_given_their_controller() {
+        let mut collider = floor_and_wall();
+        let mesh = navmesh_over_land(0.0, 0.0);
+        let rules = Ground {
+            mesh: &mesh,
+            camera: Some([200.0, -300.0, 64.0]),
+        };
+        let mut w = Walker::at(FormId(1), [200.0, -200.0, -64.5], 0.0, 1.0, false);
+        w.set_path(
+            vec![[200.0, -200.0, -64.5], [200.0, -100.0, 0.0]],
+            0.0,
+            false,
+            &MoveSettings::defaults(),
+        );
+        let dt = 1.0 / 60.0;
+        step(&mut w, 85.0, dt);
+        move_body(&mut w, &mut collider, &[], &mut Vec::new(), &rules, dt);
+        assert_eq!(w.position[2], 0.0, "{:?}", w.position);
+        for _ in 0..30 {
+            step(&mut w, 85.0, dt);
+            move_body(&mut w, &mut collider, &[], &mut Vec::new(), &rules, dt);
+        }
+        assert!(w.body.is_some_and(|b| b.on_ground), "{:?}", w.body);
+        assert!(w.position[2].abs() < 1.0, "{:?}", w.position);
+        assert!(w.position[1] > -200.0 + 30.0, "walked on: {:?}", w.position);
+    }
+
+    /// A controller left more than 30 under the land (a floor below it
+    /// where the land is higher) is put on the land (`0093012a`).
+    #[test]
+    fn a_controller_more_than_thirty_under_the_land_is_put_on_it() {
+        let mut collider = floor_and_wall();
+        for (land, expect) in [(29.0, 0.0), (31.0, 31.0)] {
+            let mesh = navmesh_over_land(0.0, land);
+            let rules = Ground {
+                mesh: &mesh,
+                camera: Some([200.0, -300.0, 64.0]),
+            };
+            let mut w = Walker::at(FormId(1), [200.0, -200.0, 0.0], 0.0, 1.0, false);
+            w.body = Some(physics::Character {
+                on_ground: true,
+                ..physics::Character::new([200.0, -200.0, 0.0])
+            });
+            move_body(
+                &mut w,
+                &mut collider,
+                &[],
+                &mut Vec::new(),
+                &rules,
+                1.0 / 60.0,
+            );
+            assert!(
+                (w.position[2] - expect).abs() < 1.0,
+                "land {land}: {:?}",
+                w.position
+            );
+        }
+    }
+
+    /// Further than `fCharControllerWarpDistSqr` (2449.5) from the camera
+    /// the move isn't the controller's: added where they stand, the feet
+    /// on the navmesh's height (`0092f260`'s far branch), the wall the
+    /// controller stops at nearby passed; within it, the controller again.
+    #[test]
+    fn far_from_the_camera_people_walk_on_the_navmesh_without_their_controller() {
+        let mut collider = floor_and_wall();
+        let mesh = navmesh_over_land(12.0, 0.0);
+        let path = vec![[200.0, 0.0, 0.0], [200.0, 300.0, 0.0]];
+        let dt = 1.0 / 60.0;
+        let run = |camera: [f32; 3], collider: &mut physics::Collider| {
+            let rules = Ground {
+                mesh: &mesh,
+                camera: Some(camera),
+            };
+            let mut w = Walker::at(FormId(1), [200.0, 0.0, 0.0], 0.0, 1.0, false);
+            w.set_path(path.clone(), 0.0, false, &MoveSettings::defaults());
+            for _ in 0..240 {
+                step(&mut w, 85.0, dt);
+                move_body(&mut w, collider, &[], &mut Vec::new(), &rules, dt);
+            }
+            w
+        };
+        let far = run([200.0, -2600.0, 64.0], &mut collider);
+        assert!(
+            far.position[1] > 150.0,
+            "through the wall: {:?}",
+            far.position
+        );
+        assert_eq!(far.position[2], 12.0, "on the navmesh: {:?}", far.position);
+        let near = run([200.0, -2300.0, 64.0], &mut collider);
+        let radius = physics::CharacterShape::PLAYER.radius;
+        assert!(
+            near.position[1] <= 100.0 - radius + 0.5,
+            "{:?}",
+            near.position
+        );
+        assert!(
+            near.position[2].abs() < 1.0,
+            "on the floor: {:?}",
+            near.position
+        );
+    }
+
     #[test]
     fn walkers_are_moved_by_their_controller_and_a_wall_stops_them_till_they_are_stuck() {
         let mut collider = floor_and_wall();
@@ -4069,7 +4386,17 @@ mod tests {
         let mut frames = 0;
         while frames < 600 && w.stuck_at.is_none() {
             step(&mut w, 85.0, dt);
-            move_body(&mut w, &mut collider, &[], &mut Vec::new(), dt);
+            move_body(
+                &mut w,
+                &mut collider,
+                &[],
+                &mut Vec::new(),
+                &Ground {
+                    mesh: &NavMesh::default(),
+                    camera: None,
+                },
+                dt,
+            );
             frames += 1;
         }
         assert!(w.body.is_some(), "collision under them: a controller");
@@ -4110,7 +4437,17 @@ mod tests {
         let mut closest = f32::MAX;
         for _ in 0..300 {
             step(&mut w, 85.0, dt);
-            move_body(&mut w, &mut collider, &[other], &mut Vec::new(), dt);
+            move_body(
+                &mut w,
+                &mut collider,
+                &[other],
+                &mut Vec::new(),
+                &Ground {
+                    mesh: &NavMesh::default(),
+                    camera: None,
+                },
+                dt,
+            );
             closest = closest.min((w.position[0] - 5.0).hypot(w.position[1] + 150.0));
         }
         assert!(closest >= 2.0 * 20.25 - 0.5, "{closest}");
@@ -4193,7 +4530,17 @@ mod tests {
         for _ in 0..3 {
             movers.clear();
             step(&mut w, 85.0, dt);
-            move_body(&mut w, &mut collider, &[], &mut movers, dt);
+            move_body(
+                &mut w,
+                &mut collider,
+                &[],
+                &mut movers,
+                &Ground {
+                    mesh: &NavMesh::default(),
+                    camera: None,
+                },
+                dt,
+            );
         }
         assert_eq!(movers.len(), 1);
         // At the walk's speed, along the path (+y).
