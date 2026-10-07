@@ -307,6 +307,7 @@ fn main() {
         .insert_resource(player)
         .insert_resource(walk::CellCollision(physics::Collider::new()))
         .insert_resource(walk::Doors(Vec::new()))
+        .init_resource::<UploadedTextures>()
         .insert_resource(PendingScene(scene))
         .insert_resource(PendingExterior(outdoors))
         .insert_resource(grading)
@@ -1505,9 +1506,49 @@ pub struct Spawner<'w, 's> {
     place_lighting: ResMut<'w, viewmodel::PlaceLighting>,
     water: water::WaterSpawn<'w>,
     particle_materials: ResMut<'w, Assets<particles::ParticleMaterial>>,
+    uploaded: ResMut<'w, UploadedTextures>,
 }
 
+/// The places' textures on the GPU by what they are (the file, read as
+/// data or colour, its layers, compressed or not, the anisotropy), so a
+/// texture another loaded place already has isn't converted and sent
+/// again (outdoor squares share most of theirs). Only ids: a texture
+/// goes when no place holds it any more, as before, and is sent again
+/// if it's wanted after.
+#[derive(Resource, Default)]
+pub struct UploadedTextures(
+    std::collections::HashMap<(String, bool, u32, bool, u16), AssetId<Image>>,
+);
+
 impl Spawner<'_, '_> {
+    /// A place's texture: the one already on the GPU when a loaded place
+    /// has it, else sent now.
+    fn texture(
+        &mut self,
+        texture: &TextureData,
+        compressed: bool,
+        anisotropy: u16,
+    ) -> Option<Handle<Image>> {
+        let key = (
+            texture.path.clone(),
+            texture.linear,
+            texture.layers,
+            compressed,
+            anisotropy,
+        );
+        if let Some(handle) = self
+            .uploaded
+            .0
+            .get(&key)
+            .and_then(|&id| self.images.get_strong_handle(id))
+        {
+            return Some(handle);
+        }
+        let handle = upload_texture(&mut self.images, texture, compressed, anisotropy)?;
+        self.uploaded.0.insert(key, handle.id());
+        Some(handle)
+    }
+
     /// Puts a loaded place's textures, models and terrain on screen, and
     /// returns what it spawned (so an outdoor square can be dropped later).
     fn spawn(&mut self, scene: &ViewerScene) -> Vec<Entity> {
@@ -1571,7 +1612,7 @@ impl Spawner<'_, '_> {
         let textures: Vec<Option<Handle<Image>>> = scene
             .textures
             .iter()
-            .map(|t| upload_texture(&mut self.images, t, compressed, anisotropy))
+            .map(|t| self.texture(t, compressed, anisotropy))
             .collect();
         if scene.lights.len() > MAX_LIGHTS {
             println!(
@@ -1834,7 +1875,7 @@ impl Spawner<'_, '_> {
         let textures: Vec<Option<Handle<Image>>> = scene
             .textures
             .iter()
-            .map(|t| upload_texture(&mut self.images, t, compressed, anisotropy))
+            .map(|t| self.texture(t, compressed, anisotropy))
             .collect();
         let root = self
             .commands
