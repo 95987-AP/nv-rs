@@ -106,6 +106,37 @@ impl Leveled {
     }
 }
 
+/// Everything a form can give, at any level: itself when it isn't a
+/// leveled list, else every entry's, lists inside lists followed (each
+/// once, in the lists' order).
+pub fn outcomes(order: &LoadOrder, form: FormId) -> Vec<FormId> {
+    let mut out = Vec::new();
+    let mut seen = Vec::new();
+    outcomes_into(order, form, 0, &mut seen, &mut out);
+    out
+}
+
+fn outcomes_into(
+    order: &LoadOrder,
+    form: FormId,
+    depth: u8,
+    seen: &mut Vec<FormId>,
+    out: &mut Vec<FormId>,
+) {
+    if depth > 16 || seen.contains(&form) {
+        return;
+    }
+    seen.push(form);
+    match Leveled::load(order, form) {
+        Some(list) => {
+            for e in &list.entries {
+                outcomes_into(order, e.form, depth + 1, seen, out);
+            }
+        }
+        None => out.push(form),
+    }
+}
+
 /// What a form gives `count` of at the player's level: itself when it
 /// isn't a leveled list, else what the list picks, as (form, count).
 /// `roll` gives random numbers.

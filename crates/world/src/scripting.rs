@@ -459,6 +459,11 @@ pub struct GameState {
     pub discovered: HashSet<FormId>,
     /// What people have equipped (`EquipItem`), by person.
     pub equipped: HashMap<FormId, Vec<FormId>>,
+    /// Clothes and armour people other than the player wore from the start
+    /// (`world::outfit`) that came off, by person: taken off
+    /// (`UnequipItem`: `None`), or for something put on over the same body
+    /// slots (`Some(that)`, `0088db20`).
+    pub taken_off: HashMap<FormId, Vec<(FormId, Option<FormId>)>>,
     /// Who's fighting whom: attacker → target (`StartCombat`, being hit,
     /// an aggressive creature seeing the player).
     pub combat: HashMap<FormId, FormId>,
@@ -664,6 +669,21 @@ impl GameState {
         let kind = |f: FormId| order.get(f).map(|r| r.entry.header.kind);
         let item_kind = kind(item);
         let slots = crate::actor::Armor::load(order, item).map_or(0, |a| a.slots);
+        // Someone else's clothes from the start on those slots come off
+        // (`world::outfit`); one of them put on again is worn again.
+        if who != PLAYER_REF && slots != 0 {
+            let replaced = crate::outfit::replaced_by(order, who, item);
+            let off = self.taken_off.entry(who).or_default();
+            off.retain(|(i, _)| *i != item);
+            for (piece, by) in replaced {
+                if !off.iter().any(|(i, _)| *i == piece) {
+                    off.push((piece, by));
+                }
+            }
+            if off.is_empty() {
+                self.taken_off.remove(&who);
+            }
+        }
         let worn = self.equipped.entry(who).or_default();
         worn.retain(|&f| {
             if f == item {
@@ -693,6 +713,13 @@ impl GameState {
             self.item_event(order, who, item, event::UNEQUIP);
         }
         self.unequip(who, item);
+        // Clothes someone else wore from the start come off too
+        // (`world::outfit`).
+        if who != PLAYER_REF && crate::outfit::worn_from_start(order, who, item) {
+            let off = self.taken_off.entry(who).or_default();
+            off.retain(|(i, _)| *i != item);
+            off.push((item, None));
+        }
     }
 
     /// Whether someone has an item equipped.

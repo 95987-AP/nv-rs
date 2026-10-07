@@ -77,6 +77,7 @@ pub mod music;
 pub mod noise;
 pub mod npc_aim;
 pub mod npc_combat;
+pub mod outfit;
 pub mod particles;
 pub mod perks;
 mod placement;
