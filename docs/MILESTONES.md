@@ -632,6 +632,19 @@ check in Doc Mitchell's house; not compared with the original. Evidence,
 gaps (fatigue damage, the stagger/knockdown animations, NPC specials)
 and next action: [MELEE_UNARMED.md](MELEE_UNARMED.md).
 
+M4/M3 batch `claude/fatigue-blockers` (2026-10-07): fatigue and
+knock-outs, and two quest blockers. Traced and implemented: full fatigue
+(record + derived, auto-calculated people), fists' and the bean bag's
+fatigue damage through the armour, `fMinimumFatigue`, regeneration with
+the all-back-at-0 rule, the knock states (fatigue below 0, paralysis,
+essential down; `GetKnockedState` now 1, not 2), `GetFatiguePercentage`;
+`ForceFlee` (the engine's flee package out of a fight, nothing in one)
+and `GetGroupMemberCount`/`GetGroupTargetCount` (combat groups: alone,
+joined by helpers, merged, the player's). Unblocks by function: 9 quests
+calling `ForceFlee`, 9 asking `GetGroupMemberCount`. Generated-data
+tests; live checks in the Prospector Saloon; not compared with the
+original. Evidence, gaps and next action: [FATIGUE.md](FATIGUE.md).
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

@@ -86,11 +86,9 @@ attack animation.
 
 ## Not done (with what would be needed)
 
-- **Fatigue damage**: fists' hits set `fFatigueDamage` to half the
-  health damage unless the target is a creature (`00646310`), × the bonus
-  for unarmed attackers (`009b73d0`); fatigue and knock-outs aren't kept
-  (`world::combat_ai` assumes full fatigue). Needs the fatigue actor
-  value's damage and the unconscious state from it.
+- **Fatigue damage**: done in `claude/fatigue-blockers`
+  ([FATIGUE.md](FATIGUE.md)): fists' half, the bean bag's, regeneration,
+  knock-outs.
 - **The stagger and knockdown themselves**: the hit reaction animations
   (the reaction flags `0089a760` sets after the limb damage, its "staggered down" message), the process's
   knockdown (vtable `+0x418`, force `00646580`): animation and physics,
