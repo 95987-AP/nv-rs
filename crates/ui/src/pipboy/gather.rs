@@ -6,6 +6,7 @@ use esm::{FormId, FourCC, LoadOrder};
 use world::dialogue::PLAYER_REF;
 use world::scripting::{Facts, GameState};
 
+use super::repair::{RepairInput, RepairRow};
 use super::{
     ItemLine, ItemTab, MarkerLine, NoteLine, PipboyInput, QuestLine, ReputationLine, StatLine,
     WorldMapLine,
@@ -30,6 +31,55 @@ pub struct Whereabouts {
     pub markers: Vec<world::map::MapMarker>,
     /// The player's feet and heading (degrees clockwise from north).
     pub player: Option<([f32; 3], f32)>,
+    /// Where the world map shows the active quest's targets (in the
+    /// worldspace, `quest_points`).
+    pub quest: Vec<[f32; 3]>,
+}
+
+/// Where the world map puts the active quest's targets (`0079e0a0` →
+/// `0079f7e0`): a target outdoors in the worldspace at itself; one indoors
+/// at the last door on the way to it (the door search, `world::
+/// quest_targets::door_path`) that stands outdoors in the worldspace; with
+/// none, at the player (the map menu's `+0x114`, read as the player).
+// Translated from 0079f7e0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn quest_points(
+    order: &LoadOrder,
+    state: &GameState,
+    graph: &mut world::quest_targets::DoorGraph,
+    world_space: FormId,
+) -> Vec<[f32; 3]> {
+    let Some(active) = state.active_quest else {
+        return Vec::new();
+    };
+    let Some(quest) = world::quest::Quest::load(order, active) else {
+        return Vec::new();
+    };
+    let player = state.place(order, PLAYER_REF);
+    let mut out = Vec::new();
+    for t in world::quest_targets::current_targets(order, &quest, state) {
+        let Some((space, _, at, _)) = state.place(order, t.reference) else {
+            continue;
+        };
+        if space == world_space {
+            out.push(at);
+            continue;
+        }
+        let Some((from_space, _, from, _)) = player else {
+            continue;
+        };
+        let path = world::quest_targets::door_path(order, state, graph, from_space, from, space)
+            .unwrap_or_default();
+        let outdoor = path.iter().rev().find_map(|&d| {
+            let w = world::scripting::whereabouts(order, d)?;
+            (w.world == Some(world_space)).then_some(w.position)
+        });
+        match outdoor {
+            Some(p) => out.push(p),
+            None if from_space == world_space => out.push(from),
+            None => {}
+        }
+    }
+    out
 }
 
 fn record_text(order: &LoadOrder, id: FormId, sub: FourCC) -> Option<String> {
@@ -121,26 +171,15 @@ pub fn date_time(state: &GameState, order: &LoadOrder) -> String {
     )
 }
 
-/// A default object (the `DOBJ` record `DefaultObjectManager`: its `DATA`
-/// an array of forms, `0058db10` reading slot n): 0 the Stimpak, 2 Rad-X,
-/// 3 RadAway, 21 the Doctor's Bag (the STATS menu's aid buttons,
-/// `007da2c0`).
-pub fn default_object(order: &LoadOrder, index: usize) -> Option<FormId> {
-    let rr = order.records_of_type(FourCC::new(b"DOBJ")).next()?;
-    let rr = order.get(rr.form_id)?;
-    let record = rr.record().ok()?;
-    let data = record.get(esm::sig::DATA)?.data.clone();
-    let at = index * 4;
-    let raw = u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?);
-    (raw != 0).then(|| rr.plugin.to_global(FormId(raw)))
-}
+pub use world::items::default_object;
 
 /// The world map for a worldspace: its `ICON` picture, `MNAM` (usable
 /// width and height u32, then the north-west and south-east cells' x, y
-/// as i16), and where its markers and the player land on it (`0079cdb0`,
-/// `0079c380`: north-west corner (x × 4096, y × 4096 + 4096), south-east
-/// ((x + 1) × 4096, y × 4096); a place's share across and down between
-/// them).
+/// as i16), and where its markers, the player and the player's own marker
+/// land on it (`0079cdb0`, `0079c380`: north-west corner (x × 4096, y ×
+/// 4096 + 4096), south-east ((x + 1) × 4096, y × 4096); a place's share
+/// across and down between them, inside the picture's border,
+/// `world::map::world_to_map`).
 pub fn world_map(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> Option<WorldMapLine> {
     let world = at.world?;
     let record = order.get(world)?.record().ok()?;
@@ -152,12 +191,12 @@ pub fn world_map(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> Opti
     let size = [u32_at(0) as f32, u32_at(4) as f32];
     let nw = [i16_at(8) * 4096.0, i16_at(10) * 4096.0 + 4096.0];
     let se = [i16_at(12) * 4096.0 + 4096.0, i16_at(14) * 4096.0];
-    let place = |p: [f32; 3]| {
-        [
-            (p[0] - nw[0]) / (se[0] - nw[0]),
-            (p[1] - nw[1]) / (se[1] - nw[1]),
-        ]
-    };
+    let place = |p: [f32; 3]| world::map::world_to_map(nw, se, [p[0], p[1]]);
+    // The player's own marker when it's in this worldspace (`0079f360`).
+    let custom = state
+        .custom_marker
+        .filter(|m| m.space == world)
+        .map(|m| place(m.position));
     let markers = at
         .markers
         .iter()
@@ -175,6 +214,9 @@ pub fn world_map(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> Opti
         size,
         markers,
         player: at.player.map(|(p, h)| (place(p), h)),
+        corners: [nw, se],
+        custom,
+        quest: at.quest.iter().map(|&p| place(p)).collect(),
     })
 }
 
@@ -274,6 +316,7 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
     // What's carried.
     let caps_form = world::barter::caps(order);
     let mut items = Vec::new();
+    let mut keys = Vec::new();
     let mut caps = 0;
     // The aid buttons' items: default objects 0, 21, 3, 2 (in the order of
     // `PipboyInput::aid`: Stimpak, Doctor's Bag, RadAway, Rad-X).
@@ -289,6 +332,39 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
         }
         let Some(rr) = order.get(item) else { continue };
         let kind = rr.entry.header.kind;
+        // Keys go on the keyring (`00782a90`: the Misc tab's keyring row,
+        // `00782810` its list).
+        if kind.as_bytes() == b"KEYM" {
+            let info = world::items::item_info(order, item);
+            keys.push(ItemLine {
+                form: item.0,
+                name: info
+                    .as_ref()
+                    .map(|i| i.name.clone())
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| item.to_string()),
+                count,
+                tab: ItemTab::Misc,
+                equipped: false,
+                usable: false,
+                value: info.as_ref().map_or(0, |i| i.value),
+                weight: info.as_ref().map_or(0.0, |i| i.weight),
+                icon: record_text(order, item, ICON),
+                damage: None,
+                dps: None,
+                projectiles: 1,
+                damage_resistance: None,
+                damage_threshold: None,
+                condition: None,
+                strength: None,
+                ammo: None,
+                weight_class: None,
+                effects: None,
+                repairable: false,
+                modded: false,
+            });
+            continue;
+        }
         let Some(tab) = item_tab(order, state, item) else {
             continue;
         };
@@ -308,7 +384,7 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
                 kind.as_bytes(),
                 b"WEAP" | b"ARMO" | b"ALCH" | b"INGR" | b"BOOK"
             ),
-            value: info.as_ref().map_or(0, |i| i.value),
+            value: world::items::value(order, state, item),
             weight: info.as_ref().map_or(0.0, |i| i.weight),
             icon: record_text(order, item, ICON),
             damage: None,
@@ -321,14 +397,18 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
             ammo: None,
             weight_class: None,
             effects: None,
+            repairable: false,
+            modded: world::weapon_mods::flags(state, PLAYER_REF, item) != 0,
         };
         if kind == WEAP {
             if let Some(w) = world::combat::Weapon::load(order, item) {
                 // The damage card (`006450f0`, drawn at the file's alpha 0):
                 // the hit's damage (`00644ce0`, `world::combat::
-                // hit_damage`); `006450f0` then applies the ammunition's
-                // damage effects and perk entry 0, not done here.
-                let damage = world::combat::hit_damage(order, state, PLAYER_REF, &w);
+                // hit_damage`) × a split beam's 1.3; `006450f0` also
+                // applies the ammunition's damage effects and perk entry 0,
+                // not done here.
+                let damage = world::combat::hit_damage(order, state, PLAYER_REF, &w)
+                    * world::weapon_mods::shown_damage_mult(order, state, PLAYER_REF, item);
                 line.damage = Some(damage);
                 let ammo = w.ammo_in_use(order, state, PLAYER_REF);
                 line.projectiles = w.shot(order, ammo).0.max(1);
@@ -337,6 +417,7 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
                 // takes with its reload) isn't worked out yet: left empty.
                 line.dps = None;
                 line.condition = Some(world::combat::weapon_condition(state, PLAYER_REF, item));
+                line.repairable = world::repair::can_repair(order, state, item);
                 if let Some(a) = ammo.or_else(|| w.ammo.first().copied()) {
                     let held = state.item_count(order, PLAYER_REF, a);
                     // In the clip: the equipped weapon's own clip in the
@@ -395,7 +476,8 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
             } else {
                 0
             });
-            line.condition = Some(1.0);
+            line.condition = Some(world::combat::weapon_condition(state, PLAYER_REF, item));
+            line.repairable = world::repair::can_repair(order, state, item);
         }
         // Aid's and ammunition's effects text (`00406620`, `00503a70`: the
         // effects with their magnitudes and durations, joined) isn't
@@ -425,12 +507,28 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
 
     // Notes (`NOTE`: `FULL`, the text in `TNAM`; listed by name, the list's
     // order not traced).
+    // Its kind is `DATA` (0 sound, 1 text, 2 picture, 3 voice; `TNAM` is
+    // the text of a text note, a voice note's topic), a picture's `XNAM`.
     let mut notes: Vec<NoteLine> = state
         .notes
         .iter()
-        .map(|&n| NoteLine {
-            name: record_name(order, n).unwrap_or_else(|| n.to_string()),
-            text: record_text(order, n, TNAM).unwrap_or_default(),
+        .map(|&n| {
+            let kind = order
+                .get(n)
+                .and_then(|r| r.record().ok())
+                .and_then(|r| r.get(esm::sig::DATA).and_then(|s| s.data.first().copied()))
+                .unwrap_or(1);
+            NoteLine {
+                form: n.0,
+                name: record_name(order, n).unwrap_or_else(|| n.to_string()),
+                text: if kind == 1 {
+                    record_text(order, n, TNAM).unwrap_or_default()
+                } else {
+                    String::new()
+                },
+                kind,
+                image: record_text(order, n, FourCC::new(b"XNAM")),
+            }
         })
         .collect();
     notes.sort_by(|a, b| a.name.cmp(&b.name));
@@ -502,6 +600,7 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
         karma_title: world::reputation::karmic_title(order, state).unwrap_or_default(),
         reputations,
         items,
+        keys,
         caps,
         // Carried against Carry Weight (actor value 13).
         weight: (state.inventory_weight(order, PLAYER_REF), perm(13)),
@@ -512,7 +611,117 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
         quests,
         notes,
         world_map: world_map(order, state, at),
-        stations: Vec::new(),
+        stations: state
+            .radio
+            .rows(&|r| world::radio::disabled(order, state, r))
+            .into_iter()
+            .map(|(r, name, in_range, tuned)| super::StationLine {
+                reference: r.0,
+                name,
+                in_range,
+                tuned,
+            })
+            .collect(),
+        // The local map is made by the caller (its pictures).
+        local_map: None,
+        // Hot keys whose items are still carried (`004bf4b0` finds them
+        // among the inventory's items).
+        hotkeys: state.hotkeys.map(|h| {
+            h.filter(|&f| state.item_count(order, PLAYER_REF, f) > 0)
+                .map(|f| f.0)
+        }),
+        // The caller's (the sound playing).
+        note_audio: None,
+    }
+}
+
+/// The mod screen's contents for a weapon of the player's (`00784710`,
+/// `007840f0`): its name, condition, picture and damage; the mods fitted to
+/// it, then the player's that fit it (`world::weapon_mods::fitting`), each
+/// with its name and description (`DESC`).
+pub fn item_mod_input(
+    order: &LoadOrder,
+    state: &GameState,
+    weapon: FormId,
+) -> super::item_mod::ItemModInput {
+    use super::item_mod::{ItemModInput, ModRow};
+    let condition = world::repair::condition(state, PLAYER_REF, weapon);
+    let row = |m: FormId, fitted: bool| ModRow {
+        form: m.0,
+        name: world::items::item_info(order, m).map_or_else(String::new, |i| i.name),
+        description: record_text(order, m, esm::FourCC::new(b"DESC")).unwrap_or_default(),
+        fitted,
+    };
+    let flags = world::weapon_mods::flags(state, PLAYER_REF, weapon);
+    let mut rows: Vec<ModRow> = world::weapon_mods::slots(order, weapon)
+        .map(|slots| {
+            (0..3)
+                .filter(|&i| flags & (1 << i) != 0)
+                .filter_map(|i| slots[i].item)
+                .map(|m| row(m, true))
+                .collect()
+        })
+        .unwrap_or_default();
+    rows.extend(
+        world::weapon_mods::fitting(order, state, PLAYER_REF, weapon)
+            .into_iter()
+            .map(|m| row(m, false)),
+    );
+    ItemModInput {
+        weapon: weapon.0,
+        name: world::items::item_info(order, weapon).map_or_else(String::new, |i| i.name),
+        condition,
+        icon: record_text(order, weapon, ICON),
+        damage: world::repair::shown_stat(order, state, weapon, condition / 100.0)
+            .and_then(|s| s.value)
+            .unwrap_or(0),
+        rows,
+    }
+}
+
+/// What the repair screen shows for an item (`007b7020`, `007b6aa0`,
+/// `007b57f0`): its condition and figure, the player's Repair, and a line
+/// for it and for every one of each thing that can mend it
+/// (`world::repair::parts`), in the player's things' order.
+pub fn repair_input(order: &LoadOrder, state: &GameState, chosen: FormId) -> RepairInput {
+    let skill = world::repair::skill(order, state, PLAYER_REF);
+    let condition = world::repair::condition(state, PLAYER_REF, chosen);
+    let armour = |f: FormId| order.get(f).is_some_and(|r| r.entry.header.kind == ARMO);
+    let mut rows = Vec::new();
+    for p in world::repair::parts(order, state, chosen) {
+        if p.chosen {
+            let mends_to = world::repair::mended_condition(order, skill, condition, condition);
+            rows.push(RepairRow {
+                form: chosen.0,
+                name: p.name.clone(),
+                condition,
+                armour: armour(chosen),
+                equipped: state.is_equipped(PLAYER_REF, chosen),
+                chosen: true,
+                mends_to,
+                stat_after: world::repair::shown_stat(order, state, chosen, mends_to),
+            });
+        }
+        for i in 0..p.count {
+            rows.push(RepairRow {
+                form: p.item.0,
+                name: p.name.clone(),
+                condition: p.condition,
+                armour: armour(p.item),
+                equipped: p.equipped && i == 0,
+                chosen: false,
+                mends_to: p.mends_to,
+                stat_after: world::repair::shown_stat(order, state, chosen, p.mends_to),
+            });
+        }
+    }
+    RepairInput {
+        chosen: chosen.0,
+        condition,
+        icon: record_text(order, chosen, ICON),
+        skill,
+        stat: world::repair::shown_stat(order, state, chosen, condition / 100.0),
+        rows,
     }
 }
 
@@ -631,14 +840,23 @@ mod tests {
                 marker(0x901, [0.0, 0.0, 0.0], 0),
             ],
             player: Some(([-8192.0, 12288.0, 0.0], 45.0)),
+            quest: Vec::new(),
         };
+        let mut state = state;
+        world::map::set_custom_marker(&mut state, FormId(0x810), [8192.0, -4096.0, 0.0]);
         let map = world_map(&order, &state, &at).unwrap();
         assert_eq!(map.picture, "interface\\worldmap\\test.dds");
         assert_eq!(map.size, [1000.0, 800.0]);
-        // North-west corner (-8192, 12288), south-east (8192, -4096).
+        // North-west corner (-8192, 12288), south-east (8192, -4096): the
+        // shares × 0.796875 + 0.1015625 inside the picture's border.
+        assert_eq!(map.corners, [[-8192.0, 12288.0], [8192.0, -4096.0]]);
         assert_eq!(map.markers.len(), 1);
-        assert_eq!(map.markers[0].at, [0.5, 0.75]);
+        assert_eq!(map.markers[0].at, [0.5, 0.69921875]);
         assert!(!map.markers[0].travel);
-        assert_eq!(map.player, Some(([0.0, 0.0], 45.0)));
+        assert_eq!(map.player, Some(([0.1015625, 0.1015625], 45.0)));
+        assert_eq!(map.custom, Some([0.8984375, 0.8984375]));
+        // Another worldspace's marker isn't shown.
+        world::map::set_custom_marker(&mut state, FormId(0x811), [0.0; 3]);
+        assert_eq!(world_map(&order, &state, &at).unwrap().custom, None);
     }
 }

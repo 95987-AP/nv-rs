@@ -21,9 +21,16 @@
 //! assert!(player.on_ground && player.feet[2].abs() < 1.0);
 //! ```
 
+pub mod contacts;
+pub mod grab;
+pub mod impulses;
+pub mod layers;
 pub mod ragdoll;
+pub mod rigid;
 pub mod shapes;
 mod vec;
+pub mod view_caster;
+pub mod wind;
 
 use std::collections::{HashMap, HashSet};
 
@@ -61,10 +68,32 @@ struct Triangle {
     /// The Havok material of the shape it came from ([NO_MATERIAL] when
     /// none was given): what a shot striking it sounds and looks like.
     material: u32,
+    /// Its rigid body's friction and restitution: 1 + an index into
+    /// `Live::surfaces`, 0 for none given.
+    surface: u16,
+    /// Its body's Havok layer ([`ANY_LAYER`]: not given), which decides
+    /// what casts meet it ([`Collider::raycast_layer`]).
+    layer: u8,
+    /// The placed reference it comes from, 0 for none
+    /// ([`Collider::add_placed`]).
+    reference: u32,
+}
+
+/// A triangle added without a Havok layer: every cast meets it.
+pub const ANY_LAYER: u8 = u8::MAX;
+
+/// How a surface rubs and bounces: its rigid body's friction and
+/// restitution (`nif::RigidBodyInfo`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Surface {
+    pub friction: f32,
+    pub restitution: f32,
 }
 
 #[derive(Debug, Clone, Default)]
 struct Live {
+    /// The surfaces triangles were added with (see `Triangle::surface`).
+    surfaces: Vec<Surface>,
     /// Objects whose triangles are switched off.
     hidden: HashSet<u32>,
     /// Other characters, as upright cylinders.
@@ -74,6 +103,8 @@ struct Live {
     /// owned triangles themselves, by owner.
     rest: HashMap<u32, Vec<(u32, Vec3)>>,
     owned: HashMap<u32, Vec<u32>>,
+    /// The triangles of each placed reference ([`Collider::add_placed`]).
+    placed: HashMap<u32, Vec<u32>>,
 }
 
 /// Another character a walking one runs into: the game's character
@@ -92,6 +123,32 @@ pub const NO_MATERIAL: u32 = u32::MAX;
 
 fn bucket(v: f32) -> i32 {
     (v / BUCKET).floor() as i32
+}
+
+/// Whether a triangle's box is further than `reach` (and a margin, for
+/// rounding) from a segment's box along some axis: then no point of it is
+/// within `reach` of the segment, and the exact test can be skipped.
+fn surely_beyond(t: [Vec3; 3], a: Vec3, b: Vec3, reach: f32) -> bool {
+    const MARGIN: f32 = 0.05;
+    (0..3).any(|k| {
+        let (t0, t1) = (
+            t[0][k].min(t[1][k]).min(t[2][k]),
+            t[0][k].max(t[1][k]).max(t[2][k]),
+        );
+        let (s0, s1) = (a[k].min(b[k]), a[k].max(b[k]));
+        t0 - s1 > reach + MARGIN || s0 - t1 > reach + MARGIN
+    })
+}
+
+/// [`bucket_keys`] without making a list: each key in the same order.
+fn for_bucket(a: Vec3, b: Vec3, c: Vec3, mut f: impl FnMut((i32, i32))) {
+    let (x0, x1) = (a[0].min(b[0]).min(c[0]), a[0].max(b[0]).max(c[0]));
+    let (y0, y1) = (a[1].min(b[1]).min(c[1]), a[1].max(b[1]).max(c[1]));
+    for bx in bucket(x0)..=bucket(x1) {
+        for by in bucket(y0)..=bucket(y1) {
+            f((bx, by));
+        }
+    }
 }
 
 /// The buckets a triangle's x-y box overlaps.
@@ -140,6 +197,51 @@ impl Collider {
         owner: u32,
         material: u32,
     ) {
+        self.add_solid_surface(vertices, triangles, (shell, owner, material), None);
+    }
+
+    /// [`Self::add_solid_material`] (shell, owner and material) with the
+    /// friction and restitution of the body they belong to, which rigid
+    /// bodies resting on them rub and bounce against
+    /// ([`crate::rigid`]).
+    pub fn add_solid_surface(
+        &mut self,
+        vertices: &[Vec3],
+        triangles: &[[u32; 3]],
+        parts: (f32, u32, u32),
+        surface: Option<Surface>,
+    ) {
+        self.add_layered(vertices, triangles, parts, surface, ANY_LAYER);
+    }
+
+    /// [`Self::add_solid_surface`] with the Havok layer of the body the
+    /// triangles belong to (`nif::CollisionPart::layer`). An owner is also
+    /// the placed reference they come from ([`Self::add_placed`]).
+    pub fn add_layered(
+        &mut self,
+        vertices: &[Vec3],
+        triangles: &[[u32; 3]],
+        parts: (f32, u32, u32),
+        surface: Option<Surface>,
+        layer: u8,
+    ) {
+        self.add_placed(vertices, triangles, parts, surface, layer, parts.1);
+    }
+
+    /// [`Self::add_layered`] for the collision of a placed reference
+    /// (`reference`, 0 for none): what the crosshair's pick
+    /// ([`view_caster`]) takes a triangle for, whether or not the triangles
+    /// have an owner that moves or switches them off.
+    pub fn add_placed(
+        &mut self,
+        vertices: &[Vec3],
+        triangles: &[[u32; 3]],
+        (shell, owner, material): (f32, u32, u32),
+        surface: Option<Surface>,
+        layer: u8,
+        reference: u32,
+    ) {
+        let surface = surface.map_or(0, |s| self.surface_index(s));
         let base = self.vertices.len() as u32;
         self.vertices.extend_from_slice(vertices);
         if owner != 0 {
@@ -159,9 +261,31 @@ impl Collider {
                 [t[0] + base, t[1] + base, t[2] + base],
                 shell,
                 owner,
-                material,
+                (material, surface, layer, reference),
             );
         }
+    }
+
+    /// 1 + the index of a surface in the table (added if new; the table is
+    /// small: a few values per place). 0 once it's full.
+    fn surface_index(&mut self, s: Surface) -> u16 {
+        let table = &mut self.live.surfaces;
+        if let Some(i) = table.iter().position(|&t| t == s) {
+            return i as u16 + 1;
+        }
+        if table.len() >= usize::from(u16::MAX - 1) {
+            return 0;
+        }
+        table.push(s);
+        table.len() as u16
+    }
+
+    /// The friction and restitution a triangle was added with, if any.
+    pub fn surface(&self, index: u32) -> Option<Surface> {
+        let s = self.triangles.get(index as usize)?.surface;
+        (s > 0)
+            .then(|| self.live.surfaces.get(usize::from(s) - 1).copied())
+            .flatten()
     }
 
     /// Moves an object's triangles (`owner`, see [`Collider::add_solid`])
@@ -178,14 +302,32 @@ impl Collider {
         let Some(owned) = self.live.owned.get(&owner) else {
             return;
         };
-        // Out of their old buckets first.
+        // Out of their old buckets first: each bucket they're in looked
+        // through once (a triangle is only in its own buckets, so the lists
+        // come out as taking them out one at a time leaves them).
         let owned: Vec<u32> = owned.clone();
+        let lo = owned.iter().copied().min().unwrap_or(0);
+        let hi = owned.iter().copied().max().unwrap_or(0);
+        // An owner's triangles are added together: when they're one run
+        // of numbers, being in the run is being one of them.
+        let run = (hi - lo) as usize + 1 == owned.len();
+        let leaving: HashSet<u32> = if run {
+            HashSet::new()
+        } else {
+            owned.iter().copied().collect()
+        };
+        let mut buckets: Vec<(i32, i32)> = Vec::new();
         for &t in &owned {
             let [a, b, c] = self.triangle(t);
-            for key in bucket_keys(a, b, c) {
-                if let Some(list) = self.grid.get_mut(&key) {
-                    list.retain(|&i| i != t);
+            for_bucket(a, b, c, |key| {
+                if !buckets.contains(&key) {
+                    buckets.push(key);
                 }
+            });
+        }
+        for key in &buckets {
+            if let Some(list) = self.grid.get_mut(key) {
+                list.retain(|&i| i < lo || i > hi || (!run && !leaving.contains(&i)));
             }
         }
         for &(i, p) in rest {
@@ -196,11 +338,20 @@ impl Collider {
             ];
             self.vertices[i as usize] = add(r, translation);
         }
+        // Into their new ones: each bucket's in the owner's order, as
+        // putting them in one at a time does.
+        let mut arriving: Vec<((i32, i32), Vec<u32>)> = Vec::new();
         for &t in &owned {
             let [a, b, c] = self.triangle(t);
-            for key in bucket_keys(a, b, c) {
-                self.grid.entry(key).or_default().push(t);
-            }
+            for_bucket(a, b, c, |key| {
+                match arriving.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, list)) => list.push(t),
+                    None => arriving.push((key, vec![t])),
+                }
+            });
+        }
+        for (key, list) in arriving {
+            self.grid.entry(key).or_default().extend(list);
         }
     }
 
@@ -208,7 +359,13 @@ impl Collider {
     /// (their corners in a line: the game's meshes have a few) have no
     /// surface to touch, and the closest-point tests divide by their area,
     /// so they're left out.
-    fn push_triangle(&mut self, tri: [u32; 3], shell: f32, owner: u32, material: u32) {
+    fn push_triangle(
+        &mut self,
+        tri: [u32; 3],
+        shell: f32,
+        owner: u32,
+        (material, surface, layer, reference): (u32, u16, u8, u32),
+    ) {
         let [a, b, c] = tri.map(|i| self.vertices[i as usize]);
         if [a, b, c].iter().flatten().any(|v| !v.is_finite()) {
             return;
@@ -224,9 +381,15 @@ impl Collider {
             shell,
             owner,
             material,
+            surface,
+            layer,
+            reference,
         });
         if owner != 0 {
             self.live.owned.entry(owner).or_default().push(index);
+        }
+        if reference != 0 {
+            self.live.placed.entry(reference).or_default().push(index);
         }
         for key in bucket_keys(a, b, c) {
             self.grid.entry(key).or_default().push(index);
@@ -239,12 +402,22 @@ impl Collider {
     pub fn extend(&mut self, other: &Collider) {
         let base = self.vertices.len() as u32;
         self.vertices.extend_from_slice(&other.vertices);
+        let surfaces: Vec<u16> = other
+            .live
+            .surfaces
+            .iter()
+            .map(|&s| self.surface_index(s))
+            .collect();
         for tri in &other.triangles {
+            let surface = match tri.surface {
+                0 => 0,
+                s => surfaces.get(usize::from(s) - 1).copied().unwrap_or(0),
+            };
             self.push_triangle(
                 tri.corners.map(|i| i + base),
                 tri.shell,
                 tri.owner,
-                tri.material,
+                (tri.material, surface, tri.layer, tri.reference),
             );
         }
         self.live.hidden.extend(other.live.hidden.iter().copied());
@@ -305,7 +478,7 @@ impl Collider {
 
     /// Whether any triangle belongs to this object.
     pub fn owns(&self, owner: u32) -> bool {
-        owner != 0 && self.triangles.iter().any(|t| t.owner == owner)
+        owner != 0 && self.live.owned.get(&owner).is_some_and(|t| !t.is_empty())
     }
 
     /// The other characters walkers run into, replacing the last list.
@@ -339,7 +512,28 @@ impl Collider {
     /// The nearest surface along a ray from `origin` in `direction` (unit
     /// length), within `max` units: its distance and triangle.
     pub fn raycast(&self, origin: Vec3, direction: Vec3, max: f32) -> Option<(f32, u32)> {
-        self.cast(origin, direction, max, false)
+        self.cast(origin, direction, max, false, None)
+    }
+
+    /// [`Collider::raycast`] for a cast on Havok layer `layer`: triangles
+    /// whose body's layer that layer doesn't touch (the game's collision
+    /// filter, [`layers::Filter::layers_touch`] with the cast first, as the
+    /// ray filter `00c84930` asks it) are passed through. A shot (layer 6,
+    /// `PROJECTILE`) goes through a `TRANSPARENT` (3) chain-link fence that
+    /// stops a walker.
+    pub fn raycast_layer(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max: f32,
+        layer: u8,
+    ) -> Option<(f32, u32)> {
+        self.cast(origin, direction, max, false, Some(layer))
+    }
+
+    /// The Havok layer a triangle's body is on ([`ANY_LAYER`]: not given).
+    pub fn layer(&self, index: u32) -> u8 {
+        self.triangles[index as usize].layer
     }
 
     /// [`Collider::raycast`], also meeting switched-off objects (an open
@@ -350,10 +544,24 @@ impl Collider {
         direction: Vec3,
         max: f32,
     ) -> Option<(f32, u32)> {
-        self.cast(origin, direction, max, true)
+        self.cast(origin, direction, max, true, None)
     }
 
-    fn cast(&self, origin: Vec3, direction: Vec3, max: f32, hidden: bool) -> Option<(f32, u32)> {
+    fn cast(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max: f32,
+        hidden: bool,
+        layer: Option<u8>,
+    ) -> Option<(f32, u32)> {
+        let filter = layer.map(|l| (l, layers::Filter::shared()));
+        let passes = |t: u32| {
+            filter.is_some_and(|(l, f)| {
+                let tl = self.triangles[t as usize].layer;
+                tl != ANY_LAYER && !f.layers_touch(l, tl)
+            })
+        };
         // Walk the buckets the ray crosses, a step at a time.
         let steps = (max / (BUCKET * 0.5)).ceil().max(1.0) as usize;
         let mut best: Option<(f32, u32)> = None;
@@ -370,7 +578,7 @@ impl Collider {
                         continue;
                     };
                     for &t in list {
-                        if !seen.insert(t) || (!hidden && self.switched_off(t)) {
+                        if !seen.insert(t) || (!hidden && self.switched_off(t)) || passes(t) {
                             continue;
                         }
                         let [a, b, c] = self.triangle(t);
@@ -446,6 +654,134 @@ impl Collider {
         }
         best
     }
+
+    /// The placed reference a triangle comes from (0 for none).
+    pub fn reference(&self, index: u32) -> u32 {
+        self.triangles[index as usize].reference
+    }
+
+    /// Every triangle a sphere of `radius` cast from `origin` along
+    /// `direction` (unit length) for up to `max` units touches, as an
+    /// all-hits collector gathers a Havok linear cast's: each with where it
+    /// is touched, nearest first. Only triangles whose body's layer the
+    /// cast's `layer` touches ([`layers::Filter::layers_touch`], the cast
+    /// first; those added without a layer always count), not switched off.
+    pub fn spherecast_all(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max: f32,
+        radius: f32,
+        layer: u8,
+    ) -> Vec<SphereHit> {
+        let filter = layers::Filter::shared();
+        let lo = [0, 1, 2].map(|i| origin[i].min(origin[i] + direction[i] * max) - radius);
+        let hi = [0, 1, 2].map(|i| origin[i].max(origin[i] + direction[i] * max) + radius);
+        let mut out = Vec::new();
+        for t in self.near(lo, hi) {
+            let tl = self.layer(t);
+            if tl != ANY_LAYER && !filter.layers_touch(layer, tl) {
+                continue;
+            }
+            let [a, b, c] = self.triangle(t);
+            let shell = self.shell(t);
+            if let Some((d, on_triangle)) =
+                sphere_sweep_triangle(origin, direction, max, radius + shell, a, b, c)
+            {
+                let centre = add(origin, scale(direction, d));
+                let point = add(
+                    on_triangle,
+                    scale(normalize(sub(centre, on_triangle)), shell),
+                );
+                out.push(SphereHit {
+                    distance: d,
+                    point,
+                    triangle: t,
+                });
+            }
+        }
+        out.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+        out
+    }
+
+    /// Where a ray from `origin` along `direction` (unit length) first meets
+    /// one placed reference's triangles ([`Self::add_placed`]), however far,
+    /// passing everything else; `None` when it misses them or they're
+    /// switched off.
+    pub fn raycast_reference(&self, origin: Vec3, direction: Vec3, reference: u32) -> Option<f32> {
+        let tris = self.live.placed.get(&reference)?;
+        tris.iter()
+            .filter(|&&t| !self.switched_off(t))
+            .filter_map(|&t| {
+                let [a, b, c] = self.triangle(t);
+                ray_triangle(origin, direction, a, b, c)
+            })
+            .min_by(f32::total_cmp)
+    }
+}
+
+/// Where a ray from `o` along `d` (unit length) first meets a capsule (the
+/// segment `a b` grown by `r`); 0 when it starts inside.
+pub fn ray_capsule(o: Vec3, d: Vec3, a: Vec3, b: Vec3, r: f32) -> Option<f32> {
+    let inside = {
+        let p = closest_on_segment(o, a, b);
+        dist2(o, p) <= r * r
+    };
+    if inside {
+        return Some(0.0);
+    }
+    let mut best: Option<f32> = None;
+    let mut consider = |t: f32| {
+        if t >= 0.0 && best.map_or(true, |b| t < b) {
+            best = Some(t);
+        }
+    };
+    if let Some((t, _)) = sphere_sweep_segment(o, d, r, a, b) {
+        consider(t);
+    }
+    for c in [a, b] {
+        if let Some(t) = ray_sphere(o, d, c, r) {
+            consider(t);
+        }
+    }
+    best
+}
+
+/// A sphere of radius `r` moving from `o` along `d` (unit length) up to
+/// `max`: when it first touches a capsule (segment `a b`, radius `cr`) and
+/// the point of the capsule's surface it touches; already touching, 0 and
+/// the capsule's surface point nearest the start.
+pub fn sphere_sweep_capsule(
+    o: Vec3,
+    d: Vec3,
+    max: f32,
+    r: f32,
+    (a, b, cr): (Vec3, Vec3, f32),
+) -> Option<(f32, Vec3)> {
+    let t = ray_capsule(o, d, a, b, r + cr)?;
+    if t > max {
+        return None;
+    }
+    let centre = add(o, scale(d, t));
+    let axis = closest_on_segment(centre, a, b);
+    let toward = sub(centre, axis);
+    let n = if dot(toward, toward) > 1e-12 {
+        normalize(toward)
+    } else {
+        scale(d, -1.0)
+    };
+    Some((t, add(axis, scale(n, cr))))
+}
+
+/// The point of segment `a b` nearest `p`.
+fn closest_on_segment(p: Vec3, a: Vec3, b: Vec3) -> Vec3 {
+    let e = sub(b, a);
+    let ee = dot(e, e);
+    if ee < 1e-12 {
+        return a;
+    }
+    let u = (dot(sub(p, a), e) / ee).clamp(0.0, 1.0);
+    add(a, scale(e, u))
 }
 
 /// Where a swept sphere first touches something ([`Collider::spherecast`]).
@@ -604,6 +940,15 @@ pub const HAVOK_UNIT: f32 = 6.999_125_7;
 /// float at `01016248`), 3.5 game units; models' shapes have 0.1.
 pub const TERRAIN_SHELL: f32 = 0.5 * HAVOK_UNIT;
 
+/// How the ground rubs and bounces: each square's land body is built
+/// (`00621f60`) from Havok's default body info (`00c8f510`, restitution
+/// 0.4) as a fixed body (mass 0, motion 5) with its friction set to
+/// `[Landscape] fLandFriction` (2.5 in the exe and `Fallout.ini`).
+pub const LAND_SURFACE: Surface = Surface {
+    friction: 2.5,
+    restitution: 0.4,
+};
+
 /// The Havok world's gravity, (0, 0, −98.1) Havok units a second squared
 /// (`00f4b550`: 10 × −9.81, put on z by both world builders), in game
 /// units: 686.61.
@@ -676,6 +1021,35 @@ pub struct Character {
     /// `00c70550`); taken by whoever applies fall damage.
     pub left_ground_at: f32,
     pub fell: Option<f32>,
+    /// Horizontal velocity, units per second, as [`Character::update_controlled`]
+    /// keeps it from one update to the next.
+    pub horizontal: [f32; 2],
+}
+
+/// The most the on-ground state changes the velocity in one update: 500
+/// Havok units a second (`01013d84`, the movement input's maximum velocity
+/// change, `00cd4800`), in game units.
+pub const GROUND_MAX_VELOCITY_CHANGE: f32 = 500.0 * HAVOK_UNIT;
+/// The in-air state's: 2000 Havok units a second (`01013970`, stored by
+/// its constructor `00cd3f90`).
+pub const AIR_MAX_VELOCITY_CHANGE: f32 = 2000.0 * HAVOK_UNIT;
+
+/// Moves `current` toward `desired` by `gain` of the gap, the gap first
+/// cut to `max_change` long (the controller's movement input, as the
+/// ground and air states use it, `00cd4800` and `00cd3fb0`).
+pub fn blend_velocity(
+    current: [f32; 2],
+    desired: [f32; 2],
+    gain: f32,
+    max_change: f32,
+) -> [f32; 2] {
+    let mut diff = [desired[0] - current[0], desired[1] - current[1]];
+    let len = (diff[0] * diff[0] + diff[1] * diff[1]).sqrt();
+    if len > max_change {
+        let k = max_change / len;
+        diff = [diff[0] * k, diff[1] * k];
+    }
+    [current[0] + gain * diff[0], current[1] + gain * diff[1]]
 }
 
 /// A surface the capsule rests on or is pushed by.
@@ -701,6 +1075,57 @@ impl Character {
             ground: feet[2],
             left_ground_at: feet[2],
             fell: None,
+            horizontal: [0.0; 2],
+        }
+    }
+
+    /// One controller update of `dt` seconds wanting to go at `desired`
+    /// (x, y; units per second), as the game's character states set the
+    /// velocity once per update before it's integrated:
+    ///
+    /// - jumping (asked, and standing): upward at `jump_speed`, the
+    ///   horizontal velocity set to the ground's own (still ground: 0) —
+    ///   the jumping state `00cd4280` replaces it, it doesn't keep the
+    ///   run-up;
+    /// - on the ground: the wanted velocity (gain 1, `00cd4800`);
+    /// - in the air: `air_gain` of the way from the current velocity to the
+    ///   wanted one (`00cd3fb0`; `world::locomotion::air_gain`, 0.3).
+    ///
+    /// Whether the in-air state also runs in the update a jump starts
+    /// isn't traced (the jumping state hands over through `00c6cba0`); here
+    /// it doesn't. On slopes the game works the velocity out in the
+    /// ground's plane and Havok's proxy solver slides it; neither is
+    /// modelled (the horizontal velocity is used as it is).
+    pub fn update_controlled(
+        &mut self,
+        collider: &Collider,
+        shape: &CharacterShape,
+        desired: [f32; 2],
+        jump_speed: Option<f32>,
+        air_gain: f32,
+        dt: f32,
+    ) {
+        let jumping = self.on_ground && jump_speed.is_some_and(|s| s > 0.0);
+        if jumping {
+            self.horizontal = [0.0; 2];
+        } else if self.on_ground {
+            self.horizontal =
+                blend_velocity(self.horizontal, desired, 1.0, GROUND_MAX_VELOCITY_CHANGE);
+        } else {
+            self.horizontal =
+                blend_velocity(self.horizontal, desired, air_gain, AIR_MAX_VELOCITY_CHANGE);
+        }
+        let velocity = self.horizontal;
+        let before = self.feet;
+        self.update_with_jump(collider, shape, velocity, jump_speed, dt);
+        // What's kept is the velocity the move ended with (Havok's proxy
+        // leaves the solved velocity in the controller): stopped or slid by
+        // what it ran into.
+        if dt > 0.0 {
+            self.horizontal = [
+                (self.feet[0] - before[0]) / dt.min(0.25),
+                (self.feet[1] - before[1]) / dt.min(0.25),
+            ];
         }
     }
 
@@ -879,13 +1304,16 @@ impl Character {
         let steps = (distance / INCREMENT).ceil().max(1.0) as usize;
         let piece = distance / steps as f32;
         let mut feet = self.feet;
+        // The triangles near it are the same at every step (the grid is
+        // across x and y, which the sweep keeps): found once.
+        let candidates = self.touch_candidates(collider, shape);
         for _ in 0..steps {
             let next = [feet[0], feet[1], feet[2] - piece];
             if let Some(support) = (Character {
                 feet: next,
                 ..*self
             })
-            .touching(collider, shape)
+            .touching_among(collider, shape, &candidates)
             {
                 return (feet, Some(support));
             }
@@ -894,8 +1322,8 @@ impl Character {
         (feet, None)
     }
 
-    /// The face the capsule overlaps most, turned toward it, if any.
-    fn touching(&self, collider: &Collider, shape: &CharacterShape) -> Option<Support> {
+    /// The triangles near enough for [`Character::touching_among`] to look at.
+    fn touch_candidates(&self, collider: &Collider, shape: &CharacterShape) -> Vec<u32> {
         let r = shape.radius;
         let lo = [
             self.feet[0] - r - 1.0,
@@ -907,10 +1335,25 @@ impl Character {
             self.feet[1] + r + 1.0,
             self.feet[2] + shape.lift + shape.height + 1.0,
         ];
+        collider.near(lo, hi)
+    }
+
+    /// The face the capsule overlaps most among `candidates` (in their
+    /// order), turned toward it, if any.
+    fn touching_among(
+        &self,
+        collider: &Collider,
+        shape: &CharacterShape,
+        candidates: &[u32],
+    ) -> Option<Support> {
+        let r = shape.radius;
         let (bottom, top) = shape.axis(self.feet);
         let mut best: Option<Support> = None;
-        for t in collider.near(lo, hi) {
+        for &t in candidates {
             let [a, b, c] = collider.triangle(t);
+            if surely_beyond([a, b, c], bottom, top, r + collider.shell(t)) {
+                continue;
+            }
             let (on_axis, on_triangle) = segment_triangle_closest(bottom, top, a, b, c);
             let gap = sub(on_axis, on_triangle);
             let d = length(gap);
@@ -974,6 +1417,9 @@ impl Character {
             let mut deepest: Option<(f32, Vec3, Support)> = None;
             for &t in &candidates {
                 let [a, b, c] = collider.triangle(t);
+                if surely_beyond([a, b, c], bottom, top, r + collider.shell(t)) {
+                    continue;
+                }
                 let (on_axis, on_triangle) = segment_triangle_closest(bottom, top, a, b, c);
                 let gap = sub(on_axis, on_triangle);
                 let d = length(gap);
@@ -1113,7 +1559,7 @@ pub(crate) fn segment_triangle_closest(
 
 /// The point of triangle `a b c` nearest `p` (Ericson, Real-Time Collision
 /// Detection, 5.1.5).
-fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
+pub(crate) fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
     let ab = sub(b, a);
     let ac = sub(c, a);
     let ap = sub(p, a);
@@ -1152,7 +1598,7 @@ fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 
 /// The closest points between segments `p1`–`q1` and `p2`–`q2` (Ericson,
 /// 5.1.9).
-fn segment_segment_closest(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (Vec3, Vec3) {
+pub(crate) fn segment_segment_closest(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (Vec3, Vec3) {
     let d1 = sub(q1, p1);
     let d2 = sub(q2, p2);
     let r = sub(p1, p2);
@@ -1511,6 +1957,37 @@ mod tests {
     }
 
     #[test]
+    fn a_running_jump_starts_from_standing_and_steers_three_tenths_a_frame() {
+        let c = room();
+        let shape = CharacterShape::PLAYER;
+        let dt = 1.0 / 60.0;
+        let mut p = Character::new([-50.0, 0.0, 0.0]);
+        // Settle, then run east at 308.
+        for _ in 0..30 {
+            p.update_controlled(&c, &shape, [0.0, 0.0], None, 0.3, dt);
+        }
+        p.update_controlled(&c, &shape, [308.0, 0.0], None, 0.3, dt);
+        assert!(p.on_ground && (p.horizontal[0] - 308.0).abs() < 0.5);
+        // The jump's update: the run-up is dropped.
+        let x = p.feet[0];
+        p.update_controlled(&c, &shape, [308.0, 0.0], Some(296.5), 0.3, dt);
+        assert!(!p.on_ground);
+        assert!((p.feet[0] - x).abs() < 1e-3, "{}", p.feet[0] - x);
+        // Then 0.3 of the gap each update: 92.4, then 157.1.
+        p.update_controlled(&c, &shape, [308.0, 0.0], None, 0.3, dt);
+        assert!((p.horizontal[0] - 92.4).abs() < 0.1, "{:?}", p.horizontal);
+        p.update_controlled(&c, &shape, [308.0, 0.0], None, 0.3, dt);
+        assert!((p.horizontal[0] - 157.08).abs() < 0.1, "{:?}", p.horizontal);
+        // Letting go in the air slows it the same way, not at once.
+        p.update_controlled(&c, &shape, [0.0, 0.0], None, 0.3, dt);
+        assert!((p.horizontal[0] - 109.96).abs() < 0.1, "{:?}", p.horizontal);
+        assert_eq!(
+            blend_velocity([0.0, 0.0], [10000.0, 0.0], 1.0, 500.0),
+            [500.0, 0.0]
+        );
+    }
+
+    #[test]
     fn the_game_jump_rises_its_height() {
         // `fJumpHeightMin` 64: launched at √(2 g h), about 296.5 a second.
         let speed = (2.0 * GRAVITY * 64.0).sqrt();
@@ -1615,6 +2092,194 @@ mod tests {
         assert!(north(&all).is_none());
     }
 
+    /// The box test only skips triangles the exact test finds out of reach.
+    #[test]
+    fn surely_beyond_never_skips_a_triangle_within_reach() {
+        let mut seed = 12345u64;
+        let mut unit = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 33) as f32) / (1u64 << 31) as f32 * 2.0 - 1.0
+        };
+        let mut skipped = 0;
+        for _ in 0..200_000 {
+            let mut p = || [unit() * 120.0, unit() * 120.0, unit() * 120.0];
+            let (a, b, c) = (p(), p(), p());
+            let bottom = [unit() * 60.0, unit() * 60.0, unit() * 60.0];
+            let top = add(bottom, [0.0, 0.0, unit().abs() * 80.0]);
+            let reach = 20.0 + unit().abs() * 20.0;
+            if surely_beyond([a, b, c], bottom, top, reach) {
+                skipped += 1;
+                let (on_axis, on_triangle) = segment_triangle_closest(bottom, top, a, b, c);
+                let d = length(sub(on_axis, on_triangle));
+                assert!(
+                    d.is_nan() || d >= reach,
+                    "{a:?} {b:?} {c:?} {bottom:?} {top:?} {reach} {d}"
+                );
+            }
+        }
+        assert!(skipped > 10_000);
+    }
+
+    /// A seeded number from -1 to 1 (the tests' own, no library).
+    fn lcg(seed: &mut u64) -> f32 {
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*seed >> 33) as f32) / (1u64 << 31) as f32 * 2.0 - 1.0
+    }
+
+    /// Where the outdoor numbers are largest (Goodsprings, about -68000,
+    /// 5800, 8480; f32 steps of 1/128 there) and just past the margin, the
+    /// box test still only skips what both exact tests (the touch's and
+    /// the push's, the stricter) leave out.
+    #[test]
+    fn surely_beyond_never_skips_a_triangle_within_reach_outdoors() {
+        let mut seed = 777u64;
+        let origin = [-68250.0, 5800.0, 8480.0];
+        let reach = CharacterShape::PLAYER.radius + 0.7;
+        let mut skipped = 0;
+        for i in 0..200_000 {
+            let mut u = || lcg(&mut seed);
+            let bottom = add(origin, [u() * 40.0, u() * 40.0, u() * 40.0]);
+            let top = add(bottom, [0.0, 0.0, 87.0]);
+            // A triangle whose box starts just beyond reach along one axis.
+            let k = i % 3;
+            let gap = reach + 0.05 + u().abs() * 0.02;
+            let mut corner = |_| {
+                let mut p = add(bottom, [u() * 60.0, u() * 60.0, u() * 60.0]);
+                let start = if k == 2 { top[k] } else { bottom[k] };
+                p[k] = start + gap + u().abs() * 30.0;
+                p
+            };
+            let (a, b, c) = (corner(0), corner(1), corner(2));
+            if surely_beyond([a, b, c], bottom, top, reach) {
+                skipped += 1;
+                let (on_axis, on_triangle) = segment_triangle_closest(bottom, top, a, b, c);
+                let d = length(sub(on_axis, on_triangle));
+                assert!(
+                    d.is_nan() || d >= reach - 1e-4,
+                    "{a:?} {b:?} {c:?} {bottom:?} {top:?} {reach} {d}"
+                );
+            }
+        }
+        assert!(skipped > 100_000);
+    }
+
+    /// The downward sweep with its candidates found once gives what
+    /// finding them again at every step (the way before) gives: the grid
+    /// is across x and y, which the sweep keeps.
+    #[test]
+    fn one_candidate_list_sweeps_as_one_per_step() {
+        let mut seed = 4242u64;
+        let origin = [-68250.0, 5800.0, 8480.0];
+        let shape = CharacterShape::PLAYER;
+        for _ in 0..40 {
+            let mut c = Collider::new();
+            let mut vertices = Vec::new();
+            let mut triangles = Vec::new();
+            for _ in 0..300 {
+                let mut u = || lcg(&mut seed);
+                let middle = add(origin, [u() * 400.0, u() * 400.0, u() * 150.0]);
+                let base = vertices.len() as u32;
+                for _ in 0..3 {
+                    let mut u = || lcg(&mut seed);
+                    vertices.push(add(middle, [u() * 60.0, u() * 60.0, u() * 20.0]));
+                }
+                triangles.push([base, base + 1, base + 2]);
+            }
+            c.add(&vertices, &triangles);
+            for _ in 0..50 {
+                let mut u = || lcg(&mut seed);
+                let feet = add(origin, [u() * 300.0, u() * 300.0, 200.0 + u() * 100.0]);
+                let distance = 50.0 + u().abs() * 400.0;
+                let walker = Character::new(feet);
+                let found = walker.swept_down(&c, &shape, distance);
+                // The way before: the triangles near looked up at each step.
+                let steps = (distance / 0.5).ceil().max(1.0) as usize;
+                let piece = distance / steps as f32;
+                let mut at = feet;
+                let mut expected = (at, None);
+                for _ in 0..steps {
+                    let next = [at[0], at[1], at[2] - piece];
+                    let there = Character {
+                        feet: next,
+                        ..walker
+                    };
+                    let near = there.touch_candidates(&c, &shape);
+                    if let Some(s) = there.touching_among(&c, &shape, &near) {
+                        expected = (at, Some(s));
+                        break;
+                    }
+                    at = next;
+                    expected = (at, None);
+                }
+                assert_eq!(found, expected, "{feet:?} {distance}");
+            }
+        }
+    }
+
+    /// Moving an owner leaves every bucket's list as taking its triangles
+    /// out one at a time and putting them back does (the order queries see
+    /// them in).
+    #[test]
+    fn moving_an_owner_leaves_the_buckets_as_one_at_a_time() {
+        let mut c = Collider::new();
+        // Ground under everything, and an object of many triangles on it.
+        let mut ground = Vec::new();
+        let mut tris = Vec::new();
+        for i in 0..20 {
+            let x = i as f32 * 50.0 - 500.0;
+            let b = ground.len() as u32;
+            ground.extend([[x, -500.0, 0.0], [x + 60.0, -500.0, 0.0], [x, 500.0, 0.0]]);
+            tris.push([b, b + 1, b + 2]);
+        }
+        c.add(&ground, &tris);
+        let mut body = Vec::new();
+        let mut body_tris = Vec::new();
+        for i in 0..12 {
+            let a = i as f32 * 0.5;
+            let b = body.len() as u32;
+            body.extend([
+                [a.cos() * 40.0, a.sin() * 40.0, 10.0],
+                [a.cos() * 90.0, a.sin() * 90.0, 30.0],
+                [0.0, 0.0, 60.0],
+            ]);
+            body_tris.push([b, b + 1, b + 2]);
+        }
+        c.add_solid_surface(&body, &body_tris, (0.0, 0x77, NO_MATERIAL), None);
+        let one_at_a_time = |c: &mut Collider, r: &[[f32; 3]; 3], t: Vec3| {
+            let owned = c.live.owned[&0x77].clone();
+            for &tri in &owned {
+                let [a, b, cc] = c.triangle(tri);
+                for key in bucket_keys(a, b, cc) {
+                    if let Some(list) = c.grid.get_mut(&key) {
+                        list.retain(|&i| i != tri);
+                    }
+                }
+            }
+            for &(i, p) in &c.live.rest[&0x77].clone() {
+                let q = [0, 1, 2].map(|k| r[k][0] * p[0] + r[k][1] * p[1] + r[k][2] * p[2]);
+                c.vertices[i as usize] = add(q, t);
+            }
+            for &tri in &owned {
+                let [a, b, cc] = c.triangle(tri);
+                for key in bucket_keys(a, b, cc) {
+                    c.grid.entry(key).or_default().push(tri);
+                }
+            }
+        };
+        let mut expected = c.clone();
+        let turn = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        for (r, t) in [(turn, [300.0, 20.0, 0.0]), (turn, [-280.0, 500.0, 5.0])] {
+            c.move_owner(0x77, &r, t);
+            one_at_a_time(&mut expected, &r, t);
+            assert_eq!(c.grid, expected.grid);
+            assert_eq!(c.vertices, expected.vertices);
+        }
+    }
+
     #[test]
     fn a_swept_sphere_stops_its_radius_and_the_shell_short_of_a_wall() {
         let c = room();
@@ -1690,5 +2355,39 @@ mod tests {
         assert!(c
             .spherecast([0.0, 0.0, 50.0], [0.0, 1.0, 0.0], 150.0, 10.0)
             .is_none());
+    }
+
+    #[test]
+    fn shots_pass_a_transparent_fence_that_stops_walkers() {
+        // A chain-link fence on layer 3 (TRANSPARENT) 100 units north, a
+        // wall on layer 1 (STATIC) behind it.
+        let mut c = Collider::new();
+        let plane = |y: f32| {
+            [
+                [-100.0, y, 0.0],
+                [100.0, y, 0.0],
+                [100.0, y, 200.0],
+                [-100.0, y, 200.0],
+            ]
+        };
+        let quad = [[0, 1, 2], [0, 2, 3]];
+        c.add_layered(&plane(100.0), &quad, (0.0, 0x31, NO_MATERIAL), None, 3);
+        c.add_layered(&plane(200.0), &quad, (0.0, 0x32, NO_MATERIAL), None, 1);
+        let north = [0.0, 1.0, 0.0];
+        // Unfiltered (and for the character, layer 30) the fence is met.
+        let (d, t) = c.raycast([0.0, 0.0, 50.0], north, 500.0).unwrap();
+        assert!((d - 100.0).abs() < 1e-3 && c.owner(t) == 0x31);
+        let (_, t) = c.raycast_layer([0.0, 0.0, 50.0], north, 500.0, 30).unwrap();
+        assert_eq!(c.owner(t), 0x31);
+        // A projectile's cast (layer 6) goes through to the wall.
+        let (d, t) = c.raycast_layer([0.0, 0.0, 50.0], north, 500.0, 6).unwrap();
+        assert!((d - 200.0).abs() < 1e-3 && c.owner(t) == 0x32, "{d}");
+        assert_eq!(c.layer(t), 1);
+        // Triangles added without a layer stop every cast.
+        let mut plain = Collider::new();
+        plain.add(&plane(100.0), &quad);
+        assert!(plain
+            .raycast_layer([0.0, 0.0, 50.0], north, 500.0, 6)
+            .is_some());
     }
 }

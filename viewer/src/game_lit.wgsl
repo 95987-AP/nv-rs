@@ -56,6 +56,10 @@
 }
 #import bevy_pbr::mesh_view_bindings as view_bindings
 #import bevy_pbr::pbr_types
+#import bevy_pbr::mesh_bindings::mesh
+#ifdef BINDLESS
+#import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d, bindless_textures_cube}
+#endif
 
 // Bevy's mesh vertex input, plus the triangle's corners.
 struct GameVertex {
@@ -120,6 +124,7 @@ struct GameVertexOutput {
 // creatures are skinned (`SKINNED`): their bones move them.
 @vertex
 fn vertex(vertex: GameVertex) -> GameVertexOutput {
+    set_game_slot(vertex.instance_index);
     var out: GameVertexOutput;
 #ifdef SKINNED
     let world_from_local = skinning::skin_model(vertex.joint_indices, vertex.joint_weights, vertex.instance_index);
@@ -137,7 +142,7 @@ fn vertex(vertex: GameVertex) -> GameVertexOutput {
     out.position = position_world_to_clip(out.world_position.xyz);
     // Decals are pulled nearer by a constant in depth (0 for the rest), as
     // the game's depth bias does; depth is z / w, so add w times it.
-    out.position.z += out.position.w * game.draw.x;
+    out.position.z += out.position.w * game_draw().x;
 #ifdef VERTEX_UVS_A
     out.uv = vertex.uv;
 #endif
@@ -270,7 +275,8 @@ struct GameLighting {
     // The surface's own glow; w is 1 when the glow map masks it.
     emissive: vec4<f32>,
     // x: the luminance shown at full brightness at the starting exposure,
-    // which cancels the camera's exposure there; y: how many lights.
+    // which cancels the camera's exposure there; y: how many lights; z: 1
+    // when the ambient, sun and fog are the hour's shared light outdoors.
     scale: vec4<f32>,
     // The fog's color as stored, and its power in w.
     fog_color: vec4<f32>,
@@ -302,15 +308,162 @@ struct GameLighting {
     hair_tint: vec4<f32>,
 }
 
-@group(2) @binding(100) var<uniform> game: GameLighting;
-@group(2) @binding(101) var glow_texture: texture_2d<f32>;
-@group(2) @binding(102) var glow_sampler: sampler;
-@group(2) @binding(103) var normal_texture: texture_2d<f32>;
-@group(2) @binding(104) var normal_sampler: sampler;
-@group(2) @binding(105) var environment_texture: texture_cube<f32>;
-@group(2) @binding(106) var environment_sampler: sampler;
-@group(2) @binding(107) var environment_mask: texture_2d<f32>;
-@group(2) @binding(108) var environment_mask_sampler: sampler;
+// The hour's light outdoors, shared by every surface (`shared_light.rs`).
+struct SharedLight {
+    ambient: vec4<f32>,
+    directional_color: vec4<f32>,
+    directional_direction: vec4<f32>,
+    fog_color: vec4<f32>,
+    fog_range: vec4<f32>,
+}
+
+// The material's resources (`lighting::GameLit`). Bindless (`BINDLESS`):
+// one array of every material's lighting, the textures in Bevy's bindless
+// arrays, each material's entries found through its slot in the index
+// table (the mesh's `material_and_lightmap_bind_group_slot`); otherwise
+// each bound on its own.
+struct GameLitIndices {
+    lighting: u32,
+    glow: u32,
+    glow_sampler: u32,
+    normal: u32,
+    normal_sampler: u32,
+    environment: u32,
+    environment_sampler: u32,
+    environment_mask: u32,
+    environment_mask_sampler: u32,
+    shared_light: u32,
+}
+
+#ifdef BINDLESS
+@group(2) @binding(100) var<storage> game_lit_indices: array<GameLitIndices>;
+@group(2) @binding(101) var<storage> game_lit: array<GameLighting>;
+#else
+@group(2) @binding(50) var<uniform> game: GameLighting;
+@group(2) @binding(51) var glow_texture: texture_2d<f32>;
+@group(2) @binding(52) var glow_sampler: sampler;
+@group(2) @binding(53) var normal_texture: texture_2d<f32>;
+@group(2) @binding(54) var normal_sampler: sampler;
+@group(2) @binding(55) var environment_texture: texture_cube<f32>;
+@group(2) @binding(56) var environment_sampler: sampler;
+@group(2) @binding(57) var environment_mask: texture_2d<f32>;
+@group(2) @binding(58) var environment_mask_sampler: sampler;
+@group(2) @binding(59) var shared_light_texture: texture_2d<f32>;
+#endif
+
+// The material being drawn's slot (set first thing in each entry point).
+var<private> game_slot: u32;
+
+fn set_game_slot(instance_index: u32) {
+    game_slot = mesh[instance_index].material_and_lightmap_bind_group_slot & 0xffffu;
+}
+
+#ifdef BINDLESS
+fn game_index() -> u32 {
+    return game_lit_indices[game_slot].lighting;
+}
+fn game_ambient() -> vec4<f32> { return game_lit[game_index()].ambient; }
+fn game_directional_color() -> vec4<f32> { return game_lit[game_index()].directional_color; }
+fn game_directional_direction() -> vec4<f32> { return game_lit[game_index()].directional_direction; }
+fn game_emissive() -> vec4<f32> { return game_lit[game_index()].emissive; }
+fn game_scale() -> vec4<f32> { return game_lit[game_index()].scale; }
+fn game_fog_color() -> vec4<f32> { return game_lit[game_index()].fog_color; }
+fn game_fog_range() -> vec4<f32> { return game_lit[game_index()].fog_range; }
+fn game_specular() -> vec4<f32> { return game_lit[game_index()].specular; }
+fn game_surface() -> vec4<f32> { return game_lit[game_index()].surface; }
+fn game_falloff() -> vec4<f32> { return game_lit[game_index()].falloff; }
+fn game_environment() -> vec4<f32> { return game_lit[game_index()].environment; }
+fn game_draw() -> vec4<f32> { return game_lit[game_index()].draw; }
+fn game_light(i: u32) -> GameLight { return game_lit[game_index()].lights[i]; }
+fn game_actor() -> vec4<f32> { return game_lit[game_index()].actor; }
+fn game_hair_tint() -> vec4<f32> { return game_lit[game_index()].hair_tint; }
+fn sample_glow(uv: vec2<f32>) -> vec4<f32> {
+    let k = game_lit_indices[game_slot];
+    return textureSample(bindless_textures_2d[k.glow], bindless_samplers_filtering[k.glow_sampler], uv);
+}
+fn sample_normal(uv: vec2<f32>) -> vec4<f32> {
+    let k = game_lit_indices[game_slot];
+    return textureSample(bindless_textures_2d[k.normal], bindless_samplers_filtering[k.normal_sampler], uv);
+}
+fn sample_environment(along: vec3<f32>) -> vec4<f32> {
+    let k = game_lit_indices[game_slot];
+    return textureSample(bindless_textures_cube[k.environment], bindless_samplers_filtering[k.environment_sampler], along);
+}
+fn sample_environment_mask(uv: vec2<f32>) -> vec4<f32> {
+    let k = game_lit_indices[game_slot];
+    return textureSample(bindless_textures_2d[k.environment_mask], bindless_samplers_filtering[k.environment_mask_sampler], uv);
+}
+fn shared_light_vector(i: i32) -> vec4<f32> {
+    return textureLoad(bindless_textures_2d[game_lit_indices[game_slot].shared_light], vec2<i32>(i, 0), 0);
+}
+#else
+fn game_ambient() -> vec4<f32> { return game.ambient; }
+fn game_directional_color() -> vec4<f32> { return game.directional_color; }
+fn game_directional_direction() -> vec4<f32> { return game.directional_direction; }
+fn game_emissive() -> vec4<f32> { return game.emissive; }
+fn game_scale() -> vec4<f32> { return game.scale; }
+fn game_fog_color() -> vec4<f32> { return game.fog_color; }
+fn game_fog_range() -> vec4<f32> { return game.fog_range; }
+fn game_specular() -> vec4<f32> { return game.specular; }
+fn game_surface() -> vec4<f32> { return game.surface; }
+fn game_falloff() -> vec4<f32> { return game.falloff; }
+fn game_environment() -> vec4<f32> { return game.environment; }
+fn game_draw() -> vec4<f32> { return game.draw; }
+fn game_light(i: u32) -> GameLight { return game.lights[i]; }
+fn game_actor() -> vec4<f32> { return game.actor; }
+fn game_hair_tint() -> vec4<f32> { return game.hair_tint; }
+fn sample_glow(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(glow_texture, glow_sampler, uv);
+}
+fn sample_normal(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(normal_texture, normal_sampler, uv);
+}
+fn sample_environment(along: vec3<f32>) -> vec4<f32> {
+    return textureSample(environment_texture, environment_sampler, along);
+}
+fn sample_environment_mask(uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(environment_mask, environment_mask_sampler, uv);
+}
+fn shared_light_vector(i: i32) -> vec4<f32> {
+    return textureLoad(shared_light_texture, vec2<i32>(i, 0), 0);
+}
+#endif
+
+// The ambient, the sun and the fog: the surface's own, or the hour's
+// shared light outdoors.
+fn outdoors() -> bool {
+    return game_scale().z > 0.5;
+}
+fn ambient_light() -> vec4<f32> {
+    if (outdoors()) {
+        return shared_light_vector(0);
+    }
+    return game_ambient();
+}
+fn directional_color() -> vec4<f32> {
+    if (outdoors()) {
+        return shared_light_vector(1);
+    }
+    return game_directional_color();
+}
+fn directional_direction() -> vec4<f32> {
+    if (outdoors()) {
+        return shared_light_vector(2);
+    }
+    return game_directional_direction();
+}
+fn fog_color() -> vec4<f32> {
+    if (outdoors()) {
+        return shared_light_vector(3);
+    }
+    return game_fog_color();
+}
+fn fog_range() -> vec4<f32> {
+    if (outdoors()) {
+        return shared_light_vector(4);
+    }
+    return game_fog_range();
+}
 
 // The sRGB curve both ways, exactly as the GPU applies it to sRGB textures
 // and to the screen, so encoding undoes its decoding.
@@ -327,7 +480,7 @@ fn srgb_encode(linear: vec3<f32>) -> vec3<f32> {
 // direction for the fade is exact (the specular vertex shaders pass it
 // unnormalized, and the blend of that is exact).
 fn highlight(n: vec3<f32>, h: vec3<f32>, to_light: vec3<f32>, mask: f32) -> f32 {
-    var s = pow(max(saturate(dot(n, h)), 1e-6), max(game.specular.w, 1e-3)) * mask;
+    var s = pow(max(saturate(dot(n, h)), 1e-6), max(game_specular().w, 1e-3)) * mask;
     let n_dot_l = dot(n, to_light);
     if (n_dot_l <= 0.2) {
         s *= saturate(n_dot_l + 0.5);
@@ -340,6 +493,7 @@ fn fragment(
     game_in: GameVertexOutput,
     @builtin(front_facing) is_front: bool,
 ) -> FragmentOutput {
+    set_game_slot(game_in.instance_index);
     let in = bevy_input(game_in);
     var pbr_input = pbr_input_from_standard_material(in, is_front);
     // The alpha before Bevy's own handling (which makes opaque surfaces'
@@ -365,7 +519,7 @@ fn fragment(
     var alpha = base.a;
     // No-lighting surfaces fade by viewing angle (per vertex, blended).
     var fade = 1.0;
-    if (game.surface.z > 0.5) {
+    if (game_surface().z > 0.5) {
         fade = k.weights.x * falloff_opacity(abs(dot(vertex_normal, normalize(eye - k.a))))
             + k.weights.y * falloff_opacity(abs(dot(vertex_normal, normalize(eye - k.b))))
             + k.weights.z * falloff_opacity(abs(dot(vertex_normal, normalize(eye - k.c))));
@@ -375,18 +529,18 @@ fn fragment(
         discard;
     }
 
-    if (game.surface.z > 0.5) {
+    if (game_surface().z > 0.5) {
         // A no-lighting surface (`NOLIGHTTEXVC` and its kin): texture ×
         // vertex color × MaterialColor, its opacity faded by viewing
         // angle, and fog by the kind of surface.
-        shaded = surface * game.emissive.rgb;
+        shaded = surface * game_emissive().rgb;
         alpha *= fade;
-        if (game.surface.w > 1.5) {
+        if (game_surface().w > 1.5) {
             shaded = mix(shaded, vec3<f32>(1.0), saturate(1.5 * fog));
-        } else if (game.surface.w > 0.5) {
+        } else if (game_surface().w > 0.5) {
             shaded *= 1.0 - fog;
         } else {
-            shaded = mix(shaded, game.fog_color.rgb, fog);
+            shaded = mix(shaded, fog_color().rgb, fog);
         }
     } else {
     var n = vertex_normal;
@@ -403,10 +557,10 @@ fn fragment(
     // minus 1, normalized, in the frame of the texture's U (red), V
     // (green) and the vertex normal (blue); U and V come from the mesh
     // (`cellview::MeshData::tangents`).
-    if (game.surface.x > 0.5) {
+    if (game_surface().x > 0.5) {
         let t = normalize(in.world_tangent.xyz - vertex_normal * dot(in.world_tangent.xyz, vertex_normal));
         let b = in.world_tangent.w * cross(vertex_normal, t);
-        let stored = textureSample(normal_texture, normal_sampler, in.uv);
+        let stored = sample_normal(in.uv);
         let m = normalize(stored.rgb * 2.0 - 1.0);
         n = normalize(m.x * t + m.y * b + m.z * vertex_normal);
         reflect_normal = normalize(0.1 * (m.x * t + m.y * b) + m.z * vertex_normal);
@@ -414,13 +568,13 @@ fn fragment(
     }
 #endif
 #endif
-    let gets_specular = game.surface.y > 0.5;
+    let gets_specular = game_surface().y > 0.5;
     var specular = vec3<f32>(0.0);
     // People (`preview::cell::Shading`): skin's own passes and the hair
     // shader, as the game draws them (compiled by the game at run time,
     // read from the actors recording).
-    let is_skin = game.actor.x > 0.5 && game.actor.x < 1.5;
-    let is_hair = game.actor.x > 1.5;
+    let is_skin = game_actor().x > 0.5 && game_actor().x < 1.5;
+    let is_hair = game_actor().x > 1.5;
     // The view direction per vertex (skin's rim) and per pixel (hair).
     let to_eye_blended = blended_toward(k, eye);
     // Hair: the bent normal its highlight uses, half the normal map's
@@ -428,22 +582,22 @@ fn fragment(
     let bent = normalize(0.5 * n + vertex_normal);
     var hair_specular = vec3<f32>(0.0);
 
-    var light = game.ambient.rgb;
-    let sun = normalize(game.directional_direction.xyz);
+    var light = ambient_light().rgb;
+    let sun = normalize(directional_direction().xyz);
     // Skin's directional pass (`SLS1002`) gets the light times the image
     // space's factor, its highlight too.
-    var sun_color = game.directional_color.rgb;
+    var sun_color = directional_color().rgb;
     if (is_skin) {
-        sun_color *= game.actor.y;
+        sun_color *= game_actor().y;
     }
     light += sun_color * saturate(dot(n, sun));
     if (gets_specular) {
         let h = blended_half(k, sun, true, eye);
         specular += saturate(highlight(n, h, sun, specular_mask) * sun_color);
     }
-    let count = min(u32(game.scale.y), 64u);
+    let count = min(u32(game_scale().y), 64u);
     for (var i = 0u; i < count; i += 1u) {
-        let l = game.lights[i];
+        let l = game_light(i);
         let to_light = l.position_radius.xyz - p;
         let d2 = dot(to_light, to_light);
         let r2 = l.position_radius.w * l.position_radius.w;
@@ -491,26 +645,26 @@ fn fragment(
     // EmittanceColor times the glow map's stored color.
     var mask = vec3<f32>(1.0);
 #ifdef VERTEX_UVS_A
-    if (game.emissive.w > 0.5) {
-        mask = textureSample(glow_texture, glow_sampler, in.uv).rgb;
+    if (game_emissive().w > 0.5) {
+        mask = sample_glow(in.uv).rgb;
     }
 #endif
-    light += game.emissive.rgb * mask;
+    light += game_emissive().rgb * mask;
     light = max(light, vec3<f32>(0.0));
 
     // Specular is added before fog, as the game draws it (in one pass, or
     // in passes added before its fog pass).
-    shaded = mix(surface * light + specular, game.fog_color.rgb, fog);
+    shaded = mix(surface * light + specular, fog_color().rgb, fog);
 
     // The reflection, added on top of the finished surface (the game's
     // separate pass blends ONE + ONE). On an alpha-blended surface it's
     // divided by the alpha so that blending adds it whole, as the game's
     // pass does.
-    if (game.environment.x > 0.0) {
+    if (game_environment().x > 0.0) {
         // The view direction per vertex, as the reflection pass's vertex
         // shader gives it.
         var reflected = reflection(in, reflect_normal, blended_toward(k, eye), specular_mask, fog);
-        if (game.surface.w > 0.5) {
+        if (game_surface().w > 0.5) {
             reflected /= max(alpha, 1e-3);
         }
         shaded += reflected;
@@ -521,7 +675,7 @@ fn fragment(
     // holds them, so blended surfaces (light beams, glass, decals) blend
     // the way the game blends them; the image space pass (`grade.wgsl`)
     // turns the finished picture into linear light for the screen.
-    out.color = vec4<f32>(shaded * game.scale.x * view_bindings::view.exposure, alpha);
+    out.color = vec4<f32>(shaded * game_scale().x * view_bindings::view.exposure, alpha);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }
@@ -534,7 +688,7 @@ fn hair_mask(in: VertexOutput) -> f32 {
     var mask = 1.0;
 #ifdef VERTEX_COLORS
     let factor = srgb_encode(in.color.rgb) - vec3<f32>(1.0);
-    let tint = 2.0 * game.hair_tint.rgb - vec3<f32>(1.0);
+    let tint = 2.0 * game_hair_tint().rgb - vec3<f32>(1.0);
     let t2 = dot(tint, tint);
     if (t2 > 1e-4) {
         mask = saturate(dot(factor, tint) / t2);
@@ -572,14 +726,15 @@ fn stored_surface(in: VertexOutput, base: vec3<f32>, textured: bool) -> vec3<f32
 // saturate((d - near) / (far - near)) ^ power. The game works it out per
 // vertex; the fragment shader calls this at the triangle's corners.
 fn fog_amount(p: vec3<f32>) -> f32 {
-    if (game.fog_range.w < 0.5) {
+    let range = fog_range();
+    if (range.w < 0.5) {
         return 0.0;
     }
     let v = view_bindings::view.view_from_world * vec4<f32>(p, 1.0);
     let projection = view_bindings::view.clip_from_view;
-    let d = length(vec3<f32>(v.x * projection[0][0], v.y * projection[1][1], -v.z - game.fog_range.z));
-    let span = max(game.fog_range.y - game.fog_range.x, 1e-4);
-    return pow(saturate((d - game.fog_range.x) / span), game.fog_color.w);
+    let d = length(vec3<f32>(v.x * projection[0][0], v.y * projection[1][1], -v.z - range.z));
+    let span = max(range.y - range.x, 1e-4);
+    return pow(saturate((d - range.x) / span), fog_color().w);
 }
 
 // The reflection pass (`SLS2057`; window reflections `SLS2058`), with its
@@ -591,21 +746,21 @@ fn fog_amount(p: vec3<f32>) -> f32 {
 // The game normalizes the view direction per vertex; this is per pixel.
 fn reflection(in: VertexOutput, n: vec3<f32>, to_eye: vec3<f32>, normal_alpha: f32, fog: f32) -> vec3<f32> {
     var v = to_eye;
-    if (game.environment.z > 0.5) {
+    if (game_environment().z > 0.5) {
         v = -v;
     }
     let r = 2.0 * dot(n, v) * n - v;
     // Bevy's axes (y up, -z north) back to the game's (x east, y north,
     // z up), which the cube maps are laid out in.
     let along = vec3<f32>(r.x, -r.z, r.y);
-    var c = textureSample(environment_texture, environment_sampler, along).rgb;
+    var c = sample_environment(along).rgb;
     var mask = normal_alpha;
 #ifdef VERTEX_UVS_A
-    if (game.environment.y > 0.5) {
-        mask = textureSample(environment_mask, environment_mask_sampler, in.uv).r;
+    if (game_environment().y > 0.5) {
+        mask = sample_environment_mask(in.uv).r;
     }
 #endif
-    c *= mask * game.environment.x * game.environment.w;
+    c *= mask * game_environment().x * game_environment().w;
 #ifdef VERTEX_COLORS
     c *= srgb_encode(in.color.rgb);
 #endif
@@ -616,8 +771,8 @@ fn reflection(in: VertexOutput, n: vec3<f32>, to_eye: vec3<f32>, normal_alpha: f
 // (`D3DRS_ALPHAFUNC` against `D3DRS_ALPHAREF` / 255): whether a pixel with
 // this alpha is kept. No test keeps everything.
 fn alpha_test_passes(a: f32) -> bool {
-    let func = u32(game.draw.y + 0.5);
-    let r = game.draw.z;
+    let func = u32(game_draw().y + 0.5);
+    let r = game_draw().z;
     switch func {
         case 1u: { return false; }
         case 2u: { return a < r; }
@@ -634,7 +789,7 @@ fn alpha_test_passes(a: f32) -> bool {
 // start opacity at the start angle to the stop opacity at the stop angle
 // (`falloff` holds the two cosines, then the two opacities).
 fn falloff_opacity(cos_angle: f32) -> f32 {
-    let f = game.falloff;
+    let f = game_falloff();
     if (abs(f.y - f.x) < 1e-6) {
         return select(f.w, f.z, cos_angle >= f.x);
     }

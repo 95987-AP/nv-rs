@@ -213,6 +213,105 @@ pub fn next_depth(ui: &mut Ui, open: &[TileId]) -> f32 {
     top + 2.0
 }
 
+/// A menu's showing state (the menu object's `+0x24`): 1 shown, 2 fading
+/// out, 4 faded out (hidden but still open), 8 fading in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Showing {
+    #[default]
+    Shown,
+    FadingOut,
+    Hidden,
+    FadingIn,
+}
+
+/// A menu fading out of sight and back, as the interface manager does it:
+/// the fade is put on the manager's list with its length (`00706f50` →
+/// `007164c0`), its time counted each frame up to the length (`00716320`),
+/// and the menu drawn at that fraction (`00711ea0`: the whole tree's alpha
+/// times it, through `00712450`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Fade {
+    pub showing: Showing,
+    elapsed: f32,
+    seconds: f32,
+}
+
+/// `menufade`, or `explorefade` when that is 0 (`00a1d910`, `00a1db20`).
+fn fade_seconds(ui: &mut Ui, menu: TileId) -> f32 {
+    let seconds = ui.number(menu, t::MENUFADE);
+    if seconds == 0.0 {
+        ui.number(menu, t::EXPLOREFADE)
+    } else {
+        seconds
+    }
+}
+
+impl Fade {
+    /// Fades the menu out (`00a1d910`) when it is shown (`visible`): state
+    /// 2 over `menufade` (else `explorefade`) seconds. Without trait 6002
+    /// ([`LEAVE_STACK`]) the menu stays open, hidden, once faded.
+    pub fn fade_out(&mut self, ui: &mut Ui, menu: TileId) {
+        if ui.number(menu, t::VISIBLE) == 0.0 {
+            return;
+        }
+        self.seconds = fade_seconds(ui, menu);
+        self.elapsed = 0.0;
+        self.showing = Showing::FadingOut;
+    }
+
+    /// Fades the menu in (`00a1db20`): state 8 over `menufade` (else
+    /// `explorefade`) seconds.
+    pub fn fade_in(&mut self, ui: &mut Ui, menu: TileId) {
+        self.seconds = fade_seconds(ui, menu);
+        self.elapsed = 0.0;
+        self.showing = Showing::FadingIn;
+    }
+
+    /// One frame (`00716320`, `00711ea0`): the time counted, `visible` set
+    /// (on while fading, off once faded out, on once faded in), and the
+    /// menu's alpha returned (1 − the fraction fading out, the fraction
+    /// fading in, 0 hidden, 1 shown).
+    pub fn frame(&mut self, ui: &mut Ui, menu: TileId, dt: f32) -> f32 {
+        let fading = matches!(self.showing, Showing::FadingOut | Showing::FadingIn);
+        if fading {
+            self.elapsed += dt;
+            let done = self.fraction() >= 1.0;
+            match (self.showing, done) {
+                (Showing::FadingOut, true) => {
+                    self.showing = Showing::Hidden;
+                    ui.set_number(menu, t::VISIBLE, 0.0);
+                }
+                (Showing::FadingIn, true) => self.showing = Showing::Shown,
+                _ => {}
+            }
+            if self.showing != Showing::Hidden {
+                ui.set_number(menu, t::VISIBLE, 1.0);
+            }
+        }
+        self.alpha()
+    }
+
+    /// How far the fade has got, 0 to 1 (`00716320`: time ÷ length,
+    /// clamped; a fade of no length is over at once).
+    fn fraction(&self) -> f32 {
+        if self.seconds <= 0.0 {
+            1.0
+        } else {
+            (self.elapsed / self.seconds).clamp(0.0, 1.0)
+        }
+    }
+
+    /// The menu's alpha now.
+    pub fn alpha(&self) -> f32 {
+        match self.showing {
+            Showing::Shown => 1.0,
+            Showing::Hidden => 0.0,
+            Showing::FadingOut => 1.0 - self.fraction(),
+            Showing::FadingIn => self.fraction(),
+        }
+    }
+}
+
 /// Whether a tile is shown and on screen: its own `visible` and its
 /// ancestors' (`00a040a0`).
 fn shown(ui: &mut Ui, tile: TileId) -> bool {
@@ -228,7 +327,8 @@ fn inside(r: [f32; 4], x: f32, y: f32) -> bool {
 }
 
 /// Whether the point (menu units) is on the tile's picture: an image's
-/// rectangle, a text's glyphs (the game picks the drawn geometry).
+/// rectangle, a text's glyphs (the game picks the drawn geometry); a
+/// radial tile's slice of its circle besides ([`in_slice`]).
 fn hits(ui: &mut Ui, tile: TileId, x: f32, y: f32) -> bool {
     let (tx, ty) = ui.screen_position(tile);
     match ui.tiles[tile].kind {
@@ -236,6 +336,11 @@ fn hits(ui: &mut Ui, tile: TileId, x: f32, y: f32) -> bool {
             let w = ui.number(tile, t::WIDTH);
             let h = ui.number(tile, t::HEIGHT);
             inside([tx, ty, w, h], x, y)
+        }
+        kind::RADIAL => {
+            let w = ui.number(tile, t::WIDTH);
+            let h = ui.number(tile, t::HEIGHT);
+            inside([tx, ty, w, h], x, y) && in_slice(ui, tile, x, y)
         }
         kind::TEXT => match ui.layout(tile) {
             Some(layout) => layout.quads.iter().any(|q| {
@@ -252,6 +357,47 @@ fn hits(ui: &mut Ui, tile: TileId, x: f32, y: f32) -> bool {
     }
 }
 
+/// A radial tile's own test (`RadialTile`'s slot 0x14, `00a216b0`): the
+/// point's angle around the centre (`user0`, `user1`), clockwise from
+/// straight up (a point level with it: π/2 to the right, 3π/2 to the left),
+/// within `user2` .. `user3`, and its distance within `user4` .. `user5`.
+/// (The game scales the pointer to the menu's units first; it's in them
+/// here.)
+pub fn in_slice(ui: &mut Ui, tile: TileId, x: f32, y: f32) -> bool {
+    let u = |ui: &mut Ui, i: i32| ui.number(tile, t::USER0 + i);
+    let (cx, cy) = (u(ui, 0), u(ui, 1));
+    let (fx, fy) = (x - cx, y - cy);
+    let angle = slice_angle(fx, fy);
+    if !(u(ui, 2) <= angle && angle <= u(ui, 3)) {
+        return false;
+    }
+    let distance = (fx * fx + fy * fy).sqrt();
+    u(ui, 4) <= distance && distance <= u(ui, 5)
+}
+
+/// `00a216b0`'s angle of a point `fx`, `fy` from the centre (y down):
+/// atan(−fx / fy), + π below the centre, + 2π up and to the left (with the
+/// exe's own rounded constants).
+#[allow(clippy::approx_constant)]
+pub fn slice_angle(fx: f32, fy: f32) -> f32 {
+    let mut a = if fy == 0.0 {
+        if fx <= 0.0 {
+            4.71238
+        } else {
+            1.57075
+        }
+    } else {
+        (-fx / fy).atan()
+    };
+    if fy > 0.0 {
+        a += 3.14159;
+    }
+    if fx < 0.0 && fy < 0.0 {
+        a += 6.28318;
+    }
+    a
+}
+
 /// The tile under the point (`007126c0`): the drawn tiles of the menu
 /// (`menu`: the top menu, which takes all clicks when it stacks "no click
 /// past", `00716910`) from the nearest (highest depth, then the later in
@@ -263,7 +409,7 @@ pub fn pick(ui: &mut Ui, menu: TileId, x: f32, y: f32) -> Option<TileId> {
     for (order, tile) in ui.descendants(menu).into_iter().enumerate() {
         if !matches!(
             ui.tiles[tile].kind,
-            kind::IMAGE | kind::HOTRECT | kind::TEXT
+            kind::IMAGE | kind::HOTRECT | kind::TEXT | kind::RADIAL
         ) {
             continue;
         }
@@ -482,6 +628,11 @@ impl Interface {
                 ui.refresh();
             }
         }
+    }
+
+    /// Whether the left button is held down on a tile.
+    pub fn held(&self) -> bool {
+        self.pressed.is_some()
     }
 
     /// Forgets tiles the menu's code took away (a list's lines filled
@@ -859,6 +1010,35 @@ mod tests {
         );
     }
 
+    /// `00a1d910`/`00a1db20`: fades last `menufade` seconds, `explorefade`
+    /// when that is 0; a hidden menu isn't faded out again; `00711ea0`:
+    /// visible while fading, off once faded out, on once faded in.
+    #[test]
+    fn menus_fade_out_and_in() {
+        let mut ui = test_support::ui();
+        let mut code = Recorder::default();
+        let xml = "<menu name=\"M\"><class>&MessageMenu;</class><menufade>0</menufade><explorefade>0.5</explorefade></menu>";
+        let menu = test_support::load(&mut ui, xml, &mut code);
+        let mut fade = Fade::default();
+        // Hidden (menus start so): nothing to fade.
+        fade.fade_out(&mut ui, menu);
+        assert_eq!(fade.showing, Showing::Shown);
+        ui.set_number(menu, t::VISIBLE, 1.0);
+        fade.fade_out(&mut ui, menu);
+        assert_eq!(fade.showing, Showing::FadingOut);
+        assert_eq!(fade.frame(&mut ui, menu, 0.25), 0.5);
+        assert_eq!(ui.number(menu, t::VISIBLE), 1.0);
+        assert_eq!(fade.frame(&mut ui, menu, 0.25), 0.0);
+        assert_eq!(fade.showing, Showing::Hidden);
+        assert_eq!(ui.number(menu, t::VISIBLE), 0.0);
+        assert_eq!(fade.frame(&mut ui, menu, 1.0), 0.0);
+        fade.fade_in(&mut ui, menu);
+        assert_eq!(fade.frame(&mut ui, menu, 0.125), 0.25);
+        assert_eq!(ui.number(menu, t::VISIBLE), 1.0);
+        assert_eq!(fade.frame(&mut ui, menu, 1.0), 1.0);
+        assert_eq!(fade.showing, Showing::Shown);
+    }
+
     /// `0070c4a0`: pressing on a `draggable` tile drags it: `dragx`/`dragy`
     /// follow the pointer in the tile's frame, `dragstartx`/`y` and
     /// `dragoffsetx`/`y` from the press, `dragdeltax`/`y` the whole units
@@ -908,6 +1088,64 @@ mod tests {
         assert_eq!(ui.number(knob, drag::X), 47.0);
     }
 
+    /// The DATA maps' `x` adds `dragdeltax` (`map_menu.xml`) and stays in
+    /// its limits: a drag moves the map by what the pointer moved, once,
+    /// and nothing moves it after (the delta stays set but nothing sets it
+    /// again, as in the game, which works `x` out when a source is set).
+    #[test]
+    fn a_drag_moves_a_map_once() {
+        let mut ui = test_support::ui();
+        let mut code = Recorder::default();
+        let xml = "<menu name=\"M\"><class>&MessageMenu;</class>
+            <hotrect name=\"Win\"><locus>&true;</locus><clipwindow>&true;</clipwindow><width>855</width><height>500</height>
+              <hotrect name=\"Map\"><id>2</id><target>&true;</target><draggable>&true;</draggable><locus>&true;</locus>
+                <width>4608</width><height>3000</height>
+                <x><add src=\"me()\" trait=\"dragdeltax\"/>
+                  <max><copy>427.5</copy><sub src=\"me()\" trait=\"width\"/></max><min>427.5</min></x>
+                <y><add src=\"me()\" trait=\"dragdeltay\"/>
+                  <max><copy>250</copy><sub src=\"me()\" trait=\"height\"/></max><min>250</min></y>
+              </hotrect></hotrect></menu>";
+        let menu = test_support::load(&mut ui, xml, &mut code);
+        ui.set_number(menu, t::VISIBLE, 1.0);
+        let map = ui.find(menu, "Map").unwrap();
+        ui.set_base(map, t::X, -1000.0);
+        ui.set_base(map, t::Y, -500.0);
+        ui.refresh();
+        assert_eq!(ui.number(map, t::X), -1000.0);
+        let mut i = Interface::default();
+        let at =
+            |ui: &mut Ui, i: &mut Interface, code: &mut Recorder, x, down, pressed, released| {
+                i.pointer(ui, menu, code, x, 200.0, down, pressed, released, 0.0);
+            };
+        at(&mut ui, &mut i, &mut code, 300.0, false, false, false);
+        at(&mut ui, &mut i, &mut code, 300.0, true, true, false);
+        at(&mut ui, &mut i, &mut code, 290.0, true, false, false);
+        at(&mut ui, &mut i, &mut code, 270.0, true, false, false);
+        assert_eq!(ui.number(map, t::X), -1030.0);
+        // Many passes with the same delta still set add nothing.
+        for _ in 0..5 {
+            ui.refresh();
+            assert_eq!(ui.number(map, t::X), -1030.0);
+        }
+        // The same delta set again (the pointer moved as much again) is a
+        // move again.
+        at(&mut ui, &mut i, &mut code, 250.0, true, false, false);
+        assert_eq!(ui.number(map, t::X), -1050.0);
+        at(&mut ui, &mut i, &mut code, 250.0, false, false, true);
+        for _ in 0..5 {
+            ui.refresh();
+            assert_eq!(ui.number(map, t::X), -1050.0);
+        }
+        // The limits hold: dragged far right, the map's left edge stops at
+        // the window's middle.
+        at(&mut ui, &mut i, &mut code, 100.0, false, false, false);
+        at(&mut ui, &mut i, &mut code, 100.0, true, true, false);
+        at(&mut ui, &mut i, &mut code, 3000.0, true, false, false);
+        assert_eq!(ui.number(map, t::X), 427.5);
+        at(&mut ui, &mut i, &mut code, 3000.0, false, false, true);
+        assert_eq!(ui.number(map, t::X), 427.5);
+    }
+
     #[test]
     fn clip_windows_and_clipping_children() {
         let mut ui = test_support::ui();
@@ -924,5 +1162,33 @@ mod tests {
         assert_eq!(clip_rect(&mut ui, label), Some([10.0, 20.0, 100.0, 50.0]));
         let deep = ui.find(menu, "Deep").unwrap();
         assert_eq!(clip_rect(&mut ui, deep), None);
+    }
+}
+
+#[cfg(test)]
+mod radial_tests {
+    use super::*;
+
+    /// `00a216b0`: up and right is 0..π/2, right π/2, down π, left 3π/2.
+    #[test]
+    fn slice_angles() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert!(close(slice_angle(0.0, -10.0), 0.0));
+        assert!(close(slice_angle(10.0, -10.0), std::f32::consts::FRAC_PI_4));
+        assert!(close(slice_angle(10.0, 0.0), std::f32::consts::FRAC_PI_2));
+        assert!(close(slice_angle(0.0, 10.0), std::f32::consts::PI));
+        assert!(close(
+            slice_angle(-10.0, 0.0),
+            3.0 * std::f32::consts::FRAC_PI_2
+        ));
+        assert!(close(
+            slice_angle(-10.0, -10.0),
+            7.0 * std::f32::consts::FRAC_PI_4
+        ));
+        // The wheel's first slice (30 to 60 degrees) holds its icon's
+        // middle: (557, 250) around (390, 390).
+        let a = slice_angle(557.0 - 390.0, 250.0 - 390.0);
+        let (from, to) = (std::f32::consts::FRAC_PI_6, std::f32::consts::FRAC_PI_3);
+        assert!((from..=to).contains(&a));
     }
 }

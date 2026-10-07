@@ -5,7 +5,9 @@
 //! collision object (`bhkBlendCollisionObject`: target, flags, body, two
 //! gains) naming a `bhkRigidBody` with a `bhkCapsuleShape`. The body's
 //! translation and rotation are its frame in the skeleton's space (Havok
-//! units, seven game units each); its mass, centre of mass, inertia,
+//! units, seven game units each); a `bhkRigidBodyT`'s (the dog's pelvis
+//! and spine, with spheres) place it relative to its bone instead (the
+//! joints' pivots meet only so); its mass, centre of mass, inertia,
 //! damping, friction and restitution follow (offsets as in
 //! [`Nif::collision`]'s notes: inertia at 116 as three rows of four floats,
 //! centre at 164, mass at 180, linear and angular damping, friction,
@@ -125,6 +127,16 @@ impl Nif {
     /// The skeleton's ragdoll, if its bones carry bodies.
     pub fn ragdoll(&self) -> Result<Option<Ragdoll>> {
         let bones = self.skeleton()?;
+        // Each bone in the skeleton's space, in the file's pose (for
+        // `bhkRigidBodyT` bodies, which sit relative to their bone).
+        let mut pose: Vec<Transform> = Vec::with_capacity(bones.len());
+        for b in &bones {
+            let w = match b.parent.and_then(|p| pose.get(p)) {
+                Some(parent) => parent.then_child(&b.local),
+                None => b.local,
+            };
+            pose.push(w);
+        }
         let mut ragdoll = Ragdoll::default();
         // Rigid body block → body index.
         let mut body_of = std::collections::HashMap::new();
@@ -148,13 +160,26 @@ impl Nif {
             let Some(body_block) = self.reference(r.i32("the rigid body")?) else {
                 continue;
             };
-            if self.block_type(body_block) != "bhkRigidBody" {
-                continue;
-            }
+            let relative = match self.block_type(body_block) {
+                "bhkRigidBody" => false,
+                "bhkRigidBodyT" => true,
+                _ => continue,
+            };
             let Some(bone) = bones.iter().position(|b| b.name == node.av.net.name) else {
                 continue;
             };
-            let (body, constraints) = self.ragdoll_body(body_block, bone, &bones[bone].name)?;
+            let (mut body, constraints) = self.ragdoll_body(body_block, bone, &bones[bone].name)?;
+            // A `bhkRigidBodyT`'s translation and rotation place it relative
+            // to its bone (the game scales that offset with the body,
+            // `00cb30d0`); a plain body's are its frame in the skeleton's
+            // space. The dog's pelvis and spine bodies are the first kind.
+            if relative {
+                body.frame = pose[bone].then_child(&Transform {
+                    scale: 1.0,
+                    ..body.frame
+                });
+                body.frame.scale = 1.0;
+            }
             body_of.insert(body_block, ragdoll.bodies.len());
             ragdoll.bodies.push(body);
             constraint_blocks.extend(constraints);

@@ -2,11 +2,14 @@
 //! `FalloutNV.exe` with Ghidra (`%USERPROFILE%\nv-re\findings\
 //! ai_rules.md` §5b and §6):
 //!
-//! - Greetings ([`Social::greets`]): someone who notices the player within
-//!   `fAIMinGreetingDistance` (150) says a line from `HELLO`, no dialogue
-//!   menu, and turns to them; then not again for `fAIGreetingTimer` (20 s).
+//! - Greetings ([`Social::greeting`], [`HelloCooldown`]): someone free to
+//!   talk who notices the player within `fAIMinGreetingDistance` (150)
+//!   says a line from `HELLO`, no dialogue menu, and turns to them; then not
+//!   again for `fAIGreetingTimer` (20 s) after the line, and nobody else
+//!   greets the player for `fHelloCooldownTime` (30 s).
 //! - Idle chatter ([`Social::chatter_due`]): a line from `IdleChatter`
-//!   every 15–60 s (the data's `fIdleChatterCommentTimer…`).
+//!   every 15–60 s (the data's `fIdleChatterCommentTimer…`), only when the
+//!   player isn't near enough to be greeted.
 //! - Conversations between two people ([`Social::start_conversation`],
 //!   [`conversation`]): within 200, when their timer (30–60 s) has run out,
 //!   a 25 % chance each; the lines are worked out at the start from
@@ -43,6 +46,9 @@ pub struct SocialSettings {
     pub greeting_distance: f32,
     /// `fAIGreetingTimer` (20 s).
     pub greeting_timer: f32,
+    /// `fHelloCooldownTime` (30 s; setting `011d03a0`, initialiser
+    /// `00f65740`; not in the data).
+    pub hello_cooldown: f32,
     /// `fIdleChatterCommentTimer` and `…Max` (exe 5 and 30, data 15 and 60).
     pub chatter: (f32, f32),
     /// `fAISocialTimerForConversationsMin` and `…Max` (exe 5 and 30, data 30
@@ -66,6 +72,7 @@ impl SocialSettings {
         SocialSettings {
             greeting_distance: g("fAIMinGreetingDistance", 150.0),
             greeting_timer: g("fAIGreetingTimer", 20.0),
+            hello_cooldown: g("fHelloCooldownTime", 30.0),
             chatter: (
                 g("fIdleChatterCommentTimer", 5.0),
                 g("fIdleChatterCommentTimerMax", 30.0),
@@ -113,6 +120,171 @@ fn between((lo, hi): (f32, f32), unit: f32) -> f32 {
     lo + (hi - lo) * unit
 }
 
+/// What [`Social::greeting`] decided for this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Greeting {
+    /// Busy: no greeting and no idle chatter.
+    Busy,
+    /// Near the player: no idle chatter, no greeting now.
+    Near,
+    /// Greet the player (`HELLO`), if the player's [`HelloCooldown`] is
+    /// free.
+    Greet,
+    /// The player isn't near: the idle chatter timer runs.
+    Away,
+}
+
+/// The facts `008eeec0` asks before a greeting (process = their high
+/// process; the player's are the `PlayerCharacter`'s). Not carried out
+/// (their meaning isn't traced, so they're left out and never block):
+/// the player's `00969860` (+0x224 → +0x94), the process's `+0x66c`
+/// (`00901460`: bytes +0x411…+0x415 all clear), the actor's look target
+/// (`+0x2c8` → process +0x40, set through process `+0x12c` `0091ea40`) not
+/// being the player, and the process's `+0x4e0` (`008d9050`, byte +0x374).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct GreetingCheck {
+    /// In combat (actor +0x104, `00493bb0`).
+    pub in_combat: bool,
+    /// Fleeing (`008a6650(0)`: a flee package, type 22 or 10, or a low
+    /// combat package fleeing).
+    pub fleeing: bool,
+    /// Unconscious (life state 3, `00437bd0`).
+    pub unconscious: bool,
+    /// Knocked down (actor +0x230 → process +0x40c knock state, `00884560`).
+    pub knocked: bool,
+    /// A voice of theirs playing (process +0x48c slot 0, the sound handle
+    /// +0x314 that saying a line keeps and `00934250` stops; `00ad8ce0`).
+    pub speaking: bool,
+    /// Their GREET procedure saying a line (process +0x30c, byte +0x32c,
+    /// set by `008bc3d0` and cleared when no line is found or the speech
+    /// stops).
+    pub greeting_line: bool,
+    /// Someone saying a GREET line to the player (player +0x6cc,
+    /// `008defe0`: set by `008dd880` as `008dbe30` begins a line with the
+    /// player as listener, cleared by `00953ce0` when it ends, the speech
+    /// is stopped or the dialogue menu closes).
+    pub player_spoken_to: bool,
+    /// How well they detect the player (`008a0d10`).
+    pub detection: i32,
+    /// Asleep (actor +0x1ac, the process's furniture state copy, 9;
+    /// `00579670`).
+    pub asleep: bool,
+    /// The player sneaking and not swimming (move flags 0x400 without
+    /// 0x800, `004997b0`).
+    pub player_sneaking: bool,
+    /// The player trespassing (player +0x1c0, `008d1e70` through vfunc
+    /// +0x448; set from `00546da0` by `008d2a40`).
+    pub player_trespassing: bool,
+    /// The distance between them and the player (`005723b0`).
+    pub distance: f32,
+    /// The player in combat (player +0xdf0 `bPlayerInCombat` (Xbox PDB),
+    /// `00953c50`).
+    pub player_in_combat: bool,
+    /// Their package forbids hellos ([`package_forbids_hellos`],
+    /// `008a78f0(0)`).
+    pub hellos_forbidden: bool,
+    /// Their package is an alarm package (type 21, `008a61b0`).
+    pub alarm_package: bool,
+    /// In a made conversation package (type 0x1c, `009336c0`) and not
+    /// moving (move flags & 0xf clear, `004938e0`).
+    pub still_in_made_dialogue: bool,
+}
+
+impl GreetingCheck {
+    /// The first gate (`008ef5cc`…`008ef6c0`): busy people don't greet or
+    /// chatter.
+    pub fn busy(&self) -> bool {
+        self.in_combat
+            || self.fleeing
+            || self.unconscious
+            || self.knocked
+            || self.speaking
+            || self.greeting_line
+            || self.player_spoken_to
+    }
+}
+
+/// The player's greeting cooldown (`PlayerCharacter` +0xe24): negative
+/// while anyone may greet the player; else the time (`GetTickCount`
+/// milliseconds, as a float) of the last greeting. Starts at −1 (the
+/// constructor `00938180`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HelloCooldown(pub f32);
+
+impl Default for HelloCooldown {
+    fn default() -> Self {
+        HelloCooldown(-1.0)
+    }
+}
+
+impl HelloCooldown {
+    /// Whether someone may greet the player now (`008bc520`: +0xe24 < 0).
+    pub fn free(&self) -> bool {
+        self.0 < 0.0
+    }
+
+    /// Someone greeted the player (`008bc560`, after the GREET procedure
+    /// started in `008bc3d0`): the tick count is noted.
+    pub fn greeted(&mut self, now_ms: u32) {
+        self.0 = now_ms as f32;
+    }
+
+    /// The player's update (`0094417x`…`009441e4`): once more than
+    /// `fHelloCooldownTime` × 1000 ms have passed since the last greeting,
+    /// −1 again.
+    // Translated from the player update at 00944179 (decompiled,
+    // FalloutNV.exe 1.4.0.525).
+    pub fn update(&mut self, now_ms: u32, settings: &SocialSettings) {
+        if self.0 > 0.0 {
+            let passed = f64::from(now_ms) - f64::from(self.0);
+            if f64::from(settings.hello_cooldown) * 1000.0 < passed {
+                self.0 = -1.0;
+            }
+        }
+    }
+}
+
+/// A package's general flags (`PKDT` u32 at 0, the package's +0x1c) and
+/// its behaviour flags (`PKDT` u16 at 6, +0x22). The offsets in memory
+/// follow from the sandbox flags' (`PKDT` u16 at 8, +0x24).
+fn package_flag_words(order: &LoadOrder, package: FormId) -> (u32, u16) {
+    order
+        .get(package)
+        .and_then(|rr| rr.record().ok())
+        .and_then(|r| {
+            r.get(esm::FourCC::new(b"PKDT"))
+                .filter(|s| s.data.len() >= 8)
+                .map(|s| {
+                    (
+                        u32::from_le_bytes([s.data[0], s.data[1], s.data[2], s.data[3]]),
+                        u16::from_le_bytes([s.data[6], s.data[7]]),
+                    )
+                })
+        })
+        .unwrap_or((0, 0))
+}
+
+/// Whether a package forbids greeting the player (`008a78f0(0)`): its
+/// general flag 0x1000 is set (`0067a380`) and behaviour flag 0x01 (the
+/// editor's "Hellos to player", inferred name) clear (`0067a850`).
+pub fn package_forbids_hellos(order: &LoadOrder, package: FormId) -> bool {
+    let (general, behaviour) = package_flag_words(order, package);
+    flags_forbid_hellos(general, behaviour)
+}
+
+/// [`package_forbids_hellos`] on the flag words.
+// Translated from 008a78f0 case 0 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn flags_forbid_hellos(general: u32, behaviour: u16) -> bool {
+    general & 0x1000 != 0 && behaviour & 0x01 == 0
+}
+
+/// Whether a package allows idle chatter (`0067abd0`: behaviour flag 0x80,
+/// the editor's "Allow Idle Chatter", inferred name; asked whatever the
+/// general flags).
+pub fn package_allows_chatter(order: &LoadOrder, package: FormId) -> bool {
+    package_flag_words(order, package).1 & 0x80 != 0
+}
+
 /// One person's social timers (their high process): the greeting timer
 /// (+0x330), idle chatter (+0x298), conversations (+0x2c8), the same-pair
 /// timer (+0x2a0) and the people they've talked with lately.
@@ -139,52 +311,93 @@ impl Social {
         }
     }
 
-    /// Whether someone greets the player now (`008eeec0`): they detect the
-    /// player (above 0), are free to (not fighting, not in a conversation,
-    /// … the caller's `free`), the player is within `fAIMinGreetingDistance`
-    /// and their greeting timer has run out. The line is from `HELLO`; then
-    /// the timer is set ([`Self::greeted`]).
-    pub fn greets(
-        &self,
-        detection: i32,
-        free: bool,
-        distance: f32,
-        settings: &SocialSettings,
-    ) -> bool {
-        free && detection > 0 && distance <= settings.greeting_distance && self.greeting <= 0.0
+    /// What the high-process update does about the player this frame
+    /// (`008eeec0`, `008ef5cc`…`008ef9af`; [`GreetingCheck`] has each
+    /// condition with its address):
+    ///
+    /// 1. Someone busy ([`GreetingCheck::busy`]) neither greets nor
+    ///    chatters ([`Greeting::Busy`]).
+    /// 2. Detecting the player (above 0), not asleep, the player neither
+    ///    sneaking nor trespassing, and the player within
+    ///    `fAIMinGreetingDistance`: no idle chatter, and a greeting
+    ///    ([`Greeting::Greet`]) when the player isn't in combat, their
+    ///    package allows hellos, isn't an alarm package, they aren't
+    ///    standing still in a made conversation package, and their greeting
+    ///    timer has run out; else [`Greeting::Near`].
+    /// 3. Otherwise [`Greeting::Away`]: the idle chatter timer runs
+    ///    ([`Self::chatter_due`]).
+    ///
+    /// A greeting says `HELLO` through `008bc3d0` only when the player's
+    /// [`HelloCooldown`] is free.
+    // Translated from 008eeec0 (decompiled, FalloutNV.exe 1.4.0.525).
+    pub fn greeting(&self, check: &GreetingCheck, settings: &SocialSettings) -> Greeting {
+        if check.busy() {
+            return Greeting::Busy;
+        }
+        let near = check.detection > 0
+            && !check.asleep
+            && !check.player_sneaking
+            && !check.player_trespassing
+            && check.distance <= settings.greeting_distance;
+        if !near {
+            return Greeting::Away;
+        }
+        let greets = !check.player_in_combat
+            && !check.hellos_forbidden
+            && !check.alarm_package
+            && !check.still_in_made_dialogue
+            && self.greeting <= 0.0;
+        if greets {
+            Greeting::Greet
+        } else {
+            Greeting::Near
+        }
     }
 
-    /// A line was said to the player, or the player's dialogue with them
-    /// ended (`008dbe30`, `00762160`): no greeting for `fAIGreetingTimer`.
+    /// The GREET procedure saying a line to someone (`008dbe30`: process
+    /// +0x330 set to `fAIGreetingTimer` on every update while a line with a
+    /// listener is said, and when no line was found), and the player's
+    /// dialogue with them closing (`00762160`): no greeting for
+    /// `fAIGreetingTimer` from now.
     pub fn greeted(&mut self, settings: &SocialSettings) {
         self.greeting = settings.greeting_timer;
     }
 
-    /// The frame's time passes on the greeting timer.
+    /// The frame's time passes on the greeting timer (`008eeec0`: process
+    /// +0x330 less the frame's time on every high-process update).
     pub fn tick(&mut self, dt: f32) {
         if self.greeting > 0.0 {
             self.greeting -= dt;
         }
     }
 
-    /// The idle chatter timer (`008eeec0`): while it runs it counts down;
-    /// once out, if they have no package or it isn't a dialogue package
-    /// (type 15), a line from `IdleChatter` is due and the timer starts again
-    /// at random within `fIdleChatterCommentTimer…`. (The code also asks the
-    /// package whether it allows chatter, `0067abd0`, not traced: taken as
-    /// yes.) Whether a line is due.
+    /// The idle chatter timer (`008eeec0`, `008ef8ee`), only run when the
+    /// player isn't near ([`Greeting::Away`]): while it's above 0, or while
+    /// they stand in a made conversation package (`009336c0`, type 0x1c), it
+    /// counts down; else, if they have no package, or it isn't a dialogue
+    /// package (type 15) and allows idle chatter (`0067abd0`: behaviour
+    /// flag 0x80), a line from `IdleChatter` is due and the timer starts
+    /// again at random within `fIdleChatterCommentTimer…`. `package` is
+    /// their package's type and whether it allows chatter
+    /// ([`package_allows_chatter`]). Whether a line is due.
+    // Translated from 008eeec0 (decompiled, FalloutNV.exe 1.4.0.525).
     pub fn chatter_due(
         &mut self,
         dt: f32,
-        package_kind: Option<u8>,
+        package: Option<(u8, bool)>,
+        in_made_dialogue: bool,
         settings: &SocialSettings,
         unit: &mut dyn FnMut() -> f32,
     ) -> bool {
-        if self.chatter > 0.0 {
+        if self.chatter > 0.0 || in_made_dialogue {
             self.chatter -= dt;
             return false;
         }
-        if package_kind == Some(crate::ai::kinds::DIALOGUE) {
+        let allowed = match package {
+            None => true,
+            Some((kind, chatter)) => kind != crate::ai::kinds::DIALOGUE && chatter,
+        };
+        if !allowed {
             return false;
         }
         self.chatter = between(settings.chatter, unit());
@@ -289,11 +502,10 @@ pub fn pick_for(
         speaker: Some(speaker),
     };
     let mut quest_ok: std::collections::HashMap<FormId, bool> = Default::default();
-    topic_lines(order, topic).into_iter().find(|info| {
-        if info.responses.is_empty()
-            || said.contains(&info.form_id)
-            || (info.flags & crate::dialogue::SAY_ONCE != 0 && state.said.contains(&info.form_id))
-        {
+    // `0061b320` asks `0061a790` (the same choice as the menu's): random
+    // runs and the Intelligence classes as `dialogue::pick`.
+    let available = topic_lines(order, topic).into_iter().filter(|info| {
+        if said.contains(&info.form_id) {
             return false;
         }
         if let Some(q) = info.quest {
@@ -309,8 +521,9 @@ pub fn pick_for(
                 return false;
             }
         }
-        facts.conditions_pass(&info.conditions, speaker.reference, listener)
-    })
+        crate::dialogue::line_available(order, info, speaker, listener, state)
+    });
+    crate::dialogue::choose(available, state.dice)
 }
 
 /// One line of a conversation between two people: who says it, to whom.
@@ -422,6 +635,7 @@ mod tests {
         SocialSettings {
             greeting_distance: 150.0,
             greeting_timer: 20.0,
+            hello_cooldown: 30.0,
             chatter: (15.0, 60.0),
             conversation_timer: (30.0, 60.0),
             same_npc: 120.0,
@@ -432,22 +646,141 @@ mod tests {
         }
     }
 
+    fn near(distance: f32) -> GreetingCheck {
+        GreetingCheck {
+            detection: 10,
+            distance,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn greetings_wait_for_the_timer_and_the_distance() {
         let s = settings();
         let mut social = Social::new(&s, &mut || 0.5);
         assert_eq!(social.chatter, 37.5);
         assert_eq!(social.conversation, 45.0);
-        assert!(social.greets(10, true, 140.0, &s));
-        assert!(!social.greets(0, true, 140.0, &s));
-        assert!(!social.greets(10, true, 160.0, &s));
-        assert!(!social.greets(10, false, 140.0, &s));
+        assert_eq!(social.greeting(&near(140.0), &s), Greeting::Greet);
+        let unseen = GreetingCheck {
+            detection: 0,
+            ..near(140.0)
+        };
+        assert_eq!(social.greeting(&unseen, &s), Greeting::Away);
+        assert_eq!(social.greeting(&near(160.0), &s), Greeting::Away);
         social.greeted(&s);
-        assert!(!social.greets(10, true, 140.0, &s));
+        // Near but waiting: no greeting, and no chatter either.
+        assert_eq!(social.greeting(&near(140.0), &s), Greeting::Near);
         for _ in 0..200 {
             social.tick(0.1);
         }
-        assert!(social.greets(10, true, 140.0, &s));
+        assert_eq!(social.greeting(&near(140.0), &s), Greeting::Greet);
+    }
+
+    #[test]
+    fn busy_people_neither_greet_nor_chatter() {
+        let s = settings();
+        let social = Social::new(&s, &mut || 0.5);
+        for busy in [
+            GreetingCheck {
+                in_combat: true,
+                ..near(100.0)
+            },
+            GreetingCheck {
+                fleeing: true,
+                ..near(100.0)
+            },
+            GreetingCheck {
+                unconscious: true,
+                ..near(100.0)
+            },
+            GreetingCheck {
+                knocked: true,
+                ..near(100.0)
+            },
+            GreetingCheck {
+                speaking: true,
+                ..near(100.0)
+            },
+            GreetingCheck {
+                greeting_line: true,
+                ..near(100.0)
+            },
+            // Someone else is saying a line to the player.
+            GreetingCheck {
+                player_spoken_to: true,
+                ..near(100.0)
+            },
+        ] {
+            assert_eq!(social.greeting(&busy, &s), Greeting::Busy, "{busy:?}");
+        }
+    }
+
+    #[test]
+    fn what_keeps_a_near_person_from_greeting() {
+        let s = settings();
+        let social = Social::new(&s, &mut || 0.5);
+        // Not near at all (the chatter path): asleep, the player sneaking
+        // or trespassing.
+        for away in [
+            GreetingCheck {
+                asleep: true,
+                ..near(100.0)
+            },
+            GreetingCheck {
+                player_sneaking: true,
+                ..near(100.0)
+            },
+            GreetingCheck {
+                player_trespassing: true,
+                ..near(100.0)
+            },
+        ] {
+            assert_eq!(social.greeting(&away, &s), Greeting::Away, "{away:?}");
+        }
+        // Near, no chatter, no greeting.
+        for quiet in [
+            GreetingCheck {
+                player_in_combat: true,
+                ..near(100.0)
+            },
+            GreetingCheck {
+                hellos_forbidden: true,
+                ..near(100.0)
+            },
+            GreetingCheck {
+                alarm_package: true,
+                ..near(100.0)
+            },
+            GreetingCheck {
+                still_in_made_dialogue: true,
+                ..near(100.0)
+            },
+        ] {
+            assert_eq!(social.greeting(&quiet, &s), Greeting::Near, "{quiet:?}");
+        }
+    }
+
+    #[test]
+    fn a_packages_behaviour_flags_count_only_with_general_flag_0x1000() {
+        assert!(!flags_forbid_hellos(0, 0));
+        assert!(flags_forbid_hellos(0x1000, 0));
+        assert!(flags_forbid_hellos(0x1000, 0x80));
+        assert!(!flags_forbid_hellos(0x1000, 0x01));
+    }
+
+    #[test]
+    fn one_greeting_holds_everyone_else_off_for_the_hello_cooldown() {
+        let s = settings();
+        let mut cooldown = HelloCooldown::default();
+        assert!(cooldown.free());
+        cooldown.greeted(5_000);
+        assert!(!cooldown.free());
+        // 30 s exactly isn't past it; just after is.
+        cooldown.update(35_000, &s);
+        assert!(!cooldown.free());
+        cooldown.update(35_001, &s);
+        assert!(cooldown.free());
+        assert_eq!(cooldown, HelloCooldown(-1.0));
     }
 
     #[test]
@@ -456,13 +789,22 @@ mod tests {
         let mut social = Social::new(&s, &mut || 0.0);
         assert_eq!(social.chatter, 15.0);
         let mut t = 0.0f32;
-        while !social.chatter_due(0.5, None, &s, &mut || 1.0) {
+        while !social.chatter_due(0.5, None, false, &s, &mut || 1.0) {
             t += 0.5;
         }
         assert!((t - 15.0).abs() < 0.6, "{t}");
         assert_eq!(social.chatter, 60.0);
         social.chatter = 0.0;
-        assert!(!social.chatter_due(0.5, Some(crate::ai::kinds::DIALOGUE), &s, &mut || 1.0));
+        let dialogue = Some((crate::ai::kinds::DIALOGUE, true));
+        assert!(!social.chatter_due(0.5, dialogue, false, &s, &mut || 1.0));
+        // A package that doesn't allow idle chatter: none, the timer left.
+        let sandbox = crate::ai::kinds::SANDBOX;
+        assert!(!social.chatter_due(0.5, Some((sandbox, false)), false, &s, &mut || 1.0));
+        assert_eq!(social.chatter, 0.0);
+        // Standing in a made conversation package, the timer only runs.
+        assert!(!social.chatter_due(0.5, Some((sandbox, true)), true, &s, &mut || 1.0));
+        assert_eq!(social.chatter, -0.5);
+        assert!(social.chatter_due(0.5, Some((sandbox, true)), false, &s, &mut || 1.0));
     }
 
     #[test]

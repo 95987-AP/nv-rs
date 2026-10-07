@@ -4,8 +4,9 @@
 //! had its time, `00a07dc0` stops them. The straight-line kind (mode 0),
 //! which the HUD uses: value = from + (to − from) × min(elapsed / length,
 //! 1), the animation dropped once it has set its end value; and the pulse
-//! (mode 1: V.A.T.S.'s part labels and meters). Modes 2–4 (flashes counted
-//! by `_FlashCount`, a three-stage fade) aren't here.
+//! (mode 1: V.A.T.S.'s part labels and meters), and the counted flash
+//! (mode 2: the sneak meter's [DANGER]). Modes 3 and 4 (flashes up to
+//! `_TotalFlashCount`, a three-stage fade) aren't here.
 
 use crate::tile::{TileId, Ui};
 
@@ -18,9 +19,16 @@ struct Animation {
     /// When it started and how long it lasts, in seconds.
     start: f64,
     length: f64,
-    /// 0 a straight line once, 1 a pulse for ever ([`Animations::pulse`]).
+    /// 0 a straight line once, 1 a pulse for ever ([`Animations::pulse`]),
+    /// 2 three pulses then up to `to` ([`Animations::flash`]).
     mode: u8,
+    /// Mode 2: the rounds finished (`_FlashCount`).
+    flashes: u32,
 }
+
+/// How many pulses a mode 2 flash makes before it settles (the double 3.0
+/// at `01021928`, `00a080d0`).
+pub const FLASHES: u32 = 3;
 
 /// The animations under way.
 #[derive(Debug, Clone, Default)]
@@ -54,6 +62,36 @@ impl Animations {
             start: now,
             length: f64::from(seconds),
             mode: 0,
+            flashes: 0,
+        });
+    }
+
+    /// Starts a counted flash (`00a07c60` mode 2, which zeroes
+    /// `_FlashCount`; `00a080d0`): pulses as [`Self::pulse`] does, a new
+    /// round each time one ends while fewer than [`FLASHES`] have ended,
+    /// then goes up from `from` to `to` and stops there.
+    pub fn flash(
+        &mut self,
+        tile: TileId,
+        trait_id: i32,
+        from: f32,
+        to: f32,
+        seconds: f32,
+        now: f64,
+    ) {
+        if from == to || seconds <= 0.0 {
+            return;
+        }
+        self.stop(tile, trait_id);
+        self.list.push(Animation {
+            tile,
+            trait_id,
+            from,
+            to,
+            start: now,
+            length: f64::from(seconds),
+            mode: 2,
+            flashes: 0,
         });
     }
 
@@ -82,6 +120,7 @@ impl Animations {
             start: now,
             length: f64::from(seconds),
             mode: 1,
+            flashes: 0,
         });
     }
 
@@ -144,6 +183,29 @@ impl Animations {
                 }
                 let k = 1.0 - (t as f32 * 2.0 - 1.0).abs();
                 ui.set_number(a.tile, a.trait_id, (a.to - a.from) * k + a.from);
+                continue;
+            }
+            if a.mode == 2 {
+                // Translated from 00a080d0 (decompiled, FalloutNV.exe 1.4.0.525)
+                let count = a.flashes;
+                let mut t = (now - a.start) / a.length;
+                if t >= 1.0 {
+                    if count < FLASHES {
+                        a.start = now;
+                        t = 0.0;
+                    }
+                    a.flashes += 1;
+                }
+                if count < FLASHES {
+                    let k = 1.0 - (t as f32 * 2.0 - 1.0).abs();
+                    ui.set_number(a.tile, a.trait_id, (a.to - a.from) * k + a.from);
+                } else {
+                    let v = (a.to - a.from) * t as f32 + a.from;
+                    ui.set_number(a.tile, a.trait_id, v.min(a.to));
+                    if v >= a.to {
+                        finished.push(i);
+                    }
+                }
                 continue;
             }
             let k = ((now - a.start) / a.length).min(1.0) as f32;
@@ -234,5 +296,47 @@ mod tests {
         assert!(anims.moving(a, t::ALPHA));
         anims.stop(a, t::ALPHA);
         assert_eq!(anims.mode(a, t::ALPHA), 0);
+    }
+
+    #[test]
+    fn a_flash_pulses_three_times_then_settles_at_the_top() {
+        let mut ui = Ui::new(
+            Screen {
+                width_px: 1920,
+                height_px: 1080,
+                safe_x: 15.0,
+                safe_y: 15.0,
+            },
+            SystemColors::new(None, None),
+            Box::new(|_| None),
+        );
+        let m = ui
+            .load_menu(
+                b"<menu name=\"m\"><image name=\"a\"><alpha>0</alpha></image></menu>",
+                &mut |_| None,
+            )
+            .unwrap();
+        let a = ui.find(m, "a").unwrap();
+        let mut anims = Animations::default();
+        anims.flash(a, t::ALPHA, 0.0, 255.0, 0.5, 0.0);
+        assert_eq!(anims.mode(a, t::ALPHA), 2);
+        anims.step(&mut ui, 0.25);
+        assert_eq!(ui.number(a, t::ALPHA), 255.0);
+        // Rounds one and two end: each starts again from the bottom.
+        for end in [0.5, 1.0] {
+            anims.step(&mut ui, end);
+            assert_eq!(ui.number(a, t::ALPHA), 0.0, "{end}");
+            anims.step(&mut ui, end + 0.25);
+            assert_eq!(ui.number(a, t::ALPHA), 255.0, "{end}");
+        }
+        // The third has ended: one more round goes straight up to the top
+        // and stops there.
+        anims.step(&mut ui, 1.5);
+        assert_eq!(ui.number(a, t::ALPHA), 0.0);
+        anims.step(&mut ui, 1.75);
+        assert_eq!(ui.number(a, t::ALPHA), 127.5);
+        anims.step(&mut ui, 2.0);
+        assert_eq!(ui.number(a, t::ALPHA), 255.0);
+        assert!(!anims.moving(a, t::ALPHA));
     }
 }

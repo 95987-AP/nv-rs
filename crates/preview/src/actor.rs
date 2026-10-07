@@ -113,6 +113,7 @@ impl Loader<'_> {
                 skeleton: Some(pose.skeleton.clone()),
                 sequences: Default::default(),
                 particles: None,
+                bsx_flags: 0,
             });
             Some(self.models.len() - 1)
         });
@@ -154,6 +155,7 @@ impl Loader<'_> {
                     .and_then(|kf| kf.sequences().ok())
                     .and_then(|s| s.into_iter().next())
             };
+            let walk_path = walk;
             let turn = |file: &str| optional(&turn_path(walk, file));
             let (turn_left, turn_right) = (turn("mtturnleft.kf"), turn("mtturnright.kf"));
             let walk = optional(walk);
@@ -212,6 +214,9 @@ impl Loader<'_> {
                         .flatten()
                         .map(|r| crate::ragdoll::RagdollRig::new(&bones, r)),
                     bound: nif.bound(),
+                    skeleton_path: skeleton.to_string(),
+                    idle_path: idle.to_string(),
+                    walk_path: walk_path.to_string(),
                 }),
             }))
         });
@@ -315,15 +320,23 @@ impl Loader<'_> {
                         .zip(pose.index.get(&name).copied())
                         .map(|(posed, index)| (posed, index, Transform::IDENTITY))
                 }
-                None => nif.attach_bone().and_then(|bone| {
-                    let name = bone.to_ascii_lowercase();
-                    let index = *pose.index.get(&name)?;
-                    if part.facegen {
-                        Some((attachment(pose, &name)?, index, unturn(pose, &name)?))
-                    } else {
-                        Some((*pose.posed.get(&name)?, index, Transform::IDENTITY))
-                    }
-                }),
+                // Clothes and armour: the body slot's bone, which the game
+                // hangs unskinned pieces from after any `Prn` one
+                // (`world::actor::slot_parent_bone`, `004ac1e0`); else the
+                // model's `Prn` bone.
+                None => part
+                    .parent_bone
+                    .clone()
+                    .or_else(|| nif.attach_bone())
+                    .and_then(|bone| {
+                        let name = bone.to_ascii_lowercase();
+                        let index = *pose.index.get(&name)?;
+                        if part.facegen {
+                            Some((attachment(pose, &name)?, index, unturn(pose, &name)?))
+                        } else {
+                            Some((*pose.posed.get(&name)?, index, Transform::IDENTITY))
+                        }
+                    }),
             };
             // The face's shape, from the model's FaceGen morphs.
             let part_egm = face.and_then(|_| self.read_egm(&part.model, None));
@@ -844,6 +857,7 @@ mod tests {
             facegen: true,
             face_tint: Some("textures\\characters\\facemods\\falloutnv.esm\\00104c0c_0.dds".into()),
             bone: None,
+            parent_bone: None,
         };
         let mut skin = mesh(SKIN_FLAG);
         retexture(&mut skin, &part);
@@ -930,6 +944,7 @@ mod tests {
             facegen: true,
             face_tint: None,
             bone: None,
+            parent_bone: None,
         };
         retexture(&mut hair, &part);
         let (layer, base) = composite_parts(&hair.textures[0]).unwrap();

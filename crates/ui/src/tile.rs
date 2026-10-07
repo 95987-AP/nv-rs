@@ -50,6 +50,12 @@ pub struct Trait {
     pub actions: Vec<Action>,
     worked_out: u32,
     busy: bool,
+    /// How many times code has set it (`00a012d0`): what a trait that
+    /// adds the mouse's drag is fed by.
+    sets: u32,
+    /// For a trait that adds a drag delta: what it was last worked out
+    /// from (see [`Ui::value`]).
+    fed: Option<Vec<(u32, u32)>>,
 }
 
 /// A text tile's laid-out text.
@@ -239,8 +245,9 @@ impl Ui {
                 self.set_number(id, t::SYSTEMCOLOR, 1.0);
                 self.set_number(id, t::VISIBLE, 0.0);
             }
-            // `00a1f6e0`.
-            kind::IMAGE | kind::HOTRECT => {
+            // `00a1f6e0` (a radial tile's too: `RadialTile` is an image
+            // with its own picking).
+            kind::IMAGE | kind::HOTRECT | kind::RADIAL => {
                 for trait_id in [t::BRIGHTNESS, t::RED, t::GREEN, t::BLUE, t::ALPHA] {
                     self.set_number(id, trait_id, 255.0);
                 }
@@ -613,6 +620,7 @@ impl Ui {
     /// its operators are dropped and its text cleared.
     pub fn set_number(&mut self, tile: TileId, trait_id: i32, value: f32) {
         let tr = self.trait_mut(tile, trait_id);
+        tr.sets = tr.sets.wrapping_add(1);
         tr.actions.clear();
         tr.value = Value {
             number: value,
@@ -644,6 +652,7 @@ impl Ui {
             string: None,
         };
         tr.worked_out = 0;
+        tr.fed = None;
         self.pass += 1;
     }
 
@@ -731,6 +740,40 @@ impl Ui {
         }
         tr.busy = true;
         let actions = tr.actions.clone();
+        // A trait that adds the mouse's drag (`x`, `y` of the DATA maps)
+        // is worked out when what it reads is set or changes, once for each
+        // time (the game updates a trait when a source is set, `00a012d0`),
+        // not again on every pass: else the last drag's movement is added
+        // again and again and the map runs away to the edge of its limits.
+        let mut fed = None;
+        let sources: Vec<(TileId, i32)> = actions
+            .iter()
+            .filter_map(|a| match a.operand {
+                Operand::Link { tile, trait_id } => Some((tile, trait_id)),
+                _ => None,
+            })
+            .collect();
+        if sources
+            .iter()
+            .any(|&(_, id)| id == crate::menu::drag::DELTA_X || id == crate::menu::drag::DELTA_Y)
+        {
+            let signature: Vec<(u32, u32)> = sources
+                .iter()
+                .map(|&(source, id)| {
+                    let number = self.value(source, id).number;
+                    let sets = self.tiles[source].traits.get(&id).map_or(0, |t| t.sets);
+                    (sets, number.to_bits())
+                })
+                .collect();
+            let tr = self.trait_mut(tile, trait_id);
+            if tr.fed.as_ref() == Some(&signature) {
+                tr.worked_out = pass;
+                tr.busy = false;
+                return tr.value.clone();
+            }
+            fed = Some(signature);
+        }
+        let tr = self.trait_mut(tile, trait_id);
         let before = tr.value.clone();
         let mut value = before.clone();
         let mut stack: Vec<f32> = Vec::new();
@@ -782,6 +825,9 @@ impl Ui {
         tr.value = value.clone();
         tr.worked_out = pass;
         tr.busy = false;
+        if fed.is_some() {
+            tr.fed = fed;
+        }
         value
     }
 

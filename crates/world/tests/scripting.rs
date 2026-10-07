@@ -130,7 +130,7 @@ fn the_menu_lists_top_level_and_learned_topics_the_speaker_answers() {
         choices.into_iter().map(|c| c.topic.form_id.0).collect()
     };
     let menu = |state: &GameState| -> Vec<(u32, String)> {
-        dialogue::menu_topics(&order, &top, &[], &doc, state)
+        dialogue::menu_topics(&order, &top, &doc, state)
             .into_iter()
             .map(|c| (c.topic.form_id.0, c.label))
             .collect()
@@ -143,9 +143,6 @@ fn the_menu_lists_top_level_and_learned_topics_the_speaker_answers() {
             (TOPIC_ABOUT, "Tell me about yourself.".to_string()),
         ]
     );
-    // The opening line's follow-ups stay in the main list.
-    let opened = dialogue::menu_topics(&order, &top, &[FormId(TOPIC_SECRET)], &doc, &state);
-    assert_eq!(ids(opened), [TOPIC_TOWN, TOPIC_ABOUT, TOPIC_SECRET]);
     // Asking about him teaches the secret, which is offered from then on.
     let about = dialogue::pick(&order, FormId(TOPIC_ABOUT), &doc, &state).unwrap();
     dialogue::line_begins(&mut state, &about, FormId(DOC_REF));
@@ -154,15 +151,32 @@ fn the_menu_lists_top_level_and_learned_topics_the_speaker_answers() {
     let learned: Vec<u32> = menu(&state).into_iter().map(|(t, _)| t).collect();
     assert_eq!(learned, [TOPIC_TOWN, TOPIC_ABOUT, TOPIC_SECRET]);
     // A line with follow-ups offers only those (that he answers).
-    let next = dialogue::next_choices(&order, &about, &top, &[], &doc, &state);
+    let next = dialogue::next_choices(&order, &about, &top, &doc, &state);
     assert_eq!(ids(next), [TOPIC_TOWN]);
     // One without goes back to the main list.
     let town = dialogue::pick(&order, FormId(TOPIC_TOWN), &doc, &state).unwrap();
-    let back = dialogue::next_choices(&order, &town, &top, &[], &doc, &state);
+    let back = dialogue::next_choices(&order, &town, &top, &doc, &state);
     assert_eq!(ids(back), [TOPIC_TOWN, TOPIC_ABOUT, TOPIC_SECRET]);
     // Nothing while the quest the lines belong to isn't running.
     state.running.remove(&FormId(QUEST));
     assert!(menu(&state).is_empty());
+}
+
+#[test]
+fn a_topic_with_no_lines_says_the_lines_connected_to_it() {
+    let (_data, order) = order("scripting-linked-topic");
+    let state = GameState::new(&order);
+    let doc = Speaker::load(&order, FormId(DOC_REF), FormId(DOC)).unwrap();
+    // The topic has no lines of its own: its connection (`INFC`) names the
+    // secret's, which stands under the secret topic.
+    let own = dialogue::topic_lines(&order, FormId(TOPIC_LINKED));
+    assert_eq!(own.len(), 1);
+    assert_eq!(own[0].form_id, FormId(SECRET_LINE));
+    assert_eq!(own[0].topic, Some(FormId(TOPIC_SECRET)));
+    let said = dialogue::pick(&order, FormId(TOPIC_LINKED), &doc, &state).unwrap();
+    assert_eq!(said.form_id, FormId(SECRET_LINE));
+    // The secret topic still has its line, once.
+    assert_eq!(dialogue::topic_lines(&order, FormId(TOPIC_SECRET)).len(), 1);
 }
 
 #[test]
@@ -195,10 +209,25 @@ fn the_killing_blow_is_kept_for_how_the_body_falls() {
     let (_data, order) = order("scripting-blow");
     let scripts = ScriptCache::default();
     let mut state = GameState::new(&order);
+    let before = state.globals[&FormId(GLOBAL)];
     Runner::new(&order, &scripts, &mut state).run_source("GeckoRef.KillActor player", None, None);
     assert!(state.dead.contains(&FormId(GECKO_REF)));
+    // Its `OnDeath` ran (VCG02's geckos count their deaths there).
+    assert_eq!(state.globals[&FormId(GLOBAL)], before + 100.0);
+    // Killing the dead again does nothing more.
+    Runner::new(&order, &scripts, &mut state).run_source("GeckoRef.KillActor player", None, None);
+    assert_eq!(state.globals[&FormId(GLOBAL)], before + 100.0);
     let (by, damage) = state.last_blow[&FormId(GECKO_REF)];
     assert_eq!(by, PLAYER_REF);
+    // `KillActor` deals no hit: the body goes limp with the death
+    // routine's nudge only, the attacker named.
+    assert_eq!(
+        state.deaths[&FormId(GECKO_REF)],
+        world::combat::DeathStart {
+            killer: Some(PLAYER_REF),
+            hit: false
+        }
+    );
     // Without a weapon, `fDeathForce…`: 20 to 60 Havok units a second as
     // the damage goes from 0.1 to 40, at most past it (shots: 20 to 40 over
     // 0.1 to 10).
@@ -232,6 +261,51 @@ fn the_killing_blow_is_kept_for_how_the_body_falls() {
 }
 
 #[test]
+fn a_death_nudges_the_body_along_its_way() {
+    let (_data, order) = order("scripting-nudge");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    // `KillActor` with nobody named: no attacker (`005be2a0`), no hit.
+    Runner::new(&order, &scripts, &mut state).run_source("GeckoRef.KillActor", None, None);
+    assert_eq!(
+        state.deaths[&FormId(GECKO_REF)],
+        world::combat::DeathStart {
+            killer: None,
+            hit: false
+        }
+    );
+    // `0089d900`: a unit direction × `fDeathForceForceMin` (the exe's 35
+    // here; the fixture doesn't set it), game units a second.
+    use world::combat::death_nudge;
+    let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-3);
+    // Standing still: the way it faces (heading clockwise from north).
+    let east = std::f32::consts::FRAC_PI_2;
+    assert!(close(
+        death_nudge(&order, [0.0; 3], east, None),
+        [35.0, 0.0, 0.0]
+    ));
+    assert!(close(
+        death_nudge(&order, [0.0; 3], 0.0, None),
+        [0.0, 35.0, 0.0]
+    ));
+    // Moving: along the controller's velocity, whatever its speed.
+    assert!(close(
+        death_nudge(&order, [3.0, -4.0, 0.0], east, None),
+        [21.0, -28.0, 0.0]
+    ));
+    // Killed by the player: away from the player, moving or not.
+    assert!(close(
+        death_nudge(
+            &order,
+            [3.0, -4.0, 0.0],
+            east,
+            Some(([0.0, 100.0, 0.0], [0.0, 0.0, 0.0]))
+        ),
+        [0.0, 35.0, 0.0]
+    ));
+}
+
+#[test]
 fn falls_hurt_past_six_hundred_units() {
     let (_data, order) = order("scripting-fall");
     // `fJumpFallHeightMult` 0.025 × (fall − 600) ^ 1.65 (the exe's
@@ -262,7 +336,7 @@ fn skill_checks_show_what_they_need_and_pick_the_outcome() {
             None,
             None,
         );
-        let choices = dialogue::next_choices(&order, &about, &top, &[], &doc, state);
+        let choices = dialogue::next_choices(&order, &about, &top, &doc, state);
         assert_eq!(choices.len(), 1);
         (choices[0].info.form_id.0, choices[0].label.clone())
     };
@@ -604,6 +678,58 @@ fn hits_hurt_kill_and_run_the_targets_scripts() {
 }
 
 #[test]
+fn explosions_hurt_through_the_hit_path() {
+    use world::combat::{self, Weapon};
+    let (_data, order) = order("scripting-explosion");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let gecko = FormId(GECKO_REF);
+    let pistol = Weapon::load(&order, FormId(PISTOL)).unwrap();
+    // No criticals (Luck 0), no armour: the damage given is taken.
+    state.actor_values.insert((PLAYER_REF, 11), 0.0);
+    let hit = Runner::new(&order, &scripts, &mut state)
+        .explosion_hit(Some(PLAYER_REF), gecko, Some(&pistol), 20.0)
+        .unwrap();
+    assert!((hit.dealt - 20.0).abs() < 1e-4 && hit.part.is_none() && !hit.critical);
+    assert!((combat::health(&order, &state, gecko).unwrap() - 10.0).abs() < 1e-4);
+    // Hurt, it fights its maker.
+    assert_eq!(state.combat.get(&gecko), Some(&PLAYER_REF));
+    // Armour comes off as for any hit: DR 50 halves it.
+    let mut armoured = state.clone();
+    armoured.actor_values.insert((gecko, 18), 50.0);
+    let dealt = Runner::new(&order, &scripts, &mut armoured)
+        .explosion_hit(Some(PLAYER_REF), gecko, Some(&pistol), 8.0)
+        .unwrap()
+        .dealt;
+    assert!((dealt - 4.0).abs() < 1e-4, "{dealt}");
+    // Another kills it: its OnDeath runs, the player the killer.
+    state.globals.insert(FormId(GLOBAL), 0.0);
+    Runner::new(&order, &scripts, &mut state).explosion_hit(
+        Some(PLAYER_REF),
+        gecko,
+        Some(&pistol),
+        20.0,
+    );
+    assert!(state.dead.contains(&gecko));
+    assert_eq!(state.globals[&FormId(GLOBAL)], 100.0);
+    assert!(state.events.contains(&Event::Died {
+        who: gecko,
+        by: PLAYER_REF
+    }));
+    // An object's OnHitWith blocks run (the bottle counts the weapon); it
+    // takes no damage.
+    state.globals.insert(FormId(GLOBAL), 0.0);
+    let bottle = Runner::new(&order, &scripts, &mut state).explosion_hit(
+        Some(PLAYER_REF),
+        FormId(BOTTLE_REF),
+        Some(&pistol),
+        20.0,
+    );
+    assert_eq!(bottle, None);
+    assert_eq!(state.globals[&FormId(GLOBAL)], 1.0);
+}
+
+#[test]
 fn clothes_go_on_by_slot_and_aid_heals() {
     let (_data, order) = order("scripting-pipboy");
     let mut state = GameState::new(&order);
@@ -782,7 +908,7 @@ fn people_go_through_load_doors_toward_their_package() {
     assert_eq!(package.form_id, FormId(FAR_TRAVEL));
     // Not reachable on foot from here...
     assert!(ai::destination(&order, &state, doc, &package).is_none());
-    let (space, _) = ai::target_place(&order, &state, &package).unwrap();
+    let (space, _) = ai::target_place(&order, &state, doc, &package).unwrap();
     assert_eq!(space, FormId(CELL2));
     // ...but through the door at 150,150, coming out at 400,0 over there.
     let way = ai::door_toward(&order, &state, doc, space).unwrap();
@@ -841,7 +967,7 @@ fn people_go_through_load_doors_toward_their_package() {
     state.player_cell = Some(FormId(CELL));
     assert!(ai::destination(&order, &state, doc, &follow).is_none());
     assert_eq!(
-        ai::target_place(&order, &state, &follow).map(|t| t.0),
+        ai::target_place(&order, &state, doc, &follow).map(|t| t.0),
         Some(FormId(CELL))
     );
     // And back, from the far side's door.
@@ -944,7 +1070,7 @@ fn locks_keys_and_terminals() {
         ("Office Terminal", "Welcome, USER")
     );
     assert!(!t.unlocked());
-    assert_eq!(t.science_needed(), 25);
+    assert_eq!(world::hacking::min_skill(t.difficulty), 25.0);
     assert_eq!(t.items.len(), 2);
     assert_eq!(t.items[0].result.as_deref(), Some("Unlocking..."));
     assert_eq!(t.items[1].note, Some(FormId(NOTE)));
@@ -962,21 +1088,69 @@ fn locks_keys_and_terminals() {
     assert!(locks::lock_now(&order, &state, strongbox).is_none());
     assert!(state.unhandled.is_empty(), "{:?}", state.unhandled_first);
 
-    // Hacking it: locked until Science reaches 25, then open for good,
-    // worth `iXPRewardHackComputerEasy` once.
-    use world::terminal::{try_hack, Access};
+    // Getting in: the hacking game once Science reaches the easy
+    // minimum (25); hacked, it opens for good, worth
+    // `iXPRewardHackComputerEasy` once, and `GetLocked` still says 1.
+    use world::terminal::{access, Access};
     let r = FormId(TERMINAL_REF);
     Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 10", None, None);
-    assert_eq!(
-        try_hack(&order, &mut state, &t, r),
-        Access::NeedsScience(25)
-    );
+    assert_eq!(access(&order, &state, &t, r), Access::NeedsScience(25));
     Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 25", None, None);
-    assert_eq!(try_hack(&order, &mut state, &t, r), Access::Hacked);
+    assert_eq!(access(&order, &state, &t, r), Access::Hack);
+    world::terminal::hacked(&order, &mut state, &t, r);
     assert_eq!(world::experience::xp(&state), 60.0);
     Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 0", None, None);
-    assert_eq!(try_hack(&order, &mut state, &t, r), Access::Open);
-    assert_eq!(world::experience::xp(&state), 60.0);
+    assert_eq!(access(&order, &state, &t, r), Access::Open);
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLocked"),
+        1.0
+    );
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLockLevel"),
+        1.0
+    );
+    // A script's `Lock` takes the hack away and sets the level; `Unlock`
+    // opens it.
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Lock 3", None, None);
+    Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 60", None, None);
+    assert_eq!(access(&order, &state, &t, r), Access::NeedsScience(75));
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLockLevel"),
+        3.0
+    );
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Unlock", None, None);
+    assert_eq!(access(&order, &state, &t, r), Access::Open);
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLocked"),
+        0.0
+    );
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLockLevel"),
+        -1.0
+    );
+    // Locked out: `GetLocked` 2; level 5 ("requires key") too.
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Lock", None, None);
+    world::terminal::lock_out(&mut state, r);
+    assert_eq!(access(&order, &state, &t, r), Access::LockedOut);
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "TerminalRef.GetLocked"),
+        2.0
+    );
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Unlock", None, None);
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Lock 5", None, None);
+    assert_eq!(access(&order, &state, &t, r), Access::LockedOut);
+    Runner::new(&order, &scripts, &mut state).run_source("TerminalRef.Unlock", None, None);
+    Runner::new(&order, &scripts, &mut state).run_source("player.SetAV Science 0", None, None);
+    // `ForceTerminalBack` (a terminal item's script, the terminal menu
+    // open) asks the menu back.
+    state.events.clear();
+    state.more.menu_open = Some(world::terminal::TERMINAL_MENU);
+    Runner::new(&order, &scripts, &mut state).run_source("ForceTerminalBack", Some(r), Some(r));
+    state.more.menu_open = None;
+    assert!(state
+        .events
+        .iter()
+        .any(|e| matches!(e, world::scripting::Event::TerminalBack)));
     // Quest scripts reward experience too.
     Runner::new(&order, &scripts, &mut state).run_source("RewardXP 25", None, None);
     assert_eq!(world::experience::xp(&state), 85.0);
@@ -1814,4 +1988,166 @@ fn play_group_has_an_object_play_its_models_sequence() {
             flags: 0,
         }]
     );
+}
+
+#[test]
+fn play_bink_gives_the_movie_and_its_flags_with_the_games_defaults() {
+    use world::scripting::Video;
+    let (_data, order) = order("scripting-playbink");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let mut play = |line: &str| {
+        Runner::new(&order, &scripts, &mut state).run_source(line, None, None);
+        state.events.pop()
+    };
+    // The opening quest's own call.
+    assert_eq!(
+        play("PlayBink \"FNVIntro.bik\" 1 1 0 1"),
+        Some(Event::Video(Video {
+            file: "FNVIntro.bik".into(),
+            interruptable: true,
+            mute_audio: true,
+            pause_music: false,
+            letterbox: true,
+        }))
+    );
+    // Left out: the handler's defaults 0, 1, 1, 1.
+    assert_eq!(
+        play("PlayBink \"Other.bik\""),
+        Some(Event::Video(Video {
+            file: "Other.bik".into(),
+            interruptable: false,
+            mute_audio: true,
+            pause_music: true,
+            letterbox: true,
+        }))
+    );
+    assert_eq!(
+        play("PlayBink \"Other.bik\" 0 0"),
+        Some(Event::Video(Video {
+            file: "Other.bik".into(),
+            interruptable: false,
+            mute_audio: false,
+            pause_music: true,
+            letterbox: true,
+        }))
+    );
+}
+
+/// Scripted items see their `OnAdd` on the holder's next script run
+/// (`00574fa0` flags it, `004d2480` runs it), each item its own copy of
+/// the script: `TestCaseBundle`'s `OnAdd Player` gives 25 cases and
+/// `RemoveMe` takes the bundle away (as the game's `Case10mmAddScript`).
+#[test]
+fn scripted_items_see_their_onadd() {
+    let (_data, order) = order("scripting-onadd");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let (bundle, case) = (FormId(CASE_BUNDLE), FormId(CASE));
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.AddItem TestCaseBundle 2",
+        None,
+        None,
+    );
+    assert_eq!(state.item_count(&order, PLAYER_REF, bundle), 2);
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(state.item_count(&order, PLAYER_REF, bundle), 0);
+    assert_eq!(state.item_count(&order, PLAYER_REF, case), 50);
+    // In a chest the block (`OnAdd Player`) doesn't run.
+    let chest = FormId(CHEST_REF);
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "ChestRef.AddItem TestCaseBundle 1",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(state.item_count(&order, chest, bundle), 1);
+    // Taken from it, it runs for the player.
+    state.move_item(&order, chest, PLAYER_REF, bundle, 1);
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(state.item_count(&order, PLAYER_REF, case), 75);
+    assert_eq!(state.item_count(&order, PLAYER_REF, bundle), 0);
+    // `RemoveMe` outside an item's own run does nothing.
+    Runner::new(&order, &scripts, &mut state).run_source("RemoveMe", None, None);
+    assert!(state.unhandled.is_empty(), "{:?}", state.unhandled_first);
+    // Each item keeps its own variables: `OnAdd` marks it, the same run's
+    // `GameMode` (later in the script) gives 5 cases and removes it.
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.AddItem TestLateBundle 1",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(state.item_count(&order, PLAYER_REF, FormId(LATE_BUNDLE)), 0);
+    assert_eq!(state.item_count(&order, PLAYER_REF, case), 80);
+    assert!(state.item_scripts.is_empty());
+    // `OnEquip` and `OnUnequip` (the faction outfits' warnings).
+    let global = |state: &mut GameState| state.globals.get(&FormId(GLOBAL)).copied();
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.AddItem TestScriptedHat 1",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.EquipItem TestScriptedHat",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(global(&mut state), Some(99.0));
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.UnequipItem TestScriptedHat",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(global(&mut state), Some(7.0));
+}
+
+/// A quest with its own delay runs at once, and on that first run
+/// `GetSecondsPassed` is the frame's time (`005ab400`, `005ac1e0`,
+/// `0059c430`); afterwards the time gathered since the last run. Doc
+/// Mitchell's farewell timer (`VGenericTimer`, delay 0.1, `fTimer` 0.1)
+/// counts down over its second and third runs this way.
+#[test]
+fn an_own_delay_quests_first_run_counts_the_frame() {
+    use testdata::{group, record, sub, zstr};
+    let data = testdata::TempData::empty("quest-first-run");
+    let mut script = sub(b"EDID", &zstr("TestTimerScript"));
+    script.extend(sub(b"SCHR", &[0; 20]));
+    script.extend(sub(
+        b"SCTX",
+        b"scn TestTimerScript\nfloat fSeen\nshort nRuns\nBegin GameMode\nset fSeen to GetSecondsPassed\nset nRuns to nRuns + 1\nEnd",
+    ));
+    let mut quest = sub(b"EDID", &zstr("TestTimer"));
+    quest.extend(sub(b"SCRI", &0x900u32.to_le_bytes()));
+    let mut qdata = vec![0x01, 50, 0, 0];
+    qdata.extend(0.1f32.to_le_bytes());
+    quest.extend(sub(b"DATA", &qdata));
+    let mut hedr = 1.34f32.to_le_bytes().to_vec();
+    hedr.extend([0; 8]);
+    let mut plugin = record(b"TES4", 0, &sub(b"HEDR", &hedr));
+    plugin.extend(group(*b"SCPT", 0, &record(b"SCPT", 0x900, &script)));
+    plugin.extend(group(*b"QUST", 0, &record(b"QUST", 0x901, &quest)));
+    data.write("FalloutNV.esm", &plugin);
+    let order = LoadOrder::from_data_dir(data.path(), &ActivePlugins::OfficialOnly).unwrap();
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let var = |state: &GameState, name: &str| {
+        state
+            .variables
+            .get(&FormId(0x901))
+            .and_then(|l| l.iter().find(|v| v.0 == name).map(|v| v.2))
+            .unwrap_or(0.0)
+    };
+    Runner::new(&order, &scripts, &mut state).update(0.0625);
+    assert_eq!(var(&state, "nruns"), 1.0);
+    assert_eq!(var(&state, "fseen"), 0.0625);
+    // Not again until 0.1 s have gathered; then all of it.
+    Runner::new(&order, &scripts, &mut state).update(0.0625);
+    assert_eq!(var(&state, "nruns"), 1.0);
+    Runner::new(&order, &scripts, &mut state).update(0.0625);
+    assert_eq!(var(&state, "nruns"), 2.0);
+    assert_eq!(var(&state, "fseen"), 0.125);
 }

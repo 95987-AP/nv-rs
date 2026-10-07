@@ -14,13 +14,21 @@
 //! picture (`sCursorFilename`, 32 × 32, drawn above every menu, `0070b240`)
 //! is drawn where it is.
 
+pub mod asks;
 pub mod barter;
+pub mod caravan;
 pub mod chargen;
+pub mod companion_wheel;
+pub mod computers;
 pub mod container;
 pub mod dialog;
+pub mod hacking;
 pub mod levelup;
-mod message;
+pub(crate) mod message;
+pub mod recipe;
+pub mod repair;
 pub mod sleepwait;
+pub mod start;
 pub mod textedit;
 pub mod traits;
 pub mod vigor;
@@ -43,7 +51,7 @@ use crate::GameFiles;
 /// The game's menus, built for the window's size, and the ones open.
 #[derive(Resource, Default)]
 pub struct GameMenus {
-    screen: Option<Box<Screen>>,
+    pub(crate) screen: Option<Box<Screen>>,
     failed: bool,
     /// `--open-menu levelup:perks`: the next level-up menu's points are
     /// given and Continue pressed through the menu's own clicks.
@@ -75,8 +83,15 @@ pub struct Screen {
     fader: Option<TileId>,
     /// The Rest control (T) held down (the sleep/wait menu cancels on it).
     rest_down: bool,
+    /// The Pip-Boy's callback for the "how many?" open, if it asked
+    /// (`asks`).
+    quantity_owner: Option<u32>,
+    /// The pointer this frame, in menu units.
+    pub pointer: Option<(f32, f32)>,
     sizes: HashMap<String, Option<(u32, u32)>>,
     atlases: HashMap<String, Option<ui::Atlas>>,
+    /// `nif` tiles' models (the start menu's pause background).
+    models: HashMap<String, Option<Vec<start::ModelPiece>>>,
 }
 
 /// A menu on screen.
@@ -85,6 +100,10 @@ pub enum OpenMenu {
     Dialog(ui::menus::dialog::DialogMenu),
     Container(Box<container::ContainerScreen>),
     Barter(Box<barter::BarterScreen>),
+    Recipe(Box<recipe::RecipeScreen>),
+    Repair(Box<repair::RepairScreen>),
+    CompanionWheel(Box<companion_wheel::WheelScreen>),
+    Caravan(Box<caravan::CaravanScreen>),
     Quantity(ui::menus::quantity::QuantityMenu),
     LevelUp(Box<ui::menus::levelup::LevelUpMenu>),
     Traits(Box<ui::menus::traits::TraitMenu>),
@@ -92,6 +111,9 @@ pub enum OpenMenu {
     TextEdit(Box<ui::menus::textedit::TextEditMenu>),
     SleepWait(Box<ui::menus::sleepwait::SleepWaitMenu>),
     Vigor(Box<vigor::VigorScreen>),
+    Start(Box<start::StartScreen>),
+    Hacking(Box<hacking::HackingScreen>),
+    Computers(Box<computers::ComputersScreen>),
 }
 
 impl OpenMenu {
@@ -101,6 +123,10 @@ impl OpenMenu {
             OpenMenu::Dialog(m) => m,
             OpenMenu::Container(c) => &mut c.menu,
             OpenMenu::Barter(b) => &mut b.menu,
+            OpenMenu::Recipe(r) => &mut r.menu,
+            OpenMenu::Repair(r) => &mut r.menu,
+            OpenMenu::CompanionWheel(w) => &mut w.menu,
+            OpenMenu::Caravan(c) => &mut c.menu,
             OpenMenu::Quantity(m) => m,
             OpenMenu::LevelUp(m) => &mut **m,
             OpenMenu::Traits(m) => &mut **m,
@@ -108,6 +134,9 @@ impl OpenMenu {
             OpenMenu::TextEdit(m) => &mut **m,
             OpenMenu::SleepWait(m) => &mut **m,
             OpenMenu::Vigor(m) => &mut m.menu,
+            OpenMenu::Start(m) => &mut m.menu,
+            OpenMenu::Hacking(m) => &mut m.menu,
+            OpenMenu::Computers(m) => &mut m.menu,
         }
     }
 
@@ -117,6 +146,10 @@ impl OpenMenu {
             OpenMenu::Dialog(m) => m.menu,
             OpenMenu::Container(c) => c.menu.menu,
             OpenMenu::Barter(b) => b.menu.menu,
+            OpenMenu::Recipe(r) => r.menu.menu,
+            OpenMenu::Repair(r) => r.menu.menu,
+            OpenMenu::CompanionWheel(w) => w.menu.menu,
+            OpenMenu::Caravan(c) => c.menu.menu,
             OpenMenu::Quantity(m) => m.menu,
             OpenMenu::LevelUp(m) => m.menu,
             OpenMenu::Traits(m) => m.menu,
@@ -124,7 +157,19 @@ impl OpenMenu {
             OpenMenu::TextEdit(m) => m.menu,
             OpenMenu::SleepWait(m) => m.menu,
             OpenMenu::Vigor(m) => m.menu.menu,
+            OpenMenu::Start(m) => m.menu.menu,
+            OpenMenu::Hacking(m) => m.menu.menu,
+            OpenMenu::Computers(m) => m.menu.menu,
         }
+    }
+
+    /// A service menu: one whose making hides the conversation
+    /// (`00763ff0`: the barter menu `0072d250`, the recipe menu
+    /// `00726ff0`) and whose closing brings it back (`007640a0`: `0072d6d0`,
+    /// `00727430`). (A companion's trade, the repair menu and the face menu
+    /// do too; they aren't shown here. Containers in mode 1 don't.)
+    fn is_service(&self) -> bool {
+        matches!(self, OpenMenu::Barter(_) | OpenMenu::Recipe(_))
     }
 
     fn closed(&self) -> bool {
@@ -133,6 +178,10 @@ impl OpenMenu {
             OpenMenu::Dialog(m) => m.closed,
             OpenMenu::Container(c) => c.menu.closed,
             OpenMenu::Barter(b) => b.menu.closed,
+            OpenMenu::Recipe(r) => r.menu.closed,
+            OpenMenu::Repair(r) => r.menu.closed,
+            OpenMenu::CompanionWheel(w) => w.menu.closed,
+            OpenMenu::Caravan(c) => c.closed,
             OpenMenu::Quantity(m) => m.closed,
             OpenMenu::LevelUp(m) => m.closed,
             OpenMenu::Traits(m) => m.closed,
@@ -140,6 +189,11 @@ impl OpenMenu {
             OpenMenu::TextEdit(m) => m.closed,
             OpenMenu::SleepWait(m) => m.closed,
             OpenMenu::Vigor(m) => m.menu.closed,
+            // Its requests (the load asked for, back to the game) are
+            // carried out first (`start::frame`).
+            OpenMenu::Start(m) => m.menu.closed && m.menu.requests.is_empty(),
+            OpenMenu::Hacking(m) => m.menu.closed,
+            OpenMenu::Computers(m) => m.menu.closed,
         }
     }
 }
@@ -150,15 +204,31 @@ impl Plugin for GameMenusPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GameMenus>()
             .init_resource::<MenuDraw>()
+            .init_resource::<asks::PipboyAsks>()
             .init_resource::<StartMenu>()
             .init_resource::<FixedPointer>()
+            .init_resource::<start::GameSettings>()
+            .init_resource::<start::SaveFiles>()
+            .init_resource::<FixedClicks>()
+            .init_resource::<FixedKeys>()
+            .init_resource::<hacking::HackingSounds>()
+            .init_resource::<companion_wheel::WheelVoices>()
             .add_systems(
                 Update,
-                (start_menu, open_menus, run_open_menus, draw_menus)
+                (
+                    start_menu,
+                    escape_opens_start_menu,
+                    open_menus,
+                    run_open_menus,
+                    start_menu_frame,
+                    draw_menus,
+                )
                     .chain()
                     .before(crate::menus::run_menus),
             )
-            .add_systems(Update, vigor::draw.after(run_open_menus));
+            .add_systems(Update, vigor::draw.after(run_open_menus))
+            .add_systems(Update, hacking::play_sounds.after(run_open_menus))
+            .add_systems(Update, companion_wheel::play_voices.after(run_open_menus));
     }
 }
 
@@ -166,6 +236,19 @@ impl Plugin for GameMenusPlugin {
 /// 1080 picture (for screenshots, which have no mouse).
 #[derive(Resource, Default)]
 pub struct FixedPointer(pub Option<(f32, f32)>);
+
+/// `--menu-click S,...`: left clicks at these seconds (pressed one frame,
+/// let go the next), for testing with `FixedPointer`.
+#[derive(Resource, Default)]
+pub struct FixedClicks {
+    pub at: Vec<f64>,
+    pub release: bool,
+}
+
+/// `--menu-keys S:K,...`: keys typed into the top menu at these seconds
+/// (a character, or left, right, up, down), for testing.
+#[derive(Resource, Default)]
+pub struct FixedKeys(pub Vec<(f64, String)>);
 
 /// `--open-menu NAME[:ID]`: a menu to open once the place has loaded, for
 /// testing.
@@ -192,6 +275,7 @@ fn reference_name(order: &esm::LoadOrder, reference: esm::FormId) -> String {
 }
 
 /// Opens the `--open-menu` menu once the player is in the place.
+#[allow(clippy::too_many_arguments)]
 fn start_menu(
     game: Res<GameFiles>,
     mut start: ResMut<StartMenu>,
@@ -200,8 +284,10 @@ fn start_menu(
     mut menus: ResMut<GameMenus>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut state: ResMut<crate::dialogue::DialogueState>,
+    commands: Res<crate::scripts::StartCommands>,
 ) {
-    if !player.ready {
+    // After `--run`'s lines (a menu opened first would hold them back).
+    if !player.ready || !commands.0.is_empty() {
         return;
     }
     let Some(asked) = start.0.take() else {
@@ -243,6 +329,26 @@ fn start_menu(
     let request = match (name, form) {
         ("container", Some(r)) => crate::menus::Menu::Container(r, reference_name(order, r)),
         ("barter", Some(r)) => crate::menus::Menu::Barter(r),
+        // A recipe category's crafting menu for the player, as
+        // `ShowRecipeMenu` would open it.
+        ("recipes", Some(r)) => crate::menus::Menu::Recipe {
+            actor: world::dialogue::PLAYER_REF,
+            category: r,
+        },
+        // A vendor's repairs, as `ShowRepairMenu` on them would open them.
+        ("repair", Some(r)) => crate::menus::Menu::RepairServices(r),
+        // A companion's things, as `OpenTeammateContainer` would open them.
+        ("teammate", Some(r)) => crate::menus::Menu::Teammate(r),
+        // A companion's wheel, as using them would bring it up.
+        ("wheel", Some(r)) => crate::menus::Menu::CompanionWheel(r),
+        // A placed terminal's own screen, as getting in would open it.
+        ("terminal", Some(r)) => {
+            crate::menus::Menu::Terminal(world::scripting::base_of(order, r).unwrap_or(r), r)
+        }
+        // A placed terminal's hacking menu, as using it would open it.
+        ("hacking", Some(r)) => {
+            crate::menus::Menu::Hacking(world::scripting::base_of(order, r).unwrap_or(r), r)
+        }
         _ => {
             println!("--open-menu: don't know how to open '{asked}'.");
             return;
@@ -316,8 +422,11 @@ impl Screen {
             fade: None,
             fader,
             rest_down: false,
+            quantity_owner: None,
+            pointer: None,
             sizes: HashMap::new(),
             atlases: HashMap::new(),
+            models: HashMap::new(),
         }
     }
 
@@ -424,12 +533,18 @@ pub fn takes(m: &crate::menus::Menu) -> bool {
     message::takes(m)
         || container::takes(m)
         || barter::takes(m)
+        || recipe::takes(m)
+        || repair::takes(m)
+        || companion_wheel::takes(m)
+        || caravan::takes(m)
         || levelup::takes(m)
         || traits::takes(m)
         || chargen::takes(m)
         || textedit::takes(m)
         || sleepwait::takes(m)
         || vigor::takes(m)
+        || hacking::takes(m)
+        || computers::takes(m)
 }
 
 /// The world's requests become menus.
@@ -443,6 +558,9 @@ fn open_menus(
     mut sounds: ResMut<crate::sounds::SoundRequests>,
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time<bevy::time::Real>>,
+    mut asks: ResMut<asks::PipboyAsks>,
+    hacking_sounds: Res<hacking::HackingSounds>,
+    scripts: Res<crate::scripts::Scripts>,
 ) {
     let Some(size) = window_size(&windows) else {
         return;
@@ -456,8 +574,13 @@ fn open_menus(
     };
     queue.game_ready = true;
     while let Some(request) = queue.take_next(takes) {
+        let before = screen.open.len();
         if message::takes(&request) {
             message::open(screen, &game.0, request);
+        } else if hacking::takes(&request) {
+            hacking::open(screen, &game.0, &state.0, request, &hacking_sounds);
+        } else if computers::takes(&request) {
+            computers::open(screen, &game.0, &state.0, request);
         } else if vigor::takes(&request) {
             sounds
                 .0
@@ -486,13 +609,27 @@ fn open_menus(
             sounds
                 .0
                 .extend(barter::open(screen, &game.0, &mut state.0, request));
+        } else if recipe::takes(&request) {
+            recipe::open(screen, &game.0, &mut state.0, request);
+        } else if repair::takes(&request) {
+            repair::open(screen, &game.0, &mut state.0, request);
+        } else if companion_wheel::takes(&request) {
+            companion_wheel::open(screen, &game.0, &scripts.0, &mut state.0, request);
+        } else if caravan::takes(&request) {
+            caravan::open(screen, &game.0, &mut state.0, request);
         } else {
             sounds
                 .0
                 .extend(container::open(screen, &game.0, &mut state.0, request));
         }
+        // A service menu made: the conversation fades out under it.
+        if screen.open.len() > before && screen.open.last().is_some_and(OpenMenu::is_service) {
+            dialog::service_opened(screen);
+        }
         player.ready = false;
     }
+    // The Pip-Boy's questions (over it, so the player isn't ready anyway).
+    asks::open(screen, &game.0, &mut asks);
     queue.game_open = !screen.open.is_empty();
     if wanted && !to_perks {
         menus.levelup_to_perks = false;
@@ -510,6 +647,8 @@ pub struct MenuInput<'w, 's> {
     typed: EventReader<'w, 's, KeyboardInput>,
     time: Res<'w, Time<bevy::time::Real>>,
     fixed: Res<'w, FixedPointer>,
+    clicks: ResMut<'w, FixedClicks>,
+    fixed_keys: ResMut<'w, FixedKeys>,
 }
 
 /// A key as the game's interface turns it into a menu code (`007154b0`):
@@ -544,7 +683,7 @@ fn key_code(key: &Key) -> Option<u32> {
 /// The open menus get the pointer and the keys, then hand what the player
 /// did back to the game.
 #[allow(clippy::too_many_arguments)]
-fn run_open_menus(
+pub(crate) fn run_open_menus(
     game: Res<GameFiles>,
     mut menus: ResMut<GameMenus>,
     mut queue: ResMut<crate::menus::Menus>,
@@ -554,6 +693,10 @@ fn run_open_menus(
     conversation: Res<crate::dialogue::Conversation>,
     mut sounds: ResMut<crate::sounds::SoundRequests>,
     scripts: Res<crate::scripts::Scripts>,
+    mut asks: ResMut<asks::PipboyAsks>,
+    mut hacking_sounds: ResMut<hacking::HackingSounds>,
+    mut hud_messages: ResMut<crate::hud::HudMessages>,
+    mut wheel_voices: ResMut<companion_wheel::WheelVoices>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         input.typed.clear();
@@ -569,6 +712,7 @@ fn run_open_menus(
     container::update(screen);
     textedit::update(screen, now * 1000.0);
     vigor::update(screen, dt);
+    companion_wheel::update(screen, &mut wheel_voices, now * 1000.0);
     // The Rest control (T) this frame, for the sleep/wait menu.
     let mut rest_pressed = false;
     {
@@ -577,6 +721,7 @@ fn run_open_menus(
             interface,
             open,
             rest_down,
+            pointer: here,
             ..
         } = &mut *screen;
         let Some(top) = open.last_mut() else {
@@ -594,6 +739,14 @@ fn run_open_menus(
                 .ok()
                 .and_then(|w| w.physical_cursor_position().map(|p| (p.x * k, p.y * k))),
         };
+        *here = pointer;
+        // `--menu-click`: pressed this frame, let go the next.
+        let release = std::mem::take(&mut input.clicks.release);
+        let press = {
+            let due = input.clicks.at.iter().position(|&t| t <= now);
+            due.map(|i| input.clicks.at.remove(i)).is_some()
+        };
+        input.clicks.release = press;
         if let Some((x, y)) = pointer {
             if let OpenMenu::Vigor(v) = top {
                 v.pointer = Some(Vec2::new(x / k, y / k));
@@ -604,14 +757,26 @@ fn run_open_menus(
                 top.code(),
                 x,
                 y,
-                input.mouse.pressed(MouseButton::Left),
-                input.mouse.just_pressed(MouseButton::Left),
-                input.mouse.just_released(MouseButton::Left),
+                input.mouse.pressed(MouseButton::Left) || press,
+                input.mouse.just_pressed(MouseButton::Left) || press,
+                input.mouse.just_released(MouseButton::Left) || release,
                 now,
             );
         }
         if let OpenMenu::Vigor(v) = top {
             sounds.0.extend(v.inputs(&game.0, &mut state.0));
+        }
+        // A meter's bar held under the pointer follows it (`007cf6a0`, id
+        // 0x66).
+        if let (OpenMenu::Start(s), Some((x, _)), true) =
+            (&mut *top, pointer, input.mouse.pressed(MouseButton::Left))
+        {
+            let bar = interface.dragging.or(interface.over).filter(|&o| {
+                ui.has(o, t::ID) && ui.number(o, t::ID) as i32 == ui::menus::start::id::BAR
+            });
+            if let Some(bar) = bar {
+                s.menu.drag_meter(ui, bar, x);
+            }
         }
         let notches = match input.scroll.unit {
             MouseScrollUnit::Line => input.scroll.delta.y,
@@ -653,8 +818,43 @@ fn run_open_menus(
                     continue;
                 }
             }
+            // Tab or Escape leave the hacking and terminal menus and the
+            // companion wheel (their code 10).
+            if matches!(
+                top,
+                OpenMenu::Hacking(_) | OpenMenu::Computers(_) | OpenMenu::CompanionWheel(_)
+            ) && matches!(e.logical_key, Key::Escape | Key::Tab)
+            {
+                use ui::menu::MenuCode;
+                match top {
+                    OpenMenu::CompanionWheel(w) => {
+                        w.menu
+                            .special_key(ui, ui::menus::companion_wheel::LEAVE, now * 1000.0);
+                    }
+                    OpenMenu::Hacking(h) => {
+                        h.menu
+                            .special_key(ui, ui::menus::hacking::LEAVE, now * 1000.0);
+                    }
+                    OpenMenu::Computers(c) => {
+                        c.menu
+                            .special_key(ui, ui::menus::computers::LEAVE, now * 1000.0);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             // The Escape control: the message box hears it as a 1 (`0070c4a0`).
             if e.logical_key == Key::Escape {
+                // The start menu takes the Escape control as Back
+                // (`007cf5e0`).
+                if let OpenMenu::Start(s) = top {
+                    s.menu.escape(ui, now);
+                    continue;
+                }
+                // The recipe menu's Exit is its X key.
+                if top.code().class() == ui::menus::recipe::CLASS {
+                    interface.key(ui, menu, top.code(), u32::from(b'X'), false, false, now);
+                }
                 if top.code().class() == ui::menus::message::CLASS {
                     interface.key(
                         ui,
@@ -682,6 +882,22 @@ fn run_open_menus(
                 }
             }
         }
+        // `--menu-keys`: the ones due.
+        while let Some(i) = input.fixed_keys.0.iter().position(|(t, _)| *t <= now) {
+            let (_, k) = input.fixed_keys.0.remove(i);
+            let code = match k.to_ascii_lowercase().as_str() {
+                "left" => Some(ui::menu::key::LEFT),
+                "right" => Some(ui::menu::key::RIGHT),
+                "up" => Some(ui::menu::key::UP),
+                "down" => Some(ui::menu::key::DOWN),
+                "enter" => Some(ui::menu::key::ENTER),
+                _ => k.chars().next().map(|c| c as u32),
+            };
+            if let Some(code) = code {
+                println!("--menu-keys: {k}");
+                interface.key(ui, menu, top.code(), code, false, false, now);
+            }
+        }
         // The menus have the keys and buttons.
         input.keys.reset_all();
         // Sounds the interface asked for.
@@ -696,6 +912,10 @@ fn run_open_menus(
             }
         }
     }
+    // The hacking and terminal menus' frames (`00767c90`, `00758470`),
+    // after the pointer.
+    hacking::update(screen, now * 1000.0);
+    computers::update(screen, now * 1000.0);
     // The sleep/wait menu's frame: its clicks carried out, the hours pass
     // (`007c0580`).
     let rest_held = screen.rest_down;
@@ -716,6 +936,23 @@ fn run_open_menus(
     sounds
         .0
         .extend(barter::after(screen, &game.0, &mut state.0));
+    hud_messages
+        .queue
+        .extend(recipe::after(screen, &game.0, &mut state.0));
+    sounds
+        .0
+        .extend(repair::after(screen, &game.0, &mut state.0));
+    sounds.0.extend(companion_wheel::after(
+        screen,
+        &game.0,
+        &scripts.0,
+        &mut state.0,
+        &mut wheel_voices,
+        now * 1000.0,
+    ));
+    sounds
+        .0
+        .extend(caravan::after(screen, &game.0, &mut state.0, now * 1000.0));
     sounds
         .0
         .extend(levelup::after(screen, &game.0, &mut state.0));
@@ -726,29 +963,140 @@ fn run_open_menus(
         .0
         .extend(chargen::after(screen, &game.0, &mut state.0));
     textedit::after(screen, &mut state.0);
-    let Screen {
-        ui,
-        interface,
-        open,
-        ..
-    } = screen;
-    // Closed menus leave the screen.
+    asks::after(screen, &mut asks);
+    for m in hacking::after(
+        screen,
+        order,
+        &mut state.0,
+        &mut hacking_sounds,
+        now * 1000.0,
+    ) {
+        queue.push(m);
+    }
+    for n in computers::after(
+        screen,
+        order,
+        &scripts.0,
+        &mut state.0,
+        &mut hacking_sounds,
+        now * 1000.0,
+    ) {
+        println!("{n}");
+        hud_messages.queue.push(n);
+    }
+    // Closed menus leave the screen; a service menu closing brings the
+    // conversation back (`007640a0`).
     let mut i = 0;
-    while i < open.len() {
-        if open[i].closed() {
-            let m = open.remove(i);
-            ui.detach(m.tile());
-            if open.is_empty() {
-                interface.over = None;
-                interface.focus = None;
+    while i < screen.open.len() {
+        if screen.open[i].closed() {
+            let m = screen.open.remove(i);
+            screen.ui.detach(m.tile());
+            if screen.open.is_empty() {
+                screen.interface.over = None;
+                screen.interface.focus = None;
+            }
+            if m.is_service() {
+                dialog::service_closed(screen);
             }
         } else {
             i += 1;
         }
     }
+    let open = &screen.open;
     queue.game_open = !open.is_empty();
-    if open.is_empty() && conversation.0.is_none() {
+    // (A box over the Pip-Boy closing leaves the Pip-Boy up.)
+    if open.is_empty() && conversation.0.is_none() && !queue.pipboy {
         player.ready = true;
+    }
+}
+
+/// The Escape control opens the start menu as the pause menu
+/// (`0070c4a0` at `0070e651` → `007cb7d0(1, 0)`) when no other menu has
+/// the keys (the game's menus closed, no conversation, no lock; the
+/// Pip-Boy may be up: the start menu opens over it). The game stops
+/// (virtual time paused) while it's up. Saving is offered unless the game
+/// refuses (`00850fe0`: its refusals in combat and the like aren't
+/// followed here).
+#[allow(clippy::too_many_arguments)]
+fn escape_opens_start_menu(
+    game: Res<GameFiles>,
+    mut menus: ResMut<GameMenus>,
+    mut queue: ResMut<crate::menus::Menus>,
+    keys: Res<ButtonInput<KeyCode>>,
+    conversation: Res<crate::dialogue::Conversation>,
+    mut settings: ResMut<start::GameSettings>,
+    mut virt: ResMut<Time<Virtual>>,
+    mut player: ResMut<crate::walk::Player>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+) {
+    if !keys.just_pressed(KeyCode::Escape) {
+        return;
+    }
+    let Some(size) = window_size(&windows) else {
+        return;
+    };
+    if queue.others_open() || conversation.0.is_some() {
+        return;
+    }
+    let Some(screen) = screen(&mut menus, &game.0, size) else {
+        return;
+    };
+    if !screen.open.is_empty() {
+        return;
+    }
+    let was_paused = virt.is_paused();
+    if start::open(screen, &game.0, &mut settings, true, was_paused) {
+        virt.pause();
+        queue.game_open = true;
+        player.ready = false;
+    }
+}
+
+/// The start menu's frame: its fades and saving, then what it asked for:
+/// back to the game (time going again), a save or load for the save
+/// system, the program's end, the settings' new values (the volumes into
+/// the music's decks).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn start_menu_frame(
+    game: Res<GameFiles>,
+    mut menus: ResMut<GameMenus>,
+    mut settings: ResMut<start::GameSettings>,
+    mut saves: ResMut<start::SaveFiles>,
+    mut virt: ResMut<Time<Virtual>>,
+    time: Res<Time<bevy::time::Real>>,
+    mut exit: EventWriter<AppExit>,
+    mut music: ResMut<crate::music::Music>,
+    mut sounds: ResMut<crate::sounds::SoundRequests>,
+) {
+    let Some(screen) = menus.screen.as_deref_mut() else {
+        return;
+    };
+    let out = start::frame(screen, &game.0, &mut settings, time.elapsed_secs_f64());
+    for s in out.sounds {
+        if let Some(id) = game.0.order.form_by_editor_id(&s) {
+            sounds.0.push(id);
+        }
+    }
+    if let Some(was_paused) = out.resume {
+        if !was_paused {
+            virt.unpause();
+        }
+    }
+    if let Some(s) = out.save {
+        saves.0 = Some(s);
+    }
+    for (setting, v) in out.applied {
+        use ui::menus::start::Setting;
+        match setting {
+            Setting::MasterVolume => crate::music::set_volumes(&mut music, |vol| vol.master = v),
+            Setting::MusicVolume => crate::music::set_volumes(&mut music, |vol| vol.music = v),
+            Setting::RadioVolume => crate::music::set_volumes(&mut music, |vol| vol.radio = v),
+            _ => {}
+        }
+    }
+    if out.exit {
+        println!("Exit Game.");
+        exit.write(AppExit::Success);
     }
 }
 
@@ -760,6 +1108,7 @@ fn draw_menus(
     windows: Query<&Window, With<PrimaryWindow>>,
     fixed: Res<FixedPointer>,
     time: Res<Time<bevy::time::Real>>,
+    pipboy: Option<Res<crate::pipboy::Pipboy>>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         if !draw.0.is_empty() {
@@ -771,6 +1120,15 @@ fn draw_menus(
         return;
     };
     let tiles = screen.menu_tiles();
+    // Each menu's fade alpha (the conversation's under a service menu).
+    let alphas: Vec<f32> = screen
+        .open
+        .iter()
+        .map(|m| match m {
+            OpenMenu::Dialog(d) => d.fade.alpha(),
+            _ => 1.0,
+        })
+        .collect();
     let mut items: Vec<DrawItem> = Vec::new();
     // The fade to black moves every frame (`007011d0`) and is drawn under
     // the menus while it lasts.
@@ -796,11 +1154,29 @@ fn draw_menus(
                 items.extend(ui::draw_list(&mut screen.ui, fader, &mut files, &|_| None));
             }
         }
-        for &menu in &tiles {
-            items.extend(ui::draw_list(&mut screen.ui, menu, &mut files, &|_| None));
+        for (&menu, &alpha) in tiles.iter().zip(&alphas) {
+            let first = items.len();
+            let drawn = ui::draw_list(&mut screen.ui, menu, &mut files, &|_| None);
+            items.extend(ui::draw::faded(&mut screen.ui, drawn, alpha));
+            // A start menu's `nif` tile (the pause background).
+            start::background_draws(
+                &mut screen.ui,
+                &screen.open,
+                &game.0,
+                &mut screen.models,
+                &mut items,
+                menu,
+                first,
+            );
         }
-        // The cursor over everything while a menu is open and the pointer
-        // is in the window.
+        // The cursor over everything while a menu is open (the Pip-Boy
+        // too: it moves over the screen and the model's buttons,
+        // `007f8720`, except where DATA's map hides it, `0079a130`) and
+        // the pointer is in the window.
+        let wanted = !tiles.is_empty()
+            || pipboy
+                .as_ref()
+                .is_some_and(|p| p.open && !p.cursor_hidden());
         if let Some(cursor) = screen.cursor {
             let k = screen.ui.screen_size.resolution_converter();
             let at = match fixed.0 {
@@ -810,8 +1186,8 @@ fn draw_menus(
                     .ok()
                     .and_then(|w| w.physical_cursor_position()),
             };
-            match (at, tiles.is_empty()) {
-                (Some(p), false) => {
+            match (at, wanted) {
+                (Some(p), true) => {
                     screen.ui.set_number(cursor, t::X, p.x * k);
                     screen.ui.set_number(cursor, t::Y, p.y * k);
                     screen.ui.set_number(cursor, t::VISIBLE, 1.0);
@@ -825,7 +1201,15 @@ fn draw_menus(
     if draw.0 != items {
         draw.0 = items;
     }
-    let classes: Vec<i32> = screen.open.iter_mut().map(|m| m.code().class()).collect();
+    // The Pip-Boy's menu first while it's up: the menus over it opened
+    // from it, and the HUD keeps the pieces the Pip-Boy's pages leave on
+    // (`ui::hud::parts_for_menu`: the messages).
+    let classes: Vec<i32> = pipboy
+        .as_ref()
+        .and_then(|p| p.menu_class())
+        .into_iter()
+        .chain(screen.open.iter_mut().map(|m| m.code().class()))
+        .collect();
     if draw.1 != classes {
         draw.1 = classes;
     }

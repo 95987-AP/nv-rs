@@ -273,7 +273,83 @@ pub fn travel(order: &LoadOrder, state: &mut GameState, m: &MapMarker) -> Result
     Ok(to)
 }
 
+/// The player's own map marker (`PlayerCharacter` `+0x6f4`, a marker
+/// reference the game makes on first use, `00952e60`): the worldspace (or
+/// interior cell) it's in and where.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CustomMarker {
+    pub space: FormId,
+    pub position: [f32; 3],
+}
+
+/// Sets (or moves) the player's marker (`00952e60`).
+pub fn set_custom_marker(state: &mut GameState, space: FormId, position: [f32; 3]) {
+    state.custom_marker = Some(CustomMarker { space, position });
+}
+
+/// Removes it (`00952f90`).
+pub fn remove_custom_marker(state: &mut GameState) {
+    state.custom_marker = None;
+}
+
+/// The world map shows its worldspace's picture with a border: a place's
+/// share between the map's north-west and south-east corners (`MNAM`'s
+/// cells) is × 0.796875 + 0.1015625 on the picture (`0079c380` on the
+/// world map's tab: `01075010`, `01075008`), and back × 1.2549020 −
+/// 0.12745098 (`0079c450`: `01075020`, `01075018`).
+pub const MAP_BORDER_SCALE: f32 = 0.796875;
+pub const MAP_BORDER_OFFSET: f32 = 0.1015625;
+pub const MAP_UNBORDER_SCALE: f32 = 1.254_902;
+pub const MAP_UNBORDER_OFFSET: f32 = 0.127_450_99;
+
+/// A place's point on the world map's picture (0 to 1 across and down)
+/// between the corners `nw` and `se`. Translated from 0079c380
+/// (decompiled, FalloutNV.exe 1.4.0.525), `MapMenu::WorldToMapCoord`
+/// (Xbox PDB), the world map's tab.
+pub fn world_to_map(nw: [f32; 2], se: [f32; 2], p: [f32; 2]) -> [f32; 2] {
+    let share = [
+        (p[0] - nw[0]) / (se[0] - nw[0]),
+        (p[1] - nw[1]) / (se[1] - nw[1]),
+    ];
+    share.map(|s| s * MAP_BORDER_SCALE + MAP_BORDER_OFFSET)
+}
+
+/// The place at a point on the world map's picture, height 0 (the game
+/// then puts it on the ground, `00588e40`: not here). Translated from
+/// 0079c450 (decompiled, FalloutNV.exe 1.4.0.525),
+/// `MapMenu::MapToWorldCoord` (Xbox PDB), the world map's tab.
+pub fn map_to_world(nw: [f32; 2], se: [f32; 2], at: [f32; 2]) -> [f32; 3] {
+    let share = at.map(|a| a * MAP_UNBORDER_SCALE - MAP_UNBORDER_OFFSET);
+    [
+        (se[0] - nw[0]) * share[0] + nw[0],
+        (se[1] - nw[1]) * share[1] + nw[1],
+        0.0,
+    ]
+}
+
 /// Every marker found so far (for saving).
 pub fn found(state: &GameState) -> &HashSet<FormId> {
     &state.discovered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `0079c380` / `0079c450`: the picture's border, and back again.
+    #[test]
+    fn places_and_points_on_the_world_maps_picture() {
+        let (nw, se) = ([-4096.0, 4096.0], [4096.0, -4096.0]);
+        // The middle stays the middle; the corners land on the border.
+        assert_eq!(world_to_map(nw, se, [0.0, 0.0]), [0.5, 0.5]);
+        assert_eq!(world_to_map(nw, se, nw), [0.1015625, 0.1015625]);
+        let back = map_to_world(nw, se, world_to_map(nw, se, [1000.0, -2000.0]));
+        assert!((back[0] - 1000.0).abs() < 0.5 && (back[1] + 2000.0).abs() < 0.5);
+        assert_eq!(back[2], 0.0);
+        let mut state = GameState::default();
+        set_custom_marker(&mut state, FormId(0xDA726), [1.0, 2.0, 0.0]);
+        assert_eq!(state.custom_marker.unwrap().space, FormId(0xDA726));
+        remove_custom_marker(&mut state);
+        assert_eq!(state.custom_marker, None);
+    }
 }

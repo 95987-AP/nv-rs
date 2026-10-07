@@ -18,9 +18,11 @@ const TRDT: FourCC = FourCC::new(b"TRDT");
 const NAM1: FourCC = FourCC::new(b"NAM1");
 const CTDA: FourCC = FourCC::new(b"CTDA");
 const TCLT: FourCC = FourCC::new(b"TCLT");
+const TCFU: FourCC = FourCC::new(b"TCFU");
 const NAME: FourCC = FourCC::new(b"NAME");
 const RNAM: FourCC = FourCC::new(b"RNAM");
 const QSTI: FourCC = FourCC::new(b"QSTI");
+const INFC: FourCC = FourCC::new(b"INFC");
 const PNAM: FourCC = FourCC::new(b"PNAM");
 const KNAM: FourCC = FourCC::new(b"KNAM");
 const TDUM: FourCC = FourCC::new(b"TDUM");
@@ -82,7 +84,42 @@ pub struct Response {
     pub emotion: u32,
     pub emotion_value: i32,
     pub number: u8,
+    /// `NAM1` as the game says it: the actors' notes in braces left out
+    /// ([`without_notes`]).
     pub text: String,
+    /// `TRDT` byte 20: the emotion counts for the speaker's animations
+    /// (`DialogueResponse::bUseEmotion`, Xbox PDB; `008a5580` stores it at
+    /// actor +0x86, which `GetDialogueEmotion` checks, `005a4480`).
+    pub use_emotion: bool,
+    /// `SNAM` and `LNAM` after the `TRDT`: the idles the speaker and the
+    /// listener play with this response (`pSpeakerIdle`, `pListenIdle`,
+    /// Xbox PDB; read by `0061e780`, said by `008a20d0`).
+    pub speaker_idle: Option<FormId>,
+    pub listener_idle: Option<FormId>,
+    /// `TRDT` bytes 16..20: a sound form said instead of the voice file
+    /// (`DialogueResponse::pVoiceSound` (Xbox PDB), `+0x20`): the radio's
+    /// songs.
+    pub sound: Option<FormId>,
+}
+
+/// A response's text as the game shows it (`0083d8b0`, building a line's
+/// response, `0083d280`): what's in braces left out, braces within braces
+/// counted, and a `}` with none open dropped ("{Rush of health}MMmmahh."
+/// is "MMmmahh.").
+pub fn without_notes(text: &str) -> String {
+    let mut depth = 0u32;
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if depth == 0 && c != '}' {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// How a condition compares (the top three bits of its first byte).
@@ -163,6 +200,12 @@ pub struct Info {
     /// player can ask about (`NAME`).
     pub choices: Vec<FormId>,
     pub add_topics: Vec<FormId>,
+    /// Lines the speaker goes straight on to after this one, without the
+    /// player choosing (`TCFU`, read into the line's conversation data by
+    /// `0061dbd0`; the first that can be said is chosen by `0061af30`, see
+    /// [`follow_up`]). Doc Mitchell's farewell at his door is a chain of
+    /// them ending in the Goodbye line that lets the player leave.
+    pub follow_ups: Vec<FormId>,
     /// Result scripts (`SCTX`): run as the line starts, and after it's
     /// said (the second, after the `NEXT` marker).
     pub begin_script: Option<String>,
@@ -174,6 +217,47 @@ pub const GOODBYE: u8 = 0x01;
 /// `DATA` flag: said only once a game (Doc Mitchell's "You're awake. How
 /// about that." has it, and the intro asks for the topic again later).
 pub const SAY_ONCE: u8 = 0x04;
+/// `DATA` flag 0x02: one of a run of lines picked among at random
+/// (`00619410`; `0061a7d0` and `0061af30` gather consecutive available
+/// lines with it and choose one, see [`choose`]).
+pub const RANDOM: u8 = 0x02;
+/// `DATA` flag 0x08 (the GECK calls it "Run Immediately"; the name isn't
+/// in the executable): the dialogue menu neither runs this line's second
+/// result script nor looks for its follow-ups (`00579200`, tested by
+/// `00762ff0` and the menu's close `00762160`). Where such a line's second
+/// script runs instead is not traced.
+pub const RUN_IMMEDIATELY: u8 = 0x08;
+/// `DATA` flag 0x20: the last line of a random run (`0061aed0`).
+pub const RANDOM_END: u8 = 0x20;
+/// `DATA` flag 0x40 (the GECK's "Run for Rumors", name unverified): the
+/// menu doesn't run this line's first result script (`0083ebb0` tests
+/// `INFO+0x25 & 0x40` before running script 0).
+pub const NO_BEGIN_SCRIPT_IN_MENU: u8 = 0x40;
+/// `DATA` byte 3 flags (`INFO+0x26`): lines for a listener of low or high
+/// Intelligence only (`0061e720`: 0x10 → class 1, else 0x20 → class 3,
+/// else 2; `0061e600` drops class 3 when the listener's Intelligence is at
+/// most `iDialogueDummySpeakThisIntOrBelow` (`011d0dc8`), class 1 when
+/// above).
+pub const LOW_INTELLIGENCE: u8 = 0x10;
+pub const HIGH_INTELLIGENCE: u8 = 0x20;
+
+/// The hard-coded `GOODBYE` topic (default topic kind 1, index 2:
+/// `0061a2d0(1, 2)`).
+pub const GOODBYE_TOPIC: FormId = crate::social::topics::GOODBYE;
+
+/// Whether the player activating someone has them just say their greeting,
+/// with no dialogue menu (an NPC's `Activate`, `005fa330` at `005faa3f`):
+/// the `GREETING` line found for them (`0061a2d0(0, 0)`, `0061b320`) is
+/// flagged Goodbye (`00619df0`: `INFO+0x25 & 1`) and has a single response
+/// (`0083c7b0` finds a first, `0083c7e0` no next). Then the actor says the
+/// topic to the player through `0057b7c0` (the speech in progress stopped,
+/// the listener set to the player, the GREET procedure, `008dbe30`), which
+/// picks the line again; otherwise the dialogue menu opens (`00709470(4,
+/// …)`). No line at all: nothing happens.
+// Translated from 005fa330 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn activation_says_a_line(info: &Info) -> bool {
+    info.flags & GOODBYE != 0 && info.responses.len() == 1
+}
 
 fn global(rr: &RecordRef<'_>, data: &[u8]) -> FormId {
     rr.plugin.to_global(FormId(le_u32(data, 0)))
@@ -211,10 +295,26 @@ impl Topic {
         }
     }
 
-    /// Offered in the list of things to ask about: an ordinary topic
-    /// flagged top-level.
+    /// Flagged top-level, whatever its kind: the game adds every such topic
+    /// to the player's topics as it's loaded (`TESTopic::InitItem`, Xbox
+    /// PDB, `00619030`, tests `00619410`: `DATA` flags 0x02 only). The
+    /// hard-coded `GOODBYE` topic is one (kind 1, flags 0x02, priority 5):
+    /// Sunny Smiles' "Until next time." answers it from the main list.
     pub fn is_top_level(&self) -> bool {
-        self.kind == ORDINARY_TOPIC && self.flags & TOP_LEVEL != 0
+        self.flags & TOP_LEVEL != 0
+    }
+
+    /// The topic's Intelligence class (`0083f0d0`: `DATA` flags 0x10 → 1,
+    /// else 0x20 → 3, else 2), as for lines ([`LOW_INTELLIGENCE`],
+    /// [`HIGH_INTELLIGENCE`]).
+    pub fn intelligence_class(&self) -> u8 {
+        if self.flags & LOW_INTELLIGENCE != 0 {
+            1
+        } else if self.flags & HIGH_INTELLIGENCE != 0 {
+            3
+        } else {
+            2
+        }
     }
 
     /// What the menu shows for it when its line has no prompt of its own.
@@ -264,16 +364,33 @@ pub struct Choice {
 /// `DATA` byte 3 flag: the choice is always shown dimmed.
 pub const ALWAYS_DARKEN: u8 = 0x02;
 
+/// The hard-coded `SpeechChallengeFailure` and `InfoRefusal` topics
+/// (`0083de60` tests their form IDs, 0xFD and 0x118): never in a topic
+/// list (`0083ed50`).
+pub const SPEECH_CHALLENGE_FAILURE: FormId = FormId(0xFD);
+pub const INFO_REFUSAL: FormId = FormId(0x118);
+
 /// Each topic the speaker has a line for now, as a choice, in the order
-/// given.
+/// given (`MenuTopicManager::FillTopicList`, Xbox PDB, `0083ed50`): the
+/// two hard-coded refusal topics are left out, and topics of the wrong
+/// Intelligence class for the player ([`Topic::intelligence_class`],
+/// compared as for lines). The topic's rumor flag (0x01) and what it does
+/// there (`0042df90`, `0087f510`) are not carried out.
 fn answered(
     order: &LoadOrder,
     topics: &[&Topic],
     speaker: &Speaker,
     state: &GameState,
 ) -> Vec<Choice> {
+    let facts = crate::scripting::Facts {
+        order,
+        state,
+        speaker: Some(speaker),
+    };
     topics
         .iter()
+        .filter(|t| t.form_id != SPEECH_CHALLENGE_FAILURE && t.form_id != INFO_REFUSAL)
+        .filter(|t| suits_intelligence(order, &facts, t.intelligence_class(), PLAYER_REF))
         // Only a running quest's lines can be said; the topic's record
         // lists the quests it has lines for.
         .filter(|t| t.quests.is_empty() || t.quests.iter().any(|q| state.running.contains(q)))
@@ -386,52 +503,51 @@ pub fn check_tag_passed(
 }
 
 /// The main list of things to ask about, shown after a line with no
-/// follow-ups of its own (`TCLT`): the follow-ups of the line that opened
-/// the conversation (`opening`), every top-level topic, and every topic
-/// the player has learned (`AddTopic`, a line's `NAME`), each once, for
-/// which the speaker has a line now, highest priority first.
+/// choices of its own (`TCLT`): the player's topics (`PlayerCharacter`
+/// `+0x6a8`, `0083ec30`), which are every top-level topic (added as the
+/// game loads, `00619030`) and every topic learned since (`AddTopic`
+/// `00952830`, a said line's `NAME` via `0061f150`), each once, for which
+/// the speaker has a line now ([`answered`]), highest priority first
+/// (`0083ed50` sorts this list, not a line's choices, with `0083f110`;
+/// whether that sort keeps equal priorities in order isn't traced, they
+/// keep the files' order here).
 ///
-/// Read from Sunny Smiles' records: her greeting's follow-ups are her
-/// top-level questions plus a "Goodbye." that isn't top-level, stored in
-/// exactly descending priority (100 … 75, then 50), and "That's all I
-/// wanted to know. Let's talk about something else." has no follow-ups, so
-/// it leads back to the main list. That the main list keeps the opening
-/// line's follow-ups (so "Goodbye." stays) is a guess, not traced in the
-/// game's code.
+/// Sunny Smiles: "That's all I wanted to know. Let's talk about something
+/// else." has no choices, so it leads back here, where her top-level
+/// questions and the hard-coded `GOODBYE` topic (top-level, priority 5,
+/// her "Until next time.") are offered.
 pub fn menu_topics(
     order: &LoadOrder,
     top_level: &[Topic],
-    opening: &[FormId],
     speaker: &Speaker,
     state: &GameState,
 ) -> Vec<Choice> {
-    let mut extra: Vec<FormId> = opening.to_vec();
     let mut learned: Vec<FormId> = state.topics.iter().copied().collect();
     learned.sort_by_key(|id| id.0);
-    extra.extend(learned);
     let mut seen: std::collections::HashSet<FormId> = top_level.iter().map(|t| t.form_id).collect();
-    let extra: Vec<Topic> = extra
+    let learned: Vec<Topic> = learned
         .into_iter()
         .filter(|id| seen.insert(*id))
         .filter_map(|id| Topic::load(order, id))
         .collect();
-    let mut topics: Vec<&Topic> = extra.iter().chain(top_level).collect();
+    let mut topics: Vec<&Topic> = top_level.iter().chain(&learned).collect();
     topics.sort_by(|a, b| b.priority.total_cmp(&a.priority));
     answered(order, &topics, speaker, state)
 }
 
-/// What the player can say after a line: its follow-ups (`TCLT`) as
-/// stored, when it has any; otherwise the main list ([`menu_topics`]).
+/// What the player can say after a line (`0083ec30`): its choices
+/// (`TCLT`) in their stored order, when it has any (the menu topic's
+/// `bTopicIsChoice`, Xbox PDB, set by `0083db00` when the line's choice
+/// list isn't empty); otherwise the main list ([`menu_topics`]).
 pub fn next_choices(
     order: &LoadOrder,
     info: &Info,
     top_level: &[Topic],
-    opening: &[FormId],
     speaker: &Speaker,
     state: &GameState,
 ) -> Vec<Choice> {
     if info.choices.is_empty() {
-        return menu_topics(order, top_level, opening, speaker, state);
+        return menu_topics(order, top_level, speaker, state);
     }
     let topics: Vec<Topic> = info
         .choices
@@ -493,6 +609,7 @@ impl Info {
         let mut conditions = Vec::new();
         let mut choices = Vec::new();
         let mut add_topics = Vec::new();
+        let mut follow_ups = Vec::new();
         let mut scripts: [Option<String>; 2] = [None, None];
         let mut after_next = false;
         for sub in &record.subrecords {
@@ -511,15 +628,33 @@ impl Info {
                         emotion_value: le_u32(&sub.data, 4) as i32,
                         number: sub.data[12],
                         text: String::new(),
+                        use_emotion: sub.data.get(20).is_some_and(|b| *b != 0),
+                        speaker_idle: None,
+                        listener_idle: None,
+                        sound: (sub.data.len() >= 20)
+                            .then(|| global(rr, &sub.data[16..]))
+                            .filter(|id| id.0 != 0),
                     });
                 }
                 k if k == NAM1 => {
                     if let Some(r) = pending.as_mut() {
-                        r.text = sub.zstring();
+                        r.text = without_notes(&sub.zstring());
+                    }
+                }
+                // A response's idles (`0061e780`: only after a `TRDT`).
+                k if (k == SNAM || k == LNAM) && sub.data.len() >= 4 => {
+                    if let Some(r) = pending.as_mut() {
+                        let idle = Some(global(rr, &sub.data)).filter(|id| id.0 != 0);
+                        if k == SNAM {
+                            r.speaker_idle = idle;
+                        } else {
+                            r.listener_idle = idle;
+                        }
                     }
                 }
                 k if k == CTDA => conditions.extend(read_condition(rr, &sub.data)),
                 k if k == TCLT && sub.data.len() >= 4 => choices.push(global(rr, &sub.data)),
+                k if k == TCFU && sub.data.len() >= 4 => follow_ups.push(global(rr, &sub.data)),
                 k if k == NAME && sub.data.len() >= 4 => add_topics.push(global(rr, &sub.data)),
                 _ => {}
             }
@@ -549,6 +684,7 @@ impl Info {
             check: form(KNAM),
             choices,
             add_topics,
+            follow_ups,
             begin_script: scripts[0].take(),
             end_script: scripts[1].take(),
         }
@@ -602,9 +738,11 @@ pub fn lines_for(order: &LoadOrder, base: FormId, voice: Option<FormId>) -> Vec<
 }
 
 const VTCK: FourCC = FourCC::new(b"VTCK");
+const VNAM: FourCC = FourCC::new(b"VNAM");
 const RNAM_RACE: FourCC = FourCC::new(b"RNAM");
 const ACBS: FourCC = FourCC::new(b"ACBS");
 const SNAM: FourCC = FourCC::new(b"SNAM");
+const LNAM: FourCC = FourCC::new(b"LNAM");
 
 /// The player's reference and base record (fixed forms in every game).
 pub const PLAYER_REF: FormId = FormId(0x14);
@@ -640,7 +778,13 @@ impl Speaker {
             reference,
             base,
             name: record.full_name(),
-            voice: form(VTCK),
+            // A talking activator's voice type is its VNAM (form type
+            // 0x16 in 00616fa0 → 009185e0).
+            voice: form(VTCK).or_else(|| {
+                (rr.entry.header.kind.as_bytes() == b"TACT")
+                    .then(|| form(VNAM))
+                    .flatten()
+            }),
             race: form(RNAM_RACE),
             female: record
                 .get(ACBS)
@@ -686,6 +830,33 @@ pub fn topic_lines(order: &LoadOrder, topic: FormId) -> Vec<Info> {
             Some((priority(info.quest), info))
         })
         .collect();
+    // The lines the topic is connected to (`INFC`, in the topic record):
+    // the game's topic loader puts them in the topic's list of lines
+    // (`TESTopic::vfunc_8`, `00618aa0`), though they stand under another
+    // topic. Dead Money's Dog says his Gala greeting through one.
+    // [G] that picking a line uses them as it does the topic's own.
+    if let Some(record) = order
+        .get(topic)
+        .and_then(|rr| rr.record().ok().map(|r| (rr, r)))
+    {
+        let (rr, record) = record;
+        for sub in record.get_all(INFC).filter(|s| s.data.len() >= 4) {
+            let id = global(&rr, &sub.data);
+            if lines.iter().any(|(_, i)| i.form_id == id) {
+                continue;
+            }
+            let Some(line) = order
+                .get(id)
+                .filter(|l| l.entry.header.kind == INFO && !l.entry.header.is_deleted())
+            else {
+                continue;
+            };
+            if let Ok(record) = line.record() {
+                let info = Info::parse(order, &line, &record);
+                lines.push((priority(info.quest), info));
+            }
+        }
+    }
     lines.sort_by_key(|(p, _)| std::cmp::Reverse(*p));
     lines.into_iter().map(|(_, i)| i).collect()
 }
@@ -696,6 +867,11 @@ pub fn topic_lines(order: &LoadOrder, topic: FormId) -> Vec<Info> {
 /// player with one of ED-E's beeps, a line with no conditions of its own
 /// in `vDialogueEDE`, whose conditions name ED-E), its own conditions
 /// pass, and it isn't a "say once" line already said.
+///
+/// A run of lines flagged random is chosen among ([`choose`], with the
+/// state's current dice value; callers that want a fresh draw roll the
+/// dice first). Lines for the other end of the Intelligence scale than the
+/// player's are left out ([`LOW_INTELLIGENCE`]).
 pub fn pick(
     order: &LoadOrder,
     topic: FormId,
@@ -708,12 +884,7 @@ pub fn pick(
         speaker: Some(speaker),
     };
     let mut quest_ok: std::collections::HashMap<FormId, bool> = Default::default();
-    topic_lines(order, topic).into_iter().find(|info| {
-        if info.responses.is_empty()
-            || (info.flags & SAY_ONCE != 0 && state.said.contains(&info.form_id))
-        {
-            return false;
-        }
+    let available = topic_lines(order, topic).into_iter().filter(|info| {
         if let Some(q) = info.quest {
             let ok = *quest_ok.entry(q).or_insert_with(|| {
                 state.running.contains(&q)
@@ -727,23 +898,254 @@ pub fn pick(
                 return false;
             }
         }
-        passes(order, info, speaker, state)
-    })
+        line_available(order, info, speaker, PLAYER_REF, state)
+    });
+    choose(available, state.dice)
+}
+
+/// Whether a line itself can be said by `speaker` to `listener` now
+/// (`0061e600`, read): it has something to say (an nv-rs rule: a line
+/// without responses isn't picked), it isn't a "say once" line already
+/// said, it suits the listener's Intelligence, and its conditions pass.
+/// "Say once a day" (`DATA` byte 3 flag 0x01, a per-speaker list read by
+/// `00935a40`) is not carried out: when that list is cleared isn't
+/// traced.
+pub fn line_available(
+    order: &LoadOrder,
+    info: &Info,
+    speaker: &Speaker,
+    listener: FormId,
+    state: &GameState,
+) -> bool {
+    if info.responses.is_empty()
+        || (info.flags & SAY_ONCE != 0 && state.said.contains(&info.form_id))
+    {
+        return false;
+    }
+    let facts = crate::scripting::Facts {
+        order,
+        state,
+        speaker: Some(speaker),
+    };
+    let class = if info.flags2 & LOW_INTELLIGENCE != 0 {
+        1
+    } else if info.flags2 & HIGH_INTELLIGENCE != 0 {
+        3
+    } else {
+        2
+    };
+    if !suits_intelligence(order, &facts, class, listener) {
+        return false;
+    }
+    facts.conditions_pass(&info.conditions, speaker.reference, listener)
+}
+
+/// Translated from 0061e600 (decompiled, FalloutNV.exe 1.4.0.525): the
+/// Intelligence class of a line (`0061e720`), or of a topic (`0083ed50`
+/// with `0083f0d0`, the same comparison), against the listener's
+/// Intelligence (actor value 9) and `iDialogueDummySpeakThisIntOrBelow`
+/// (exe 4, `011d0dc8`; the data sets 3). A listener whose Intelligence
+/// isn't known here passes (unresolved: the game always has one).
+fn suits_intelligence(
+    order: &LoadOrder,
+    facts: &crate::scripting::Facts<'_>,
+    class: u8,
+    listener: FormId,
+) -> bool {
+    if class == 2 {
+        return true;
+    }
+    let Some(intelligence) = facts.current_actor_value(listener, 9) else {
+        return true;
+    };
+    let most =
+        crate::scripting::game_setting(order, "iDialogueDummySpeakThisIntOrBelow").unwrap_or(4.0);
+    // The game compares the whole value (vfunc +8 gives an int).
+    if intelligence.trunc() <= f64::from(most).trunc() {
+        class != 3
+    } else {
+        class != 1
+    }
+}
+
+/// Translated from 0061a7d0 / 0061af30 (decompiled, FalloutNV.exe
+/// 1.4.0.525): the line said out of those that can be, in order. The
+/// first one is said unless it's flagged [`RANDOM`]; consecutive random
+/// lines are gathered (up to and including one flagged [`RANDOM_END`], or
+/// until a line that isn't random) and one of them is chosen with `roll`
+/// (`rand() % count`).
+pub fn choose(available: impl IntoIterator<Item = Info>, roll: u64) -> Option<Info> {
+    let mut randoms: Vec<Info> = Vec::new();
+    for info in available {
+        let last = info.flags & RANDOM_END != 0;
+        if info.flags & RANDOM == 0 {
+            if randoms.is_empty() {
+                return Some(info);
+            }
+            break;
+        }
+        randoms.push(info);
+        if last {
+            break;
+        }
+    }
+    if randoms.is_empty() {
+        return None;
+    }
+    let i = (roll % randoms.len() as u64) as usize;
+    Some(randoms.swap_remove(i))
+}
+
+/// The line a speaker goes straight on to after `info` (translated from
+/// 0061af30, decompiled, FalloutNV.exe 1.4.0.525; the Xbox prototype calls
+/// it `TESTopic::GetMatchingFollowUpInfo` (Xbox PDB)): of the line's
+/// follow-ups (`TCFU`) in order, those whose quest is running and whose
+/// quest conditions and own conditions pass (as [`line_available`]),
+/// chosen as [`choose`] says with the state's dice value.
+pub fn follow_up(
+    order: &LoadOrder,
+    info: &Info,
+    speaker: &Speaker,
+    state: &GameState,
+) -> Option<Info> {
+    let facts = crate::scripting::Facts {
+        order,
+        state,
+        speaker: Some(speaker),
+    };
+    let available = info.follow_ups.iter().filter_map(|&id| {
+        let rr = order.get(id)?;
+        if rr.entry.header.is_deleted() {
+            return None;
+        }
+        let next = Info::load(order, id)?;
+        // `0061af30`: the line's quest (`INFO+0x48`) must be set and
+        // running (`00455620`), and its conditions pass.
+        let quest = next.quest?;
+        if !state.running.contains(&quest)
+            || !facts.conditions_pass(
+                &crate::quest::quest_conditions(order, quest),
+                speaker.reference,
+                PLAYER_REF,
+            )
+        {
+            return None;
+        }
+        line_available(order, &next, speaker, PLAYER_REF, state).then_some(next)
+    });
+    choose(available, state.dice)
+}
+
+/// How the dialogue menu ends a conversation after a line (the menu's
+/// `+0x2c`, set as each line starts by `00762860`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    /// Topics follow.
+    Continue,
+    /// The line answers the `GOODBYE` topic (`+0x2c` 1): follow-ups are
+    /// still looked for, then the menu closes.
+    GoodbyeTopic,
+    /// The line is flagged [`GOODBYE`] (`+0x2c` 2): no follow-ups; the
+    /// menu closes and its second result script runs as it does
+    /// (`00762160`).
+    GoodbyeLine,
+}
+
+/// Translated from 00762860 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn ending(info: &Info) -> Ending {
+    if info.flags & GOODBYE != 0 {
+        Ending::GoodbyeLine
+    } else if info.topic == Some(GOODBYE_TOPIC) {
+        Ending::GoodbyeTopic
+    } else {
+        Ending::Continue
+    }
+}
+
+/// Whether the dialogue menu runs a line's second result script once it's
+/// said (`00762ff0`, `00762160`: not for [`RUN_IMMEDIATELY`] lines).
+pub fn menu_runs_end_script(info: &Info) -> bool {
+    info.flags & RUN_IMMEDIATELY == 0
+}
+
+/// Whether the dialogue menu runs a line's first result script as it
+/// starts (`0083ebb0`: not for [`NO_BEGIN_SCRIPT_IN_MENU`] lines).
+pub fn menu_runs_begin_script(info: &Info) -> bool {
+    info.flags & NO_BEGIN_SCRIPT_IN_MENU == 0
+}
+
+/// What the dialogue menu does once a line has been said and its second
+/// result script has run.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AfterLine {
+    /// The speaker goes straight on with this line.
+    FollowUp(Box<Info>),
+    /// The player chooses among these.
+    Topics(Vec<Choice>),
+    /// The menu closes.
+    Close,
+}
+
+/// Translated from 00762ff0 (decompiled, FalloutNV.exe 1.4.0.525), the
+/// part after a line's last response: unless the line is a Goodbye line
+/// or [`RUN_IMMEDIATELY`], its follow-up ([`follow_up`]) is said next;
+/// otherwise a line answering `GOODBYE` closes the menu, else the topics
+/// (`0083ec30`, here [`next_choices`]) are offered, and with none the menu
+/// closes (`+0x2c` 3, "Invalid choice list encountered").
+pub fn after_line(
+    order: &LoadOrder,
+    info: &Info,
+    top_level: &[Topic],
+    speaker: &Speaker,
+    state: &GameState,
+) -> AfterLine {
+    let ending = ending(info);
+    if ending != Ending::GoodbyeLine && menu_runs_end_script(info) {
+        if let Some(next) = follow_up(order, info, speaker, state) {
+            return AfterLine::FollowUp(Box::new(next));
+        }
+    }
+    if ending != Ending::Continue {
+        return AfterLine::Close;
+    }
+    let list = next_choices(order, info, top_level, speaker, state);
+    if list.is_empty() {
+        AfterLine::Close
+    } else {
+        AfterLine::Topics(list)
+    }
 }
 
 /// The quest and topic parts of a voice file's name: whole when together
-/// they're at most 25 letters, else the quest's first 10 and the topic's
-/// first 15 (`vfreeformgoodsprings_hit_00126f2b_1.ogg`, Sunny Smiles' hurt
-/// line, but `vfreeformg_greeting_00107220_1.ogg`; every one of the 16,293
-/// voice files in `Fallout - Voices1.bsa` with a part longer than 10 or 15
-/// letters has the two together at most 25).
+/// they're at most 25 letters; else, with a quest of at most 10 letters,
+/// the quest whole and the topic cut to the rest of the 25; with a longer
+/// quest, the quest's first 10 and the topic's first 15
+/// (`vfreeformgoodsprings_hit_00126f2b_1.ogg`, Sunny Smiles' hurt line,
+/// but `vfreeformg_greeting_00107220_1.ogg`; Doc Mitchell's psych test
+/// answers, quest `VCG01`, are `vcg01_vcg01docmitchelltopi_…`).
+// Translated from 006172c0 (decompiled, FalloutNV.exe 1.4.0.525; called by
+// the response's file name builder 00617400, "%s_%08X_%u"): strlen of
+// both; over 0x19, the topic is cut at 0x19 - quest length when the quest
+// is shorter than 0xb, else the quest at 10 and the topic at 0xf.
 pub fn voice_name_parts(quest: &str, topic: &str) -> (String, String) {
-    let (q, t) = (quest.to_ascii_lowercase(), topic.to_ascii_lowercase());
-    if q.chars().count() + t.chars().count() <= 25 {
-        (q, t)
-    } else {
-        (q.chars().take(10).collect(), t.chars().take(15).collect())
+    // Byte lengths, as strlen counts; cut on a character boundary.
+    fn cut(s: &mut String, mut at: usize) {
+        while !s.is_char_boundary(at) {
+            at -= 1;
+        }
+        s.truncate(at);
     }
+    let (mut q, mut t) = (quest.to_ascii_lowercase(), topic.to_ascii_lowercase());
+    if q.len() + t.len() > 25 {
+        let topic_len = if q.len() < 11 {
+            25 - q.len()
+        } else {
+            cut(&mut q, 10);
+            15
+        };
+        cut(&mut t, topic_len);
+    }
+    (q, t)
 }
 
 /// The voice file for a response: `sound\voice\<plugin>\<voice type>\
@@ -765,6 +1167,7 @@ pub fn voice_path(
             .ok()?
             .map(|e| e.to_ascii_lowercase())
     };
+    let voice = line_speaker_voice(order, info).unwrap_or(voice);
     let voice_name = edid(Some(voice))?;
     let (quest, topic) = voice_name_parts(&edid(info.quest)?, &edid(info.topic)?);
     let rr = order.get(info.form_id)?;
@@ -776,9 +1179,50 @@ pub fn voice_path(
     ))
 }
 
+/// The voice type of a line's own speaker (`ANAM`, `TESTopicInfo::pSpeaker`
+/// (Xbox PDB), +0x3c here: `00639b40`), when the line names one.
+// Translated from 00616fa0 (decompiled, FalloutNV.exe 1.4.0.525): the voice
+// file's voice type is the line's own speaker's when it has one; only
+// without one does the speaking reference's base give it (an NPC's or
+// creature's voice type, a talking activator's `VNAM` via `009185e0`).
+// Dead Money's narrator (`NVDLC01Narrator`, voice type
+// `MaleAdult01Default`) says intro lines whose speaker is Elijah, so they
+// play from Elijah's voice type folder.
+fn line_speaker_voice(order: &LoadOrder, info: &Info) -> Option<FormId> {
+    let rr = order.get(info.form_id)?;
+    let record = rr.record().ok()?;
+    let speaker = record
+        .get(FourCC::new(b"ANAM"))
+        .filter(|s| s.data.len() >= 4)
+        .map(|s| global(&rr, &s.data))
+        .filter(|id| id.0 != 0)?;
+    let srr = order.get(speaker)?;
+    let srec = srr.record().ok()?;
+    srec.get(VTCK)
+        .filter(|s| s.data.len() >= 4)
+        .map(|s| global(&srr, &s.data))
+        .filter(|id| id.0 != 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `0083d8b0`: notes in braces aren't shown (the game's lines as
+    /// written: Cass's `Regenerating`, `FollowersTacticsCombatAggressive`).
+    #[test]
+    fn notes_left_out() {
+        assert_eq!(
+            without_notes("{Rush of health}MMmmahh. <Smacks lips>"),
+            "MMmmahh. <Smacks lips>"
+        );
+        assert_eq!(
+            without_notes("{Eager}I'll do like I'm doing then - {slight evil}except I'll try."),
+            "I'll do like I'm doing then - except I'll try."
+        );
+        assert_eq!(without_notes("a{b{c}d}e}f"), "aef");
+        assert_eq!(without_notes("No notes."), "No notes.");
+    }
 
     fn speaker() -> Speaker {
         Speaker {
@@ -820,6 +1264,7 @@ mod tests {
             check: None,
             choices: Vec::new(),
             add_topics: Vec::new(),
+            follow_ups: Vec::new(),
             begin_script: None,
             end_script: None,
         }

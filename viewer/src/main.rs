@@ -6,14 +6,20 @@
 
 mod actors;
 mod ai;
+mod anim_library;
 mod args;
+mod caravan_table;
 mod chatter;
+mod clutter;
 mod combat;
+mod controls;
+mod crosshair;
 mod daylight;
 mod dialogue;
 mod doors;
 mod effects;
 mod emittance;
+mod explosives;
 mod exterior;
 mod faces;
 mod fighting;
@@ -22,26 +28,40 @@ mod grade;
 mod grass;
 mod hiteffects;
 mod hud;
+mod impact_fx;
 mod lighting;
+mod local_map;
 mod lockpick;
 mod lod;
 mod lod_objects;
+mod look;
 mod map;
 mod menus;
+mod movie;
 mod music;
 mod particles;
 mod pipboy;
+mod player_body;
+mod player_camera;
 mod player_idle;
+mod present;
+mod radio;
 mod report;
+mod scope;
 mod scripts;
+mod shared_light;
+mod sight;
 mod sitting;
 mod sounds;
+mod swaps;
 mod terrain;
+mod test_keys;
 mod trees;
 mod vats;
 mod viewmodel;
 mod walk;
 mod water;
+mod weapon_fx;
 mod weather;
 
 use std::sync::Arc;
@@ -61,7 +81,7 @@ use bevy::render::render_resource::{
 };
 use bevy::render::renderer::RenderDevice;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
-use bevy::window::WindowResolution;
+use bevy::window::{CursorGrabMode, WindowResolution};
 use cellview::{space, Blend, Game, GpuFormat, TextureData, ViewerScene};
 use exterior::{ExteriorStart, PendingExterior};
 use grade::{GradePlugin, ImageSpaceGrade};
@@ -97,6 +117,24 @@ fn main() {
         }
         Err(message) => {
             eprintln!("error: {message}\n\n{}", args::USAGE);
+            std::process::exit(2);
+        }
+    };
+    // `NV_GUESSES=1`: untraced behaviour marked [G] runs too
+    // (`world::guesses`; the Dead Money contributor's follower rules).
+    if std::env::var("NV_GUESSES").is_ok_and(|v| v == "1") {
+        world::guesses::set(true);
+        println!("NV_GUESSES=1: untraced [G] behaviour is on.");
+    }
+    let key_presses = match args
+        .key_at
+        .iter()
+        .map(|(at, key)| test_keys::parse(*at, key))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(p) => p,
+        Err(message) => {
+            eprintln!("error: {message}");
             std::process::exit(2);
         }
     };
@@ -154,6 +192,30 @@ fn main() {
     }
     // Walking, except for screenshots, which keep the exact eye given.
     let player = walk::Player::new(args.screenshot.is_none() || args.walk);
+    // A ready-made test character, set up before the first frame.
+    let mut state = world::dialogue::GameState::new(&game.order);
+    if let Some(path) = &args.character {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let scripts = world::scripting::ScriptCache::default();
+                let problems = world::character::apply(&game.order, &scripts, &mut state, &text);
+                println!(
+                    "Character {}: {} problem(s).",
+                    path.display(),
+                    problems.len()
+                );
+                for p in problems {
+                    println!("  line {}: {} ({})", p.line, p.text, p.why);
+                }
+                // What it set up isn't news to show on screen.
+                state.events.clear();
+            }
+            Err(e) => {
+                eprintln!("error: can't read {}: {e}", path.display());
+                std::process::exit(1);
+            }
+        }
+    }
     App::new()
         .insert_resource(ClearColor(Color::BLACK))
         // Lit surfaces do their own lighting (see `lighting`); nothing else
@@ -169,35 +231,56 @@ fn main() {
             on: args.fps,
             ..default()
         })
-        .insert_resource(dialogue::DialogueState(world::dialogue::GameState::new(
-            &game.order,
-        )))
+        .insert_resource(dialogue::DialogueState(state))
         .insert_resource(sitting::Seats::new(&game.order))
+        .init_resource::<sitting::PlayerSeat>()
         .insert_resource(faces::Faces::new(&game))
         .insert_resource(actors::AnimSettings::read(&game.settings))
         .insert_resource(ai::Moves::new(&game))
         .insert_resource(ai::CellBuffer::new(&game))
+        .insert_resource(player_camera::PlayerView::new(&game.order, &game.settings))
+        .insert_resource(controls::Controls::read(&game.settings))
+        .init_resource::<player_body::PlayerBody>()
+        .insert_resource(look::LookSettings(world::look_ik::Settings::read(
+            |section, key| game.settings.float(section, key),
+        )))
         .insert_resource(GameFiles(game))
+        .insert_resource(movie::Movies::new(data.clone(), args.movies))
         .init_resource::<scripts::Scripts>()
         .init_resource::<player_idle::PlayerIdle>()
+        .init_resource::<look::LookAnchors>()
         .init_resource::<scripts::Here>()
         .init_resource::<scripts::ScriptedTalk>()
         .init_resource::<scripts::Notices>()
+        .init_resource::<combat::ObjectShots>()
+        .init_resource::<swaps::TextureSwaps>()
         .insert_resource(scripts::StartStage(args.stage.clone()))
         .insert_resource(scripts::StartCommands(args.run.clone()))
+        .insert_resource(scripts::LaterCommands {
+            lines: args.run_at.clone(),
+            ready_at: None,
+        })
+        .insert_resource(dialogue::AutoSay(args.say.iter().cloned().collect()))
+        .insert_resource(test_keys::TestKeys::new(key_presses))
         .insert_resource(viewmodel::StartWeapon(args.weapon.clone()))
         .insert_resource(lockpick::StartLock(args.lockpick.clone()))
         .insert_resource(emittance::StartRegion(args.weather_region.clone()))
         .insert_resource(viewmodel::ShowInPictures(args.weapon.is_some()))
         .init_resource::<scripts::CellScripts>()
         .init_resource::<ai::CellNav>()
+        .init_resource::<ai::PathQueue>()
         .init_resource::<ai::CombatSettings>()
+        .init_resource::<fighting::NpcShots>()
         .init_resource::<ai::Moved>()
+        .init_resource::<BroughtIn>()
         .init_resource::<ai::Chats>()
         .init_resource::<ai::Starts>()
+        .init_resource::<ai::PlayerHello>()
         .init_resource::<chatter::Lines>()
+        .init_resource::<anim_library::AnimLibrary>()
         .init_resource::<menus::Menus>()
         .init_resource::<map::MapMarkers>()
+        .init_resource::<hud::QuestCompass>()
         .init_resource::<daylight::Daylight>()
         .init_resource::<weather::Weathers>()
         .init_resource::<emittance::Glows>()
@@ -207,20 +290,32 @@ fn main() {
         .init_resource::<doors::SwingDoors>()
         .init_resource::<doors::DoorPoses>()
         .init_resource::<combat::PlayerAttack>()
+        .init_resource::<scripts::LoadRequest>()
+        .init_resource::<scope::ScopeOverlay>()
+        .init_resource::<viewmodel::Scoped>()
+        .init_resource::<viewmodel::GunWobble>()
         .insert_resource(vats::Vats::new(args.vats))
         .init_resource::<viewmodel::PlaceLighting>()
         .init_resource::<viewmodel::ViewModel>()
+        .init_resource::<viewmodel::IronSightsFov>()
+        .init_resource::<viewmodel::SightingNode>()
         .init_resource::<sounds::SoundRequests>()
         .init_resource::<sounds::Ambient>()
         .init_resource::<scripts::Activatable>()
         .init_resource::<scripts::ActivateRequest>()
         .init_resource::<dialogue::Talkers>()
         .init_resource::<dialogue::TalkTarget>()
+        .init_resource::<crosshair::Crosshair>()
         .init_resource::<dialogue::Conversation>()
-        .insert_resource(dialogue::AutoTalk(args.talk))
+        .init_resource::<dialogue::DialogueView>()
+        .insert_resource(dialogue::AutoTalk(
+            args.talk,
+            args.choose.iter().copied().collect(),
+        ))
         .insert_resource(player)
         .insert_resource(walk::CellCollision(physics::Collider::new()))
         .insert_resource(walk::Doors(Vec::new()))
+        .init_resource::<UploadedTextures>()
         .insert_resource(PendingScene(scene))
         .insert_resource(PendingExterior(outdoors))
         .insert_resource(grading)
@@ -231,30 +326,85 @@ fn main() {
             wait: args.wait,
             waited: 0.0,
         })
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(window),
-            ..default()
-        }))
+        .add_plugins({
+            let plugins = DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(window),
+                ..default()
+            });
+            // Drawing on its own thread (Bevy's default) or in step with
+            // the game's frame (`NV_SYNC_RENDER`, a debugging aid).
+            if std::env::var_os("NV_SYNC_RENDER").is_some() {
+                plugins.disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>()
+            } else {
+                plugins
+            }
+        })
         .insert_resource(hud::ShowHud(args.hud))
         .insert_resource(ai::FrozenAi(args.freeze_ai))
         .insert_resource(game_menus::StartMenu(args.open_menu.clone()))
+        .insert_resource(scripts::StartUse(args.use_on.clone()))
         .insert_resource(game_menus::FixedPointer(args.menu_pointer))
+        .insert_resource(game_menus::FixedClicks {
+            at: args.menu_clicks.clone(),
+            release: false,
+        })
+        .insert_resource(game_menus::FixedKeys(args.menu_keys.clone()))
         .add_plugins((GradePlugin, GameLightingPlugin, TerrainPlugin, LodPlugin))
+        .add_plugins(shared_light::SharedLightPlugin)
+        .add_plugins(present::PresentPlugin)
         // After the default plugins: they load shaders.
         .add_plugins((hud::HudPlugin, pipboy::PipboyPlugin))
         .add_plugins(game_menus::GameMenusPlugin)
         .insert_resource(pipboy::StartPipboy(args.pipboy.clone()))
+        .insert_resource(pipboy::StartPipboyKeys(args.pipboy_keys.clone()))
+        .insert_resource(pipboy::PretendPad(args.pad))
         .add_plugins(grass::GrassPlugin)
         .add_plugins(trees::TreePlugin)
         .add_plugins(water::WaterPlugin)
         .add_plugins(particles::ParticlesPlugin)
-        .add_plugins(music::MusicPlugin)
+        .add_plugins((
+            music::MusicPlugin,
+            radio::RadioPlugin,
+            local_map::LocalMapPlugin,
+        ))
         .add_plugins(hiteffects::HitEffectsPlugin)
+        .add_plugins(impact_fx::ImpactFxPlugin)
+        .add_plugins(weapon_fx::WeaponEffectsPlugin)
+        .add_plugins(explosives::ExplosivesPlugin)
+        .add_plugins(clutter::ClutterPlugin)
         .add_plugins(lockpick::LockpickPlugin)
+        .add_plugins(caravan_table::CaravanTablePlugin)
         .add_audio_source::<sounds::PcmSound>()
         // The first-person camera runs the image space passes with the
         // main camera's grade, once everything has set it.
+        .add_systems(
+            PreUpdate,
+            movie::withhold_input.after(bevy::input::InputSystem),
+        )
         .add_systems(PostUpdate, viewmodel::copy_grade.after(grade::adapt_eyes))
+        // The camera is the eye during the frame; the third-person view
+        // moves it once everything has used it, and the eye comes back
+        // first thing next frame (`player_camera`).
+        .add_systems(PreUpdate, player_camera::restore_eye)
+        .add_systems(
+            PreUpdate,
+            test_keys::press_test_keys.after(bevy::input::InputSystem),
+        )
+        .add_systems(
+            PostUpdate,
+            player_camera::place_view.before(bevy::transform::TransformSystem::TransformPropagate),
+        )
+        .add_systems(
+            Update,
+            (
+                player_camera::view_input
+                    .after(lockpick::pick_locks)
+                    .before(look_around),
+                player_body::update_player_body
+                    .after(sitting::player_furniture)
+                    .before(actors::animate_actors),
+            ),
+        )
         .add_systems(
             Startup,
             (
@@ -284,6 +434,7 @@ fn main() {
                     vats::run_vats,
                     vats::scale_target_time,
                     lockpick::pick_locks,
+                    scope::scope_sway,
                     look_around,
                 )
                     .chain(),
@@ -291,26 +442,41 @@ fn main() {
                 (
                     viewmodel::give_start_weapon,
                     walk::walk,
+                    // The player in furniture: on the seat, turned with it.
+                    sitting::player_furniture,
                     // Apply queued camera tracks before aiming/interactions.
                     player_idle::animate,
                     combat::player_attack,
+                    combat::object_shots,
+                    actors::report_facing_up,
+                    swaps::swap_textures,
                     combat::show_dropped_weapons,
+                    scope::update_scope,
                     viewmodel::update_view_model,
                     // A V.A.T.S. camera shot takes the view last.
                     vats::apply_shot_camera,
                 )
                     .chain(),
-                (dialogue::talk, chatter::say_lines).chain(),
+                // What the crosshair is on, for everything E and the HUD do.
+                (crosshair::pick, dialogue::talk, chatter::say_lines).chain(),
                 // The scripts, then E on doors, then the doors' swings.
-                (scripts::run_scripts, walk::doors, doors::update_doors).chain(),
+                (
+                    scripts::start_use,
+                    scripts::run_scripts,
+                    walk::doors,
+                    doors::update_doors,
+                )
+                    .chain(),
+                (movie::start_movies, movie::play_movies)
+                    .chain()
+                    .after(scripts::run_scripts),
                 walk::toggle_walking,
                 adjust_exposure,
                 // The cell's grade, then the screen effects scripts applied.
                 (toggle_grade, effects::play_effects).chain(),
-                // After the menus, which take Escape while they're open.
-                quit_on_escape.after(menus::run_menus),
                 take_screenshot,
                 update_help,
+                grab_cursor,
                 (
                     weather::run_weather,
                     follow_sky,
@@ -321,15 +487,26 @@ fn main() {
                     .chain(),
                 (
                     map::find_markers,
+                    hud::follow_quest_targets,
                     ai::move_offstage,
-                    bring_in_people,
+                    (bring_in_enabled, bring_in_people).chain(),
                     bring_in_made,
                     ai::move_actors,
+                    // People's shots fly once everyone has moved.
+                    fighting::resolve_shots.after(ai::move_actors),
+                    ai::ground_log.after(ai::move_actors),
                     scripts::save_and_load,
                     report::report_key,
                     sounds::play_sounds,
                 ),
-                (actors::script_idles, actors::animate_actors).chain(),
+                (
+                    look::set_up,
+                    sitting::idle_requests.after(chatter::say_lines),
+                    look::follow_player,
+                    actors::script_idles,
+                    actors::animate_actors,
+                )
+                    .chain(),
                 report_fps,
             )
                 .chain(),
@@ -342,6 +519,9 @@ fn main() {
                 faces::start_lines,
                 faces::release_voices,
                 faces::animate_faces,
+                // The dialogue menu's view on the speaker, once their head
+                // has moved.
+                dialogue::focus_camera,
             )
                 .chain()
                 .after(actors::animate_actors),
@@ -391,8 +571,16 @@ fn move_pieces(
     door_poses: Res<doors::DoorPoses>,
     mut pieces: Query<(&mut Moving, &scripts::PlacedRef, &mut Transform)>,
     mut materials: ResMut<Assets<GameLitMaterial>>,
+    mut dialogue: ResMut<crate::dialogue::DialogueState>,
 ) {
     let seconds = time.elapsed_secs();
+    // The sequences active on each object, for `IsAnimPlaying`: a
+    // script's group (while it plays: a one-shot that has ended stops
+    // counting, though its last pose is held), a door's `Open` or
+    // `Close`, or the ones its model plays from the start (those holding a
+    // frame aren't counted: a guess).
+    let mut active: std::collections::HashMap<esm::FormId, Vec<String>> =
+        std::collections::HashMap::new();
     for (mut piece, placed, mut transform) in &mut pieces {
         let group = groups
             .0
@@ -404,6 +592,42 @@ fn move_pieces(
             .door
             .filter(|_| group.is_none())
             .and_then(|d| door_poses.0.get(&d).copied());
+        let names = active.entry(esm::FormId(placed.0)).or_default();
+        let mut add = |name: &str| {
+            if !names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+                names.push(name.to_string());
+            }
+        };
+        let motion = &piece.motion.motion;
+        // A one-shot that has reached its end no longer counts as playing
+        // (its pose is held, but `IsAnimPlaying` reads 0).
+        let named = |name: &str| {
+            motion
+                .all
+                .iter()
+                .find(|s| s.name.eq_ignore_ascii_case(name))
+        };
+        match (group, door_pose) {
+            (Some((name, since)), _) if named(name).is_some() => {
+                if named(name).is_some_and(|s| preview::cell::sequence_playing(s, since)) {
+                    add(name)
+                }
+            }
+            (None, Some((opening, since))) => {
+                let name = if opening { "Open" } else { "Close" };
+                // A door model without that sequence still counts as it did.
+                if named(name).is_none_or(|s| preview::cell::sequence_playing(s, since)) {
+                    add(name)
+                }
+            }
+            _ => {
+                for p in motion.sequences.iter().filter(|p| p.runs) {
+                    if preview::cell::sequence_playing(&p.sequence, seconds) {
+                        add(&p.sequence.name);
+                    }
+                }
+            }
+        }
         let now = match door_pose {
             Some((opening, at)) => cellview::piece_in_sequence(
                 &piece.motion,
@@ -435,6 +659,7 @@ fn move_pieces(
         }
         piece.shown = shown;
     }
+    world::more_functions::report_sequences(&mut dialogue.0, active);
 }
 
 /// A piece that turns to face the camera (`cellview::MeshData::billboard`):
@@ -477,8 +702,8 @@ fn face_camera(
 }
 
 #[derive(Resource)]
-struct Settings {
-    brightness: f32,
+pub(crate) struct Settings {
+    pub(crate) brightness: f32,
     /// `--cloud-time`: the clouds held at this many seconds of drift.
     cloud_time: Option<f32>,
     /// The textures' anisotropic filtering, from the INI
@@ -517,6 +742,31 @@ fn open_place(
     name: &str,
     at: Option<args::Stance>,
 ) -> Result<(Option<ViewerScene>, Option<ExteriorStart>), String> {
+    // A placed reference by editor ID (a marker, say): start standing
+    // where it stands, facing its way, in its cell or worldspace.
+    let placed = game
+        .order
+        .form_by_editor_id(name)
+        .filter(|&r| {
+            game.order.get(r).is_some_and(|rr| {
+                matches!(rr.entry.header.kind.as_bytes(), b"REFR" | b"ACHR" | b"ACRE")
+            })
+        })
+        .and_then(|r| world::scripting::whereabouts(&game.order, r));
+    if let (Some(w), None) = (placed, at) {
+        let stance = args::Stance {
+            feet: w.position,
+            heading: w.heading.to_degrees(),
+            pitch: 0.0,
+        };
+        let space = game
+            .order
+            .get(w.world.unwrap_or(w.cell))
+            .and_then(|r| r.editor_id().ok().flatten())
+            .ok_or_else(|| format!("{name}'s cell has no editor ID to open"))?;
+        println!("Starting at {name} in {space}.");
+        return open_place(game, &space, Some(stance));
+    }
     let heading = at.map_or(0.0, |a| a.heading.to_radians());
     // A worldspace by name: start where --at says, else in the middle of
     // square 0,0.
@@ -575,13 +825,24 @@ const BRING_IN_REACH: f32 = 2.5 * world::land::CELL_SIZE;
 /// door, or by a script's `MoveTo`) come on screen: once a second, anyone
 /// the state has here (`world::ai::moved_into`) who isn't drawn yet is
 /// spawned, lit as the place is; outdoors, those within the loaded
-/// squares.
+/// squares. They join the place's people ([`dialogue::Talkers`]: talking,
+/// trigger volumes, combat), and are put back among them when an outdoor
+/// square load rebuilds that list from the squares' own people. Without
+/// this Sunny Smiles, walking out of the saloon for `VCG02`, never counted
+/// in `VCG02SunnyPatrolTrigger` (its `OnTrigger SunnyREF` sets stage 20).
+/// Also whom a script enabled after their square loaded
+/// (`world::ai::enabled_since_load`): `GoodspringsPowderGangMarker.Enable`
+/// brings in the Powder Gangers following it, whose marker isn't loaded
+/// here, which [`bring_in_enabled`] (run first) doesn't cover.
+#[allow(clippy::too_many_arguments)]
 fn bring_in_people(
     time: Res<Time>,
     game: Res<GameFiles>,
     state: Res<dialogue::DialogueState>,
     player: Res<walk::Player>,
-    walkers: Query<&ai::Walker>,
+    walkers: Query<(&ai::Walker, &Visibility)>,
+    exterior: Option<Res<exterior::Exterior>>,
+    (mut talkers, mut brought): (ResMut<dialogue::Talkers>, ResMut<BroughtIn>),
     mut spawner: Spawner,
     mut last: Local<f32>,
 ) {
@@ -596,7 +857,19 @@ fn bring_in_people(
         return;
     };
     let shown: std::collections::HashSet<esm::FormId> =
-        walkers.iter().map(|w| w.reference).collect();
+        walkers.iter().map(|(w, _)| w.reference).collect();
+    let moved = world::ai::moved_into(order, state, space);
+    add_talkers(
+        &mut talkers.0,
+        walkers
+            .iter()
+            .filter(|(w, v)| **v != Visibility::Hidden && moved.contains(&w.reference))
+            .map(|(w, _)| dialogue::Talker {
+                reference: w.reference,
+                base: world::scripting::base_of(order, w.reference).unwrap_or(w.reference),
+                position: w.position,
+            }),
+    );
     let near = |r: esm::FormId| {
         state.player_world.is_none()
             || state
@@ -606,10 +879,17 @@ fn bring_in_people(
                     (p[0] - me[0]).hypot(p[1] - me[1]) <= BRING_IN_REACH
                 })
     };
-    let new: Vec<esm::FormId> = world::ai::moved_into(order, state, space)
+    let enabled = exterior
+        .as_deref()
+        .map(|e| world::ai::enabled_since_load(order, state, space, &e.disabled_people()))
+        .unwrap_or_default();
+    let mut new: Vec<esm::FormId> = moved
         .into_iter()
+        .chain(enabled)
         .filter(|r| !shown.contains(r) && near(*r))
         .collect();
+    new.sort();
+    new.dedup();
     if new.is_empty() {
         return;
     }
@@ -618,7 +898,187 @@ fn bring_in_people(
     for r in &new {
         println!("{r} comes into view");
     }
+    add_talkers(
+        &mut talkers.0,
+        scene.actors.iter().map(dialogue::Talker::from_actor),
+    );
     spawner.spawn_with(&scene, lighting);
+    brought.remember(space, scene.actors.iter().map(|a| esm::FormId(a.reference)));
+}
+
+impl BroughtIn {
+    /// People put on screen in `space` after its squares loaded: they can be
+    /// talked to, shot and targeted like the place's own people.
+    fn remember(&mut self, space: esm::FormId, people: impl IntoIterator<Item = esm::FormId>) {
+        if self.space != Some(space) {
+            *self = BroughtIn {
+                space: Some(space),
+                people: Default::default(),
+            };
+        }
+        self.people.extend(people);
+    }
+}
+
+/// The people [`bring_in_people`] put on screen in the current place (not
+/// part of a loaded square or cell): outdoors they stay among the talkers
+/// when the loaded squares change (`exterior::stream_squares`).
+#[derive(Resource, Default)]
+pub struct BroughtIn {
+    space: Option<esm::FormId>,
+    pub people: std::collections::HashSet<esm::FormId>,
+}
+
+/// References a script's `Enable` / `Disable` changed after their place
+/// loaded: those of the loaded place now shown (themselves, or through
+/// their enable parent: `world::newly_enabled`) come on screen, drawn if
+/// they were left out when it loaded (people join its people); drawn ones
+/// now hidden through their parent are hidden. Their own `Enable` is
+/// carried out by `run_scripts`; this covers what wasn't drawn and the
+/// children (`VCG02BottleMarkerREF.Enable` shows the tutorial's bottles,
+/// `VCG02Gecko1REF.Enable` brings in a gecko left out at load). The game
+/// loads an enabled reference's 3D (`005c43d0` → `005aa5d0`).
+#[allow(clippy::too_many_arguments)]
+fn bring_in_enabled(
+    game: Res<GameFiles>,
+    state: Res<dialogue::DialogueState>,
+    player: Res<walk::Player>,
+    here: Res<scripts::Here>,
+    exterior: Option<Res<exterior::Exterior>>,
+    mut placed: Query<(&scripts::PlacedRef, &mut Visibility)>,
+    (mut talkers, mut brought): (ResMut<dialogue::Talkers>, ResMut<BroughtIn>),
+    mut spawner: Spawner,
+    mut seen: Local<EnableSeen>,
+) {
+    let state = &state.0;
+    if !player.ready {
+        return;
+    }
+    let space = state.player_world.or(state.player_cell);
+    let mut squares: Vec<(i32, i32)> = match (&exterior, state.player_world) {
+        (Some(e), Some(_)) => e.loaded_squares().into_iter().collect(),
+        _ => Vec::new(),
+    };
+    squares.sort();
+    // Looked at again when scripts enable or disable something, and when
+    // the place or its loaded squares change (a square that was loading
+    // while a script enabled something may have left it out).
+    let place = (space, squares);
+    let moved_on = seen.place != place;
+    if !moved_on && seen.disabled == state.disabled {
+        return;
+    }
+    let before = std::mem::replace(&mut seen.disabled, state.disabled.clone());
+    seen.place = place;
+    let order = &game.0.order;
+    let refs: Vec<esm::FormId> = match (&exterior, state.player_world, here.0) {
+        (Some(e), Some(_), _) => seen
+            .place
+            .1
+            .iter()
+            .flat_map(|&square| {
+                let mut refs: Vec<esm::FormId> = e
+                    .grid
+                    .cell_at(square)
+                    .map(|c| {
+                        order
+                            .references_in_cell(c)
+                            .into_iter()
+                            .map(|rr| rr.form_id)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                refs.extend_from_slice(e.grid.persistent_in(square));
+                refs
+            })
+            .collect(),
+        (_, None, Some(cell)) => order
+            .references_in_cell(esm::FormId(cell))
+            .into_iter()
+            .map(|rr| rr.form_id)
+            .collect(),
+        _ => return,
+    };
+    // Drawn ones whose state changed since the last look (only then, so
+    // people hidden for being elsewhere stay hidden).
+    let (came, went) = if moved_on {
+        (Vec::new(), Vec::new())
+    } else {
+        (
+            world::newly_enabled(order, refs.iter().copied(), &before, &state.disabled),
+            world::newly_enabled(order, refs.iter().copied(), &state.disabled, &before),
+        )
+    };
+    let mut drawn = std::collections::HashSet::new();
+    for (p, mut visibility) in &mut placed {
+        let r = esm::FormId(p.0);
+        drawn.insert(r);
+        if came.contains(&r) {
+            *visibility = Visibility::Inherited;
+        } else if went.contains(&r) {
+            *visibility = Visibility::Hidden;
+        }
+    }
+    // Shown now but left out when loaded (as the data has them at first),
+    // still here and not drawn.
+    let shown_now = world::newly_enabled(
+        order,
+        refs.iter().copied(),
+        &world::Disabled::new(),
+        &state.disabled,
+    );
+    let new: Vec<world::Placement> = shown_now
+        .iter()
+        .filter(|r| !drawn.contains(r) && !state.dead.contains(r))
+        .filter(|&&r| state.place(order, r).is_some_and(|p| Some(p.0) == space))
+        .filter_map(|&r| world::placement_of(order, r))
+        .filter(|p| !world::is_marker(p.base, p.base_type, p.model.as_deref()))
+        .collect();
+    if new.is_empty() {
+        return;
+    }
+    for p in &new {
+        println!(
+            "{} ({}) comes into view (enabled)",
+            p.form_id,
+            p.base_editor_id.as_deref().unwrap_or("?")
+        );
+    }
+    let scene = game.0.made_scene(new);
+    add_talkers(
+        &mut talkers.0,
+        scene.actors.iter().map(dialogue::Talker::from_actor),
+    );
+    // Kept among the place's people when its loaded squares change
+    // (`exterior::stream_squares` rebuilds them from the squares, which
+    // left these out while they were disabled): before, the Powder Gangers
+    // enabled for Ghost Town Gunfight dropped out at the next square change
+    // and shots passed through them.
+    if let Some(space) = space {
+        brought.remember(space, scene.actors.iter().map(|a| esm::FormId(a.reference)));
+    }
+    let lighting = spawner.place_lighting.get();
+    spawner.spawn_with(&scene, lighting);
+}
+
+/// What [`bring_in_enabled`] last looked at: the place (interior cell or
+/// worldspace, and the loaded squares) and the scripts' enable state.
+#[derive(Default)]
+struct EnableSeen {
+    place: (Option<esm::FormId>, Vec<(i32, i32)>),
+    disabled: world::Disabled,
+}
+
+/// Adds people to the place's people, each once.
+fn add_talkers(
+    talkers: &mut Vec<dialogue::Talker>,
+    people: impl IntoIterator<Item = dialogue::Talker>,
+) {
+    for p in people {
+        if !talkers.iter().any(|t| t.reference == p.reference) {
+            talkers.push(p);
+        }
+    }
 }
 
 /// References scripts made (`PlaceAtMe`, `world::more_functions::placed`)
@@ -711,6 +1171,8 @@ fn take_screenshot(
     // The help and the health line stay out of pictures compared with
     // the game's.
     mut help: Query<&mut Visibility, KeptOutOfPictures>,
+    flash: Res<weapon_fx::WeaponEffects>,
+    impacts: Res<impact_fx::ImpactFx>,
 ) {
     let Some(path) = request.path.clone() else {
         return;
@@ -726,6 +1188,19 @@ fn take_screenshot(
     request.frames += 1;
     request.waited += time.delta_secs();
     if request.taken || request.frames < SCREENSHOT_AFTER_FRAMES || request.waited < request.wait {
+        return;
+    }
+    // `NV_SHOT_ON_FLASH=player` (or `npc`): after that, the picture waits
+    // for a muzzle flash on screen (`weapon_fx`), to check one by eye.
+    if let Ok(which) = std::env::var("NV_SHOT_ON_FLASH") {
+        let want = which.eq_ignore_ascii_case("player");
+        if flash.shown != Some(want) {
+            return;
+        }
+    }
+    // `NV_SHOT_ON_IMPACT=1`: it waits for an impact's effect model on
+    // screen (`impact_fx`).
+    if std::env::var("NV_SHOT_ON_IMPACT").is_ok() && !impacts.shown {
         return;
     }
     request.taken = true;
@@ -753,7 +1228,7 @@ struct Grading {
 struct PendingScene(Option<ViewerScene>);
 
 #[derive(Component)]
-struct FlyCamera {
+pub(crate) struct FlyCamera {
     yaw: f32,
     pitch: f32,
     /// Meters per second.
@@ -1008,6 +1483,10 @@ fn setup(mut commands: Commands) {
         // The game clips what's too bright rather than rolling it off, and
         // the lighting shader already gives the game's brightness.
         Tonemapping::None,
+        // No light clusters: every surface is lit by the game's lights in
+        // its own shader, never Bevy's (there are none), so working out
+        // which of them reach each cluster is wasted.
+        bevy::pbr::ClusterConfig::None,
         Projection::from(PerspectiveProjection {
             // The game's: its 75° setting is the width of a 4:3 picture,
             // and wider windows keep that height.
@@ -1069,9 +1548,49 @@ pub struct Spawner<'w, 's> {
     place_lighting: ResMut<'w, viewmodel::PlaceLighting>,
     water: water::WaterSpawn<'w>,
     particle_materials: ResMut<'w, Assets<particles::ParticleMaterial>>,
+    uploaded: ResMut<'w, UploadedTextures>,
 }
 
+/// The places' textures on the GPU by what they are (the file, read as
+/// data or colour, its layers, compressed or not, the anisotropy), so a
+/// texture another loaded place already has isn't converted and sent
+/// again (outdoor squares share most of theirs). Only ids: a texture
+/// goes when no place holds it any more, as before, and is sent again
+/// if it's wanted after.
+#[derive(Resource, Default)]
+pub struct UploadedTextures(
+    std::collections::HashMap<(String, bool, u32, bool, u16), AssetId<Image>>,
+);
+
 impl Spawner<'_, '_> {
+    /// A place's texture: the one already on the GPU when a loaded place
+    /// has it, else sent now.
+    fn texture(
+        &mut self,
+        texture: &TextureData,
+        compressed: bool,
+        anisotropy: u16,
+    ) -> Option<Handle<Image>> {
+        let key = (
+            texture.path.clone(),
+            texture.linear,
+            texture.layers,
+            compressed,
+            anisotropy,
+        );
+        if let Some(handle) = self
+            .uploaded
+            .0
+            .get(&key)
+            .and_then(|&id| self.images.get_strong_handle(id))
+        {
+            return Some(handle);
+        }
+        let handle = upload_texture(&mut self.images, texture, compressed, anisotropy)?;
+        self.uploaded.0.insert(key, handle.id());
+        Some(handle)
+    }
+
     /// Puts a loaded place's textures, models and terrain on screen, and
     /// returns what it spawned (so an outdoor square can be dropped later).
     fn spawn(&mut self, scene: &ViewerScene) -> Vec<Entity> {
@@ -1123,6 +1642,8 @@ impl Spawner<'_, '_> {
         lighting: Option<GameLighting>,
         land_blend: Option<LandBlendFrom>,
     ) -> Spawned {
+        // Its clutter's bodies go to the simulation (`clutter`).
+        clutter::arrive(&scene.bodies);
         // Every desktop graphics card takes block-compressed textures;
         // check when the device is visible from here.
         let compressed = self
@@ -1133,7 +1654,7 @@ impl Spawner<'_, '_> {
         let textures: Vec<Option<Handle<Image>>> = scene
             .textures
             .iter()
-            .map(|t| upload_texture(&mut self.images, t, compressed, anisotropy))
+            .map(|t| self.texture(t, compressed, anisotropy))
             .collect();
         if scene.lights.len() > MAX_LIGHTS {
             println!(
@@ -1165,6 +1686,10 @@ impl Spawner<'_, '_> {
         // Blended pieces are built around the point the game sorts them by
         // (see `sort_center`).
         let centers: Vec<Option<[f32; 3]>> = scene.meshes.iter().map(sort_center).collect();
+        // Pieces with the same material (its data, and whether a normal map
+        // can be used) share one, so their draws can go together.
+        let mut same_material: std::collections::HashMap<String, Handle<GameLitMaterial>> =
+            std::collections::HashMap::new();
         for (data, center) in scene.meshes.iter().zip(&centers) {
             let (mesh, bind) = match actors::skinned_mesh(data) {
                 Some((mesh, bind)) => (
@@ -1177,9 +1702,14 @@ impl Spawner<'_, '_> {
                     None,
                 ),
             };
-            let material = self
-                .lit_materials
-                .add(lit_material(data, &textures, lighting));
+            let key = format!("{:?} {}", data.material, data.tangents.is_some());
+            let material = same_material
+                .entry(key)
+                .or_insert_with(|| {
+                    self.lit_materials
+                        .add(lit_material(data, &textures, lighting))
+                })
+                .clone();
             pieces.push((mesh, material));
             binds.push(bind);
         }
@@ -1248,7 +1778,12 @@ impl Spawner<'_, '_> {
                 transform,
                 SceneEntity,
                 scripts::PlacedRef(draw.reference),
+                swaps::PieceName(scene.meshes[draw.mesh].shape_name.clone()),
             ));
+            // What the game puts world decals on (`impact_fx`).
+            if scene.meshes[draw.mesh].strips && !scene.meshes[draw.mesh].material.decal {
+                piece.insert(impact_fx::DecalReceiver);
+            }
             // A glow that follows a region's weather (`emittance`).
             if let Some(link) = scene.meshes[draw.mesh].material.emittance {
                 piece.insert(emittance::Glow(link));
@@ -1313,6 +1848,7 @@ impl Spawner<'_, '_> {
                         MeshMaterial3d(material),
                         Transform::IDENTITY,
                         SceneEntity,
+                        impact_fx::LandReceiver,
                     ))
                     .id(),
             );
@@ -1357,12 +1893,25 @@ pub struct Spawned {
 
 impl Spawner<'_, '_> {
     /// One actor on its own (the first-person view) under `parent`, lit by
-    /// `lighting`: its root, its joints and its pieces' entities.
+    /// `lighting`, drawn by the first-person camera alone: its root, its
+    /// joints and its pieces' entities.
     fn spawn_lone_actor(
         &mut self,
         scene: &ViewerScene,
         lighting: GameLighting,
         parent: Entity,
+    ) -> Option<(Entity, Vec<Entity>, Vec<Entity>)> {
+        self.spawn_lone_actor_on(scene, lighting, parent, viewmodel::FIRST_PERSON_LAYER)
+    }
+
+    /// [`Self::spawn_lone_actor`] drawn on render layer `layer` (0: the
+    /// main camera's, for the player's third-person body).
+    fn spawn_lone_actor_on(
+        &mut self,
+        scene: &ViewerScene,
+        lighting: GameLighting,
+        parent: Entity,
+        layer: usize,
     ) -> Option<(Entity, Vec<Entity>, Vec<Entity>)> {
         let actor = scene.actors.first()?;
         let compressed = self
@@ -1373,7 +1922,7 @@ impl Spawner<'_, '_> {
         let textures: Vec<Option<Handle<Image>>> = scene
             .textures
             .iter()
-            .map(|t| upload_texture(&mut self.images, t, compressed, anisotropy))
+            .map(|t| self.texture(t, compressed, anisotropy))
             .collect();
         let root = self
             .commands
@@ -1409,8 +1958,7 @@ impl Spawner<'_, '_> {
                         Transform::IDENTITY,
                         actors::skinned(bind, skin_joints),
                         bevy::render::view::NoFrustumCulling,
-                        // Drawn by the first-person camera alone.
-                        bevy::render::view::RenderLayers::layer(viewmodel::FIRST_PERSON_LAYER),
+                        bevy::render::view::RenderLayers::layer(layer),
                         ChildOf(root),
                     ))
                     .id(),
@@ -1469,6 +2017,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -1497,7 +2046,10 @@ impl Spawner<'_, '_> {
         self.commands
             .spawn((
                 Mesh3d(self.meshes.add(mesh)),
-                MeshMaterial3d(self.lit_materials.add(GameLitMaterial { base, extension })),
+                MeshMaterial3d(self.lit_materials.add(GameLitMaterial {
+                    base,
+                    extension: extension.into(),
+                })),
                 Transform::from_scale(Vec3::splat(scale)),
                 bevy::render::view::NoFrustumCulling,
                 daylight::SkyWeights(dome.weights.clone()),
@@ -1581,6 +2133,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -1608,7 +2161,10 @@ impl Spawner<'_, '_> {
         self.commands
             .spawn((
                 Mesh3d(self.meshes.add(mesh)),
-                MeshMaterial3d(self.lit_materials.add(GameLitMaterial { base, extension })),
+                MeshMaterial3d(self.lit_materials.add(GameLitMaterial {
+                    base,
+                    extension: extension.into(),
+                })),
                 Transform::from_scale(Vec3::splat(scale * 0.99)),
                 bevy::render::view::NoFrustumCulling,
                 daylight::SunDisk { half_size, glare },
@@ -1660,6 +2216,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -1686,7 +2243,10 @@ impl Spawner<'_, '_> {
         self.commands
             .spawn((
                 Mesh3d(self.meshes.add(mesh)),
-                MeshMaterial3d(self.lit_materials.add(GameLitMaterial { base, extension })),
+                MeshMaterial3d(self.lit_materials.add(GameLitMaterial {
+                    base,
+                    extension: extension.into(),
+                })),
                 Transform::from_scale(Vec3::splat(scale)),
                 bevy::render::view::NoFrustumCulling,
                 daylight::Stars { fade },
@@ -1725,6 +2285,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -1752,7 +2313,10 @@ impl Spawner<'_, '_> {
         self.commands
             .spawn((
                 Mesh3d(self.meshes.add(mesh)),
-                MeshMaterial3d(self.lit_materials.add(GameLitMaterial { base, extension })),
+                MeshMaterial3d(self.lit_materials.add(GameLitMaterial {
+                    base,
+                    extension: extension.into(),
+                })),
                 Transform::from_scale(Vec3::splat(scale * 0.98)),
                 bevy::render::view::NoFrustumCulling,
                 CloudScroll {
@@ -1810,12 +2374,14 @@ fn srgb_decode(c: f32) -> f32 {
     }
 }
 
-/// `--fps`: frames counted, and the time since the last report.
+/// `--fps`: frames counted, the time since the last report and the
+/// longest frame in it (a hitch).
 #[derive(Resource, Default)]
 struct FrameCounter {
     on: bool,
     frames: u32,
     seconds: f32,
+    longest: f32,
 }
 
 fn report_fps(time: Res<Time>, mut counter: ResMut<FrameCounter>) {
@@ -1824,14 +2390,17 @@ fn report_fps(time: Res<Time>, mut counter: ResMut<FrameCounter>) {
     }
     counter.frames += 1;
     counter.seconds += time.delta_secs();
+    counter.longest = counter.longest.max(time.delta_secs());
     if counter.seconds >= 2.0 {
         println!(
-            "{:.0} frames per second ({:.1} ms a frame)",
+            "{:.0} frames per second ({:.1} ms a frame, longest {:.1} ms)",
             counter.frames as f32 / counter.seconds,
-            1000.0 * counter.seconds / counter.frames as f32
+            1000.0 * counter.seconds / counter.frames as f32,
+            1000.0 * counter.longest
         );
         counter.frames = 0;
         counter.seconds = 0.0;
+        counter.longest = 0.0;
     }
 }
 
@@ -1982,6 +2551,7 @@ fn lit_material(
             _ => 0.0,
         };
         GameLit {
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 emissive: Vec4::new(ur, ug, ub, 0.0),
                 surface: Vec4::new(0.0, 0.0, 1.0, fog_mode),
@@ -2015,6 +2585,7 @@ fn lit_material(
             .and_then(|(e, _)| e.mask)
             .and_then(|i| textures[i].clone());
         GameLit {
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 emissive: Vec4::new(er, eg, eb, flag(glow.is_some())),
                 specular,
@@ -2051,7 +2622,10 @@ fn lit_material(
         }
     };
     extension.lighting.draw = draw;
-    GameLitMaterial { base, extension }
+    GameLitMaterial {
+        base,
+        extension: extension.into(),
+    }
 }
 
 /// Where decals sort among blended surfaces (Bevy's depth bias, added to
@@ -2093,6 +2667,7 @@ fn spawn_scene(
         window.title = format!("nv-rs viewer - {}", scene.cell);
     }
     spawner.spawn(&scene);
+    local_map::capture_interior(&mut spawner.commands, &scene);
 
     let eye = Vec3::from(space::point(scene.start.eye));
     let yaw = space::heading_to_yaw(scene.start.heading);
@@ -2139,19 +2714,20 @@ fn spawn_scene(
 
 fn help_text(ev100: f32, speed: f32, walking: bool) -> String {
     let moving = if walking {
-        "Walking: hold the right mouse button to look, left to attack (R reloads); WASD, \
-         Shift to walk slowly, Ctrl to sneak, Space to jump, E to use things"
+        "Walking: the mouse looks, left button attacks, right aims (R: reload, hold: holster); \
+         WASD, Shift to walk slowly, Ctrl: sneak on/off, Space to jump, E to use things"
             .to_string()
     } else {
         format!(
-            "Flying: hold a mouse button to look; WASD, Space/Ctrl up/down, Shift faster, \
+            "Flying: the mouse looks; WASD, Space/Ctrl up/down, Shift faster, \
              wheel: speed ({speed:.1} m/s), E to use things"
         )
     };
     format!(
         "{moving}\n\
-         F: walk/fly   V: V.A.T.S.   Tab: Pip-Boy   T: wait   F5/F9: save/load   \
-         [ ]: exposure (EV {ev100:.1})   G: image space   Home: start   Esc: quit"
+         F: first/third person (hold: look around; wheel: zoom)   `: walk/fly\n\
+         V: V.A.T.S.   Tab: Pip-Boy   T: wait   F5/F9: save/load   \
+         [ ]: exposure (EV {ev100:.1})   G: image space   Home: start   Esc: pause menu"
     )
 }
 
@@ -2172,33 +2748,102 @@ fn update_help(
     }
 }
 
-/// Holding a mouse button turns the view, walking or flying.
+/// Whether the game is in menu mode for the mouse: a menu, the Pip-Boy,
+/// lockpicking, the dialogue menu (not a line said in passing) or
+/// V.A.T.S. is up. Then the mouse is the menus' pointer; otherwise, walking,
+/// it turns the view as the game's always does.
+fn mouse_in_menus(
+    menus: Option<&menus::Menus>,
+    conversation: Option<&dialogue::Conversation>,
+    vats: Option<&vats::Vats>,
+) -> bool {
+    menus.is_some_and(|m| m.is_open())
+        || conversation.is_some_and(|c| c.0.as_ref().is_some_and(|t| !t.is_line_only()))
+        || vats.is_some_and(|v| v.is_on())
+}
+
+/// What says the mouse belongs to the menus ([`mouse_in_menus`]).
+type MenuGates<'w> = (
+    Option<Res<'w, menus::Menus>>,
+    Option<Res<'w, dialogue::Conversation>>,
+    Option<Res<'w, vats::Vats>>,
+);
+
+/// The mouse turns the view: walking, always (the game's mouse look; the
+/// right button is the Aim control, `combat`), except in menus; flying,
+/// while a button is held.
+#[allow(clippy::too_many_arguments)]
 fn look_around(
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     state: Res<dialogue::DialogueState>,
     player: Res<walk::Player>,
     start_stage: Res<scripts::StartStage>,
+    view: Option<Res<player_camera::PlayerView>>,
     mut cameras: Query<(&mut Transform, &mut FlyCamera)>,
+    (menus, conversation, vats): MenuGates,
 ) {
     let Ok((mut transform, mut camera)) = cameras.single_mut() else {
         return;
     };
+    // Holding the view key (F), the mouse turns the camera around the
+    // player instead (`player_camera`).
+    let taken = player.walking && view.is_some_and(|v| v.mouse_taken);
     // Scripts can block looking through controls or a player AI package;
-    // the free-flying camera (F) isn't the player and always looks.
+    // the free-flying camera (`) isn't the player and always looks.
     // Walking, the left button attacks (`combat`), so the right one looks.
     // The initial stage is dispatched later in this Update chain. Do not
     // accept an input frame before it installs the player's native package
     // lock (005cc4f0 -> 005cc7a0), or while the place is still loading.
     let locked = player.walking
         && (!player.ready || start_stage.0.is_some() || state.0.player_looking_blocked());
-    let held =
-        mouse.pressed(MouseButton::Right) || (!player.walking && mouse.pressed(MouseButton::Left));
-    if !locked && held {
+    let held = if player.walking {
+        !mouse_in_menus(menus.as_deref(), conversation.as_deref(), vats.as_deref())
+    } else {
+        mouse.pressed(MouseButton::Right) || mouse.pressed(MouseButton::Left)
+    };
+    if !locked && held && !taken {
         camera.yaw -= motion.delta.x * LOOK_SPEED;
         camera.pitch = (camera.pitch - motion.delta.y * LOOK_SPEED).clamp(-1.54, 1.54);
     }
     transform.rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
+}
+
+/// Walking outside menus the pointer is hidden and held in the window, as
+/// the game holds it for its mouse look; in menus, flying or with the
+/// window in the background it's free.
+fn grab_cursor(
+    player: Res<walk::Player>,
+    menus: Option<Res<menus::Menus>>,
+    conversation: Option<Res<dialogue::Conversation>>,
+    vats: Option<Res<vats::Vats>>,
+    mut windows: Query<&mut Window, With<bevy::window::PrimaryWindow>>,
+) {
+    let Ok(mut window) = windows.single_mut() else {
+        return;
+    };
+    let grab = player.walking
+        && window.focused
+        && !mouse_in_menus(menus.as_deref(), conversation.as_deref(), vats.as_deref());
+    // Windows can't lock the pointer: there it's confined and put back in
+    // the middle each frame (the look reads the mouse's own motion).
+    let (mode, visible) = if !grab {
+        (CursorGrabMode::None, true)
+    } else if cfg!(target_os = "windows") {
+        (CursorGrabMode::Confined, false)
+    } else {
+        (CursorGrabMode::Locked, false)
+    };
+    if window.cursor_options.grab_mode != mode || window.cursor_options.visible != visible {
+        window.cursor_options.grab_mode = mode;
+        window.cursor_options.visible = visible;
+    }
+    if grab && cfg!(target_os = "windows") {
+        let middle = Vec2::new(window.width(), window.height()) / 2.0;
+        if window.cursor_position() != Some(middle) {
+            window.set_cursor_position(Some(middle));
+        }
+    }
 }
 
 /// G switches the cell's color adjustment (saturation, tint, contrast,
@@ -2289,15 +2934,53 @@ fn adjust_exposure(keys: Res<ButtonInput<KeyCode>>, mut cameras: Query<&mut Expo
     }
 }
 
-fn quit_on_escape(keys: Res<ButtonInput<KeyCode>>, mut exit: EventWriter<AppExit>) {
-    if keys.just_pressed(KeyCode::Escape) {
-        exit.write(AppExit::Success);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sunny Smiles walking out of the saloon (`VCG02`) must join the
+    /// outdoor people, once, so trigger volumes see her.
+    #[test]
+    fn people_brought_in_join_the_place_once() {
+        let at = |r: u32, x: f32| dialogue::Talker {
+            reference: esm::FormId(r),
+            base: esm::FormId(r + 1),
+            position: [x, 0.0, 0.0],
+        };
+        let mut talkers = vec![at(0x10, 0.0)];
+        add_talkers(&mut talkers, [at(0x00104E85, 5.0), at(0x10, 9.0)]);
+        add_talkers(&mut talkers, [at(0x00104E85, 7.0)]);
+        let refs: Vec<u32> = talkers.iter().map(|t| t.reference.0).collect();
+        assert_eq!(refs, [0x10, 0x00104E85]);
+        // The ones already there keep their places.
+        assert_eq!(talkers[0].position[0], 0.0);
+        assert_eq!(talkers[1].position[0], 5.0);
+    }
+
+    /// People a script enabled after their square loaded (the Powder Gangers
+    /// of Ghost Town Gunfight, `GoodspringsPowderGangMarker.Enable`) stay
+    /// among the place's people when the loaded squares change: before, the
+    /// rebuilt list left them out and shots passed through them.
+    #[test]
+    fn people_enabled_after_loading_stay_when_squares_change() {
+        let at = |r: u32| dialogue::Talker {
+            reference: esm::FormId(r),
+            base: esm::FormId(r + 1),
+            position: [0.0; 3],
+        };
+        let world = esm::FormId(0x000DA726);
+        let ganger = esm::FormId(0x00104C72);
+        let mut brought = BroughtIn::default();
+        brought.remember(world, [ganger]);
+        let old = vec![at(0x10), at(ganger.0)];
+        let on_screen: std::collections::HashSet<_> = [esm::FormId(0x10), ganger].into();
+        let rebuilt = exterior::with_brought_in(vec![at(0x10)], &old, &brought.people, &on_screen);
+        let refs: Vec<u32> = rebuilt.iter().map(|t| t.reference.0).collect();
+        assert_eq!(refs, [0x10, ganger.0]);
+        // Another place forgets them.
+        brought.remember(esm::FormId(0x3C), []);
+        assert!(brought.people.is_empty());
+    }
 
     #[test]
     fn mouse_motion_cannot_turn_player_during_script_package_and_releases_afterward() {
@@ -2452,6 +3135,8 @@ mod tests {
             rig: None,
             motion: None,
             billboard: None,
+            local_map: false,
+            strips: false,
         }
     }
 

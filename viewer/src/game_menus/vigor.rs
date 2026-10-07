@@ -457,6 +457,8 @@ pub fn draw(
                         .looking_to(Vec3::NEG_Y, Vec3::NEG_Z),
                     Tonemapping::None,
                     DebandDither::Disabled,
+                    // No light clusters: nothing here is lit by Bevy's lights.
+                    bevy::pbr::ClusterConfig::None,
                     Exposure {
                         ev100: crate::START_EV100,
                     },
@@ -482,6 +484,9 @@ pub fn draw(
                         MeshMaterial3d(material),
                         Transform::IDENTITY,
                         RenderLayers::layer(SCENE_LAYER),
+                        // Lit by the menu's own lights, not the hour's
+                        // outdoors (as the lockpicking and Caravan pieces).
+                        crate::shared_light::MenuLit,
                         VigorPiece {
                             mesh: draw.mesh,
                             reference: draw.reference,

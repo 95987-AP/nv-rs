@@ -1335,6 +1335,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bink"
+version = "0.1.0"
+
+[[package]]
 name = "bit-set"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3051,14 +3055,17 @@ version = "0.1.0"
 dependencies = [
  "assets",
  "bevy",
+ "bink",
  "cellview",
  "esm",
+ "lewton",
  "nif",
  "physics",
  "preview",
  "speedtree",
  "testdata",
  "ui",
+ "wgpu",
  "world",
 ]
 

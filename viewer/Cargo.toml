@@ -13,6 +13,9 @@ publish = false
 [dependencies]
 # Pinned: Bevy's API changes between releases.
 bevy = "0.16"
+# Bevy's own wgpu (the same version, no features of its own): the window's
+# surface asked which present modes it takes (`present`).
+wgpu = { version = "24", default-features = false }
 cellview = { path = "../crates/cellview" }
 physics = { path = "../crates/physics" }
 world = { path = "../crates/world" }
@@ -21,7 +24,11 @@ nif = { path = "../crates/nif" }
 preview = { path = "../crates/preview" }
 assets = { path = "../crates/assets" }
 ui = { path = "../crates/ui" }
+bink = { path = "../crates/bink" }
 speedtree = { path = "../crates/speedtree" }
+# Decodes the game's .ogg sounds (already in the build through Bevy's audio,
+# whose own .ogg playback crashed the viewer in Dead Money's Villa).
+lewton = "0.10"
 
 [dev-dependencies]
 testdata = { path = "../crates/testdata" }

@@ -5,17 +5,18 @@
 //! animations give.
 //!
 //! The animations are played as the game plays them
-//! (`world::animation`): each body section has a group playing (the idle
-//! loop under everything; the walk or run in the movement section while
-//! moving, at the rate that makes the file's root travel the actor's
-//! speed; the aim and attacks in the weapon section while fighting; the
-//! seat's loop in place of the idle; sitting down, getting up and the
-//! tree's idles in the special-idle section), and a change of group
-//! cross-fades over the files' blend times, the sequences blended per
-//! bone by their priorities. Here the frame's flags (`walking`,
-//! `running`, `fighting`, …, set by `ai`, `fighting` and `sitting`) say
-//! what each section should play, as the game's mover flags do for
-//! `Actor::PickAnimations`.
+//! (`world::animation`), picked each frame as `Actor::PickAnimations`
+//! picks them (`world::animation::pick`): the group for what the actor
+//! does (standing, walking, running or sneaking in a direction, turning in
+//! place, drawing or putting away the weapon, aiming, attacking) with its
+//! weapon kind and movement kind, looked up in the files its 3D loads
+//! (`anim_library`) with the game's fallbacks; the seat's loop in place of
+//! the idle; sitting down, getting up and the tree's idles in the
+//! special-idle section. A change of group cross-fades over the files'
+//! blend times, the sequences blended per bone by their priorities. The
+//! frame's flags (`walking`, `running`, `fighting`, …, set by `ai`,
+//! `fighting`, `sitting` and `player_body`) stand for the game's mover and
+//! process state.
 
 use std::sync::Arc;
 
@@ -25,7 +26,12 @@ use bevy::render::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::render::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use cellview::{space, ActorData, MeshData};
 use preview::cell::ActorSkeleton;
-use world::animation::{self, group, section, GroupData, MoveFlags, Player};
+use world::animation::groups::AnimSet;
+use world::animation::pick::{Frame, Library, Picker};
+use world::animation::{self, group, section, MoveFlags, Player};
+
+/// The player's reference.
+const PLAYER: esm::FormId = esm::FormId(0x14);
 use world::movement::TurnSide;
 
 /// The animation settings from the INI (`[General]`
@@ -56,25 +62,45 @@ pub struct ActorRig {
     pub joints: Vec<Entity>,
     /// The sequences playing and blending (the game's `AnimData`).
     pub player: Player,
+    /// What `PickAnimations` keeps: the ids played, the action under way,
+    /// whether the weapon is drawn.
+    pub picker: Picker,
+    /// The files the actor's 3D has (`anim_library`), once read.
+    pub anims: Option<Arc<AnimSet>>,
     /// The actor's scale: the rates are worked out before it.
     pub scale: f32,
     /// How fast it moves over the ground this frame, units a second with
     /// its scale (`ai`, `fighting`); 0 standing.
     pub speed: f32,
     /// Walking (`ai`), which plays the walk instead of the idle; running
-    /// (in a fight or fleeing), which plays the run with the weapon ready.
+    /// (in a fight or fleeing), which plays the run.
     pub walking: bool,
     pub running: bool,
+    /// Sneaking (movement flag 0x400): the sneak groups.
+    pub sneaking: bool,
     /// Turning in place (`ai`: the game's turn, movement flags 0x10 left,
     /// 0x20 right), which plays the turn animation when not walking, at the
     /// turn's own scale (`rate`: `fAITurnSpeedScale` 1.5, `00888070`).
     pub turning: Option<(TurnSide, f32)>,
     /// Holding its pose (the dead).
     pub still: bool,
-    /// In a fight (`ai`): the weapon held ready instead of put away.
+    /// In a fight (`ai`; actor +0x104, `bInCombat`, Xbox PDB).
     pub fighting: bool,
-    /// When (elapsed seconds) the last attack began.
+    /// The process wants the weapon out (`GetWantWeaponDrawn`, Xbox PDB):
+    /// drawing and putting it away follow it.
+    pub want_drawn: bool,
+    /// The weapon in hand's weapon kind (none: unarmed).
+    pub weapon_kind: Option<u8>,
+    /// A character, not a creature.
+    pub character: bool,
+    /// In furniture (no drawing the weapon).
+    pub seated: bool,
+    /// When (elapsed seconds) the last attack began, and the group it
+    /// plays (the weapon's attack animation, `AttackRight` by default).
     pub attack_at: Option<f32>,
+    pub attack_group: u8,
+    /// A reload begun: when, and its group (`ReloadA` … `ReloadZ`).
+    pub reload_at: Option<(f32, u8)>,
     /// The base loop the idle tree gave instead of the standing idle (the
     /// seated loop in a chair, `ai::Seats`), looping.
     pub dynamic_idle: Option<Arc<nif::Sequence>>,
@@ -85,13 +111,44 @@ pub struct ActorRig {
     /// A script-requested special idle owns its actual KF clock until it
     /// finishes; the furniture/free-idle clock must not overwrite it.
     pub scripted_idle: Option<esm::FormId>,
+    /// The section a requested or scripted idle plays in (its `IDLE`
+    /// record's: 7 the special idle, 0x15 the upper body, 1 or 0x14 the
+    /// movement section, `00498290`), and the one the overlay (a free idle
+    /// from the tree, sitting down, getting up) plays in.
+    pub idle_section: u8,
+    pub overlay_section: u8,
+    /// The section the overlay was last played in.
+    overlay_in: Option<u8>,
     /// Dead: the ragdoll its bones follow.
     pub ragdoll: Option<Box<DeadBody>>,
     /// Has dropped its weapon (`world::body_parts::hurt_part`): the weapon
     /// model, on the `Weapon` bone, is hidden by shrinking that bone.
     pub disarmed: bool,
-    /// The attack the weapon section was last told to play.
+    /// The attack and reload the weapon section was last told to play.
     started_attack: Option<f32>,
+    started_reload: Option<f32>,
+    /// The mover's direction flags when they aren't just "walking forward"
+    /// (the player's keys, `player_body`; a fighter stepping while facing
+    /// its target, `world::animation::pick::facing_direction`).
+    pub direction: Option<MoveFlags>,
+    /// How long the path handler has walked facing a point (its timer
+    /// +0x8c, `009e2aa0`).
+    pub facing_time: f32,
+    /// The draw for groups with several files (`0048f450`'s random pick).
+    pub draw: u32,
+    /// The running package's flags, by package (read once each).
+    package_flags: Option<(esm::FormId, u32)>,
+    /// Reloading last frame (`world::npc_combat::reloading`).
+    reloading: bool,
+    /// Whether the spine node faces up in the last pose (`IsFacingUp`;
+    /// `None` without the node): see [`spine_up`].
+    pub spine_up: Option<bool>,
+    /// The node the `Weapon` bone hangs under: the `prn:` key of the group
+    /// that last put it there (`00923960`), once known.
+    pub weapon_parent: Option<String>,
+    /// Another weapon was put in the hand (`004ab750`): handled at the next
+    /// drive (`Picker::weapon_attached`).
+    pub weapon_attached: bool,
 }
 
 /// A dead actor's ragdoll (`preview::ragdoll`): the bodies in motion, the
@@ -111,20 +168,41 @@ impl ActorRig {
         let mut rig = ActorRig {
             joints: Vec::new(),
             player: Player::default(),
+            picker: Picker::new(false),
+            anims: None,
             scale: scale.max(1e-3),
             speed: 0.0,
             walking: false,
             running: false,
+            sneaking: false,
             turning: None,
             still: false,
             fighting: false,
+            want_drawn: false,
+            weapon_kind: None,
+            character: true,
+            seated: false,
             attack_at: None,
+            attack_group: group::ATTACK_RIGHT,
+            reload_at: None,
             dynamic_idle: None,
             overlay: None,
             scripted_idle: None,
+            idle_section: section::SPECIAL_IDLE,
+            overlay_section: section::SPECIAL_IDLE,
+            overlay_in: None,
             ragdoll: None,
             disarmed: false,
             started_attack: None,
+            started_reload: None,
+            direction: None,
+            facing_time: 0.0,
+            draw: 0,
+            package_flags: None,
+            reloading: false,
+            spine_up: None,
+            weapon_parent: None,
+            weapon_attached: false,
             skeleton,
         };
         if let Some(idle) = rig.skeleton.idle.clone() {
@@ -135,20 +213,27 @@ impl ActorRig {
         rig
     }
 
-    /// Whether the weapon is held ready (the aim plays) rather than put
-    /// away.
-    fn ready(&self) -> bool {
-        self.fighting && self.skeleton.aim.is_some()
-    }
-
-    /// The bones' transforms now (as `animate_actors` poses them).
+    /// The bones' transforms now (as `animate_actors` poses them): put
+    /// away with nothing drawing or putting it away, the weapon hangs in
+    /// its holster pose (the `Holster` group the game plays, under its
+    /// `prn:` node); otherwise the `Weapon` bone, as the playing groups move
+    /// it, hangs under the node the last reparent named
+    /// ([`ActorRig::weapon_parent`]): the equip's `prn:` (the right hand,
+    /// fists the forearm's twist bone) from its `Attach` key, the
+    /// unequip's from its `Detach`.
     pub fn pose_now(&self, _now: f32) -> Vec<nif::Transform> {
         let bones = &self.skeleton.bones;
         let mut pose = self.player.pose(bones);
-        if !self.ready() {
+        let readying = matches!(
+            self.picker.action,
+            Some(world::animation::pick::Action::Equip | world::animation::pick::Action::Unequip)
+        );
+        if !self.picker.drawn && !readying {
             if let Some(h) = &self.skeleton.holster {
                 nif::hang_weapon(bones, &mut pose, h);
             }
+        } else if let Some(parent) = &self.weapon_parent {
+            nif::reparent_weapon(bones, &mut pose, parent);
         }
         if self.disarmed {
             hide_weapon(bones, &mut pose);
@@ -156,113 +241,160 @@ impl ActorRig {
         pose
     }
 
-    /// One frame of the game's animation picking (`Actor::PickAnimations`,
-    /// `00895110`, with the flags this viewer keeps instead of the mover's)
-    /// and the sequences' update.
-    fn drive(&mut self, dt: f32) {
-        let sk = self.skeleton.clone();
-        let bones = &sk.bones;
-        // The base loop (section 0): the seat's, else the standing idle.
-        match (&self.dynamic_idle, &sk.idle) {
-            (Some(s), _) => {
-                self.player.play(group::DYNAMIC_IDLE, s, -1, bones);
-            }
-            (None, Some(idle)) => {
-                self.player.play(group::IDLE, idle, -1, bones);
-            }
-            (None, None) => {}
-        }
-        // Movement (section 1): the walk or run, at the rate that makes
-        // the file's root travel the actor's speed; running without a run
-        // file plays the walk that fast (the game's fallback); standing
-        // still (or slower than 1 unit a second) eases the movement out.
-        // Turning in place with no move direction (flags 0x10 / 0x20):
-        // `TurnLeft` / `TurnRight`, `mtturnleft.kf` / `mtturnright.kf`
-        // (`ActorSkeleton::turn_left`), at the turn's own rate: the
-        // in-place scale `ai` gives (`00888070` → `00895110(1.0, scale)`).
-        // With the weapon ready the group is the weapon kind's
-        // (`1hpturnleft.kf` …), not loaded here: no turn plays then.
-        let unscaled = self.speed / self.scale;
-        let turn = self.turning.filter(|_| !self.walking && !self.ready());
-        let flags = MoveFlags {
+    /// What `PickAnimations` reads this frame, from the flags.
+    fn frame<'a>(&self, dynamic_idle: Option<&'a Arc<nif::Sequence>>) -> Frame<'a> {
+        let turn = self.turning.filter(|_| !self.walking);
+        let mut flags = self.direction.unwrap_or(MoveFlags {
             forward: self.walking,
-            running: self.running,
-            turn_left: matches!(turn, Some((TurnSide::Left, _))),
-            turn_right: matches!(turn, Some((TurnSide::Right, _))),
             ..Default::default()
-        };
-        let chosen = match animation::movement_group(flags, unscaled) {
-            Some(g) if g == group::TURN_LEFT => sk.turn_left.as_ref().map(|s| (g, s)),
-            Some(g) if g == group::TURN_RIGHT => sk.turn_right.as_ref().map(|s| (g, s)),
-            Some(g) if g == group::FAST_FORWARD => match (&sk.run, &sk.walk) {
-                (Some(run), _) => Some((g, run)),
-                (None, Some(walk)) => Some((group::FORWARD, walk)),
-                (None, None) => None,
-            },
-            Some(g) => match (&sk.walk, &sk.run) {
-                (Some(walk), _) => Some((g, walk)),
-                (None, Some(run)) => Some((g, run)),
-                (None, None) => None,
-            },
-            None => None,
-        };
-        match chosen {
-            Some((g, seq)) => {
-                self.player.movement_rate = match turn {
-                    Some((_, rate)) if g == group::TURN_LEFT || g == group::TURN_RIGHT => rate,
-                    _ => animation::movement_rate(unscaled, GroupData::read(seq).speed()),
-                };
-                self.player.play(g, seq, -1, bones);
-            }
-            None => self.player.stop_section(section::MOVEMENT),
-        }
-        // The weapon section: the aim while fighting, each attack played
-        // once over it (the aim comes back, blended from the pose, once
-        // the attack has eased out).
-        if self.ready() {
-            let new_attack = self.attack_at.is_some() && self.attack_at != self.started_attack;
-            match (&sk.attack, &sk.aim) {
-                (Some(attack), _) if new_attack => {
-                    self.started_attack = self.attack_at;
-                    self.player.play(group::ATTACK_RIGHT, attack, 0, bones);
-                }
-                (_, Some(aim)) if self.player.playing(section::WEAPON).is_none() => {
-                    self.player.play(group::AIM, aim, -1, bones);
-                }
-                _ => {}
-            }
-        } else {
-            self.player.stop_section(section::WEAPON);
-            self.started_attack = None;
-        }
-        // The special-idle section: whatever plays over everything, its
-        // clock its owner's (`sitting`).
-        match (&self.scripted_idle, &self.overlay) {
-            (Some(_), _) => {}
-            (None, Some((seq, _))) => {
-                self.player.play(group::SPECIAL_IDLE, seq, -1, bones);
-            }
-            (None, None) => self.player.stop_section(section::SPECIAL_IDLE),
-        }
-        self.player.update(dt);
-        if self.scripted_idle.is_some() {
-            if self.player.playing(section::SPECIAL_IDLE).is_none() {
-                self.scripted_idle = None;
-            }
-        } else if let Some((_, elapsed)) = &self.overlay {
-            self.player.sync_time(section::SPECIAL_IDLE, *elapsed);
+        });
+        flags.running = self.running;
+        flags.turn_left = matches!(turn, Some((TurnSide::Left, _)));
+        flags.turn_right = matches!(turn, Some((TurnSide::Right, _)));
+        Frame {
+            flags,
+            sneaking: self.sneaking,
+            speed: self.speed / self.scale,
+            turn_rate: turn.map_or(1.0, |(_, rate)| rate),
+            want_drawn: self.want_drawn,
+            in_combat: self.fighting,
+            character: self.character,
+            weapon_kind: self.weapon_kind,
+            power_armor: false,
+            can_act: !self.still,
+            seated: self.seated,
+            dynamic_idle,
+            dead: self.ragdoll.is_some(),
         }
     }
 
+    /// One frame of the game's animation picking (`world::animation::
+    /// pick`, with the flags this viewer keeps instead of the mover's and
+    /// the process's), the special-idle section, and the sequences' update.
+    fn drive(&mut self, dt: f32, lib: &mut impl Library) {
+        let sk = self.skeleton.clone();
+        let bones = &sk.bones;
+        if self.attack_at.is_some() && self.attack_at != self.started_attack {
+            self.started_attack = self.attack_at;
+            self.picker.attack(self.attack_group);
+        }
+        if let Some((at, g)) = self.reload_at {
+            if self.started_reload != Some(at) {
+                self.started_reload = Some(at);
+                self.picker.reload(g);
+            }
+        }
+        let drawn_before = self.picker.drawn;
+        {
+            let seat = self.dynamic_idle.clone();
+            let frame = self.frame(seat.as_ref());
+            let mut picker = std::mem::take(&mut self.picker);
+            // Another weapon in hand: the weapon section starts over and
+            // the weapon goes where the drawn state has it.
+            if std::mem::take(&mut self.weapon_attached) {
+                let played = picker.weapon_attached(&mut self.player, lib, &frame, bones);
+                self.weapon_parent = match played {
+                    Some(seq) => nif::weapon_parent(&seq).map(str::to_string),
+                    None => self.holster_parent(),
+                };
+            }
+            picker.pick(&mut self.player, lib, &frame, bones);
+            if self.weapon_parent.is_none() || picker.drawn != drawn_before {
+                self.weapon_parent = self.reparented(&picker, lib, &frame);
+            }
+            self.picker = picker;
+        }
+        // The overlay: whatever plays over the rest in its section (the
+        // special idle's, or the tree idle's own: `00498290`), its clock its
+        // owner's (`sitting`).
+        let slot = animation::slot(self.overlay_section);
+        match (&self.scripted_idle, &self.overlay) {
+            (Some(_), _) => {}
+            (None, Some((seq, _))) => {
+                if let Some(old) = self.overlay_in.filter(|s| *s != slot) {
+                    if self.player.playing(old) == Some(group::SPECIAL_IDLE) {
+                        self.player.stop_section(old);
+                    }
+                }
+                self.player
+                    .play_in(slot, group::SPECIAL_IDLE, seq, -1, bones);
+                self.picker.idle_played(slot);
+                self.overlay_in = Some(slot);
+            }
+            (None, None) => {
+                if let Some(old) = self.overlay_in.take() {
+                    if self.player.playing(old) == Some(group::SPECIAL_IDLE) {
+                        self.player.stop_section(old);
+                    }
+                }
+            }
+        }
+        let done = self.player.update(dt);
+        {
+            let seat = self.dynamic_idle.clone();
+            let frame = self.frame(seat.as_ref());
+            let mut picker = std::mem::take(&mut self.picker);
+            picker.ended(&mut self.player, lib, &frame, &done, bones);
+            self.picker = picker;
+        }
+        if self.scripted_idle.is_some() {
+            let s = animation::slot(self.idle_section);
+            if self.player.playing(s) != Some(group::SPECIAL_IDLE) {
+                self.scripted_idle = None;
+                self.idle_section = section::SPECIAL_IDLE;
+            }
+        } else if let (Some((_, elapsed)), Some(s)) = (&self.overlay, self.overlay_in) {
+            self.player.sync_time(s, *elapsed);
+        }
+    }
+
+    /// The holster pose's `prn:` node.
+    fn holster_parent(&self) -> Option<String> {
+        self.skeleton
+            .holster
+            .as_deref()
+            .and_then(nif::weapon_parent)
+            .map(str::to_string)
+    }
+
+    /// Where the weapon bone goes as the weapon is drawn or put away
+    /// (`MiddleHighProcess::UpdateReparentWeapon`, Xbox PDB, `00923020`,
+    /// once the process's reparent flag is set: `ReparentWeapon`,
+    /// `00923960`): under the `prn:` node of the equip or unequip playing
+    /// in the weapon section; with neither playing, of the kinds' `Equip`
+    /// when drawn, else of the `Holster` group.
+    // Translated from 00923960 (decompiled, FalloutNV.exe 1.4.0.525)
+    fn reparented(&self, picker: &Picker, lib: &mut impl Library, f: &Frame) -> Option<String> {
+        let readying = self
+            .player
+            .playing(section::WEAPON)
+            .filter(|g| *g == group::EQUIP || *g == group::UNEQUIP)
+            .and_then(|_| self.player.sequence(section::WEAPON));
+        if let Some(seq) = readying {
+            return nif::weapon_parent(seq).map(str::to_string);
+        }
+        if picker.drawn {
+            let (_, seq) = picker.weapon_group(lib, f, group::EQUIP)?;
+            return nif::weapon_parent(&seq).map(str::to_string);
+        }
+        self.holster_parent()
+    }
+
     /// Goes limp as the game's dead do, if its skeleton has a ragdoll:
-    /// from the pose it's in now, placed by `placement`, thrown as the
-    /// game throws the dead (`throw`: from where, and the speed every body
-    /// gains, × its part's share: `world::combat::death_push_share`).
-    /// False if it can't.
+    /// from the pose it's in now (no death animation: the death routine
+    /// `0089d900` makes a ragdoll's bodies dynamic at once; the `Death`
+    /// group is played only by `UpdateAnimation` `00888070` for a death
+    /// put off until the 3D loads, and then only for a creature without a
+    /// ragdoll, `HasRagDoll` vtable +0x38c false), placed by `placement`;
+    /// every body gains `nudge` (`world::combat::death_nudge`), then is
+    /// thrown as the game throws the dead by a killing hit (`throw`: from
+    /// where, and the speed every body gains, × its part's share:
+    /// `world::combat::death_push_share`). False if it can't.
     pub fn go_limp(
         &mut self,
         now: f32,
         placement: nif::Transform,
+        nudge: Option<[f32; 3]>,
         throw: Option<([f32; 3], f32)>,
     ) -> bool {
         let Some(rig) = &self.skeleton.ragdoll else {
@@ -270,6 +402,9 @@ impl ActorRig {
         };
         let died = self.pose_now(now);
         let mut sim = rig.start(&died, &placement);
+        if let Some(v) = nudge {
+            sim.add_velocity(v);
+        }
         if let Some((origin, speed)) = throw {
             let shares: Vec<f32> = rig
                 .ragdoll
@@ -433,7 +568,10 @@ pub fn script_idles(
         let Some(idle) = seats.tree.get(requested).cloned() else {
             continue;
         };
-        if idle.group() != section::SPECIAL_IDLE
+        // Any section an idle's record may name (`00498290`): the base
+        // loop, the movement section, the special idle, the whole or the
+        // upper body.
+        if !matches!(idle.group(), 0 | 1 | 7 | 0x14 | 0x15)
             || !idle.is_animation()
             || !idle.conditions.is_empty()
         {
@@ -449,7 +587,16 @@ pub fn script_idles(
         let loops = if count == 255 { -1 } else { i32::from(count) };
         let bones = rig.skeleton.clone();
         rig.player.settings = settings.0;
-        rig.player.play_script_idle(&seq, loops, &bones.bones);
+        // The loaded idle freed at once wherever it played, the new one in
+        // its section (`00498290` → `00498910(0,1)`).
+        let old = animation::slot(rig.idle_section);
+        let section = animation::slot(idle.group());
+        if old != section && rig.player.playing(old) == Some(group::SPECIAL_IDLE) {
+            rig.player.cut_section(old);
+        }
+        rig.player.play_idle_in(section, &seq, loops, &bones.bones);
+        rig.picker.idle_played(section);
+        rig.idle_section = section;
         rig.scripted_idle = Some(requested);
         rig.overlay = None;
         life.idles.stop();
@@ -464,13 +611,24 @@ pub fn script_idles(
 /// in menu mode and stands still, animations included (someone talked to
 /// mid-stride kept walking on the spot before), except, in the dialogue
 /// menu, the speaker: they stop walking and turn to face the player.
+#[allow(clippy::too_many_arguments)]
 pub fn animate_actors(
     time: Res<Time>,
     settings: Option<Res<AnimSettings>>,
     conversation: Option<Res<crate::dialogue::Conversation>>,
     menus: Option<Res<crate::menus::Menus>>,
+    drawn: Option<Res<crate::game_menus::MenuDraw>>,
     collision: Option<Res<crate::walk::CellCollision>>,
-    mut rigs: Query<&mut ActorRig>,
+    look: Option<Res<crate::look::LookSettings>>,
+    game: Option<Res<crate::GameFiles>>,
+    state: Option<Res<crate::dialogue::DialogueState>>,
+    mut library: Option<ResMut<crate::anim_library::AnimLibrary>>,
+    mut anchors: Option<ResMut<crate::look::LookAnchors>>,
+    mut rigs: Query<(
+        &mut ActorRig,
+        Option<&mut crate::look::HeadTrack>,
+        Option<&crate::ai::Walker>,
+    )>,
     mut joints: Query<&mut Transform>,
 ) {
     let now = time.elapsed_secs();
@@ -478,15 +636,20 @@ pub fn animate_actors(
     let in_dialogue = conversation
         .as_ref()
         .is_some_and(|c| c.0.as_ref().is_some_and(|t| !t.is_line_only()));
-    if menus.as_ref().is_some_and(|m| m.is_open()) {
+    if menu_stops_animation(
+        menus.as_ref().is_some_and(|m| m.is_open()),
+        menus.as_ref().is_some_and(|m| m.only_game_menus()),
+        in_dialogue,
+        drawn.as_ref().map_or(&[][..], |d| &d.1[..]),
+    ) {
         return;
     }
-    for mut rig in &mut rigs {
+    for (mut rig, mut head_track, walker) in &mut rigs {
         let rig = &mut *rig;
         // In the dialogue menu only the speaker moves: `ai` holds everyone
         // else (`still`) and has the speaker stop walking and turn in place
-        // to face the player (inferred, see `ai::move_actors`), which plays
-        // here; the dead's ragdolls wait.
+        // to face the player (`008a5580`, see `ai::move_actors`), which
+        // plays here; the dead's ragdolls wait.
         if in_dialogue && (rig.still || rig.ragdoll.is_some()) {
             continue;
         }
@@ -496,6 +659,19 @@ pub fn animate_actors(
             }
             if let Some(c) = &collision {
                 dead.sim.update(&c.0, time.delta_secs());
+            }
+            if dead.sim.asleep {
+                // The game takes settled bodies out of the world here
+                // (`FinishDying` `008f7350` → `DetachHavok`).
+                let (_, at) = dead.sim.frame(0);
+                println!(
+                    "{:.1} s: {} comes to rest, its first body at ({:.1}, {:.1}, {:.1})",
+                    now,
+                    walker.map_or(PLAYER, |w| w.reference),
+                    at[0],
+                    at[1],
+                    at[2]
+                );
             }
             let Some(r) = &rig.skeleton.ragdoll else {
                 continue;
@@ -507,15 +683,213 @@ pub fn animate_actors(
             if let Some(s) = &settings {
                 rig.player.settings = s.0;
             }
-            rig.drive(dt);
-            rig.pose_now(now)
+            match (&game, library.as_deref_mut()) {
+                (Some(game), Some(library)) => {
+                    let set = match &rig.anims {
+                        Some(set) => set.clone(),
+                        None => {
+                            let set = library.set_for(&game.0, &rig.skeleton);
+                            rig.anims = Some(set.clone());
+                            set
+                        }
+                    };
+                    if let (Some(w), Some(state)) = (walker, &state) {
+                        npc_frame(rig, w, &game.0, &state.0, &set, (now, dt));
+                    }
+                    rig.draw = rig.draw.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    let mut lib = crate::anim_library::ActorLibrary {
+                        set: &set,
+                        library,
+                        game: &game.0,
+                        draw: rig.draw >> 16,
+                    };
+                    let before = (rig.picker.action, rig.picker.drawn);
+                    rig.drive(dt, &mut lib);
+                    let after = (rig.picker.action, rig.picker.drawn);
+                    if before != after {
+                        let who = walker.map_or(PLAYER, |w| w.reference);
+                        let what = match after {
+                            (Some(a), _) if before.0 != Some(a) => {
+                                format!("{a:?} ({:04x})", rig.picker.id(section::WEAPON))
+                            }
+                            (_, true) if !before.1 => "weapon in hand".to_string(),
+                            (_, false) if before.1 => "weapon put away".to_string(),
+                            _ => String::new(),
+                        };
+                        if !what.is_empty() {
+                            println!("{now:.1} s: {who}: {what}");
+                        }
+                    }
+                }
+                _ => {
+                    let set = AnimSet::default();
+                    rig.drive(dt, &mut Unloaded(&set));
+                }
+            }
+            let mut pose = rig.pose_now(now);
+            if let (Some(ht), Some(w), Some(s)) = (head_track.as_deref_mut(), walker, look.as_ref())
+            {
+                // Whom they look at: `ai`'s head-track target
+                // (`world::head_track`), at their look anchor
+                // (`look::LookAnchors`).
+                let target = w
+                    .looking_at()
+                    .and_then(|who| anchors.as_ref()?.0.get(&who).copied());
+                let bones = &rig.skeleton.bones;
+                let placement = w.placement();
+                crate::look::track(ht, &s.0, bones, &mut pose, &placement, w.position, target);
+            }
+            // Where the others look at this one (008a2fa0).
+            if let (Some(w), Some(a)) = (walker, anchors.as_deref_mut()) {
+                match crate::look::anchor_of(
+                    head_track.as_deref(),
+                    &rig.skeleton.bones,
+                    &pose,
+                    &w.placement(),
+                    w.position,
+                ) {
+                    Some(t) => a.0.insert(w.reference, t),
+                    None => a.0.remove(&w.reference),
+                };
+            }
+            pose
         };
+        rig.spine_up = spine_up(&rig.skeleton.bones, &pose);
         for (joint, t) in rig.joints.iter().zip(&pose) {
             if let Ok(mut transform) = joints.get_mut(*joint) {
                 *transform = bevy_transform(t);
             }
         }
     }
+}
+
+/// A library with no files read (no game data): nothing but what already
+/// plays.
+struct Unloaded<'a>(&'a AnimSet);
+
+impl Library for Unloaded<'_> {
+    fn set(&self) -> &AnimSet {
+        self.0
+    }
+    fn sequence(&mut self, _id: u16) -> Option<Arc<nif::Sequence>> {
+        None
+    }
+}
+
+/// Someone else than the player, this frame, as the game's process and
+/// mover would have it for `PickAnimations`: sneaking (`00888b50`), the
+/// weapon wanted out (in a fight, by the running package or alerted:
+/// `world::animation::pick::want_weapon_out`), the weapon in hand's kind,
+/// attack and reload groups, furniture, and a fighter's steps while it
+/// keeps facing its target (`009e2aa0`: `facing_direction`).
+fn npc_frame(
+    rig: &mut ActorRig,
+    walker: &crate::ai::Walker,
+    game: &cellview::Game,
+    state: &world::scripting::GameState,
+    set: &AnimSet,
+    (now, dt): (f32, f32),
+) {
+    use world::animation::pick;
+    let order = &game.order;
+    let me = walker.reference;
+    let flags = match (walker.package, rig.package_flags) {
+        (Some(p), Some((q, f))) if p == q => Some(f),
+        (Some(p), _) => {
+            let f = world::ai::Package::load(order, p).map_or(0, |pk| pk.flags);
+            rig.package_flags = Some((p, f));
+            Some(f)
+        }
+        (None, _) => None,
+    };
+    rig.character = !world::combat::is_creature(order, me);
+    rig.sneaking = pick::npc_sneaks(state.more.forced_sneak.contains(&me), flags);
+    rig.seated = state.sitters.contains_key(&me) || state.furniture.contains_key(&me);
+    let weapon = world::combat::weapon_in_hand(order, state, me);
+    rig.weapon_kind = weapon
+        .as_ref()
+        .map(|w| world::animation::groups::weapon_kind(w.animation));
+    if let Some(w) = &weapon {
+        rig.attack_group = match w.attack_animation {
+            g @ 26..=0xa8 => g,
+            _ => group::ATTACK_RIGHT,
+        };
+    }
+    let keep_out = pick::package_draws(flags) || state.more.alerted.contains(&me);
+    rig.want_drawn = pick::want_weapon_out(
+        rig.want_drawn,
+        rig.picker.drawn,
+        rig.fighting,
+        keep_out,
+        (rig.seated, rig.picker.action.is_some(), false),
+    );
+    let reloading = world::npc_combat::reloading(state, me);
+    if reloading && !rig.reloading {
+        if let Some(w) = &weapon {
+            rig.reload_at = Some((now, group::RELOAD_A + w.reload_animation.min(22)));
+        }
+    }
+    rig.reloading = reloading;
+    // A fighter stepping while it faces its target: the side or back
+    // group by the angle (people's path handler, `009e2aa0`).
+    let v = walker.velocity;
+    if rig.fighting && rig.walking && v[0].hypot(v[1]) > 1.0 {
+        rig.facing_time += dt;
+        let travel = v[0].atan2(v[1]);
+        rig.direction = Some(pick::facing_direction(
+            travel,
+            walker.heading,
+            rig.facing_time,
+            |g| set.has(u16::from(g)),
+            !rig.character,
+        ));
+    } else {
+        rig.facing_time = 0.0;
+        rig.direction = None;
+    }
+}
+
+/// Whether menu mode stops every animation this frame: any menu open
+/// (`menu_open`), except that the dialogue menu updates its speaker each
+/// frame (`00762950` → `Actor::UpdateInDialogue`, Xbox PDB, `008a5580`):
+/// in a conversation with nothing but the game's own menus up
+/// (`only_game_menus`) and all of those the dialogue menu (class 1009,
+/// `open_classes`), the speaker animates (the rest are held `still` by
+/// `ai`). Before, the dialogue menu's own screen counted as a menu here
+/// and froze the speaker too.
+fn menu_stops_animation(
+    menu_open: bool,
+    only_game_menus: bool,
+    in_dialogue: bool,
+    open_classes: &[i32],
+) -> bool {
+    let dialogue_only = in_dialogue
+        && only_game_menus
+        && open_classes.iter().all(|c| *c == ui::menus::dialog::CLASS);
+    menu_open && !dialogue_only
+}
+
+/// Whether a pose's spine node (`Bip01 Spine`, else `Bip01 Spine01`) faces
+/// up, as `IsFacingUp` asks (`005a0710` → `00c6b7b0`): its world rotation's
+/// [2][1] above 0. An actor's placement only turns it about Z, which
+/// leaves that row alone, so the pose's own (model-space) rotation answers.
+/// `None` when the skeleton has neither node.
+pub fn spine_up(bones: &[nif::Bone], pose: &[nif::Transform]) -> Option<bool> {
+    let find = |name: &str| bones.iter().position(|b| b.name.eq_ignore_ascii_case(name));
+    let i = find("Bip01 Spine").or_else(|| find("Bip01 Spine01"))?;
+    Some(pose.get(i)?.rotation[2][1] > 0.0)
+}
+
+/// Tells the world which way each person's spine faces (`IsFacingUp`).
+pub fn report_facing_up(
+    mut state: ResMut<crate::dialogue::DialogueState>,
+    rigs: Query<(&crate::ai::Walker, &ActorRig)>,
+) {
+    let facing = rigs
+        .iter()
+        .filter_map(|(w, rig)| Some((w.reference, rig.spine_up?)))
+        .collect();
+    world::more_functions::report_facing_up(&mut state.0, facing);
 }
 
 /// The skinned piece entity's components.
@@ -533,6 +907,21 @@ pub fn skinned(
 mod tests {
     use super::*;
     use nif::anim::{Motion, Sequence, Track};
+
+    #[test]
+    fn only_the_dialogue_menu_lets_the_speaker_animate() {
+        let dialog = ui::menus::dialog::CLASS;
+        // Nothing open: everyone animates.
+        assert!(!menu_stops_animation(false, true, false, &[]));
+        // The game's dialogue menu alone, in a conversation: animating.
+        assert!(!menu_stops_animation(true, true, true, &[dialog]));
+        // A game menu on top of it (barter, 1053), or another game menu
+        // without a conversation: stopped.
+        assert!(menu_stops_animation(true, true, true, &[dialog, 1053]));
+        assert!(menu_stops_animation(true, true, false, &[dialog]));
+        // The Pip-Boy or a viewer menu: stopped.
+        assert!(menu_stops_animation(true, false, true, &[dialog]));
+    }
 
     #[test]
     fn restored_requests_wait_for_the_destination_scene() {
@@ -581,6 +970,28 @@ mod tests {
             .npc_requests
             .is_empty());
     }
+    #[test]
+    fn the_spine_faces_up_by_its_rotation() {
+        let bone = |name: &str| nif::Bone {
+            name: name.into(),
+            parent: None,
+            local: nif::Transform::IDENTITY,
+        };
+        let bones = [bone("Bip01"), bone("Bip01 Spine")];
+        // Standing: the spine's Y axis level, [2][1] = 0: not up.
+        let mut pose = vec![nif::Transform::IDENTITY; 2];
+        assert_eq!(spine_up(&bones, &pose), Some(false));
+        // Turned 90° about X (Y → Z): up.
+        pose[1].rotation = [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]];
+        assert_eq!(spine_up(&bones, &pose), Some(true));
+        // The other name, and none at all.
+        assert_eq!(
+            spine_up(&[bone("Bip01"), bone("Bip01 Spine01")], &pose),
+            Some(true)
+        );
+        assert_eq!(spine_up(&bones[..1], &pose), None);
+    }
+
     #[test]
     fn a_dropped_weapon_shrinks_its_bone_away() {
         let bone = |name: &str, parent| nif::Bone {
@@ -678,9 +1089,49 @@ mod tests {
         })
     }
 
+    /// The files a test actor's 3D has: its idle and walk (the same
+    /// sequences its skeleton carries) and any more.
+    struct TestLib {
+        set: AnimSet,
+        seqs: std::collections::HashMap<String, Arc<Sequence>>,
+    }
+
+    impl TestLib {
+        fn new(sk: &ActorSkeleton, more: Vec<(&str, Arc<Sequence>)>) -> TestLib {
+            let mut all = vec![
+                ("c\\locomotion\\mtidle.kf", sk.idle.clone().unwrap()),
+                (
+                    "c\\locomotion\\male\\mtforward.kf",
+                    sk.walk.clone().unwrap(),
+                ),
+            ];
+            all.extend(more);
+            let mut set = AnimSet::default();
+            let mut seqs = std::collections::HashMap::new();
+            for (path, seq) in all {
+                set.add(path, &seq.name);
+                seqs.insert(path.to_string(), seq);
+            }
+            TestLib { set, seqs }
+        }
+    }
+
+    impl Library for TestLib {
+        fn set(&self) -> &AnimSet {
+            &self.set
+        }
+        fn sequence(&mut self, id: u16) -> Option<Arc<Sequence>> {
+            self.seqs.get(self.set.file(id, 0)?).cloned()
+        }
+    }
+
+    fn drive(rig: &mut ActorRig, lib: &mut TestLib, dt: f32) {
+        rig.drive(dt, lib);
+    }
     #[test]
     fn scripted_idle_keeps_its_clock_and_finishes_without_restarting() {
         let mut rig = ActorRig::new(skeleton(10.0, 20.0), 1.0, 0.0);
+        let mut lib = TestLib::new(&rig.skeleton, Vec::new());
         let seq = Arc::new(Sequence {
             name: "SpecialIdle".into(),
             start: 0.0,
@@ -706,7 +1157,7 @@ mod tests {
         // A stale furniture/free-idle overlay must neither replace the
         // script sequence nor overwrite its clock.
         rig.overlay = Some((rig.skeleton.idle.clone().unwrap(), 10.0));
-        rig.drive(0.2);
+        drive(&mut rig, &mut lib, 0.2);
         assert!(Arc::ptr_eq(
             rig.player.sequence(section::SPECIAL_IDLE).unwrap(),
             &seq
@@ -714,11 +1165,11 @@ mod tests {
         assert!(rig.player.time(section::SPECIAL_IDLE).unwrap() < 1.0);
         rig.overlay = None;
         for _ in 0..15 {
-            rig.drive(0.1);
+            drive(&mut rig, &mut lib, 0.1);
         }
         assert!(rig.scripted_idle.is_none());
         assert!(rig.player.sequence(section::SPECIAL_IDLE).is_none());
-        rig.drive(0.2);
+        drive(&mut rig, &mut lib, 0.2);
         assert!(rig.player.sequence(section::SPECIAL_IDLE).is_none());
         assert!((rig.pose_now(0.0)[1].translation[2] - 10.0).abs() < 1e-3);
     }
@@ -726,18 +1177,19 @@ mod tests {
     #[test]
     fn starting_to_walk_blends_in_and_plays_at_the_actors_speed() {
         let mut rig = ActorRig::new(skeleton(10.0, 20.0), 1.0, 0.0);
+        let mut lib = TestLib::new(&rig.skeleton, Vec::new());
         let arm = |rig: &ActorRig| rig.pose_now(0.0)[1].translation[2];
         // Standing: the idle, already in.
         assert!((arm(&rig) - 10.0).abs() < 1e-4, "{}", arm(&rig));
         // Walking at 77: the walk blends in over Blend:6 = 0.2 s, no jump.
         rig.walking = true;
         rig.speed = 77.0;
-        rig.drive(0.0);
+        drive(&mut rig, &mut lib, 0.0);
         assert!((arm(&rig) - 10.0).abs() < 1e-4, "{}", arm(&rig));
-        rig.drive(0.1);
+        drive(&mut rig, &mut lib, 0.1);
         let half = arm(&rig);
         assert!(half > 12.0 && half < 18.0, "{half}");
-        rig.drive(0.1);
+        drive(&mut rig, &mut lib, 0.1);
         assert!((arm(&rig) - 20.0).abs() < 1e-3, "{}", arm(&rig));
         assert_eq!(rig.player.playing(section::MOVEMENT), Some(group::FORWARD));
         // At 77 / 85 of the file's rate (85.3 units a second → 85).
@@ -745,12 +1197,12 @@ mod tests {
         // Stopping: back to the idle over 0.2 s, no jump either.
         rig.walking = false;
         rig.speed = 0.0;
-        rig.drive(0.0);
+        drive(&mut rig, &mut lib, 0.0);
         assert!((arm(&rig) - 20.0).abs() < 1e-3, "{}", arm(&rig));
-        rig.drive(0.1);
+        drive(&mut rig, &mut lib, 0.1);
         let half = arm(&rig);
         assert!(half > 10.5 && half < 19.5, "{half}");
-        rig.drive(0.2);
+        drive(&mut rig, &mut lib, 0.2);
         assert!((arm(&rig) - 10.0).abs() < 1e-3, "{}", arm(&rig));
         assert_eq!(rig.player.playing(section::MOVEMENT), None);
     }
@@ -782,41 +1234,86 @@ mod tests {
                 },
             }],
         };
-        let sk = Arc::new(ActorSkeleton {
-            turn_left: Some(Arc::new(turn)),
-            ..(*skeleton(10.0, 20.0)).clone()
-        });
+        let sk = skeleton(10.0, 20.0);
         let mut rig = ActorRig::new(sk, 1.0, 0.0);
+        let mut lib = TestLib::new(
+            &rig.skeleton,
+            vec![("c\\locomotion\\mtturnleft.kf", Arc::new(turn))],
+        );
         // Turning left on the spot at people's in-place scale 1.5: the
         // turn group, played 1.5 times as fast.
         rig.turning = Some((TurnSide::Left, 1.5));
-        rig.drive(0.1);
+        drive(&mut rig, &mut lib, 0.1);
         assert_eq!(
             rig.player.playing(section::MOVEMENT),
             Some(group::TURN_LEFT)
         );
         assert!((rig.player.movement_rate - 1.5).abs() < 1e-6);
-        rig.drive(0.1);
+        drive(&mut rig, &mut lib, 0.1);
         assert!((rig.pose_now(0.0)[1].translation[2] - 30.0).abs() < 1e-3);
         // No file for the group: the idle (`00495740`'s last fallback).
         rig.turning = Some((TurnSide::Right, 1.5));
-        rig.drive(0.1);
+        drive(&mut rig, &mut lib, 0.1);
         assert_eq!(rig.player.playing(section::MOVEMENT), None);
         // Walking takes the walk, whatever the turn.
         rig.turning = Some((TurnSide::Left, 1.5));
         rig.walking = true;
         rig.speed = 77.0;
-        rig.drive(0.1);
+        drive(&mut rig, &mut lib, 0.1);
         assert_eq!(rig.player.playing(section::MOVEMENT), Some(group::FORWARD));
+        assert!((rig.player.movement_rate - 77.0 / 85.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn backing_up_plays_its_own_group_at_the_forward_groups_rate() {
+        let back = Sequence {
+            name: "Backward".into(),
+            start: 0.0,
+            stop: 1.0,
+            looping: true,
+            accum_root: Some("Bip01".into()),
+            materials: Vec::new(),
+            text_keys: vec![(0.0, "start".into()), (1.0, "end".into())],
+            tracks: vec![Track {
+                node: "Arm".into(),
+                priority: 30,
+                motion: Motion::Keys {
+                    translation: vec![(0.0, [0.0, 0.0, 40.0])],
+                    rotation: Vec::new(),
+                    scale: Vec::new(),
+                    default: (None, None, None),
+                    euler: None,
+                },
+            }],
+        };
+        let mut rig = ActorRig::new(skeleton(10.0, 20.0), 1.0, 0.0);
+        let mut lib = TestLib::new(&rig.skeleton, Vec::new());
+        rig.walking = true;
+        rig.speed = 77.0;
+        rig.direction = Some(MoveFlags {
+            backward: true,
+            ..Default::default()
+        });
+        // No file for the group: no movement animation, the idle shows.
+        drive(&mut rig, &mut lib, 0.1);
+        assert_eq!(rig.player.playing(section::MOVEMENT), None);
+        // With one: it plays, at 77 over the Forward group's 85.
+        let mut lib = TestLib::new(
+            &rig.skeleton,
+            vec![("c\\locomotion\\male\\mtbackward.kf", Arc::new(back))],
+        );
+        drive(&mut rig, &mut lib, 0.1);
+        assert_eq!(rig.player.playing(section::MOVEMENT), Some(group::BACKWARD));
         assert!((rig.player.movement_rate - 77.0 / 85.0).abs() < 1e-6);
     }
 
     #[test]
     fn a_scaled_actor_plays_at_its_unscaled_rate() {
         let mut rig = ActorRig::new(skeleton(10.0, 20.0), 1.1, 0.0);
+        let mut lib = TestLib::new(&rig.skeleton, Vec::new());
         rig.walking = true;
         rig.speed = 77.0 * 1.1;
-        rig.drive(0.1);
+        drive(&mut rig, &mut lib, 0.1);
         assert!((rig.player.movement_rate - 77.0 / 85.0).abs() < 1e-5);
     }
 }

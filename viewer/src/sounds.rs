@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use bevy::audio::{AudioPlayer, AudioSource, Decodable, PlaybackSettings, Source};
+use bevy::audio::{AudioPlayer, Decodable, PlaybackSettings, Source};
 use bevy::prelude::*;
 use esm::FormId;
 use world::sound::{ambient_loop, Sound};
@@ -21,6 +21,17 @@ pub struct PcmSound {
     channels: u16,
     rate: u32,
     samples: Arc<[i16]>,
+}
+
+impl PcmSound {
+    /// Interleaved 16-bit samples at this rate.
+    pub fn new(channels: u16, rate: u32, samples: Vec<i16>) -> Self {
+        PcmSound {
+            channels: channels.max(1),
+            rate: rate.max(1),
+            samples: samples.into(),
+        }
+    }
 }
 
 pub struct PcmDecoder {
@@ -66,6 +77,15 @@ impl Decodable for PcmSound {
     }
 }
 
+/// A decoded WAV file as a sound to play.
+pub(crate) fn pcm_sound(pcm: cellview::sound::Pcm) -> PcmSound {
+    PcmSound {
+        channels: pcm.channels,
+        rate: pcm.rate,
+        samples: Arc::from(pcm.samples.into_boxed_slice()),
+    }
+}
+
 /// Sounds to play once (sound records), queued by doors and scripts.
 #[derive(Resource, Default)]
 pub struct SoundRequests(pub Vec<FormId>);
@@ -82,25 +102,30 @@ pub struct Ambient {
 pub(crate) fn play(
     commands: &mut Commands,
     game: &cellview::Game,
-    oggs: &mut Assets<AudioSource>,
     wavs: &mut Assets<PcmSound>,
     sound: &Sound,
     pick: u64,
     looping: bool,
 ) -> Option<Entity> {
-    let (path, bytes) = game.sound_file(sound, pick)?;
     let settings = if looping {
         PlaybackSettings::LOOP
     } else {
         PlaybackSettings::DESPAWN
     };
-    if path.ends_with(".ogg") {
-        let handle = oggs.add(AudioSource {
-            bytes: Arc::from(bytes.into_boxed_slice()),
-        });
-        return Some(commands.spawn((AudioPlayer::new(handle), settings)).id());
-    }
-    let pcm = cellview::sound::read_wav(&bytes)
+    play_with(commands, game, wavs, sound, pick, settings)
+}
+
+/// [`play`] with these playback settings (a volume of its own).
+pub(crate) fn play_with(
+    commands: &mut Commands,
+    game: &cellview::Game,
+    wavs: &mut Assets<PcmSound>,
+    sound: &Sound,
+    pick: u64,
+    settings: PlaybackSettings,
+) -> Option<Entity> {
+    let (path, bytes) = game.sound_file(sound, pick)?;
+    let pcm = read_sound(&path, &bytes)
         .map_err(|e| println!("  couldn't play {path}: {e}"))
         .ok()?;
     let handle = wavs.add(PcmSound {
@@ -111,6 +136,55 @@ pub(crate) fn play(
     Some(commands.spawn((AudioPlayer(handle), settings)).id())
 }
 
+/// A voice line's file ready to play: decoded here like every sound (see
+/// [`read_sound`]), `None` when it can't be read.
+pub fn voice_handle(
+    path: &str,
+    bytes: &[u8],
+    wavs: &mut Assets<PcmSound>,
+) -> Option<Handle<PcmSound>> {
+    let pcm = read_sound(path, bytes)
+        .map_err(|e| println!("  couldn't play {path}: {e}"))
+        .ok()?;
+    Some(wavs.add(PcmSound {
+        channels: pcm.channels,
+        rate: pcm.rate,
+        samples: Arc::from(pcm.samples.into_boxed_slice()),
+    }))
+}
+
+/// A sound file's samples: a WAV, or an Ogg Vorbis file (`.ogg`) decoded
+/// here. Bevy's own `.ogg` playback crashed the viewer (a native fault
+/// while playing Dead Money's Villa music; decoding the same files alone is
+/// fine), so every sound plays through the viewer's own sample sources.
+pub fn read_sound(path: &str, bytes: &[u8]) -> Result<cellview::sound::Pcm, String> {
+    if path.to_ascii_lowercase().ends_with(".ogg") {
+        decode_ogg(bytes)
+    } else {
+        cellview::sound::read_wav(bytes)
+    }
+}
+
+/// An Ogg Vorbis file's samples, interleaved.
+pub fn decode_ogg(bytes: &[u8]) -> Result<cellview::sound::Pcm, String> {
+    let mut reader = lewton::inside_ogg::OggStreamReader::new(std::io::Cursor::new(bytes))
+        .map_err(|e| format!("not an Ogg Vorbis file: {e}"))?;
+    let channels = u16::from(reader.ident_hdr.audio_channels);
+    let rate = reader.ident_hdr.audio_sample_rate;
+    let mut samples = Vec::new();
+    while let Some(packet) = reader
+        .read_dec_packet_itl()
+        .map_err(|e| format!("damaged Ogg Vorbis data: {e}"))?
+    {
+        samples.extend(packet);
+    }
+    Ok(cellview::sound::Pcm {
+        channels,
+        rate,
+        samples,
+    })
+}
+
 /// Plays queued sounds, and keeps the place's loop going.
 #[allow(clippy::too_many_arguments)]
 pub fn play_sounds(
@@ -119,7 +193,6 @@ pub fn play_sounds(
     state: Res<DialogueState>,
     mut requests: ResMut<SoundRequests>,
     mut ambient: ResMut<Ambient>,
-    mut oggs: ResMut<Assets<AudioSource>>,
     mut wavs: ResMut<Assets<PcmSound>>,
 ) {
     let order = &game.0.order;
@@ -127,15 +200,7 @@ pub fn play_sounds(
     for (i, id) in std::mem::take(&mut requests.0).into_iter().enumerate() {
         if let Some(sound) = Sound::load(order, id) {
             let pick = state.dice.wrapping_add(i as u64);
-            play(
-                &mut commands,
-                &game.0,
-                &mut oggs,
-                &mut wavs,
-                &sound,
-                pick,
-                false,
-            );
+            play(&mut commands, &game.0, &mut wavs, &sound, pick, false);
         }
     }
     // The place's loop: an interior's acoustic space, by the hour.
@@ -155,15 +220,7 @@ pub fn play_sounds(
     ambient.key = wanted;
     if let Some((_, id)) = wanted {
         ambient.entity = Sound::load(order, id).and_then(|sound| {
-            let entity = play(
-                &mut commands,
-                &game.0,
-                &mut oggs,
-                &mut wavs,
-                &sound,
-                state.dice,
-                true,
-            );
+            let entity = play(&mut commands, &game.0, &mut wavs, &sound, state.dice, true);
             match entity {
                 Some(_) => println!("The place's sound: {}", sound.file),
                 None => println!("The place's sound ({}) wasn't found.", sound.file),

@@ -29,5 +29,9 @@ fn fragment(mesh: VertexOutput) -> @location(0) vec4<f32> {
     if params.mode.x > 0.5 {
         c.a = c.a * mask;
     }
+#ifdef VERTEX_COLORS
+    // A model piece's corners' alpha (the local map's fog of war).
+    c = c * mesh.color;
+#endif
     return c;
 }

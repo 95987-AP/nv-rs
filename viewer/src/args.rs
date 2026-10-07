@@ -35,12 +35,22 @@ OPTIONS:
                             flies, keeping the exact eye position given)
     --fps                   print the frame rate every two seconds
     --talk                  start talking to the nearest person once loaded
+    --choose N,N,...        with --talk or a script's talking: pick these
+                            replies in order (as the number keys would),
+                            for playing a conversation through unattended
     --stage QUEST STAGE     set a quest's stage once loaded, as a script
                             would (VCG01 0 starts Doc Mitchell's intro)
     --new-game              start the game: the opening quest (VCG00) from
-                            its first stage (movie playback is not yet
-                            implemented); scripts take you to Doc's house
-                            (the CELL can then be left out)
+                            its first stage, which plays the intro movie;
+                            scripts take you to Doc's house (the CELL can
+                            then be left out)
+    --character FILE        start as a ready-made test character: a file
+                            of the game's script lines (editor IDs) run
+                            on the new game before its first frame, plus
+                            `level N` (see characters/README.md)
+    --movies, --no-movies   play the movies scripts ask for (PlayBink), or
+                            skip them; by default they play, except when
+                            taking a screenshot
     --weapon ID             start with this weapon (editor ID or form ID)
                             equipped and 50 rounds for it; screenshots
                             then show it in your hands
@@ -53,6 +63,14 @@ OPTIONS:
                             language, as its console does (for example
                             \"SunnyREF.StartCombat player\"); can be given
                             more than once
+    --run-at SECONDS \"COMMAND\"
+                            for testing: run a script line that many
+                            seconds after loading (in the game, not in a
+                            menu); can be given more than once
+    --say TEXT              for testing: when the dialogue menu offers
+                            topics, choose the first whose text contains
+                            TEXT (ignoring case); each --say is used once,
+                            in order
     --no-hud                leave out the game's HUD (health, compass,
                             crosshair, messages); screenshots then show
                             the scene alone
@@ -64,6 +82,14 @@ OPTIONS:
                             (stats, items or data) and page or tab (from
                             0: stats:1 is S.P.E.C.I.A.L., data:2 the
                             quests); screenshots then show it
+    --pipboy-keys K[,K...]  for testing: once the Pip-Boy is up, press these
+                            keys in it, one a frame: up, down, left, right,
+                            enter, a letter (r: ITEMS' Repair, x: Mod), padx
+                            or pady (Shift + Enter, Alt + Enter: the pad's
+                            X and Y, ITEMS' Drop with --pad), or close (put
+                            it away)
+    --pad                   for testing: the menus as with a 360 pad
+                            connected (its buttons shown)
     --vats [N]              for testing: open V.A.T.S. three seconds after
                             loading (as V does); with N, queue N attacks on
                             the part it opens on and play them
@@ -76,24 +102,53 @@ OPTIONS:
     --open-menu MENU[:ID]   for testing: once loaded, open one of the game's
                             menus as the game would: container:REF (a
                             container or a body), barter:REF (a merchant),
+                            recipes:CATEGORY (the recipe menu, e.g.
+                            recipes:CampfireRecipes),
+                            repair:REF (a merchant's repairs),
+                            teammate:REF (trading with a companion),
+                            wheel:REF (a companion's wheel of orders),
                             quantity:N (how many, up to N), levelup (the
                             player goes up a level; levelup:perks also
                             gives the points and goes on to the perks),
                             wait or sleep (the sleep/wait menu; wait:N or
                             sleep:N also chooses N hours and presses Wait)
+    --use REF               for testing: once loaded, press E on this
+                            object (editor ID or form ID), as if the
+                            player's crosshair were on it
     --menu-pointer X,Y      for testing: put the menus' pointer at this
                             pixel (screenshots have no mouse)
+    --key-at SECONDS KEY[:HOLD]
+                            for testing: press a key (a letter or digit,
+                            mouse-left, mouse-right, mouse-x=COUNTS: the
+                            mouse moving sideways each frame, or
+                            wheel=NOTCHES, negative out) that
+                            many seconds after you're placed, held HOLD
+                            seconds (0.1): F third person, R:1 put the
+                            weapon away, F:9 with mouse-x=20:1 turn the
+                            third-person camera around you; can be given
+                            more than once
+    --menu-click S[,S...]   for testing: click the menus' left button at
+                            these seconds after starting (with
+                            --menu-pointer)
+    --menu-keys S:K[,S:K...]
+                            for testing: type key K (a character, or
+                            left, right, up, down, enter) into the top menu at
+                            S seconds after starting
 
 CONTROLS:
-    right mouse button + move      look around (flying: either button)
+    mouse                          look around (walking; flying: hold
+                                   a button)
     left mouse button              attack (walking)
+    right mouse button, Left Alt   aim down the sights (held)
     V                              V.A.T.S.: Left/Right target, Up/Down
                                    part, Enter or E queue an attack, X a
                                    special one, Backspace undo, Space or
                                    R play the queue, V/Esc/Tab leave
     W A S D                        move
     F                              walk (with collision) / fly
-    walking:  Shift walk slowly, Ctrl or C sneak, Space jump, R reload
+    walking:  Shift walk slowly, Ctrl sneak on/off, Caps Lock always
+              run on/off, Q auto move, Space jump, R reload (held:
+              put the weapon away or draw it)
     flying:   Space / Ctrl (or Q) up, down; Shift faster; mouse
               wheel changes speed
     E                              go through the load door in view,
@@ -108,7 +163,12 @@ CONTROLS:
     Tab                            the Pip-Boy (held: its light)
     Pip-Boy: arrows, Enter         move, equip / use; Shift + left or
                                    right change menu; the letters
-                                   press their buttons
+                                   press their buttons; the mouse
+                                   points and clicks; right button:
+                                   drop (ITEMS), your map marker
+                                   (DATA); wheel, Page Up / Down:
+                                   zoom the map; F1-F3 STATS, ITEMS,
+                                   DATA
     F5, F9                         save, load (nv-rs-quicksave.txt)
     F12                            report something that differs from
                                    the game: a picture, where you are and
@@ -146,12 +206,20 @@ pub struct Args {
     pub fps: bool,
     /// Talk to the nearest person once loaded.
     pub talk: bool,
+    /// `--choose`: the replies to pick, in order, as number keys would.
+    pub choose: Vec<usize>,
     /// A quest stage to set once loaded: the quest's editor ID and stage.
     pub stage: Option<(String, u16)>,
+    /// A ready-made test character to start as (`world::character`).
+    pub character: Option<PathBuf>,
     /// A weapon to start with, equipped.
     pub weapon: Option<String>,
     /// Script lines to run once loaded, as console commands.
     pub run: Vec<String>,
+    /// `--run-at`: script lines to run this many seconds after loading.
+    pub run_at: Vec<(f32, String)>,
+    /// `--say`: topics to choose in the dialogue menu, in order.
+    pub say: Vec<String>,
     /// The player's weather region to start with.
     pub weather_region: Option<String>,
     /// Draw the game's HUD.
@@ -165,12 +233,27 @@ pub struct Args {
     pub freeze_ai: bool,
     /// Raise the Pip-Boy once loaded: its menu and page (stats:1).
     pub pipboy: Option<String>,
+    /// `--pipboy-keys`: keys to press in the Pip-Boy once it's up.
+    pub pipboy_keys: Vec<String>,
+    /// `--pad`: the menus as with a pad connected.
+    pub pad: bool,
     /// `--lockpick REF`: try this lock once loaded.
     pub lockpick: Option<String>,
     /// `--open-menu`: a game menu to open once loaded (`name[:id]`).
     pub open_menu: Option<String>,
+    /// `--use`: an object to use (E) once loaded.
+    pub use_on: Option<String>,
     /// `--menu-pointer`: the menus' pointer at this pixel.
     pub menu_pointer: Option<(f32, f32)>,
+    /// `--key-at`: keys to press: when, and the key (`KEY[:HOLD]`).
+    pub key_at: Vec<(f32, String)>,
+    /// Play the movies scripts ask for (`PlayBink`).
+    pub movies: bool,
+    /// `--menu-click`: when to click (seconds after starting).
+    pub menu_clicks: Vec<f64>,
+    /// `--menu-keys`: keys typed into the menus (seconds after starting,
+    /// the key).
+    pub menu_keys: Vec<(f64, String)>,
 }
 
 /// Where to stand, in the game's terms: feet position in game units, and
@@ -218,19 +301,30 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut walk = false;
     let mut fps = false;
     let mut talk = false;
+    let mut choose = Vec::new();
     let mut stage = None;
     let mut new_game = false;
     let mut weapon = None;
+    let mut character = None;
     let mut run = Vec::new();
+    let mut run_at = Vec::new();
+    let mut say = Vec::new();
     let mut weather_region = None;
     let mut hud = true;
     let mut vats = None;
     let mut cloud_time = None;
     let mut freeze_ai = false;
     let mut pipboy = None;
+    let mut pipboy_keys = Vec::new();
+    let mut pad = false;
     let mut lockpick = None;
     let mut open_menu = None;
+    let mut use_on = None;
     let mut menu_pointer = None;
+    let mut key_at = Vec::new();
+    let mut movies = None;
+    let mut menu_clicks = Vec::new();
+    let mut menu_keys = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let mut value = |flag: &str| {
@@ -265,6 +359,16 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             "--walk" => walk = true,
             "--fps" => fps = true,
             "--talk" => talk = true,
+            "--choose" => {
+                let v = value("--choose")?;
+                choose = v
+                    .split(',')
+                    .map(|n| n.trim().parse::<usize>().ok().filter(|n| *n >= 1))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| {
+                        format!("--choose expects reply numbers like 1,2,1, got '{v}'")
+                    })?;
+            }
             "--stage" => {
                 let quest = value("--stage")?;
                 let n = value("--stage")?;
@@ -275,9 +379,31 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             }
             "--new-game" => new_game = true,
             "--weapon" => weapon = Some(value("--weapon")?),
+            "--character" => character = Some(value("--character")?.into()),
             "--run" => run.push(value("--run")?),
+            "--run-at" => {
+                let v = value("--run-at")?;
+                let at = v
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|s| s.is_finite() && *s >= 0.0)
+                    .ok_or_else(|| format!("--run-at expects seconds and a line, got '{v}'"))?;
+                run_at.push((at, value("--run-at")?));
+            }
+            "--key-at" => {
+                let v = value("--key-at")?;
+                let at = v
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|s| s.is_finite() && *s >= 0.0)
+                    .ok_or_else(|| format!("--key-at expects seconds and a key, got '{v}'"))?;
+                key_at.push((at, value("--key-at")?));
+            }
+            "--say" => say.push(value("--say")?),
             "--weather-region" => weather_region = Some(value("--weather-region")?),
             "--no-hud" => hud = false,
+            "--movies" => movies = Some(true),
+            "--no-movies" => movies = Some(false),
             "--freeze-ai" => freeze_ai = true,
             "--lockpick" => lockpick = Some(value("--lockpick")?),
             "--pipboy" => {
@@ -288,13 +414,51 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
                 }
                 pipboy = Some(v);
             }
+            "--pipboy-keys" => {
+                let v = value("--pipboy-keys")?;
+                for k in v.split(',').map(|k| k.trim().to_ascii_lowercase()) {
+                    let known = [
+                        "up", "down", "left", "right", "enter", "padx", "pady", "close",
+                    ]
+                    .contains(&k.as_str())
+                        || (k.len() == 1 && k.as_bytes()[0].is_ascii_lowercase());
+                    if !known {
+                        return Err(format!("--pipboy-keys: don't know the key '{k}'"));
+                    }
+                    pipboy_keys.push(k);
+                }
+            }
+            "--pad" => pad = true,
             "--open-menu" => open_menu = Some(value("--open-menu")?),
+            "--use" => use_on = Some(value("--use")?),
             "--menu-pointer" => {
                 let v = value("--menu-pointer")?;
                 let p: Vec<f32> = v.split(',').filter_map(|n| n.trim().parse().ok()).collect();
                 match p[..] {
                     [x, y] => menu_pointer = Some((x, y)),
                     _ => return Err(format!("--menu-pointer expects X,Y, got '{v}'")),
+                }
+            }
+            "--menu-keys" => {
+                let v = value("--menu-keys")?;
+                for item in v.split(',') {
+                    let parsed = item
+                        .split_once(':')
+                        .and_then(|(s, k)| Some((s.trim().parse::<f64>().ok()?, k.to_string())));
+                    let Some((at, key)) = parsed.filter(|(_, k)| !k.is_empty()) else {
+                        return Err(format!(
+                            "--menu-keys expects S:K separated by commas, got '{v}'"
+                        ));
+                    };
+                    menu_keys.push((at, key));
+                }
+            }
+            "--menu-click" => {
+                let v = value("--menu-click")?;
+                for n in v.split(',') {
+                    menu_clicks.push(n.trim().parse::<f64>().map_err(|_| {
+                        format!("--menu-click expects seconds separated by commas, got '{v}'")
+                    })?);
                 }
             }
             "--cloud-time" => {
@@ -330,6 +494,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             positional.push(NEW_GAME_CELL.to_string());
         }
     }
+    let movies = movies.unwrap_or(screenshot.is_none());
     match positional.as_slice() {
         [data, cell] => Ok(Some(Args {
             data: data.into(),
@@ -342,18 +507,29 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             walk,
             fps,
             talk,
+            choose,
             stage,
+            character,
             weapon,
             run,
+            run_at,
+            say,
             weather_region,
             hud,
             vats,
             cloud_time,
             freeze_ai,
             pipboy,
+            pipboy_keys,
+            pad,
             lockpick,
             open_menu,
+            use_on,
             menu_pointer,
+            key_at,
+            movies,
+            menu_clicks,
+            menu_keys,
         })),
         [] | [_] => Err("expected the Data folder and a cell".into()),
         [_, _, extra, ..] => Err(format!("unexpected argument '{extra}'")),
@@ -363,6 +539,15 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn movies_play_unless_skipped_or_taking_a_screenshot() {
+        let p = |a: &[&str]| parse(&strings(a)).unwrap().unwrap().movies;
+        assert!(p(&["Data", "Cell"]));
+        assert!(!p(&["Data", "Cell", "--no-movies"]));
+        assert!(!p(&["Data", "Cell", "--screenshot", "a.png"]));
+        assert!(p(&["Data", "Cell", "--screenshot", "a.png", "--movies"]));
+    }
 
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| s.to_string()).collect()
@@ -394,6 +579,42 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(frozen.freeze_ai);
+        let character = parse(&strings(&["Data", "Cell", "--character", "c.txt"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(character.character, Some(PathBuf::from("c.txt")));
+        assert_eq!(frozen.character, None);
+    }
+
+    #[test]
+    fn parses_later_lines_and_topics_to_choose() {
+        let args = parse(&strings(&[
+            "Data",
+            "Cell",
+            "--run-at",
+            "40",
+            "SunnyREF.evp",
+            "--say",
+            "I'm in",
+            "--run-at",
+            "2.5",
+            "SetStage VCG02 30",
+            "--say",
+            "Sure",
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            args.run_at,
+            [
+                (40.0, "SunnyREF.evp".to_string()),
+                (2.5, "SetStage VCG02 30".to_string())
+            ]
+        );
+        assert_eq!(args.say, ["I'm in", "Sure"]);
+        assert!(parse(&strings(&["Data", "Cell", "--run-at", "soon", "x"]))
+            .unwrap_err()
+            .contains("--run-at"));
     }
 
     #[test]
@@ -504,6 +725,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(args.open_menu.as_deref(), Some("container:Box"));
+        let args = parse(&strings(&["Data", "Cell", "--use", "TerminalRef"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(args.use_on.as_deref(), Some("TerminalRef"));
+        assert!(parse(&strings(&["Data", "Cell", "--use"])).is_err());
         let args = parse(&strings(&["Data", "Cell", "--menu-pointer", "10,20.5"]))
             .unwrap()
             .unwrap();

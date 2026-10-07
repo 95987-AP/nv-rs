@@ -18,15 +18,20 @@
 
 pub mod data;
 pub mod gather;
+pub mod item_mod;
 pub mod items;
+pub mod repair;
 pub mod screen;
 pub mod stats;
 
+use crate::menu::{Interface, MenuCode};
 use crate::names::t;
 use crate::tile::{TileId, Ui};
 
 pub use data::DataMenu;
+pub use item_mod::ItemModMenu;
 pub use items::ItemsMenu;
+pub use repair::RepairMenu;
 pub use stats::StatsMenu;
 
 /// The three menus' files.
@@ -105,6 +110,11 @@ pub struct ItemLine {
     /// 0x08), 2 heavy (0x80).
     pub weight_class: Option<u8>,
     pub effects: Option<String>,
+    /// ITEMS' Repair button can be pressed on it (`00781860`,
+    /// `world::repair::can_repair`).
+    pub repairable: bool,
+    /// A weapon with mods fitted (`ExtraWeaponModFlags`, the row's "+").
+    pub modded: bool,
 }
 
 /// A quest in the DATA menu.
@@ -120,10 +130,28 @@ pub struct QuestLine {
 }
 
 /// A note (`NOTE` added to the Pip-Boy).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct NoteLine {
+    pub form: u32,
     pub name: String,
     pub text: String,
+    /// Its kind (`DATA`, `005e8d40`): 0 a sound, 1 text, 2 a picture, 3 a
+    /// voice (a holotape).
+    pub kind: u8,
+    /// A picture note's texture (`XNAM`).
+    pub image: Option<String>,
+}
+
+/// A note's sound playing (`MapMenu` `+0x98` .. `+0xc4`, `0079a660`):
+/// how long since it began and how long all of it is, in milliseconds,
+/// and the note.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NoteAudio {
+    pub note: u32,
+    pub elapsed_ms: f32,
+    pub total_ms: f32,
+    /// All of it has played.
+    pub done: bool,
 }
 
 /// A map marker on the world map.
@@ -147,6 +175,65 @@ pub struct WorldMapLine {
     pub size: [f32; 2],
     pub markers: Vec<MarkerLine>,
     pub player: Option<([f32; 2], f32)>,
+    /// The north-west and south-east corners (game units) the picture
+    /// spans (`MNAM`'s cells), for turning a point back into a place.
+    pub corners: [[f32; 2]; 2],
+    /// The player's own marker on the picture, when in this worldspace.
+    pub custom: Option<[f32; 2]>,
+    /// The active quest's targets on the picture (`0079e0a0`).
+    pub quest: Vec<[f32; 2]>,
+}
+
+/// DATA › Local Map (`world::local_map`): the grid of tile pictures made so
+/// far (each with its 17 × 17 corners' fog of war, rows northward), and the
+/// markers, as places 0..1 on the map.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LocalMapLine {
+    /// Changes when the map is made again (a new place): the map is
+    /// zoomed and centred anew.
+    pub key: u64,
+    /// Tiles a side and a tile's size on the map (1024 outdoors, 2048
+    /// indoors, `0079ffb0`).
+    pub grids: i32,
+    pub tile_px: f32,
+    pub tiles: Vec<LocalTile>,
+    /// All the tiles drawn: the map is shown (`0079d410`).
+    pub done: bool,
+    /// The player: place and the arrow's `rotateangle`.
+    pub player: Option<([f32; 2], f32)>,
+    pub doors: Vec<LocalDoor>,
+    pub quests: Vec<[f32; 2]>,
+    pub custom: Option<[f32; 2]>,
+}
+
+/// One tile's picture on the local map.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LocalTile {
+    pub gx: i32,
+    pub gy: i32,
+    /// The picture's name for the drawing (made by the caller).
+    pub picture: String,
+    /// The 17 × 17 corners' alpha (`seen / 4`), row by row northward.
+    pub fog: Vec<f32>,
+}
+
+/// A door's marker on the local map.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LocalDoor {
+    pub at: [f32; 2],
+    pub name: String,
+    /// 0..255 (the fog of war at the door).
+    pub alpha: f32,
+}
+/// A radio station's row (`0079bea0`): the station's reference, its name,
+/// whether it's in range now (else its text at alpha 128) and whether it's
+/// the one the radio plays (`_selected`: the filled square).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StationLine {
+    pub reference: u32,
+    pub name: String,
+    pub in_range: bool,
+    pub tuned: bool,
 }
 
 /// What the Pip-Boy shows, from the game's state.
@@ -187,6 +274,8 @@ pub struct PipboyInput {
     pub karma_title: String,
     pub reputations: Vec<ReputationLine>,
     pub items: Vec<ItemLine>,
+    /// The keys carried (`KEYM`), for the keyring.
+    pub keys: Vec<ItemLine>,
     pub caps: i32,
     pub weight: (f32, f32),
     pub damage_resistance: f32,
@@ -196,7 +285,14 @@ pub struct PipboyInput {
     pub quests: Vec<QuestLine>,
     pub notes: Vec<NoteLine>,
     pub world_map: Option<WorldMapLine>,
-    pub stations: Vec<String>,
+    /// DATA › Radio's rows (`world::radio::Radio::rows`).
+    pub stations: Vec<StationLine>,
+    /// DATA › Local Map, when the caller has made it.
+    pub local_map: Option<LocalMapLine>,
+    /// The items on the hot keys 1 to 8 (carried ones).
+    pub hotkeys: [Option<u32>; 8],
+    /// A note's sound playing (the caller's).
+    pub note_audio: Option<NoteAudio>,
 }
 
 /// The three Pip-Boy menus.
@@ -233,6 +329,10 @@ pub enum Key {
     /// The X and Y buttons (Shift + Enter, Alt + Enter).
     ButtonX,
     ButtonY,
+    /// Page Up and Page Down: the pad's bumpers (codes 0x0F / 0x10,
+    /// `007154b0` DIK 0xC9 / 0xD1): zoom DATA's maps.
+    PageUp,
+    PageDown,
     /// A letter: the button the menu's `_PCButton_<letter>` names
     /// (`stats_stimpak_button` for S), clicked when it shows and can be
     /// clicked (`0070c4a0`).
@@ -244,13 +344,61 @@ pub enum Key {
 pub enum Action {
     /// Play a sound record (by editor ID).
     Sound(String),
+    /// A radio station's row clicked (`00796fd0` case 0x19): in range,
+    /// the radio is turned off, then on and tuned to it unless it was the
+    /// one playing (`world::radio::Radio::click_row`).
+    Radio(u32),
     /// Equip or take off an item, or use it (aid, books).
     Equip(u32),
     Use(u32),
-    /// Fast travel to a map marker (its reference).
+    /// Drop an item (`00780140` case 7): the game checks it can, then asks
+    /// how many above `iInventoryAskQuantityAt`.
+    Drop(u32),
+    /// Fast travel to a map marker (its reference) asked for: the game
+    /// checks the player can travel, then asks "Do you want to travel to
+    /// ...?" (`00796fd0` case 0x1a).
     Travel(u32),
+    /// The player's own marker asked for at this point of the world map's
+    /// picture (0 to 1; `00796fd0` case 0x0c): the game asks to set it, or
+    /// to move, remove or leave the one there.
+    PlaceMarker([f32; 2]),
     /// Make a quest the active one.
     ActiveQuest(u32),
+    /// Put an item on a hot key (0 to 7; `007019e0`, the item off any other).
+    SetHotkey {
+        slot: usize,
+        item: u32,
+    },
+    /// A notice on the HUD (`007052f0`; a refusal's text).
+    Notice(String),
+    /// Play a sound or voice note's audio (`00796fd0` case 0x18), or stop
+    /// the one playing (`00798ad0`).
+    PlayNote(u32),
+    StopNote,
+    /// The scroll knob turns a notch (`007f8610(0, ±fScrollKnobIncrement,
+    /// fScrollKnobRate, ...)`, with the `UIPipBoyScroll` click): `down`
+    /// when the choice moved to a later row (or the map zoomed in).
+    ScrollKnob {
+        down: bool,
+    },
+    /// Open the repair screen on an item (ITEMS' Repair, `00780140` case
+    /// 8): the game answers with [`Pipboy::open_repair`].
+    OpenRepair(u32),
+    /// Mend `chosen` with one `part` (`007b5d80`): the game answers with
+    /// [`Pipboy::repaired`].
+    Repair {
+        chosen: u32,
+        part: u32,
+    },
+    /// Open the weapon mod screen on a weapon (ITEMS' Mod, `00780140` case
+    /// 0x13): the game answers with [`Pipboy::open_item_mod`].
+    OpenItemMod(u32),
+    /// Fit a mod from the player's things to the weapon (`00783af0`): the
+    /// game answers with [`Pipboy::item_modded`].
+    FitMod {
+        weapon: u32,
+        item: u32,
+    },
 }
 
 /// A tile found by its `id` in a menu (the menu objects keep their tiles
@@ -293,12 +441,103 @@ pub(crate) fn load_menu(
         .map_err(|e| format!("{file}: {e}"))
 }
 
-/// The Pip-Boy: its three menus and which shows.
+/// The Pip-Boy: its three menus and which shows, and the repair screen
+/// opened from ITEMS.
 pub struct Pipboy {
     pub stats: StatsMenu,
     pub items: ItemsMenu,
     pub data: DataMenu,
+    /// Traits the code animates (`ui::anim`), and the limb blinking now.
+    pub anims: crate::anim::Animations,
+    blinking: Option<usize>,
     pub section: Section,
+    /// The repair screen (none when its file can't be read).
+    pub repair: Option<RepairMenu>,
+    /// It's up, over ITEMS.
+    pub repairing: bool,
+    /// The weapon mod screen (none when its file can't be read).
+    pub item_mod: Option<ItemModMenu>,
+    /// It's up, over ITEMS.
+    pub modding: bool,
+    /// The interface's pointer state over the shown menu (the tile under
+    /// the pointer, the one the button went down on, a drag).
+    pub interface: Interface,
+    /// Where the pointer last was on the screen.
+    last_at: Option<[f32; 2]>,
+}
+
+/// The menu classes' numbers (`Menu` vtable slot `+0x34`): StatsMenu
+/// 1003 (0x3eb), InventoryMenu 1002 (0x3ea), MapMenu 1023 (0x3ff), as
+/// `00717920` and `00704c10` / `007048f0` / `00704170` name them.
+pub const STATS_CLASS: i32 = 0x3eb;
+pub const ITEMS_CLASS: i32 = 0x3ea;
+pub const DATA_CLASS: i32 = 0x3ff;
+
+/// The left mouse button this frame, as `0070c4a0` reads it
+/// (`00a23a50(0, 0 / 1 / 2)`: held, gone down, come up).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Button {
+    pub down: bool,
+    pub pressed: bool,
+    pub released: bool,
+}
+
+/// The shown menu's code as the interface sees it (the `Menu` vtable's
+/// click, mouse-over and mouse-off slots), with what it asks of the game.
+struct Code<'a> {
+    section: Section,
+    stats: &'a mut StatsMenu,
+    items: &'a mut ItemsMenu,
+    data: &'a mut DataMenu,
+    input: &'a PipboyInput,
+    actions: Vec<Action>,
+}
+
+impl MenuCode for Code<'_> {
+    fn class(&self) -> i32 {
+        match self.section {
+            Section::Stats => STATS_CLASS,
+            Section::Items => ITEMS_CLASS,
+            Section::Data => DATA_CLASS,
+        }
+    }
+
+    fn click(&mut self, ui: &mut Ui, id: i32, tile: Option<TileId>, _now: f64) {
+        let input = self.input;
+        let out = match self.section {
+            Section::Stats => self.stats.click(ui, id, input),
+            Section::Items => self.items.click(ui, id, tile, input),
+            Section::Data => self.data.click(ui, id, tile, input),
+        };
+        self.actions.extend(out);
+    }
+
+    fn mouseover(&mut self, ui: &mut Ui, id: i32, tile: TileId) {
+        let input = self.input;
+        let out = match self.section {
+            Section::Stats => self.stats.mouseover(ui, tile, input),
+            Section::Items => self.items.mouseover(ui, id, tile, input),
+            Section::Data => self.data.mouseover(ui, id, tile, input),
+        };
+        self.actions.extend(out);
+    }
+
+    fn unmouseover(&mut self, ui: &mut Ui, id: i32, tile: TileId) {
+        match self.section {
+            Section::Items => self.items.unmouseover(ui, id, tile),
+            Section::Stats => self.stats.unmouseover(ui, tile),
+            Section::Data => {}
+        }
+    }
+
+    /// The wheel (`+0x28`): DATA zooms its maps (`0079c530`); STATS' and
+    /// ITEMS' slots are the base menu's (`8d0600`, nothing).
+    fn wheel(&mut self, ui: &mut Ui, _id: i32, _tile: TileId, delta: i32) {
+        if self.section == Section::Data {
+            let out = self.data.wheel(ui, delta);
+            self.actions.extend(out);
+        }
+    }
 }
 
 impl Pipboy {
@@ -310,11 +549,21 @@ impl Pipboy {
         let stats = StatsMenu::load(ui, read)?;
         let items = ItemsMenu::load(ui, read)?;
         let data = DataMenu::load(ui, read)?;
+        let repair = RepairMenu::load(ui, read).ok();
+        let item_mod = ItemModMenu::load(ui, read).ok();
         let mut p = Pipboy {
             stats,
             items,
             data,
+            anims: crate::anim::Animations::default(),
+            blinking: None,
             section: Section::Stats,
+            interface: Interface::default(),
+            last_at: None,
+            repair,
+            repairing: false,
+            item_mod,
+            modding: false,
         };
         p.show(ui, Section::Stats);
         Ok(p)
@@ -322,6 +571,12 @@ impl Pipboy {
 
     /// The shown menu's tile.
     pub fn menu(&self) -> TileId {
+        if let Some(r) = self.repair.as_ref().filter(|_| self.repairing) {
+            return r.menu;
+        }
+        if let Some(m) = self.item_mod.as_ref().filter(|_| self.modding) {
+            return m.menu;
+        }
         match self.section {
             Section::Stats => self.stats.menu,
             Section::Items => self.items.menu,
@@ -329,9 +584,36 @@ impl Pipboy {
         }
     }
 
-    /// Shows one of the three (the others hidden).
+    /// The shown menu's class number (STATS, ITEMS, DATA).
+    pub fn class(&self) -> i32 {
+        match self.section {
+            Section::Stats => STATS_CLASS,
+            Section::Items => ITEMS_CLASS,
+            Section::Data => DATA_CLASS,
+        }
+    }
+
+    /// Shows one of the three (the others hidden). The pointer's tiles
+    /// were the old menu's: the interface lets them go (the menu that
+    /// closes takes its tiles with it) and picks afresh.
     pub fn show(&mut self, ui: &mut Ui, section: Section) {
+        // The repair and mod screens close.
+        self.close_repair(ui);
+        self.close_item_mod(ui);
+        if section != self.section {
+            for tile in [self.interface.over, self.interface.focus]
+                .into_iter()
+                .flatten()
+            {
+                ui.set_number(tile, t::MOUSEOVER, 0.0);
+            }
+            self.interface = Interface::default();
+            self.data.cursor_hidden = false;
+        }
         self.section = section;
+        if section == Section::Data {
+            self.data.shown();
+        }
         for (menu, on) in [
             (self.stats.menu, section == Section::Stats),
             (self.items.menu, section == Section::Items),
@@ -341,18 +623,161 @@ impl Pipboy {
         }
     }
 
+    /// The shown list's last row under the pointer (each menu's
+    /// `listindex` it compares, `011da7d8` and kin) and its chosen row, for
+    /// the scroll knob's direction.
+    fn list_index(&self) -> (Option<usize>, Option<usize>) {
+        let hovered = match self.section {
+            Section::Items => self.items.hovered,
+            Section::Data => self.data.hovered,
+            Section::Stats => self.stats.hovered[self.stats.page.min(4)],
+        };
+        (hovered, self.chosen_index())
+    }
+
+    fn chosen_index(&self) -> Option<usize> {
+        match self.section {
+            Section::Items => self.items.list.selected,
+            Section::Data => match self.data.tab {
+                2 => self.data.quests.selected,
+                3 => self.data.notes.selected,
+                4 => self.data.radio.selected,
+                _ => None,
+            },
+            Section::Stats => match self.stats.page {
+                1 => self.stats.special.selected,
+                2 => self.stats.skills.selected,
+                3 => self.stats.perks.selected,
+                4 => self.stats.general.selected,
+                _ => self.stats.effects.selected,
+            },
+        }
+    }
+
+    /// With the knob's click (`UIPipBoyScroll`) the scroll knob turns, a
+    /// notch one way for a later row than `before`, the other for an
+    /// earlier one (`007b6120` and the other menus' mouse-overs:
+    /// +`fScrollKnobIncrement` when the new `listindex` is the greater).
+    fn route(
+        &mut self,
+        mut out: Vec<Action>,
+        before: (Option<usize>, Option<usize>),
+    ) -> Vec<Action> {
+        let clicked = out
+            .iter()
+            .any(|a| matches!(a, Action::Sound(s) if s == "UIPipBoyScroll"));
+        let turned = out.iter().any(|a| matches!(a, Action::ScrollKnob { .. }));
+        if clicked && !turned {
+            let after = self.list_index();
+            // The pointer's row when it moved, else the chosen row (keys).
+            let (b, a) = if after.0 != before.0 {
+                (before.0, after.0)
+            } else {
+                (before.1, after.1)
+            };
+            out.push(Action::ScrollKnob {
+                down: match b {
+                    None => true,
+                    Some(b) => a.is_some_and(|a| a > b),
+                },
+            });
+        }
+        out
+    }
+
+    /// The number keys held (hot keys 1 to 8), every frame while ITEMS
+    /// shows (`00781ba0` runs with the inventory menu on top): the hot key
+    /// wheel.
+    pub fn hotkey_keys(&mut self, ui: &mut Ui, down: [bool; 8], input: &PipboyInput) {
+        if self.section == Section::Items {
+            self.items.hotkey_keys(ui, down, input);
+            ui.refresh();
+        }
+    }
+
+    /// Every frame, `now` in seconds: the limb healing mode aims at blinks
+    /// (`007dbfa0` → `007dbfe0` → `007dc040`: its tiles' alpha from 255 to
+    /// 0 and back each second, `00a07c60` mode 1; the one it leaves stops
+    /// at 255), and the animated traits move (`00a080d0`).
+    pub fn frame(&mut self, ui: &mut Ui, now: f64) {
+        let aimed = self
+            .stats
+            .part
+            .filter(|_| self.stats.healing && self.section == Section::Stats);
+        if aimed != self.blinking {
+            if let Some(old) = self.blinking {
+                for tile in stats::limb_tiles(ui, self.stats.menu, old) {
+                    self.anims.stop(tile, t::ALPHA);
+                    ui.set_number(tile, t::ALPHA, 255.0);
+                }
+            }
+            if let Some(new) = aimed {
+                for tile in stats::limb_tiles(ui, self.stats.menu, new) {
+                    self.anims.pulse(tile, t::ALPHA, 255.0, 0.0, 1.0, now);
+                }
+            }
+            self.blinking = aimed;
+        }
+        self.anims.step(ui, now);
+        ui.refresh();
+    }
+
     /// Fills all three from the game's state.
     pub fn fill(&mut self, ui: &mut Ui, input: &PipboyInput) {
         self.stats.fill(ui, input);
         self.items.fill(ui, input);
         self.data.fill(ui, input);
+        self.data.note_audio(ui, input.note_audio);
         ui.refresh();
     }
 
     /// A key: moves within the shown menu or to the next one. Returns what
     /// the game should do (sounds, equipping, travel).
     pub fn key(&mut self, ui: &mut Ui, key: Key, input: &PipboyInput) -> Vec<Action> {
+        let before = self.list_index();
+        let out = self.key_inner(ui, key, input);
+        let out = self.route(out, before);
+        ui.refresh();
+        out
+    }
+
+    fn key_inner(&mut self, ui: &mut Ui, key: Key, input: &PipboyInput) -> Vec<Action> {
         let mut out = Vec::new();
+        // The repair screen has the keys while it's up: its list, Enter,
+        // and its `_PCButton_E` (Cancel); the rest do nothing.
+        // The mod screen likewise: its list, Enter, and E (Cancel).
+        if self.modding {
+            match key {
+                Key::Letter(c) => {
+                    if self.pc_button(ui, c) == Some(item_mod::CANCEL) {
+                        out.extend(self.cancel_item_mod(ui));
+                    }
+                }
+                _ => {
+                    if let Some(m) = self.item_mod.as_mut() {
+                        out.extend(m.key(ui, key));
+                    }
+                }
+            }
+            ui.refresh();
+            return out;
+        }
+        if self.repairing {
+            match key {
+                Key::Letter(c) => {
+                    if self.pc_button(ui, c) == Some(repair::CANCEL) {
+                        out.extend(self.cancel_repair(ui));
+                    }
+                }
+                _ => {
+                    if let Some(r) = self.repair.as_mut() {
+                        out.extend(r.key(ui, key));
+                    }
+                }
+            }
+            ui.refresh();
+            return out;
+        }
         match key {
             // Round the three (`007db680`, `00782190`, `00799790`: STATS
             // goes back to DATA and on to ITEMS, DATA on to STATS).
@@ -373,13 +798,19 @@ impl Pipboy {
                     out.extend(self.click(ui, id, input));
                 }
             }
+            Key::ButtonX | Key::ButtonY if self.section == Section::Items => {
+                match self.items.pad_button(ui, key) {
+                    items::PadPress::Click(id) => out.extend(self.click(ui, id, input)),
+                    items::PadPress::Refused => out.push(Action::Sound("UIMenuCancel".into())),
+                    items::PadPress::Nothing => {}
+                }
+            }
             _ => match self.section {
                 Section::Stats => out.extend(self.stats.key(ui, key, input)),
                 Section::Items => out.extend(self.items.key(ui, key, input)),
                 Section::Data => out.extend(self.data.key(ui, key, input)),
             },
         }
-        ui.refresh();
         out
     }
 
@@ -397,13 +828,278 @@ impl Pipboy {
     }
 
     /// A button of the shown menu pressed (the menus' click handlers, slot
-    /// 0x0C: `007db380` STATS, `00780140` ITEMS, `00796fd0` DATA).
+    /// 0x0C: `007db380` STATS, `00780140` ITEMS, `00796fd0` DATA). DATA's
+    /// lettered button (R: `MM_ButtonY`) does what isn't here.
     pub fn click(&mut self, ui: &mut Ui, id: i32, input: &PipboyInput) -> Vec<Action> {
-        match self.section {
-            Section::Stats => self.stats.click(ui, id, input),
-            // ITEMS' lettered buttons (Repair, Mod, the keyring's Cancel)
-            // and DATA's (R: `MM_ButtonY`) do what isn't here yet.
-            Section::Items | Section::Data => Vec::new(),
+        let before = self.list_index();
+        let ((), out) = self.with_code(ui, input, |_, code, _, ui| {
+            code.click(ui, id, None, 0.0);
+        });
+        self.route(out, before)
+    }
+
+    /// Runs the interface over the shown menu with its code.
+    fn with_code<R>(
+        &mut self,
+        ui: &mut Ui,
+        input: &PipboyInput,
+        run: impl FnOnce(&mut Interface, &mut Code, TileId, &mut Ui) -> R,
+    ) -> (R, Vec<Action>) {
+        let menu = self.menu();
+        let mut interface = std::mem::take(&mut self.interface);
+        let mut code = Code {
+            section: self.section,
+            stats: &mut self.stats,
+            items: &mut self.items,
+            data: &mut self.data,
+            input,
+            actions: Vec::new(),
+        };
+        let r = run(&mut interface, &mut code, menu, ui);
+        let actions = std::mem::take(&mut code.actions);
+        self.interface = interface;
+        (r, actions)
+    }
+
+    /// The mouse over the Pip-Boy (`0070c4a0` with the Pip-Boy up): `at` is
+    /// the pointer on the menus' picture in menu units (`007f8720`: the
+    /// screen's texture coordinates × 1280 × 960), or none when it's off
+    /// the screen, when no tile is under it (`007126c0` gives none with a
+    /// Pip-Boy menu on top and the cursor off the screen). Then the
+    /// interface's own rules (`ui::menu::Interface::pointer`): the tile
+    /// under it moused over, a press and release on the same tile a click,
+    /// a `draggable` tile dragged. On DATA's map tabs the highlight box
+    /// follows the pointer (`0079a130`). Returns what the game should do
+    /// (sounds, the interface's `clicksound` / `mouseoversound` included).
+    pub fn pointer(
+        &mut self,
+        ui: &mut Ui,
+        at: Option<[f32; 2]>,
+        button: Button,
+        now: f64,
+        input: &PipboyInput,
+    ) -> Vec<Action> {
+        self.pointer_with_right(ui, at, button, Button::default(), false, now, input)
+    }
+
+    /// [`Pipboy::pointer`] with the right button too, and whether the
+    /// Pip-Boy control (Tab) is held. Then the shown menu's every-frame
+    /// code reads the right button going down (`00a23a50(1, 1)`) unless
+    /// the Pip-Boy control is down (`00a24660(0xe, 1)`): on ITEMS it drops
+    /// the chosen item (`00781ba0`: click 7, when an item is chosen), on
+    /// DATA's world map with the pointer over the map it asks for the
+    /// player's marker there (`0079a130`: click 0x0c).
+    #[allow(clippy::too_many_arguments)]
+    pub fn pointer_with_right(
+        &mut self,
+        ui: &mut Ui,
+        at: Option<[f32; 2]>,
+        button: Button,
+        right: Button,
+        pipboy_control_down: bool,
+        now: f64,
+        input: &PipboyInput,
+    ) -> Vec<Action> {
+        // The repair and mod screens take keys only here (their mouse code,
+        // `RepairMenu` / `ItemModMenu`'s click slots, isn't translated).
+        if self.repairing || self.modding {
+            return Vec::new();
+        }
+        if button.pressed && self.section == Section::Data {
+            self.data.pressed(ui);
+        }
+        let before = self.list_index();
+        // Off the screen nothing is picked: a point no tile covers. A tile
+        // being dragged keeps the last point on the screen meanwhile (the
+        // map stops where the pointer left it, not flung off by a point
+        // far away); nothing is known of the game's own, which follows its
+        // cursor.
+        if at.is_some() {
+            self.last_at = at;
+        }
+        let held = at.or(self.last_at.filter(|_| self.interface.dragging.is_some()));
+        let [x, y] = held.unwrap_or([-1.0e6, -1.0e6]);
+        let ((), mut out) = self.with_code(ui, input, |interface, code, menu, ui| {
+            interface.pointer(
+                ui,
+                menu,
+                code,
+                x,
+                y,
+                button.down,
+                button.pressed,
+                button.released,
+                now,
+            );
+        });
+        if self.section == Section::Data {
+            out.extend(self.data.pointer_moved(ui, at, input));
+        }
+        if right.pressed && !pipboy_control_down {
+            match self.section {
+                Section::Items => out.extend(self.items.click(ui, items::DROP_ID, None, input)),
+                Section::Data => out.extend(self.data.right_pressed(ui, at)),
+                _ => {}
+            }
+        }
+        out.extend(self.interface_sounds());
+        let out = self.route(out, before);
+        ui.refresh();
+        out
+    }
+
+    /// The mouse wheel turned `notches` (away from the player positive)
+    /// over the Pip-Boy (`0070c4a0`: the nearest `wheelable` tile from the
+    /// one under the pointer gets `wheelmoved`, the list boxes' scroll bars
+    /// read it).
+    pub fn wheel(&mut self, ui: &mut Ui, notches: i32, input: &PipboyInput) -> Vec<Action> {
+        if self.repairing || self.modding {
+            return Vec::new();
+        }
+        let before = self.list_index();
+        let ((), mut out) = self.with_code(ui, input, |interface, code, menu, ui| {
+            interface.wheel(ui, menu, code, notches);
+        });
+        out.extend(self.interface_sounds());
+        let out = self.route(out, before);
+        ui.refresh();
+        out
+    }
+
+    /// The pad's sticks (left stick up / down, right stick x / y, as the
+    /// 360 pad's -32767 .. 32767) over the Pip-Boy: DATA's maps zoom and
+    /// pan with them (`00799790`).
+    pub fn sticks(&mut self, ui: &mut Ui, left_y: i32, right: [i32; 2]) -> Vec<Action> {
+        if self.repairing || self.modding || self.section != Section::Data {
+            return Vec::new();
+        }
+        let out = self.data.sticks(ui, left_y, right);
+        ui.refresh();
+        out
+    }
+
+    /// The interface's own sounds (`clicksound`, `mouseoversound`).
+    fn interface_sounds(&mut self) -> Vec<Action> {
+        self.interface
+            .effects
+            .drain(..)
+            .map(|e| match e {
+                crate::menu::Effect::Sound(name) => Action::Sound(name),
+            })
+            .collect()
+    }
+
+    /// One of the Pip-Boy's own buttons pressed with the mouse (`007f8720`
+    /// picks `PipBoyButton01` .. `03` on the model: 1 STATS, 2 ITEMS, 3
+    /// DATA; `0070c4a0` then plays `UIMenuMode` and opens that menu,
+    /// `00704c10` / `007048f0` / `00704170`).
+    pub fn press_section(&mut self, ui: &mut Ui, button: usize) -> Vec<Action> {
+        let section = match button {
+            1 => Section::Stats,
+            2 => Section::Items,
+            3 => Section::Data,
+            _ => return Vec::new(),
+        };
+        self.show(ui, section);
+        ui.refresh();
+        vec![Action::Sound("UIMenuMode".into())]
+    }
+
+    /// Whether the game's cursor is hidden now (DATA's map under it).
+    pub fn cursor_hidden(&self) -> bool {
+        self.section == Section::Data && self.data.cursor_hidden
+    }
+
+    /// Opens the repair screen over ITEMS with what the game worked out.
+    pub fn open_repair(&mut self, ui: &mut Ui, input: repair::RepairInput) {
+        let Some(r) = self.repair.as_mut() else {
+            return;
+        };
+        ui.set_number(self.items.menu, t::VISIBLE, 0.0);
+        r.open(ui, input);
+        self.repairing = true;
+        ui.refresh();
+    }
+
+    /// After a repair (`007b5b40`): closed when the item reached 99% or
+    /// only it is left, else filled again.
+    pub fn repaired(&mut self, ui: &mut Ui, input: repair::RepairInput) {
+        if !self.repairing {
+            return;
+        }
+        if RepairMenu::done_after(&input) {
+            self.close_repair(ui);
+        } else if let Some(r) = self.repair.as_mut() {
+            r.fill(ui, input);
+        }
+    }
+
+    /// Cancel (`007b5b40` case 0xc): `UIMenuMode`, back to ITEMS.
+    pub fn cancel_repair(&mut self, ui: &mut Ui) -> Vec<Action> {
+        self.close_repair(ui);
+        vec![Action::Sound(repair::MENU_SOUND.into())]
+    }
+
+    fn close_repair(&mut self, ui: &mut Ui) {
+        if !self.repairing {
+            return;
+        }
+        self.repairing = false;
+        if let Some(r) = self.repair.as_mut() {
+            r.hide(ui);
+        }
+        if self.section == Section::Items {
+            ui.set_number(self.items.menu, t::VISIBLE, 1.0);
+        }
+        ui.refresh();
+    }
+
+    /// Opens the mod screen over ITEMS with what the game worked out.
+    pub fn open_item_mod(&mut self, ui: &mut Ui, input: item_mod::ItemModInput) {
+        let Some(m) = self.item_mod.as_mut() else {
+            return;
+        };
+        ui.set_number(self.items.menu, t::VISIBLE, 0.0);
+        m.open(ui, input);
+        self.modding = true;
+        ui.refresh();
+    }
+
+    /// After a mod is fitted (`007838a0`): the list filled again.
+    pub fn item_modded(&mut self, ui: &mut Ui, input: item_mod::ItemModInput) {
+        if !self.modding {
+            return;
+        }
+        if let Some(m) = self.item_mod.as_mut() {
+            m.fill(ui, input);
+        }
+    }
+
+    /// Cancel (`007838a0` case 0xc): `UIMenuMode`, back to ITEMS.
+    pub fn cancel_item_mod(&mut self, ui: &mut Ui) -> Vec<Action> {
+        self.close_item_mod(ui);
+        vec![Action::Sound(item_mod::MENU_SOUND.into())]
+    }
+
+    fn close_item_mod(&mut self, ui: &mut Ui) {
+        if !self.modding {
+            return;
+        }
+        self.modding = false;
+        if let Some(m) = self.item_mod.as_mut() {
+            m.hide(ui);
+        }
+        if self.section == Section::Items {
+            ui.set_number(self.items.menu, t::VISIBLE, 1.0);
+        }
+        ui.refresh();
+    }
+
+    /// One frame of the menus' own movement (the repair screen's pulsing
+    /// text), `now` in seconds.
+    pub fn update(&mut self, ui: &mut Ui, now: f64) {
+        if let Some(r) = self.repair.as_mut().filter(|_| self.repairing) {
+            r.update(ui, now);
         }
     }
 }
@@ -445,5 +1141,447 @@ pub(crate) mod tests {
         assert_eq!(by_id(&ui, m, 5), ui.find(m, "a"));
         assert_eq!(by_id(&ui, m, 0), ui.find(m, "c"));
         assert_eq!(by_id(&ui, m, 9), None);
+    }
+
+    /// `inventory_menu.xml` cut down, laid out for the pointer: rows 30
+    /// high from y 100 (their `y` from `_y`, as `list_box_template.xml`
+    /// places them), a tab line at y 600 of buttons 100 wide.
+    const ITEMS: &str = r#"<menu name="InventoryMenu"><locus>&true;</locus>
+      <hotrect name="list"><id>4</id><x>0</x><y>100</y><width>300</width><height>400</height><locus>&true;</locus>
+        <target>&false;</target><wheelable>&true;</wheelable>
+        <_scroll_delta>0</_scroll_delta><_highlight_y>-1</_highlight_y><_selected_height>0</_selected_height>
+        <image name="lb_scrollbar"><_number_of_items>1</_number_of_items><_current_value>0</_current_value></image>
+      </hotrect>
+      <template name="IM_InventoryListTemplate"><hotrect name="row"><height>30</height><width>300</width>
+        <y><copy src="me()" trait="_y"/></y><target>&true;</target></hotrect></template>
+      <rect name="tabs"><id>13</id><x>0</x><y>600</y><width>855</width><locus>&true;</locus></rect>
+      <template name="TabButtonTemplate"><hotrect name="TabButton"><width>100</width><height>30</height>
+        <x><copy src="me()" trait="_x"/></x><mouseoversound>UIMenuFocus</mouseoversound></hotrect></template>
+      <image name="IM_ItemIcon"><id>11</id><visible>&false;</visible></image>
+      <rect name="IM_HotKeyWheel"><id>5</id><visible>&false;</visible><_SelectedHotkey>-1</_SelectedHotkey><_SelectedText></_SelectedText>
+        <rect name="HK_Item_0"><_HotKeyAssigned>&false;</_HotKeyAssigned><_HotKeyIcon></_HotKeyIcon></rect>
+        <rect name="HK_Item_2"><_HotKeyAssigned>&false;</_HotKeyAssigned><_HotKeyIcon></_HotKeyIcon></rect>
+      </rect>
+      <image name="IM_RepairButton"><id>8</id><x>900</x><width>10</width><height>10</height></image>
+      <image name="IM_ModButton"><id>19</id><x>900</x><y>20</y><width>10</width><height>10</height></image>
+    </menu>"#;
+
+    /// `map_menu.xml` cut down: the world map in its clip window, the
+    /// highlight box in its own, a marker template placed by `_x` / `_y`.
+    const DATA: &str = r#"<menu name="MapMenu"><locus>&true;</locus>
+      <hotrect name="MM_WorldMap_ClipWindow"><y>50</y><width>855</width><height>500</height><locus>&true;</locus><target>&false;</target>
+        <hotrect name="world"><id>4</id><draggable>&true;</draggable><locus>&true;</locus><width>855</width><height>500</height>
+          <_Magnification>1</_Magnification></hotrect>
+      </hotrect>
+      <hotrect name="MM_Highlight_ClipWindow"><y>50</y><width>855</width><height>500</height><locus>&true;</locus><target>&false;</target>
+        <rect name="box"><id>6</id><width>160</width><height>160</height><x>348</x><y>170</y><locus>&true;</locus></rect>
+      </hotrect>
+      <template name="MapMarkerTemplate"><image name="MapMarker"><user0>1</user0><width>20</width><height>20</height><target>&false;</target>
+        <x><copy src="me()" trait="_x"/><mul src="parent()" trait="width"/><sub>10</sub></x>
+        <y><copy src="me()" trait="_y"/><mul src="parent()" trait="height"/><sub>10</sub></y></image></template>
+    </menu>"#;
+
+    fn load() -> (Ui, Pipboy) {
+        let mut ui = ui();
+        let mut read = |p: &str| {
+            let text = match p {
+                STATS_FILE => stats::tests::MENU,
+                ITEMS_FILE => ITEMS,
+                DATA_FILE => DATA,
+                _ => return None,
+            };
+            Some(text.as_bytes().to_vec())
+        };
+        let p = Pipboy::load(&mut ui, &mut read).unwrap();
+        (ui, p)
+    }
+
+    fn input() -> PipboyInput {
+        let item = |form: u32, name: &str, tab: ItemTab| ItemLine {
+            form,
+            name: name.into(),
+            count: 1,
+            tab,
+            equipped: false,
+            usable: true,
+            value: 10,
+            weight: 1.0,
+            icon: None,
+            damage: None,
+            dps: None,
+            projectiles: 1,
+            damage_resistance: None,
+            damage_threshold: None,
+            condition: None,
+            strength: None,
+            ammo: None,
+            weight_class: None,
+            effects: None,
+            repairable: false,
+            modded: false,
+        };
+        let marker = |form: u32, name: &str, at: [f32; 2]| MarkerLine {
+            form,
+            name: name.into(),
+            at,
+            kind: 1,
+            travel: true,
+        };
+        PipboyInput {
+            items: vec![
+                item(0xA1, "Knife", ItemTab::Weapons),
+                item(0xA2, "Pistol", ItemTab::Weapons),
+                item(0xB1, "Vault Suit", ItemTab::Apparel),
+            ],
+            world_map: Some(WorldMapLine {
+                picture: "map.dds".into(),
+                size: [855.0, 500.0],
+                markers: vec![
+                    marker(0x901, "Goodsprings", [0.25, 0.75]),
+                    marker(0x902, "Primm", [0.75, 0.25]),
+                ],
+                player: Some(([0.5, 0.5], 0.0)),
+                corners: [[0.0, 1.0], [1.0, 0.0]],
+                custom: None,
+                quest: Vec::new(),
+            }),
+            ..stats::tests::input()
+        }
+    }
+
+    const UP: Button = Button {
+        down: false,
+        pressed: false,
+        released: false,
+    };
+    const PRESS: Button = Button {
+        down: true,
+        pressed: true,
+        released: false,
+    };
+    const RELEASE: Button = Button {
+        down: false,
+        pressed: false,
+        released: true,
+    };
+
+    fn sound(name: &str) -> Action {
+        Action::Sound(name.into())
+    }
+
+    /// `0070c4a0` over ITEMS: the row under the pointer is chosen and its
+    /// card shown (`00780ff0`, the knob clicking when the row changes),
+    /// a press and release on it equips it (`00780140` case 0x1d), leaving
+    /// it clears the choice (`00781620`), a tab button turns the tab
+    /// (cases 0x18 .. 0x1c), and the pointer off the screen picks nothing.
+    #[test]
+    fn the_mouse_chooses_equips_and_turns_tabs_on_items() {
+        let (mut ui, mut p) = load();
+        let input = input();
+        p.fill(&mut ui, &input);
+        p.show(&mut ui, Section::Items);
+        ui.refresh();
+        // The second row (y 130 .. 160 under the list at 100).
+        let out = p.pointer(&mut ui, Some([10.0, 145.0]), UP, 0.0, &input);
+        // The knob a notch on: a later row than none.
+        assert_eq!(
+            out,
+            [sound("UIPipBoyScroll"), Action::ScrollKnob { down: true }]
+        );
+        assert_eq!(p.items.list.selected, Some(1));
+        // Up to the first row: the knob the other way.
+        let out = p.pointer(&mut ui, Some([10.0, 115.0]), UP, 0.0, &input);
+        assert_eq!(
+            out,
+            [sound("UIPipBoyScroll"), Action::ScrollKnob { down: false }]
+        );
+        p.pointer(&mut ui, Some([10.0, 145.0]), UP, 0.0, &input);
+        // Pressed and let go over it: the pistol is equipped.
+        p.pointer(&mut ui, Some([10.0, 145.0]), PRESS, 0.0, &input);
+        let out = p.pointer(&mut ui, Some([10.0, 145.0]), RELEASE, 0.0, &input);
+        assert_eq!(out, [Action::Equip(0xA2)]);
+        // Off the screen: nothing under it, the choice let go.
+        p.pointer(&mut ui, None, UP, 0.0, &input);
+        assert_eq!(p.interface.over, None);
+        assert_eq!(p.items.list.selected, None);
+        // The same row again: no knob click (it was the last one).
+        let out = p.pointer(&mut ui, Some([10.0, 150.0]), UP, 0.0, &input);
+        assert!(out.is_empty());
+        // The Apparel tab: gap trunc((855 - 500) / 6) = 59, so its button
+        // spans 218 .. 318 along y 600 .. 630.
+        // (Its `mouseoversound` from the file as the pointer comes onto it;
+        // the knob, `00782470` → `007fa0f0`, as it's clicked.)
+        let out = p.pointer(&mut ui, Some([250.0, 610.0]), UP, 0.0, &input);
+        assert_eq!(out, [sound("UIMenuFocus")]);
+        p.pointer(&mut ui, Some([250.0, 610.0]), PRESS, 0.0, &input);
+        let out = p.pointer(&mut ui, Some([250.0, 610.0]), RELEASE, 0.0, &input);
+        assert_eq!(out, [sound("UIPipBoyTab")]);
+        assert_eq!(p.items.tab, 1);
+        assert_eq!(p.items.shown, [0xB1]);
+    }
+
+    /// `007f8720` / `0070c4a0`: the model's DATA button shows DATA with
+    /// `UIMenuMode`, and the pointer's tiles of the old menu are let go.
+    /// Over the world map (`0079a130`, `00799dc0`) the highlight box
+    /// follows the pointer, the game's cursor hides, the nearest marker's
+    /// name shows and a click on the map travels there.
+    #[test]
+    fn the_models_buttons_and_the_world_maps_markers() {
+        let (mut ui, mut p) = load();
+        let input = input();
+        p.fill(&mut ui, &input);
+        p.pointer(&mut ui, Some([10.0, 10.0]), UP, 0.0, &input);
+        assert_eq!(p.press_section(&mut ui, 3), [sound("UIMenuMode")]);
+        assert_eq!(p.section, Section::Data);
+        assert_eq!(p.interface.over, None);
+        ui.refresh();
+        // Goodsprings is at (0.25 × 855, 0.75 × 500) on the map, which
+        // sits at the clip window's corner (the player centred at 427.5,
+        // 250), the window at y 50: (213.75, 425) on the screen.
+        let out = p.pointer(&mut ui, Some([220.0, 420.0]), UP, 0.0, &input);
+        assert_eq!(out, [sound("UIPipBoyHighlight")]);
+        assert_eq!(p.data.marker, Some(0));
+        assert!(p.cursor_hidden());
+        let bx = by_id(&ui, p.data.menu, 6).unwrap();
+        assert_eq!(
+            (ui.number(bx, t::X), ui.number(bx, t::Y)),
+            (220.0 - 80.0, 370.0 - 80.0)
+        );
+        let title = ui.names.lookup("_Title").unwrap();
+        assert_eq!(ui.string(bx, title).unwrap(), "Goodsprings");
+        p.pointer(&mut ui, Some([220.0, 420.0]), PRESS, 0.0, &input);
+        let out = p.pointer(&mut ui, Some([220.0, 420.0]), RELEASE, 0.0, &input);
+        assert_eq!(out, [Action::Travel(0x901)]);
+        // Far from both markers: none; below the map the cursor shows.
+        p.pointer(&mut ui, Some([427.0, 300.0]), UP, 0.0, &input);
+        assert_eq!(p.data.marker, None);
+        p.pointer(&mut ui, Some([427.0, 700.0]), UP, 0.0, &input);
+        assert!(!p.cursor_hidden());
+    }
+
+    /// `00782a90` / `00780140` cases 0x1e, 10 and the tabs: with keys
+    /// carried the Misc tab ends with the keyring's row; clicking it lists
+    /// the keys; Cancel or another tab lists the tab's items again.
+    #[test]
+    fn the_keyring_opens_and_closes() {
+        let (mut ui, mut p) = load();
+        let mut input = input();
+        let key = |form: u32, name: &str| ItemLine {
+            form,
+            name: name.into(),
+            usable: false,
+            ..input.items[0].clone()
+        };
+        input.keys = vec![key(0xC2, "Doc's Key"), key(0xC1, "Bunker Key")];
+        p.fill(&mut ui, &input);
+        p.show(&mut ui, Section::Items);
+        // Weapons: no keyring row.
+        assert_eq!(p.items.shown, [0xA1, 0xA2]);
+        p.items.show_tab(&mut ui, 3, &input);
+        assert_eq!(p.items.shown, [0]);
+        let row = p.items.list.rows[0];
+        assert_eq!(ui.number(row, t::ID), items::KEYRING_ID as f32);
+        p.click(&mut ui, items::KEYRING_ID, &input);
+        assert!(p.items.keyring);
+        assert_eq!(p.items.shown, [0xC1, 0xC2]);
+        let open = ui.names.lookup("_KeyringOpen").unwrap();
+        assert_eq!(ui.number(p.items.menu, open), 1.0);
+        // A key can't be dropped from the keyring.
+        assert_eq!(
+            p.click(&mut ui, items::DROP_ID, &input),
+            [sound("UIVATSInsufficientAP")]
+        );
+        p.click(&mut ui, items::CANCEL_ID, &input);
+        assert!(!p.items.keyring);
+        assert_eq!(p.items.shown, [0]);
+        p.click(&mut ui, items::KEYRING_ID, &input);
+        p.items.show_tab(&mut ui, 0, &input);
+        assert!(!p.items.keyring);
+        assert_eq!(ui.number(p.items.menu, open), 0.0);
+    }
+
+    /// `00781680`: with an item chosen Mod can be pressed and Repair only
+    /// when the item can be repaired; with none chosen neither.
+    #[test]
+    fn items_buttons_follow_the_chosen_item() {
+        let (mut ui, mut p) = load();
+        let mut input = input();
+        input.items[1].repairable = true;
+        p.fill(&mut ui, &input);
+        p.show(&mut ui, Section::Items);
+        ui.refresh();
+        let target = |ui: &mut Ui, p: &Pipboy, id: i32| {
+            ui.number(by_id(ui, p.items.menu, id).unwrap(), t::TARGET)
+        };
+        // The knife (first row, chosen on filling): Mod yes, Repair no.
+        assert_eq!(
+            (target(&mut ui, &p, 19), target(&mut ui, &p, 8)),
+            (1.0, 0.0)
+        );
+        // The pistol under the pointer: both.
+        p.pointer(&mut ui, Some([10.0, 145.0]), UP, 0.0, &input);
+        assert_eq!(
+            (target(&mut ui, &p, 19), target(&mut ui, &p, 8)),
+            (1.0, 1.0)
+        );
+        // Off the rows: nothing chosen, neither.
+        p.pointer(&mut ui, None, UP, 0.0, &input);
+        assert_eq!(
+            (target(&mut ui, &p, 19), target(&mut ui, &p, 8)),
+            (0.0, 0.0)
+        );
+    }
+
+    /// Dragging a map with the pointer leaving the screen: the map is not
+    /// flung off by the point far away that "off the screen" is; it keeps
+    /// the last point on the screen, and goes on from the pointer's return.
+    #[test]
+    fn a_drag_goes_on_when_the_pointer_leaves_the_screen() {
+        let (mut ui, mut p) = load();
+        let input = input();
+        p.fill(&mut ui, &input);
+        p.show(&mut ui, Section::Data);
+        ui.refresh();
+        let world = by_id(&ui, p.data.menu, 4).unwrap();
+        let delta = |ui: &mut Ui| ui.number(world, crate::menu::drag::DELTA_X);
+        const HELD: Button = Button {
+            down: true,
+            pressed: false,
+            released: false,
+        };
+        p.pointer(&mut ui, Some([300.0, 300.0]), UP, 0.0, &input);
+        p.pointer(&mut ui, Some([300.0, 300.0]), PRESS, 0.0, &input);
+        assert!(p.interface.dragging.is_some());
+        p.pointer(&mut ui, Some([280.0, 300.0]), HELD, 0.0, &input);
+        assert_eq!(delta(&mut ui), -20.0);
+        p.pointer(&mut ui, None, HELD, 0.0, &input);
+        assert_eq!(delta(&mut ui), 0.0);
+        assert!(p.interface.dragging.is_some());
+        p.pointer(&mut ui, Some([260.0, 300.0]), HELD, 0.0, &input);
+        assert_eq!(delta(&mut ui), -20.0);
+        p.pointer(&mut ui, None, RELEASE, 0.0, &input);
+        assert!(p.interface.dragging.is_none());
+    }
+
+    /// The right button going down (`00781ba0`, `0079a130`): on ITEMS it
+    /// drops the chosen item (click 7) unless the Pip-Boy control is held
+    /// or nothing is chosen; on the world map, over the map, it asks for
+    /// the player's marker at the pointer's point of the picture.
+    #[test]
+    fn the_right_button_drops_and_marks_the_map() {
+        let (mut ui, mut p) = load();
+        let input = input();
+        p.fill(&mut ui, &input);
+        p.show(&mut ui, Section::Items);
+        ui.refresh();
+        let right = PRESS;
+        // Over the second row: the pistol is chosen; Tab held: nothing.
+        p.pointer(&mut ui, Some([10.0, 145.0]), UP, 0.0, &input);
+        let held = p.pointer_with_right(&mut ui, Some([10.0, 145.0]), UP, right, true, 0.0, &input);
+        assert!(!held.contains(&Action::Drop(0xA2)));
+        let out = p.pointer_with_right(&mut ui, Some([10.0, 145.0]), UP, right, false, 0.0, &input);
+        assert!(out.contains(&Action::Drop(0xA2)));
+        // Off the rows nothing is chosen: nothing to drop.
+        p.pointer(&mut ui, None, UP, 0.0, &input);
+        let out = p.pointer_with_right(&mut ui, None, UP, right, false, 0.0, &input);
+        assert!(!out.iter().any(|a| matches!(a, Action::Drop(_))));
+        // DATA's world map: the pointer's point on the picture is (the
+        // pointer less the map's place) ÷ the map's width, both ways.
+        p.press_section(&mut ui, 3);
+        ui.refresh();
+        p.pointer(&mut ui, Some([220.0, 420.0]), UP, 0.0, &input);
+        let world = by_id(&ui, p.data.menu, 4).unwrap();
+        let (mx, my) = ui.screen_position(world);
+        let w = ui.number(world, t::WIDTH);
+        let out =
+            p.pointer_with_right(&mut ui, Some([220.0, 420.0]), UP, right, false, 0.0, &input);
+        assert!(out.contains(&Action::PlaceMarker([(220.0 - mx) / w, (420.0 - my) / w])));
+        // Below the map (the cursor shows there): nothing.
+        let out =
+            p.pointer_with_right(&mut ui, Some([220.0, 700.0]), UP, right, false, 0.0, &input);
+        assert!(!out.iter().any(|a| matches!(a, Action::PlaceMarker(_))));
+    }
+
+    /// `00781ba0`, `00780140` case 0x1d, `007019e0`: holding a number key on
+    /// ITEMS shows the hot key wheel with that key highlighted (not the
+    /// "2"); a row clicked then goes on that hot key; let go, the wheel
+    /// hides. Ammunition can't go on one.
+    #[test]
+    fn number_keys_put_items_on_hot_keys() {
+        let (mut ui, mut p) = load();
+        let mut input = input();
+        input.items.push(ItemLine {
+            form: 0xC1,
+            name: "9mm Round".into(),
+            tab: ItemTab::Ammo,
+            ..input.items[0].clone()
+        });
+        p.fill(&mut ui, &input);
+        p.show(&mut ui, Section::Items);
+        ui.refresh();
+        let wheel = by_id(&ui, p.items.menu, 5).unwrap();
+        let mut down = [false; 8];
+        down[1] = true;
+        p.hotkey_keys(&mut ui, down, &input);
+        assert_eq!(ui.number(wheel, t::VISIBLE), 0.0);
+        down = [false; 8];
+        down[2] = true;
+        p.hotkey_keys(&mut ui, down, &input);
+        assert_eq!(ui.number(wheel, t::VISIBLE), 1.0);
+        let selected = ui.names.lookup("_SelectedHotkey").unwrap();
+        assert_eq!(ui.number(wheel, selected), 2.0);
+        // The pistol (second row) clicked: on hot key 3.
+        p.pointer(&mut ui, Some([10.0, 145.0]), UP, 0.0, &input);
+        p.pointer(&mut ui, Some([10.0, 145.0]), PRESS, 0.0, &input);
+        let out = p.pointer(&mut ui, Some([10.0, 145.0]), RELEASE, 0.0, &input);
+        assert_eq!(
+            out,
+            [Action::SetHotkey {
+                slot: 2,
+                item: 0xA2
+            }]
+        );
+        let place = ui.find_below(wheel, "HK_Item_2").unwrap();
+        assert_eq!(ui.string(place, t::STRING).unwrap(), "Pistol");
+        // Ammunition: refused.
+        p.items.show_tab(&mut ui, 4, &input);
+        ui.refresh();
+        let out = p.click(&mut ui, items::ROW_ID, &input);
+        assert!(out.contains(&Action::Sound("UIVATSInsufficientAP".into())));
+        p.hotkey_keys(&mut ui, [false; 8], &input);
+        assert_eq!(ui.number(wheel, t::VISIBLE), 0.0);
+    }
+
+    /// `007dbfa0` → `007dc040`: the limb healing mode aims at blinks, its
+    /// alpha from 255 to 0 and back each second; leaving it stops at 255.
+    #[test]
+    fn the_aimed_limb_blinks() {
+        let (mut ui, mut p) = load();
+        let input = input();
+        p.fill(&mut ui, &input);
+        p.stats.healing = true;
+        p.stats.part = Some(1);
+        p.frame(&mut ui, 10.0);
+        let limb = stats::limb_tiles(&ui, p.stats.menu, 1)[0];
+        p.frame(&mut ui, 10.5);
+        assert_eq!(ui.number(limb, t::ALPHA), 0.0);
+        p.frame(&mut ui, 10.75);
+        assert_eq!(ui.number(limb, t::ALPHA), 127.5);
+        p.stats.healing = false;
+        p.frame(&mut ui, 11.0);
+        assert_eq!(ui.number(limb, t::ALPHA), 255.0);
+    }
+
+    /// `007db380` → `007e0060`: the Status page's RAD button (0x1d) makes
+    /// RAD the shown mode; a mode past EFF needs hardcore.
+    #[test]
+    fn the_status_pages_mode_buttons() {
+        let (mut ui, mut p) = load();
+        let input = input();
+        p.fill(&mut ui, &input);
+        p.click(&mut ui, 0x1d, &input);
+        assert_eq!(p.stats.status_mode, 1);
+        p.click(&mut ui, 0x35, &input);
+        assert_eq!(p.stats.status_mode, 1);
     }
 }

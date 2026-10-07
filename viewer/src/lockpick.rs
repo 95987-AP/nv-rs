@@ -39,7 +39,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use bevy::audio::{AudioSinkPlayback, AudioSource, Volume};
+use bevy::audio::{AudioSinkPlayback, Volume};
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::mouse::AccumulatedMouseMotion;
@@ -158,7 +158,7 @@ impl Plugin for LockpickPlugin {
 }
 
 /// A DirectInput key number (the INI's `[Controls]` values) as Bevy's key.
-fn scan_code_key(code: u32) -> Option<KeyCode> {
+pub(crate) fn scan_code_key(code: u32) -> Option<KeyCode> {
     use KeyCode::*;
     Some(match code {
         0x01 => Escape,
@@ -620,7 +620,6 @@ pub struct LockpickAssets<'w> {
     meshes: ResMut<'w, Assets<Mesh>>,
     lit: ResMut<'w, Assets<GameLitMaterial>>,
     tiles: ResMut<'w, Assets<TileMaterial>>,
-    oggs: ResMut<'w, Assets<AudioSource>>,
     wavs: ResMut<'w, Assets<PcmSound>>,
     device: Option<Res<'w, RenderDevice>>,
 }
@@ -689,6 +688,7 @@ impl MenuPictures {
                     ];
                     pieces.push((handle, vec![(*rect, corners)]));
                 }
+                DrawKind::Model { .. } => continue,
                 DrawKind::Text { font, glyphs } => {
                     let Some(f) = ui.fonts.get(font - 1).cloned().flatten() else {
                         continue;
@@ -727,6 +727,7 @@ impl MenuPictures {
                     },
                     texture,
                     alpha_map: white.clone(),
+                    blend: None,
                 });
                 let entity = commands
                     .spawn((
@@ -882,7 +883,6 @@ fn show_lockpicking(
                 tension.playing = crate::sounds::play(
                     &mut commands,
                     &game.0,
-                    &mut assets.oggs,
                     &mut assets.wavs,
                     &s,
                     state.0.dice,
@@ -978,6 +978,8 @@ fn show_lockpicking(
                     },
                     Tonemapping::None,
                     DebandDither::Disabled,
+                    // No light clusters: nothing here is lit by Bevy's lights.
+                    bevy::pbr::ClusterConfig::None,
                     Projection::from(PerspectiveProjection {
                         fov: camera.vertical_fov(),
                         near: camera.near * space::METERS_PER_UNIT,
@@ -1041,6 +1043,7 @@ fn show_lockpicking(
                             MeshMaterial3d(material),
                             Transform::IDENTITY,
                             RenderLayers::layer(LOCK_LAYER),
+                            crate::shared_light::MenuLit,
                             LockPiece {
                                 reference: draw.reference,
                                 mesh: draw.mesh,

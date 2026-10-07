@@ -6,8 +6,6 @@
 //! things the player can use where they are: E takes an item, takes what's
 //! in a container, or runs an object's `OnActivate`.
 
-use std::collections::HashSet;
-
 use bevy::prelude::*;
 use esm::FormId;
 use world::dialogue::PLAYER_REF;
@@ -34,7 +32,7 @@ pub struct PlacedRef(pub u32);
 /// greeting), and whether it's a conversation (`StartConversation`) or
 /// just a line said (`SayTo`).
 #[derive(Resource, Default)]
-pub struct ScriptedTalk(pub Option<(FormId, Option<FormId>, bool)>);
+pub struct ScriptedTalk(pub Option<(FormId, Option<FormId>, bool, bool)>);
 
 /// Notices on screen, each with the time it appeared.
 #[derive(Resource, Default)]
@@ -56,16 +54,45 @@ pub struct StartStage(pub Option<(String, u16)>);
 #[derive(Resource, Default)]
 pub struct StartCommands(pub Vec<String>);
 
-/// The objects to use where the player is (the interior, or the outdoor
-/// square stood in), and the triggers the player is inside.
+/// `--run-at`: for testing, script lines to run this many seconds after
+/// the place has loaded (in order of time), and when it was up.
+#[derive(Resource, Default)]
+pub struct LaterCommands {
+    pub lines: Vec<(f32, String)>,
+    pub ready_at: Option<f32>,
+}
+
+impl LaterCommands {
+    /// The lines due `now` (seconds since the start), taken out in order;
+    /// the clock starts at the first call.
+    pub fn due(&mut self, now: f32) -> Vec<String> {
+        let since = now - *self.ready_at.get_or_insert(now);
+        let mut due: Vec<(f32, String)> = Vec::new();
+        self.lines.retain(|(at, line)| {
+            if *at <= since {
+                due.push((*at, line.clone()));
+                false
+            } else {
+                true
+            }
+        });
+        due.sort_by(|a, b| a.0.total_cmp(&b.0));
+        due.into_iter().map(|(_, l)| l).collect()
+    }
+}
+
+/// The objects of the attached cells (the interior, or outdoors the
+/// `uGridsToLoad` grid's loaded squares), whose scripts run
+/// (`world::ref_scripts`) and which the player can use.
 #[derive(Resource, Default)]
 pub struct CellScripts {
-    cell: Option<FormId>,
     pub refs: Vec<Interactive>,
-    /// (trigger, who) for everyone inside a trigger.
-    inside: HashSet<(FormId, FormId)>,
-    /// Where the player sat down, while they sit.
-    seat: Option<[f32; 3]>,
+    /// The game's reference-script pass: attached cells, pending events,
+    /// trigger occupancy.
+    scheduler: world::ref_scripts::RefScripts,
+    /// The player's place (worldspace, else interior) when teammates were
+    /// last brought along ([`bring_teammates`]).
+    space: Option<FormId>,
 }
 
 /// World-space bounds of rendered placed objects in the loaded cell(s).
@@ -77,58 +104,7 @@ impl ObjectBounds {
     pub fn from_scene(bounds: &[cellview::ObjectBounds]) -> Self {
         Self(bounds.iter().map(|b| (b.reference, (b.lo, b.hi))).collect())
     }
-
-    fn hit(&self, reference: FormId, eye: [f32; 3], dir: [f32; 3]) -> Option<f32> {
-        let (lo, hi) = self.0.get(&reference.0)?;
-        ray_box(eye, dir, *lo, *hi)
-    }
 }
-
-/// Where a ray enters an axis-aligned world-space box.
-fn ray_box(origin: [f32; 3], dir: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Option<f32> {
-    let (mut near, mut far) = (0.0f32, f32::INFINITY);
-    for axis in 0..3 {
-        if dir[axis].abs() < 1e-9 {
-            if origin[axis] < lo[axis] || origin[axis] > hi[axis] {
-                return None;
-            }
-            continue;
-        }
-        let a = (lo[axis] - origin[axis]) / dir[axis];
-        let b = (hi[axis] - origin[axis]) / dir[axis];
-        near = near.max(a.min(b));
-        far = far.min(a.max(b));
-    }
-    (near <= far).then_some(near)
-}
-
-fn target_hit_distance(
-    object: &Interactive,
-    object_bounds: &ObjectBounds,
-    eye: [f32; 3],
-    dir: [f32; 3],
-) -> Option<f32> {
-    let empty_record_bounds = object
-        .bounds
-        .is_none_or(|(lo, hi)| lo == [0.0; 3] && hi == [0.0; 3]);
-    if empty_record_bounds {
-        object_bounds
-            .hit(object.reference, eye, dir)
-            .or_else(|| object.ray_hit(eye, dir))
-    } else {
-        object.ray_hit(eye, dir)
-    }
-}
-
-fn hidden_by_surface(collision: &physics::Collider, eye: [f32; 3], dir: [f32; 3], d: f32) -> bool {
-    collision
-        .raycast(eye, dir, d)
-        .is_some_and(|(wall, _)| wall < d - 10.0)
-}
-
-/// How far the player can move from where they sat down before they've
-/// got up (they don't move onto the seat yet).
-const LEAVE_SEAT: f32 = 40.0;
 
 /// The object in view that E would use, and the prompt for it ("Take
 /// Bottle Cap", "Open Chest", "Vit-o-matic Vigor Tester"), which
@@ -140,10 +116,39 @@ pub struct Activatable(pub Option<(FormId, String)>);
 #[derive(Resource, Default)]
 pub struct ActivateRequest(pub Option<FormId>);
 
-/// Heights above the feet at which the player's body is tested against
-/// trigger volumes (feet, middle, head; the game tests the character's
-/// collision shape).
-const BODY_HEIGHTS: [f32; 3] = [10.0, 64.0, 110.0];
+/// `--use`: an object to press E on once the player is in the place, for
+/// testing (an editor ID or form ID).
+#[derive(Resource, Default)]
+pub struct StartUse(pub Option<String>);
+
+/// Presses E on the `--use` object, as if the crosshair were on it.
+pub fn start_use(
+    game: Res<GameFiles>,
+    mut start: ResMut<StartUse>,
+    player: Res<crate::walk::Player>,
+    mut request: ResMut<ActivateRequest>,
+) {
+    if !player.ready || start.0.is_none() {
+        return;
+    }
+    let Some(asked) = start.0.take() else {
+        return;
+    };
+    let order = &game.0.order;
+    let form = order.form_by_editor_id(&asked).or_else(|| {
+        u32::from_str_radix(asked.trim_start_matches("0x"), 16)
+            .ok()
+            .map(FormId)
+            .filter(|f| order.get(*f).is_some())
+    });
+    match form {
+        Some(f) => {
+            println!("--use: using {asked}.");
+            request.0 = Some(f);
+        }
+        None => println!("--use: no object called '{asked}'."),
+    }
+}
 
 /// Why something locked doesn't open now.
 pub enum Locked {
@@ -242,26 +247,77 @@ pub fn door_opens(
     opened
 }
 
-/// The scripted objects where the player now is: a new place runs their
-/// `OnLoad` blocks.
+/// The player's teammates come with them through a door or a move to
+/// another place: they're where the player is (and walk to their follow
+/// distance there). Those still in the same world stay where they are.
+/// [G] Not traced (Dead Money contributor, 2026-10-06): the game moves its
+/// followers (`ExtraFollower`, `iNumberActorsAllowedToFollowPlayer`)
+/// by rules not read yet. No base-game acceptance route has a teammate.
+fn bring_teammates(order: &esm::LoadOrder, state: &mut world::scripting::GameState) {
+    let (Some(at), Some(cell)) = (state.player_position, state.player_cell) else {
+        return;
+    };
+    let space = state.player_world.unwrap_or(cell);
+    for t in state.teammates.clone() {
+        if state.dead.contains(&t) || state.more.down.contains_key(&t) {
+            continue;
+        }
+        if state.place(order, t).is_some_and(|p| p.0 == space) {
+            continue;
+        }
+        state.spaces.insert(t, (space, cell));
+        state.positions.insert(t, (at, 0.0));
+        state.evaluate.insert(t);
+        println!("{t} comes along.");
+    }
+}
+
+/// The attached cells (in the game's pass order) and how to read one's
+/// objects: outdoors the `uGridsToLoad` grid around the game's grid
+/// centre (`world::ref_scripts::grid_center`), those of its squares loaded
+/// here; indoors the interior.
+fn attached_cells(
+    cell_scripts: &mut CellScripts,
+    exterior: Option<&crate::exterior::Exterior>,
+    interior: Option<FormId>,
+    feet: [f32; 3],
+) -> Vec<(FormId, Option<(i32, i32)>)> {
+    use world::ref_scripts::{grid_squares, GRIDS_TO_LOAD};
+    match exterior {
+        Some(e) => {
+            let center =
+                cell_scripts
+                    .scheduler
+                    .exterior_center(e.grid.world.form_id, feet, GRIDS_TO_LOAD);
+            // A square still loading isn't attached yet.
+            let loaded = e.loaded_squares();
+            grid_squares(center, GRIDS_TO_LOAD)
+                .into_iter()
+                .filter(|s| loaded.contains(s))
+                .filter_map(|s| e.grid.cell_at(s).map(|c| (c, Some(s))))
+                .collect()
+        }
+        None => {
+            cell_scripts.scheduler.interior();
+            interior.map(|c| (c, None)).into_iter().collect()
+        }
+    }
+}
+
+/// Makes `cells` the attached ones: newly attached cells' objects get
+/// `OnLoad`, detached triggers let their occupants go
+/// (`world::ref_scripts::RefScripts::attach`).
 fn refresh_cell_scripts(
     order: &esm::LoadOrder,
     cache: &ScriptCache,
     state: &mut world::scripting::GameState,
     cell_scripts: &mut CellScripts,
+    cells: &[FormId],
+    load: impl FnMut(FormId) -> Vec<Interactive>,
 ) {
-    if state.player_cell == cell_scripts.cell {
-        return;
-    }
-    cell_scripts.cell = state.player_cell;
-    cell_scripts.inside.clear();
-    cell_scripts.refs = state
-        .player_cell
-        .map(|c| world::scripting::interactive_references(order, c))
-        .unwrap_or_default();
     let mut runner = Runner::new(order, cache, state);
-    for r in cell_scripts.refs.iter().filter(|r| r.script.is_some()) {
-        runner.run_blocks(r.reference, Some(r.reference), "onload", |_| true);
+    if cell_scripts.scheduler.attach(&mut runner, cells, load) {
+        cell_scripts.refs = cell_scripts.scheduler.refs().to_vec();
     }
 }
 
@@ -284,6 +340,10 @@ enum Used {
     Lockpick(FormId),
     /// A bed's sleep menu (the game's checks passed).
     Sleep,
+    /// Furniture to sit in or get up from (`sitting::player_furniture`).
+    Furniture(FormId),
+    /// An item taken that the game doesn't announce (`004ce380`'s types).
+    Taken,
 }
 
 /// E on an object: its `OnActivate` script runs, if it has one, and its
@@ -325,13 +385,22 @@ fn use_object(
     if r.is_item() {
         // Someone else's: stealing (`world::crime`).
         let owner = world::crime::owner_of(order, state, r.reference);
+        // Its script's `OnAdd` blocks run with the scripted items
+        // (`Runner::run_item_scripts`; Caravan cards join the player's
+        // cards and leave the inventory).
         state.pick_up(order, r.reference, r.base, r.count);
         if let Some(owner) = owner.filter(|_| !world::crime::may_take(order, state, owner)) {
             if world::crime::steal(order, state, r.reference, owner) {
                 println!("Seen stealing {}.", counted(r.base, r.count));
             }
         }
-        return Some(Used::Notice(format!("{} added", counted(r.base, r.count))));
+        // "<name> added" / "<n> <name>(s) added" (`004ce380`).
+        return Some(
+            match world::activation::pickup_message(order, r.base, r.count) {
+                Some(message) => Used::Notice(message),
+                None => Used::Taken,
+            },
+        );
     }
     if r.is_container() {
         let label = r.name.clone().unwrap_or_else(|| "Container".into());
@@ -340,6 +409,11 @@ fn use_object(
             Some(Locked::Pick) => Used::Lockpick(r.reference),
             Some(Locked::Says(why)) => Used::Notice(why),
         });
+    }
+    // Any furniture while in furniture gets the player up
+    // (`TESFurniture::Activate`, `world::furniture::activate`).
+    if r.is_furniture() && state.furniture.contains_key(&PLAYER_REF) {
+        return Some(Used::Furniture(r.reference));
     }
     // A bed: the game's checks (`world::living::sleep::may_sleep_in`; the
     // player doesn't lie down), then its sleep menu (the game's,
@@ -351,10 +425,8 @@ fn use_object(
         };
     }
     if r.is_furniture() {
-        // Sitting: scripts see it (`IsCurrentFurnitureRef`,
-        // `GetSitting`); the player stays where they are (no sitting
-        // animation or seat position yet).
-        state.sit(PLAYER_REF, r.reference);
+        // Sitting: the sit procedure (`sitting::player_furniture`).
+        return Some(Used::Furniture(r.reference));
     }
     if r.is_terminal() {
         return Some(Used::Terminal(r.base, r.reference));
@@ -362,9 +434,10 @@ fn use_object(
     None
 }
 
-/// Each frame in the game (not in a menu): the objects' `GameMode`
-/// blocks, and triggers that the player's body, or a person, enters, stays
-/// in or leaves (`people`: reference and feet).
+/// Each frame in the game (not in a menu): the attached objects'
+/// scripts, with the events flagged since their last run (`OnLoad`, and
+/// triggers that the player's body, or a person, enters, stays in or
+/// leaves; `people`: reference and feet). See `world::ref_scripts`.
 fn run_cell_scripts(
     order: &esm::LoadOrder,
     cache: &ScriptCache,
@@ -372,38 +445,12 @@ fn run_cell_scripts(
     cell_scripts: &mut CellScripts,
     people: &[(FormId, [f32; 3])],
     seconds: f32,
+    sight: Option<&dyn world::sight::Sight>,
 ) {
     let mut runner = Runner::new(order, cache, state);
+    runner.sight = sight;
     runner.seconds_passed = seconds;
-    for r in cell_scripts.refs.iter().filter(|r| r.script.is_some()) {
-        if !world::enabled_now(order, r.reference, &runner.state.disabled) {
-            continue;
-        }
-        runner.run_blocks(r.reference, Some(r.reference), "gamemode", |_| true);
-        if r.trigger.is_none() {
-            continue;
-        }
-        for &(who, feet) in people {
-            let inside = BODY_HEIGHTS
-                .iter()
-                .any(|h| r.contains([feet[0], feet[1], feet[2] + h]));
-            let key = (r.reference, who);
-            let was = cell_scripts.inside.contains(&key);
-            match (was, inside) {
-                (false, true) => {
-                    cell_scripts.inside.insert(key);
-                    runner.run_event(r.reference, "ontriggerenter", who);
-                    runner.run_event(r.reference, "ontrigger", who);
-                }
-                (true, true) => runner.run_event(r.reference, "ontrigger", who),
-                (true, false) => {
-                    cell_scripts.inside.remove(&key);
-                    runner.run_event(r.reference, "ontriggerleave", who);
-                }
-                (false, false) => {}
-            }
-        }
-    }
+    cell_scripts.scheduler.frame(&mut runner, people);
 }
 
 /// What the player looks at within reach that E would use: an item, a
@@ -414,31 +461,27 @@ fn object_in_view(
     order: &esm::LoadOrder,
     state: &GameState,
     refs: &[Interactive],
-    object_bounds: &ObjectBounds,
-    collision: &physics::Collider,
-    view: ([f32; 3], [f32; 3]),
+    target: Option<FormId>,
 ) -> Option<(FormId, String)> {
-    let (eye, dir) = view;
-    let mut best: Option<(f32, &Interactive)> = None;
-    for r in refs {
-        if r.trigger.is_some() || [*b"NPC_", *b"CREA", *b"DOOR"].contains(r.kind.as_bytes()) {
-            continue;
-        }
-        let Some(d) = target_hit_distance(r, object_bounds, eye, dir) else {
-            continue;
-        };
-        if d > cellview::ACTIVATE_REACH || best.is_some_and(|(bd, _)| d >= bd) {
-            continue;
-        }
-        let usable =
-            r.is_item() || r.is_container() || r.is_furniture() || has_on_activate(order, cache, r);
-        if usable && world::enabled_now(order, r.reference, &state.disabled) {
-            best = Some((d, r));
-        }
+    // The reference the crosshair is on within reach (`crosshair`, the
+    // game's view caster, which also leaves out what a wall hides).
+    let target = target?;
+    let r = refs.iter().find(|r| {
+        r.reference == target
+            && r.trigger.is_none()
+            && ![*b"NPC_", *b"CREA", *b"DOOR"].contains(r.kind.as_bytes())
+    })?;
+    let usable =
+        r.is_item() || r.is_container() || r.is_furniture() || has_on_activate(order, cache, r);
+    if !usable || !world::enabled_now(order, r.reference, &state.disabled) {
+        return None;
     }
-    let (d, r) = best?;
-    // Walls in the way hide it.
-    if hidden_by_surface(collision, eye, dir, d) {
+    // A reference a script has "destroyed" (`SetDestroyed 1`, form flag
+    // 0x800000, `00477ba0`) under the crosshair has no prompt (the HUD's
+    // crosshair update, `00775a00`, clears it for anything but actors) and
+    // doesn't activate (`005180b0` returns at once): the VCG02 bottles
+    // after their `OnLoad`.
+    if state.destroyed.contains(&r.reference) {
         return None;
     }
     let name = r.name.clone().unwrap_or_else(|| r.reference.to_string());
@@ -479,37 +522,40 @@ fn base_or(order: &esm::LoadOrder, r: FormId) -> FormId {
     world::scripting::base_of(order, r).unwrap_or(r)
 }
 
-/// `MoveTo` on the player: go to where `to` stands, loading its place.
+/// `MoveTo` on the player: go to where `to` stands now (the place and
+/// position the state has for it: someone who walked out of their editor
+/// cell is found where they walked to), loading its place.
 fn move_player(
     game: &cellview::Game,
-    disabled: &world::Disabled,
+    state: &world::scripting::GameState,
     to: FormId,
     pending: &mut crate::PendingScene,
     pending_exterior: &mut crate::exterior::PendingExterior,
 ) -> Result<(), String> {
     let order = &game.order;
-    let w = world::scripting::whereabouts(order, to)
+    let (space, _, position, heading) = state
+        .place(order, to)
         .ok_or_else(|| format!("{to} isn't a placed object"))?;
-    let info = world::cell_info(order, w.cell).map_err(|e| e.to_string())?;
-    if !info.interior {
-        let world = w
-            .world
-            .or(info.world)
-            .ok_or_else(|| "it's outdoors but in no worldspace".to_string())?;
-        let grid = world::WorldGrid::load(order, world).map_err(|e| e.to_string())?;
+    let interior = order
+        .get(space)
+        .is_some_and(|r| r.entry.header.kind == esm::sig::CELL);
+    if !interior {
+        let grid = world::WorldGrid::load(order, space).map_err(|e| e.to_string())?;
         pending_exterior.0 = Some(crate::exterior::ExteriorStart {
             grid,
-            feet: [w.position[0], w.position[1]],
-            height: Some(w.position[2]),
-            heading: w.heading,
+            feet: [position[0], position[1]],
+            height: Some(position[2]),
+            heading,
         });
         return Ok(());
     }
-    let mut scene = game.load_cell_now(w.cell, disabled).map_err(|e| e.0)?;
-    let [x, y, z] = w.position;
+    let mut scene = game
+        .load_cell_now(space, &state.disabled)
+        .map_err(|e| e.0)?;
+    let [x, y, z] = position;
     scene.start = cellview::Start {
         eye: [x, y, z + cellview::EYE_HEIGHT],
-        heading: w.heading,
+        heading,
         via: "a script (MoveTo)",
     };
     pending.0 = Some(scene);
@@ -567,7 +613,12 @@ fn record_name(order: &esm::LoadOrder, id: FormId) -> String {
 }
 
 /// Where F5 saves and F9 loads (in the folder the viewer runs in).
-const QUICKSAVE: &str = "nv-rs-quicksave.txt";
+pub(crate) const QUICKSAVE: &str = "nv-rs-quicksave.txt";
+
+/// A load of the most recent save asked for by the game itself (the
+/// player's death, `world::player_death`), done as F9 does it.
+#[derive(Resource, Default)]
+pub struct LoadRequest(pub bool);
 
 /// A loaded world cannot retain trigger occupancy or a seat from the world
 /// it replaces, even when the saved player is in the same cell.
@@ -667,14 +718,33 @@ pub fn save_and_load(
     mut player_idle: ResMut<crate::player_idle::PlayerIdle>,
     mut cell_scripts: ResMut<CellScripts>,
     mut seats: ResMut<crate::sitting::Seats>,
-    mut start_pitch: ResMut<crate::StartPitch>,
+    (mut start_pitch, mut request, mut menu_saves): (
+        ResMut<crate::StartPitch>,
+        ResMut<LoadRequest>,
+        ResMut<crate::game_menus::start::SaveFiles>,
+    ),
 ) {
     let now = time.elapsed_secs();
+    let requested = std::mem::take(&mut request.0);
     let mut say = |text: String| {
         println!("{text}");
         notices.0.push((text, now));
     };
-    if keys.just_pressed(KeyCode::F5) {
+    // The start menu's Save and Load pages name their file
+    // (`game_menus::start`); F5 and F9 the quick save.
+    use crate::game_menus::start::SaveFile;
+    let asked = menu_saves.0.take();
+    let save_to = match &asked {
+        Some(SaveFile::Save(p)) => Some(p.to_string_lossy().to_string()),
+        _ if keys.just_pressed(KeyCode::F5) => Some(QUICKSAVE.to_string()),
+        _ => None,
+    };
+    let load_from = match &asked {
+        Some(SaveFile::Load(p)) => Some(p.to_string_lossy().to_string()),
+        _ if keys.just_pressed(KeyCode::F9) || requested => Some(QUICKSAVE.to_string()),
+        _ => None,
+    };
+    if let Some(save_to) = save_to {
         let place = cameras.single().ok().and_then(|(t, input)| {
             let eye = game_point(t.translation);
             let f = t.forward().as_vec3();
@@ -694,14 +764,14 @@ pub fn save_and_load(
                 &seats,
                 cameras.single().map_or(0.0, |(_, input)| input.pitch),
             )
-            .and_then(|camera| save_camera(QUICKSAVE, &mut state.0, place, camera));
+            .and_then(|camera| save_camera(&save_to, &mut state.0, place, camera));
         match result {
-            Ok(()) => say(format!("Saved ({QUICKSAVE}).")),
+            Ok(()) => say(format!("Saved ({save_to}).")),
             Err(e) => say(format!("Couldn't save: {e}")),
         }
     }
-    if keys.just_pressed(KeyCode::F9) {
-        let result = std::fs::read_to_string(QUICKSAVE)
+    if let Some(load_from) = load_from {
+        let result = std::fs::read_to_string(&load_from)
             .map_err(|e| e.to_string())
             .and_then(|text| {
                 load_saved_world(
@@ -720,7 +790,7 @@ pub fn save_and_load(
         match result {
             Ok(true) => say("Loaded.".into()),
             Ok(false) => say("Loaded (the save doesn't say where the player was).".into()),
-            Err(e) => say(format!("Couldn't load {QUICKSAVE}: {e}")),
+            Err(e) => say(format!("Couldn't load {load_from}: {e}")),
         }
     }
 }
@@ -848,10 +918,28 @@ pub struct HereNow<'w> {
     virtual_time: ResMut<'w, Time<Virtual>>,
     /// The game's own menus open (their classes), for `MenuMode` blocks.
     menu_draw: Res<'w, crate::game_menus::MenuDraw>,
+    /// Movies scripts asked for (`PlayBink`).
+    movies: ResMut<'w, crate::movie::Movies>,
     player_idle: ResMut<'w, crate::player_idle::PlayerIdle>,
     seats: Res<'w, crate::sitting::Seats>,
     object_bounds: Option<Res<'w, ObjectBounds>>,
+    /// What the crosshair is on (`crosshair`, the game's view caster).
+    crosshair: Res<'w, crate::crosshair::Crosshair>,
+    player_seat: ResMut<'w, crate::sitting::PlayerSeat>,
+    later: ResMut<'w, LaterCommands>,
 }
+
+/// The start-up state and requests `run_scripts` works with.
+type Starting<'w> = (
+    ResMut<'w, StartStage>,
+    Res<'w, crate::walk::Player>,
+    ResMut<'w, crate::PendingScene>,
+    ResMut<'w, crate::exterior::PendingExterior>,
+    (
+        ResMut<'w, crate::combat::ObjectShots>,
+        ResMut<'w, crate::swaps::TextureSwaps>,
+    ),
+);
 
 /// Runs the scripts for this frame and carries out what they asked for.
 #[allow(clippy::too_many_arguments)]
@@ -865,15 +953,16 @@ pub fn run_scripts(
     conversation: Res<Conversation>,
     mut talk: ResMut<ScriptedTalk>,
     mut notices: ResMut<Notices>,
-    (mut start_stage, player, mut pending, mut pending_exterior): (
-        ResMut<StartStage>,
-        Res<crate::walk::Player>,
-        ResMut<crate::PendingScene>,
-        ResMut<crate::exterior::PendingExterior>,
-    ),
+    (
+        mut start_stage,
+        player,
+        mut pending,
+        mut pending_exterior,
+        (mut object_shots, mut texture_swaps),
+    ): Starting,
     mut start_commands: ResMut<StartCommands>,
     here_now: HereNow,
-    cameras: Query<(&Transform, &FlyCamera)>,
+    cameras: Query<(&Transform, &FlyCamera, Option<&Projection>)>,
     mut placed: Query<(&PlacedRef, &mut Visibility)>,
     mut text: Query<NoticePanel, (With<NoticeText>, Without<PlacedRef>)>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -894,9 +983,13 @@ pub fn run_scripts(
         mut lockpicking,
         mut virtual_time,
         menu_draw,
+        mut movies,
         mut player_idle,
         seats,
         object_bounds,
+        crosshair,
+        mut player_seat,
+        mut later,
     } = here_now;
     let order = &game.0.order;
     let now = time.elapsed_secs();
@@ -945,7 +1038,7 @@ pub fn run_scripts(
     let state = &mut state.0;
     let (eye, dir, heading) = cameras
         .single()
-        .map(|(t, input)| {
+        .map(|(t, input, _)| {
             let f = t.forward().as_vec3();
             (
                 game_point(t.translation),
@@ -958,10 +1051,35 @@ pub fn run_scripts(
             )
         })
         .unwrap_or_default();
+    // The camera's up and view angle, for `GetLineOfSight`.
+    let (up, tan_half_fov, aspect) = cameras
+        .single()
+        .map(|(t, _, projection)| {
+            let u = t.up().as_vec3();
+            let (fov, aspect) = match projection {
+                Some(Projection::Perspective(p)) => (p.fov, p.aspect_ratio),
+                _ => (
+                    cellview::vertical_fov(cellview::GAME_FOV_DEGREES),
+                    16.0 / 9.0,
+                ),
+            };
+            ([u.x, -u.z, u.y], (fov * 0.5).tan(), aspect)
+        })
+        .unwrap_or(([0.0, 0.0, 1.0], 1.0, 1.0));
     // Animation and V.A.T.S. can move the view independently of the body.
     // Quest positions, triggers and saves must follow the collision capsule.
     let feet = player.position_for_view(eye);
     state.player_position = Some(feet);
+    // What has 3D now (`PlayMagicShaderVisuals` needs it): the rendered
+    // placed objects, the people about and the player.
+    let mut loaded: std::collections::HashSet<FormId> = object_bounds
+        .as_deref()
+        .map(|b| b.0.keys().map(|&r| FormId(r)).collect())
+        .unwrap_or_default();
+    loaded.insert(PLAYER_REF);
+    loaded.extend(talkers.0.iter().map(|t| t.reference));
+    world::more_functions::report_loaded(state, loaded);
+    state.player_heading = heading;
     match &exterior {
         Some(e) => {
             state.player_world = Some(e.grid.world.form_id);
@@ -973,28 +1091,76 @@ pub fn run_scripts(
         }
     }
     // `--run`: each line as the console would run it, once the place is
-    // up and the player is in it.
+    // up and the player is in it; the scripted items' runs after each, so
+    // the next sees what they did (an item's `OnAdd`).
     if player.ready {
         for line in std::mem::take(&mut start_commands.0) {
-            let flow = Runner::new(order, &scripts.0, state).run_source(&line, None, None);
+            let mut runner = Runner::new(order, &scripts.0, state);
+            let flow = runner.run_source(&line, None, None);
+            runner.run_item_scripts();
             println!("{line}: {flow:?}");
         }
-    }
-    refresh_cell_scripts(order, &scripts.0, state, &mut cell_scripts);
-    // Walking away from a seat gets the player up.
-    if let Some(seat) = cell_scripts.seat {
-        let d = ((feet[0] - seat[0]).powi(2) + (feet[1] - seat[1]).powi(2)).sqrt();
-        if d > LEAVE_SEAT || !state.furniture.contains_key(&PLAYER_REF) {
-            state.stand(PLAYER_REF);
-            cell_scripts.seat = None;
+        // `--run-at`: later, in game mode.
+        if conversation.0.as_ref().is_none_or(|t| t.is_line_only()) && !waiting.is_open() {
+            for line in later.due(now) {
+                let flow = Runner::new(order, &scripts.0, state).run_source(&line, None, None);
+                println!("{now:.1} s: {line}: {flow:?}");
+            }
         }
     }
+    let attached = attached_cells(
+        &mut cell_scripts,
+        exterior.as_deref(),
+        here.0.map(FormId),
+        feet,
+    );
+    let cells: Vec<FormId> = attached.iter().map(|(c, _)| *c).collect();
+    let space = state.player_world.or(state.player_cell);
+    if space != cell_scripts.space {
+        cell_scripts.space = space;
+        if world::guesses::enabled() {
+            bring_teammates(order, state);
+        }
+    }
+    refresh_cell_scripts(
+        order,
+        &scripts.0,
+        state,
+        &mut cell_scripts,
+        &cells,
+        |cell| match (
+            &exterior,
+            attached
+                .iter()
+                .find(|(c, _)| *c == cell)
+                .and_then(|(_, s)| *s),
+        ) {
+            (Some(e), Some(square)) => {
+                world::scripting::interactive_in_square(order, &e.grid, square)
+            }
+            _ => world::scripting::interactive_references(order, cell),
+        },
+    );
     // Time stands still in the dialogue menu (not while a line is said)
     // and in the other menus.
     let dt = time.delta_secs();
     if conversation.0.as_ref().is_none_or(|t| t.is_line_only()) && !waiting.is_open() {
         let warner = state.living.trespass.as_ref().map(|w| w.warner);
-        Runner::new(order, &scripts.0, state).update(dt);
+        let mut people: Vec<(FormId, [f32; 3])> = vec![(PLAYER_REF, feet)];
+        people.extend(talkers.0.iter().map(|t| (t.reference, t.position)));
+        let sight = crate::sight::ViewerSight {
+            collision: &collision.0,
+            bounds: object_bounds.as_deref(),
+            people: &people,
+            eye,
+            forward: dir,
+            up,
+            tan_half_fov,
+            aspect,
+        };
+        Runner::new(order, &scripts.0, state)
+            .with_sight(&sight)
+            .update(dt);
         // Someone coming to warn the trespassing player off
         // (`world::living::trespass`).
         let now_warner = state.living.trespass.as_ref().map(|w| w.warner);
@@ -1008,9 +1174,15 @@ pub fn run_scripts(
             }
         }
         if player.ready {
-            let mut people: Vec<(FormId, [f32; 3])> = vec![(PLAYER_REF, feet)];
-            people.extend(talkers.0.iter().map(|t| (t.reference, t.position)));
-            run_cell_scripts(order, &scripts.0, state, &mut cell_scripts, &people, dt);
+            run_cell_scripts(
+                order,
+                &scripts.0,
+                state,
+                &mut cell_scripts,
+                &people,
+                dt,
+                Some(&sight),
+            );
         }
         // The sleep/wait menu open: the scripts' `MenuMode 1012` blocks
         // run (`PlayerBedSCRIPT` notes `IsPCSleeping` there).
@@ -1026,48 +1198,78 @@ pub fn run_scripts(
                 .collect();
             world::living::sleep::menu_mode(&mut Runner::new(order, &scripts.0, state), &refs);
         }
-        if let Some(r) = activate_request.0.take() {
-            let object = cell_scripts.refs.iter().find(|o| o.reference == r);
+        // Sitting down or getting up, E does nothing
+        // (`world::furniture::player_activation_blocked`; also while the
+        // entry or exit plays).
+        let refused = state.sitters.get(&PLAYER_REF).is_some_and(|s| {
+            world::furniture::player_activation_blocked(s.state) || s.playing.is_some()
+        });
+        // Items the player dropped (made references) are taken as placed
+        // items are (the hook the Pip-Boy's Drop needs; `pipboy`).
+        let dropped = state
+            .place(order, PLAYER_REF)
+            .map(|(space, ..)| world::more_functions::placed::dropped_items(order, state, space))
+            .unwrap_or_default();
+        if let Some(r) = activate_request.0.take().filter(|_| !refused) {
+            let object = cell_scripts
+                .refs
+                .iter()
+                .chain(&dropped)
+                .find(|o| o.reference == r);
             match object.and_then(|o| use_object(order, &scripts.0, state, o)) {
                 Some(Used::Notice(n)) => announce(n, &mut notices),
                 Some(Used::Container(c, name)) => {
                     waiting.push(crate::menus::Menu::Container(c, name));
                 }
                 Some(Used::Terminal(t, r)) => {
-                    waiting.push(crate::menus::Menu::Terminal(t, r));
+                    use crate::game_menus::hacking::{use_terminal, Using};
+                    match use_terminal(order, state, t, r) {
+                        Using::Open(m) => waiting.push(m),
+                        Using::Refused(why) => {
+                            if let Some(s) = order.form_by_editor_id(crate::lockpick::POPUP_SOUND) {
+                                sound_requests.0.push(s);
+                            }
+                            announce(why, &mut notices);
+                        }
+                    }
                 }
                 Some(Used::Lockpick(r)) => lockpicking.request = Some(r),
                 Some(Used::Sleep) => {
                     waiting.push(crate::menus::Menu::SleepWait { sleep: true });
                 }
-                None => {}
+                Some(Used::Furniture(f)) => player_seat.activated = Some(f),
+                Some(Used::Taken) | None => {}
             }
-            // A taken item's pick-up sound.
+            // A taken item's pick-up sound: its own (`YNAM`), else a
+            // weapon's by its kind, else the generic one (`008adcf0(item,
+            // 1, 0)`, which `004ce380` hands the "added" message).
             if let Some(o) = object.filter(|o| o.is_item()) {
                 if !world::enabled_now(order, o.reference, &state.disabled) {
-                    if let Some(s) = world::sound::pickup_sound(order, o.base) {
+                    if let Some(s) = world::sound::item_sound(order, o.base, true) {
+                        println!("Pick-up sound: {}", record_name(order, s));
                         sound_requests.0.push(s);
+                    }
+                    if dropped.iter().any(|d| d.reference == o.reference) {
+                        world::more_functions::placed::taken(state, o.reference);
                     }
                 }
             }
-            if state.furniture.contains_key(&PLAYER_REF) && cell_scripts.seat.is_none() {
-                cell_scripts.seat = Some(feet);
-            }
         }
     }
+    let dropped = state
+        .place(order, PLAYER_REF)
+        .map(|(space, ..)| world::more_functions::placed::dropped_items(order, state, space))
+        .unwrap_or_default();
     // Scripts can turn the crosshair's roll-over text (and with it using
     // things) off (`DisablePlayerControls`).
     let rollover = !state.controls_off[world::scripting::controls::ROLLOVER];
     activatable.0 = if conversation.0.is_none() && rollover {
-        object_in_view(
-            &scripts.0,
-            order,
-            state,
-            &cell_scripts.refs,
-            object_bounds.as_deref().unwrap_or(&ObjectBounds::default()),
-            &collision.0,
-            (eye, dir),
-        )
+        let refs: std::borrow::Cow<[world::scripting::Interactive]> = if dropped.is_empty() {
+            std::borrow::Cow::Borrowed(&cell_scripts.refs)
+        } else {
+            std::borrow::Cow::Owned([cell_scripts.refs.as_slice(), &dropped].concat())
+        };
+        object_in_view(&scripts.0, order, state, &refs, crosshair.target())
     } else {
         None
     };
@@ -1110,6 +1312,43 @@ pub fn run_scripts(
                 waiting.push(crate::menus::Menu::Barter(merchant));
                 None
             }
+            // `game_menus::recipe`, with `world::crafting`'s rules.
+            Event::RecipeMenu { actor, category } => {
+                waiting.push(crate::menus::Menu::Recipe { actor, category });
+                None
+            }
+            Event::RepairServices(vendor) => {
+                waiting.push(crate::menus::Menu::RepairServices(vendor));
+                None
+            }
+            Event::TeammateContainer(who) => {
+                waiting.push(crate::menus::Menu::Teammate(who));
+                None
+            }
+            Event::Casino {
+                game,
+                casino,
+                min_bet,
+                max_bet,
+                ..
+            } => {
+                println!("{game:?} at {casino} (bets {min_bet} to {max_bet}): not shown yet.");
+                None
+            }
+            Event::Caravan {
+                npc,
+                deck,
+                difficulty,
+                share,
+            } => {
+                waiting.push(crate::menus::Menu::Caravan {
+                    npc,
+                    deck,
+                    difficulty,
+                    share,
+                });
+                None
+            }
             // `ShowSleepWaitMenu` (its refusals already given): the game's
             // sleep/wait menu (`game_menus::sleepwait`).
             Event::SleepWaitMenu { sleep } => {
@@ -1121,6 +1360,8 @@ pub fn run_scripts(
             } else {
                 format!("{} was killed by {}.", name(who), name(by))
             }),
+            Event::KnockedOut { who } => Some(format!("{} is down.", name(who))),
+            Event::GotUp { who } => Some(format!("{} gets up.", name(who))),
             Event::Journal { quest, text } => Some(format!("{}: {text}", name(quest))),
             Event::Objective {
                 text, completed, ..
@@ -1142,20 +1383,18 @@ pub fn run_scripts(
                 } else if (to == PLAYER_REF || to.0 == 0) && talk.0.is_none() {
                     // `Say` speaks to no one in particular (`to` 0): the
                     // player hears it as a line said to them.
-                    talk.0 = Some((speaker, topic, conversation));
+                    // `SayTo` (a line to the player, not `Say`'s to no
+                    // one): its `SayToDone` blocks run when it's said.
+                    let say_to = !conversation && to == PLAYER_REF;
+                    talk.0 = Some((speaker, topic, conversation, say_to));
                 }
                 None
             }
             Event::PackageAction { who, package, kind } => {
                 if let Some(p) = world::ai::Package::load(order, package) {
-                    use world::scripting::PackageActionKind;
-                    let action = match kind {
-                        PackageActionKind::Begin => &p.actions.begin,
-                        PackageActionKind::Change => &p.actions.change,
-                    };
+                    let action = p.actions.get(kind);
                     // Camera-bearing player idles with no script or topic
-                    // can now use the actual KF. Other callback payloads
-                    // still require their own synchronous dispatcher.
+                    // can now use the actual KF.
                     if who == PLAYER_REF
                         && action.topic.is_none()
                         && action.bytecode().is_empty()
@@ -1166,15 +1405,25 @@ pub fn run_scripts(
                         }
                         continue;
                     }
-                    if action.idle.is_some()
+                    let busy = action.idle.is_some()
                         || action.topic.is_some()
-                        || !action.bytecode().is_empty()
-                    {
-                        println!(
-                            "{}: package {} {kind:?} action requested (playback pending).",
-                            name(who),
-                            name(package)
-                        );
+                        || action.source().is_some_and(|s| !s.trim().is_empty());
+                    // Its script, idle and topic (`world::ai::actions`).
+                    let idle = world::ai::actions::perform(
+                        &mut Runner::new(order, &scripts.0, state),
+                        who,
+                        &p,
+                        kind,
+                    );
+                    match idle {
+                        Some(idle) if who == PLAYER_REF => player_idle.requests.push(idle),
+                        Some(idle) => {
+                            player_idle.npc_requests.insert(who, idle);
+                        }
+                        None => {}
+                    }
+                    if busy {
+                        println!("{}: package {} {kind:?} action.", name(who), name(package));
                     }
                 }
                 None
@@ -1192,10 +1441,7 @@ pub fn run_scripts(
                 node,
                 texture,
             } => {
-                println!(
-                    "A script gives {}'s {node} the texture {texture} (not shown here).",
-                    name(what)
-                );
+                texture_swaps.0.push((what, node, texture));
                 None
             }
             Event::Enable(r, on) => {
@@ -1247,13 +1493,8 @@ pub fn run_scripts(
             }
             Event::MoveTo { what, to } if what == PLAYER_REF => {
                 println!("A script moves the player to {}.", name(to));
-                if let Err(e) = move_player(
-                    &game.0,
-                    &state.disabled,
-                    to,
-                    &mut pending,
-                    &mut pending_exterior,
-                ) {
+                if let Err(e) = move_player(&game.0, state, to, &mut pending, &mut pending_exterior)
+                {
                     println!("  couldn't: {e}");
                 }
                 None
@@ -1275,9 +1516,10 @@ pub fn run_scripts(
                 );
                 None
             }
-            // Not played yet: said, so it's clear what scripts did.
-            Event::Video(file) => {
-                println!("A script plays the video {file} (Bink videos aren't played here).");
+            // Played by `movie::start_movies`, before anything else moves.
+            Event::Video(video) => {
+                println!("A script plays the movie {}.", video.file);
+                movies.queue.push_back(video);
                 None
             }
             // Played by `music::play_music`.
@@ -1295,12 +1537,15 @@ pub fn run_scripts(
             }
             Event::Menu(menu) => {
                 menus.push(menu);
-                Some(match menu {
+                match menu {
                     world::scripting::RACE_SEX_MENU => {
-                        "(The face and body menu would open here; kept as it is.)".to_string()
+                        Some("(The face and body menu would open here; kept as it is.)".to_string())
                     }
-                    _ => format!("(Menu {menu} would open here.)"),
-                })
+                    // Opened by their own events (`Event::RecipeMenu`,
+                    // `Event::Casino`); the number is for `MenuMode`.
+                    world::crafting::RECIPE_MENU | 1080..=1082 => None,
+                    _ => Some(format!("(Menu {menu} would open here.)")),
+                }
             }
             Event::Sound(sound) => {
                 sound_requests.0.push(sound);
@@ -1339,8 +1584,21 @@ pub fn run_scripts(
                 let base = world::scripting::base_of(order, what);
                 match base.and_then(|b| order.get(b)).map(|r| r.entry.header.kind) {
                     Some(k) if k.as_bytes() == b"TERM" => {
-                        waiting.push(crate::menus::Menu::Terminal(base.unwrap_or(what), what));
-                        None
+                        use crate::game_menus::hacking::{use_terminal, Using};
+                        match use_terminal(order, state, base.unwrap_or(what), what) {
+                            Using::Open(m) => {
+                                waiting.push(m);
+                                None
+                            }
+                            Using::Refused(why) => {
+                                if let Some(s) =
+                                    order.form_by_editor_id(crate::lockpick::POPUP_SOUND)
+                                {
+                                    sound_requests.0.push(s);
+                                }
+                                Some(why)
+                            }
+                        }
                     }
                     Some(k) if k.as_bytes() == b"CONT" => {
                         match locked(order, state, what, &name(what)) {
@@ -1355,10 +1613,26 @@ pub fn run_scripts(
                             Some(Locked::Says(why)) => Some(why),
                         }
                     }
+                    // A talking activator with a voice (Elijah's hologram)
+                    // starts a conversation, as the player's own E would.
+                    Some(k)
+                        if k.as_bytes() == b"TACT"
+                            && base.is_some_and(|b| {
+                                world::dialogue::Speaker::load(order, what, b)
+                                    .is_some_and(|s| s.voice.is_some())
+                            }) =>
+                    {
+                        talk.0 = Some((what, None, true, false));
+                        None
+                    }
                     _ => None,
                 }
             }
             Event::Activate { .. } => None,
+            // An item's own `ForceTerminalBack` is carried out by the
+            // terminal menu (`game_menus::computers`). From another script
+            // it isn't (the game's goes back if a terminal menu is open).
+            Event::TerminalBack => None,
             Event::More(shown) => {
                 println!("{}", world::more_functions::describe(order, state, &shown));
                 match shown {
@@ -1376,6 +1650,14 @@ pub fn run_scripts(
                     // Everything runs at the multiplier's speed.
                     world::more_functions::Shown::TimeMultiplier(m) => {
                         virtual_time.set_relative_speed(m.max(0.0));
+                    }
+                    // `PushActorAway`: knocking someone down alive (a
+                    // ragdoll that gets up again) isn't drawn yet; only the
+                    // dead go limp here (`ActorRig::go_limp`).
+                    world::more_functions::Shown::PushedAway { .. } => {}
+                    // `FireWeapon`: shot in `combat::object_shots`.
+                    world::more_functions::Shown::WeaponFired { from, weapon } => {
+                        object_shots.0.push((from, weapon));
                     }
                     _ => {}
                 }
@@ -1399,7 +1681,7 @@ pub fn run_scripts(
         let result = player_idle
             .snapshot(
                 &seats,
-                cameras.single().map_or(0.0, |(_, input)| input.pitch),
+                cameras.single().map_or(0.0, |(_, input, _)| input.pitch),
             )
             .and_then(|camera| save_camera(file, state, place, camera));
         match result {
@@ -1437,6 +1719,19 @@ mod tests {
     #[derive(Resource)]
     struct TestLoadResult(Result<bool, String>);
 
+    #[test]
+    fn later_lines_run_once_when_due_in_time_order() {
+        let mut later = LaterCommands {
+            lines: vec![(30.0, "b".into()), (10.0, "a".into()), (30.0, "c".into())],
+            ready_at: None,
+        };
+        // The clock starts at the first look.
+        assert!(later.due(100.0).is_empty());
+        assert_eq!(later.due(111.0), ["a"]);
+        assert_eq!(later.due(140.0), ["b", "c"]);
+        assert!(later.due(500.0).is_empty());
+    }
+
     fn queue_test_reload_cleanup(mut commands: Commands, result: Res<TestLoadResult>) {
         queue_reload_cleanup(&mut commands, &result.0);
     }
@@ -1445,7 +1740,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(TestLoadResult(result));
         world.insert_resource(Conversation::test_active());
-        world.insert_resource(ScriptedTalk(Some((FormId(10), None, true))));
+        world.insert_resource(ScriptedTalk(Some((FormId(10), None, true, false))));
         let mut lines = crate::chatter::Lines::default();
         lines.say(
             FormId(11),
@@ -1463,6 +1758,7 @@ mod tests {
                 check: None,
                 choices: vec![],
                 add_topics: vec![],
+                follow_ups: vec![],
                 begin_script: Some("SetStage TestQuest 10".into()),
                 end_script: Some("SetStage TestQuest 20".into()),
             },
@@ -1652,73 +1948,6 @@ mod tests {
         )
     }
 
-    fn box_collider(lo: [f32; 3], hi: [f32; 3]) -> physics::Collider {
-        let [x0, y0, z0] = lo;
-        let [x1, y1, z1] = hi;
-        let vertices = [
-            [x0, y0, z0],
-            [x1, y0, z0],
-            [x1, y1, z0],
-            [x0, y1, z0],
-            [x0, y0, z1],
-            [x1, y0, z1],
-            [x1, y1, z1],
-            [x0, y1, z1],
-        ];
-        let triangles = [
-            [0, 2, 1],
-            [0, 3, 2],
-            [4, 5, 6],
-            [4, 6, 7],
-            [0, 1, 5],
-            [0, 5, 4],
-            [1, 2, 6],
-            [1, 6, 5],
-            [2, 3, 7],
-            [2, 7, 6],
-            [3, 0, 4],
-            [3, 4, 7],
-        ];
-        let mut collider = physics::Collider::new();
-        collider.add(&vertices, &triangles);
-        collider
-    }
-
-    fn vigor_tester_ref() -> Interactive {
-        Interactive {
-            reference: FormId(0x0010_4c13),
-            base: FormId(0x0010_4c0a),
-            script: Some(FormId(0x0010_4c03)),
-            count: 1,
-            position: [1883.0, 1763.0, 7360.0],
-            rotation: [0.0; 3],
-            scale: 1.0,
-            trigger: None,
-            // FalloutNV.esm's VCG01VigorTester ACTI has empty OBND.
-            bounds: Some(([0.0; 3], [0.0; 3])),
-            name: Some("Vit-o-matic Vigor Tester".into()),
-            kind: esm::FourCC::new(b"ACTI"),
-        }
-    }
-
-    #[test]
-    fn mesh_bounds_do_not_expand_targets_with_real_record_bounds() {
-        let mut object = vigor_tester_ref();
-        object.bounds = Some(([-1.0; 3], [1.0; 3]));
-        let mesh_bounds = ObjectBounds::from_scene(&[cellview::ObjectBounds {
-            reference: object.reference.0,
-            lo: [1842.0, 1746.0, 7360.0],
-            hi: [1924.0, 1782.0, 7522.0],
-        }]);
-        assert!(target_hit_distance(
-            &object,
-            &mesh_bounds,
-            [1883.0, 1600.0, 7440.0],
-            [0.0, 1.0, 0.0],
-        )
-        .is_none());
-    }
-
     #[test]
     fn failed_reload_preserves_quests_triggers_camera_requests_and_destination() {
         let data = testdata::functions::functions("transactional-reload");
@@ -1733,10 +1962,7 @@ mod tests {
         let mut state = GameState::new(&game.order);
         state.stages.insert(FormId(0x104c1c), 55);
         let before = world::save::save(&state, None);
-        let mut cells = CellScripts {
-            seat: Some([1.0; 3]),
-            ..default()
-        };
+        let mut cells = CellScripts::default();
         let mut idle = crate::player_idle::PlayerIdle::default();
         idle.requests.push(FormId(42));
         let mut pending = crate::PendingScene(None);
@@ -1761,7 +1987,6 @@ mod tests {
             )
             .is_err());
             assert_eq!(world::save::save(&state, None), before);
-            assert_eq!(cells.seat, Some([1.0; 3]));
             assert_eq!(idle.requests, [FormId(42)]);
             assert!(pending.0.is_none());
             assert!(exterior.0.is_none());
@@ -1788,7 +2013,6 @@ mod tests {
         )
         .unwrap());
         assert_eq!(state.stages[&FormId(0x104c1c)], 60);
-        assert!(cells.seat.is_none());
         assert!(idle.requests.is_empty());
         assert_eq!(pitch.0, 0.0);
         let start = &pending.0.as_ref().unwrap().start;
@@ -1848,6 +2072,18 @@ mod tests {
         );
     }
 
+    fn attach_test_cell(
+        order: &esm::LoadOrder,
+        cache: &ScriptCache,
+        state: &mut GameState,
+        cells: &mut CellScripts,
+        cell: u32,
+    ) {
+        refresh_cell_scripts(order, cache, state, cells, &[FormId(cell)], |c| {
+            world::scripting::interactive_references(order, c)
+        });
+    }
+
     #[test]
     fn same_cell_reload_reenters_triggers_from_the_loaded_state() {
         use esm::{ActivePlugins, LoadOrder};
@@ -1859,21 +2095,22 @@ mod tests {
         let mut state = GameState::new(&order);
         state.player_cell = Some(FormId(HOUSE));
         let mut cells = CellScripts::default();
-        refresh_cell_scripts(&order, &cache, &mut state, &mut cells);
+        attach_test_cell(&order, &cache, &mut state, &mut cells, HOUSE);
         let people = [(PLAYER_REF, [1888.0, 1835.0, 7360.0])];
         // Enter before the quest permits the instruction, then load a save
         // at stage55 in that same volume. Old occupancy must not suppress it.
-        run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016);
-        assert!(!cells.inside.is_empty());
-        cells.seat = Some([1.0; 3]);
+        run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016, None);
+        assert!(!cells
+            .scheduler
+            .inside(FormId(testdata::functions::ids::VIGOR_TRIGGER_REF))
+            .is_empty());
         let mut loaded = GameState::new(&order);
         loaded.player_cell = Some(FormId(HOUSE));
         loaded.stages.insert(FormId(VIGOR_QUEST), 55);
         restore_script_state(&mut state, &mut cells, loaded);
-        refresh_cell_scripts(&order, &cache, &mut state, &mut cells);
-        run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016);
+        attach_test_cell(&order, &cache, &mut state, &mut cells, HOUSE);
+        run_cell_scripts(&order, &cache, &mut state, &mut cells, &people, 0.016, None);
         assert_eq!(state.stages.get(&FormId(VIGOR_QUEST)), Some(&60));
-        assert!(cells.seat.is_none());
     }
 
     #[test]
@@ -1904,10 +2141,8 @@ mod tests {
             .iter()
             .any(|e| matches!(e, Event::CharacterMenu(_))));
         assert_eq!(state.stages.get(&FormId(VIGOR_QUEST)), Some(&55));
-        let mut cell_scripts = CellScripts {
-            refs,
-            ..Default::default()
-        };
+        let mut cell_scripts = CellScripts::default();
+        attach_test_cell(&order, &cache, &mut state, &mut cell_scripts, HOUSE);
         run_cell_scripts(
             &order,
             &cache,
@@ -1915,6 +2150,7 @@ mod tests {
             &mut cell_scripts,
             &[(PLAYER_REF, [1888.0, 1835.0, 7360.0])],
             1.0 / 60.0,
+            None,
         );
         assert_eq!(state.stages.get(&FormId(VIGOR_QUEST)), Some(&60));
         assert!(!state.objectives.contains_key(&(FormId(VIGOR_QUEST), 30)));
@@ -1952,34 +2188,30 @@ mod tests {
             .any(|e| matches!(e, Event::CharacterMenu(_))));
     }
 
+    /// E uses the object the crosshair is on (`crosshair`, the game's view
+    /// caster) and nothing else: the Vigor Tester (an `ACTI` with an
+    /// `OnActivate` script and an empty `OBND`, picked by its collision),
+    /// not when the crosshair is elsewhere, and not once it's destroyed.
     #[test]
-    fn empty_obnd_uses_vigor_testers_real_mesh_bounds_and_keeps_wall_occlusion() {
-        // nvinspect on the installed NV_VitoMaticVigorTester_Cabinet02.NIF
-        // reports mesh and Havok hull extents x[-41,41], y[-17,19], z[0,162].
-        // The placed reference is at (1883,1763,7360), rotation 0, scale 1.
-        let object = vigor_tester_ref();
-        let eye = [1883.0, 1600.0, 7440.0];
-        let dir = [0.0, 1.0, 0.0];
-        assert!(object.ray_hit(eye, dir).is_none());
+    fn the_object_used_is_the_one_the_crosshair_is_on() {
+        use esm::{ActivePlugins, LoadOrder};
+        use testdata::functions::ids::{HOUSE, VIGOR_TESTER_REF};
 
-        let object_bounds = ObjectBounds::from_scene(&[cellview::ObjectBounds {
-            reference: object.reference.0,
-            lo: [1842.0, 1746.0, 7360.0],
-            hi: [1924.0, 1782.0, 7522.0],
-        }]);
-        let hit = target_hit_distance(&object, &object_bounds, eye, dir).unwrap();
-        assert!((hit - 146.0).abs() < 1e-5, "{hit}");
-
-        // The same NIF's collision hull reaches the same front plane, so it
-        // is not mistaken for a blocking wall before the rendered target.
-        let cabinet = box_collider([1842.0, 1746.0, 7360.0], [1924.0, 1782.0, 7522.0]);
-        assert!(!hidden_by_surface(&cabinet, eye, dir, hit));
-
-        // A separate nearer wall still hides the tester.
-        let wall = box_collider([1800.0, 1699.0, 7300.0], [1960.0, 1701.0, 7600.0]);
-        assert!(hidden_by_surface(&wall, eye, dir, hit));
+        let data = testdata::functions::functions("crosshair-object");
+        let order = LoadOrder::from_data_dir(data.path(), &ActivePlugins::OfficialOnly).unwrap();
+        let cache = ScriptCache::default();
+        let refs = world::scripting::interactive_references(&order, FormId(HOUSE));
+        let mut state = GameState::new(&order);
+        let tester = FormId(VIGOR_TESTER_REF);
+        let seen = |state: &GameState, target| {
+            object_in_view(&cache, &order, state, &refs, target).map(|(r, _)| r)
+        };
+        assert_eq!(seen(&state, Some(tester)), Some(tester));
+        assert_eq!(seen(&state, None), None);
+        assert_eq!(seen(&state, Some(FormId(0x00AB_CDEF))), None);
+        state.destroyed.insert(tester);
+        assert_eq!(seen(&state, Some(tester)), None);
     }
-
     #[test]
     fn keys_in_messages_become_the_viewers() {
         assert_eq!(

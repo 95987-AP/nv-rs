@@ -1,6 +1,6 @@
 # nv-rs milestones
 
-Updated 2026-10-04. Priority tracker and session handoff.
+Updated 2026-10-06. Priority tracker and session handoff.
 
 ## Baseline
 
@@ -19,10 +19,10 @@ history is retained separately; do not publish its build outputs.
 | Milestone | Completion gate | Status |
 | --- | --- | --- |
 | M1: Opening and persistent world | Retail opening movie and scripted wakeup, animations/movement, Doc Mitchell's creation sequence, exit into Goodsprings, talk/interact, save, restart and reload. Player, NPC, quest, inventory and reference state survives. Compare with the original game. | Active; initial live run and package-action reader complete; choreography and full route pending. |
-| M2: Core gameplay loop | Sunny's tutorial and a representative Goodsprings quest branch through their own scripts: movement, weapons/reloads, damage/death, AI, dialogue, loot, trade and progression. Save/reload at intermediate stages. Verify melee and V.A.T.S.; track other weapon classes explicitly. | Partial implementation reported; acceptance pending. |
-| M3: Base-game systems and campaign | Coverage matrix for quests, actor/creature types, weapon classes, effects, factions/crime, companions, travel and menus. Representative routes and ultimately campaign completion, with evidence and regression tests for blockers. | Inventory and acceptance routes needed. |
-| M4: Stability and performance | Recorded routes and extended play without crashes or lost state. Measure frame times, memory, loading and streaming stalls on target hardware. Publish traces/settings and agreed budgets; remove measured stalls without changing behavior. | Not measured here; instrument earlier when it helps M1/M2. |
-| M5: DLC and mods | Official DLC progression and reproducible plugin/archive/loose-file, script and content-extension cases; document interfaces and exclusions. | Load-order infrastructure exists; broad compatibility unverified. |
+| M2: Core gameplay loop | Sunny's tutorial and a representative Goodsprings quest branch through their own scripts: movement, weapons/reloads, damage/death, AI, dialogue, loot, trade and progression. Save/reload at intermediate stages. Verify melee and V.A.T.S.; track other weapon classes explicitly. | Partial implementation reported; acceptance pending. Crafting (`ShowRecipeMenu`, [CRAFTING.md](CRAFTING.md)): rules and the game's menu done; tutorial help and item card remain. |
+| M3: Base-game systems and campaign | Coverage matrix for quests, actor/creature types, weapon classes, effects, factions/crime, companions, travel and menus. Representative routes and ultimately campaign completion, with evidence and regression tests for blockers. | Inventory and acceptance routes needed. Terminals ([HACKING.md](HACKING.md), [TERMINALS.md](TERMINALS.md)): who gets in, hacking and the terminal's own menu done; rendered terminals (the menus on the terminal's screen) remain. Item scripts ([ITEM_SCRIPTS.md](ITEM_SCRIPTS.md)): per-item scripts with `OnAdd`, `OnEquip`, `OnUnequip`, `GameMode`, `RemoveMe`, `DropMe`, `OnDrop` and `Drop` into the world, and the Pip-Boy's Drop (the pad's X: its refusals and "How many?"). Repairing ([REPAIR.md](REPAIR.md)): merchants' repair services (`ShowRepairMenu`) and the Pip-Boy's repair screen done, NPC skills now with their offsets; the player's armour wears from hits and its DT/DR follows its condition. Companions ([COMPANIONS.md](COMPANIONS.md)): trading things with them (`OpenTeammateContainer`) and their wheel of orders (`CompanionWheelMenu`, with the UI's `radial` tiles) done; their re-equipping and the wheel's Back Up remain. Caravan ([CARAVAN.md](CARAVAN.md)): the cards, the player's collection (`AddCardToPlayer`) and the rules (placing, values, jacks and jokers, drawing, the end) the opponent's AI (`ProcessAI`, with the exe's own sort), the bet and results, the menu's state machine (`world::caravan::menu`), its tiles (`ui::menus::caravan`) and the 3D table (`cellview::caravan`, the viewer's `caravan_table`) done: playable in the viewer from `ShowCaravanMenu`; the tutorials remain. Casinos ([CASINO.md](CASINO.md)): the record, the player's winnings, levels and comps quest, refusals and the anti-cheat lock, settling chips, and the slot machines' rules and states (`world::casino`) done; the games on screen and blackjack's and roulette's rules remain. Weapon mods ([WEAPON_MODS.md](WEAPON_MODS.md)): slots, fitting and their effects on damage, clip, spread, weight, attack speed, projectiles, V.A.T.S. to-hit, condition and worth, the Pip-Boy's mod screen, the modded models (the player's first-person objects, `WNAM`/`WNM{n}`) split beams (projectiles, cone, the shown damage) and silencers (`world::noise`: attacks' noise, `VNAM`/`NAM5` sound levels for `fActorAlertSoundTimer`, heard by detection) done; the remaining effects remain. |
+| M4: Stability and performance | Recorded routes and extended play without crashes or lost state. Measure frame times, memory, loading and streaming stalls on target hardware. Publish traces/settings and agreed budgets; remove measured stalls without changing behavior. | Not measured here; instrument earlier when it helps M1/M2. Chazm's PR #12 (2026-10-07, `claude/contrib-chazm-perf`, [CONTRIB_CHAZM.md](CONTRIB_CHAZM.md)): mean frame time, three interleaved runs before/after, Goodsprings 19.8 → 16.7 ms, Back in the Saddle 41.7 → 23.9 ms, Ghost Town Gunfight 24.9 → 20.1 ms, Doc's walk 14.0 → 10.8 ms; Doc's house screenshots pixel-identical, outdoor ones within run-to-run noise. |
+| M5: DLC and mods | Official DLC progression and reproducible plugin/archive/loose-file, script and content-extension cases; document interfaces and exclusions. | Load-order infrastructure exists; broad compatibility unverified. DLC track started by the maintainer alongside M1 (2026-10-05): Dead Money research pass in [DEAD_MONEY.md](DEAD_MONEY.md); next action: run its data pass. |
 | M6: VR | Shared simulation with action inputs, independent aim and multiple views. Headset-tested tracking, controllers, menus, combat, comfort and frame budget. | Architecture documented; headset validation pending. |
 
 Preserve save correctness, mod semantics and VR boundaries throughout; order
@@ -33,27 +33,106 @@ reading do not establish them.
 
 ## Active work: M1
 
-Methodology and pipeline batch, 2026-10-05 (cloud session without game
-files; PR #10). Research into precedent projects and tooling produced
-[METHODOLOGY.md](METHODOLOGY.md). The maintainer's decisions are in
-[adr/](adr/README.md): full use of the Xbox 360 prototype symbols,
-translating marked decompiled logic, and a Mudcrab-style layout (planned in
-ADR-0004). New tools in `research/`, tested only on synthetic binaries:
-Ghidra scripts (identity, gated full export, function cards, command-table
-labels, name import) and `nv-oracle` (`nv-call`, `nv-probe`, `nv-inject`).
-There is also a repository hygiene test. Root 976 tests, clippy and format
-pass, as do 24/24 `nv-oracle` Wine groups and the Ghidra suite. PR #10's
-Windows CI passed at `12d8321`. None of the tools has run against
-FalloutNV.exe yet.
-[PROTOTYPE_SYMBOLS.md](PROTOTYPE_SYMBOLS.md) lists likely names for the
-look-IK functions (`00c78610` BoneTrack, `00c755e0` LimitBoneRot); these are
-unverified. Order for the local session: land
-`codex/m1-reload-update-order`, merge PR #10 (`OPENING_LOOK_IK.md` will
-conflict), then run the ADR-0004 restructure. **Next action:** look-IK
-pilot. Load the prototype with its symbols, confirm the `bhkRagdollController`
-pairs and field names in the PC disassembly, then record `00c755e0` and
-`00c78610` arguments and results with `nv-probe` in a private game copy
-while Doc looks at the player.
+Next session: start with [HANDOFF.md](HANDOFF.md). Open tasks:
+[TASKS.md](TASKS.md); contributor rules: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Overnight 2026-10-06 → 07 (integration branch, play builds 12 onward):
+radio unification and the 2 key, death into ragdoll, Chazm's PRs #11 and
+#12 ([CONTRIB_CHAZM.md](CONTRIB_CHAZM.md)), and maintainer's-list fixes
+B3, B4, B5, B6, B10, B11, B12, B13, B16. Each was traced in FalloutNV.exe, checked live
+in the release viewer (what was and wasn't is in each topic page) and
+passed all three acceptance routes after merging. None has been compared
+side by side with the original game. The twelve major systems are open
+as GitHub issues #13–#24. A shared read-only Ghidra server now serves
+agents' queries ([RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md)).
+**Next action:** play the latest build in the play copy and file F12
+reports; then B14 (opening) and B1/B2 (physics), split into sub-PRs.
+
+Overnight batches, 2026-10-06 (local session; integration branch
+`claude/overnight-integration`, not merged into `main`; each batch also has
+its own pushed `claude/m*-*` branch for review as a PR). Play copy builds 1-6
+were published from the integration branch. Everything below is implemented
+and unit-tested; **none of it has been compared side by side with the
+original game**.
+- M1: look-IK (`claude/m1-look-ik`), Pip-Boy mouse (`claude/m1-pipboy`),
+  player movement (`claude/m1-movement`), Doc's door farewell via TCFU
+  follow-ups (`claude/m1-dialogue`), NPC dialogue facing/zoom and topic
+  list (`claude/m1-dialogue-npc`), player furniture sitting
+  (`claude/m1-sitting`).
+- M2: grid-wide exterior reference scripts (`claude/m2-cell-scripts`),
+  package types and actions (`claude/m2-packages`), quest targets on the
+  compass (`claude/m2-quest-targets`), dynamite/explosions
+  (`claude/m2-explosives`), third-person camera and player body
+  (`claude/m2-third-person`), NPC weapon choice/reloads/GetShouldAttack/
+  OnStartCombat (`claude/m2-npc-combat`), Back in the Saddle and Ghost Town
+  Gunfight route fixes (`claude/m2-vcg02-route`, `claude/m2-vms16-route`).
+- B5 (`claude/b5-weapon-effects`, 2026-10-07): firing sounds (2D for the
+  player, 3D and distant for people, placed and attenuated as the game's
+  audio does), muzzle flashes on the player's (both views) and people's
+  guns, melee swing-miss sounds; traced, unit-tested, seen live; not
+  compared with the original ([WEAPON_EFFECTS.md](WEAPON_EFFECTS.md)).
+- B6 (`claude/b6-impacts`, 2026-10-07): impacts: world decals clipped onto
+  struck `NiTriStrips` pieces and the land (lifetime, fade, limits), blood
+  spatter decals, impact effect models with their own controllers, impact
+  sounds placed and attenuated; traced, unit-tested; decals seen live,
+  effect models placed but too faint to see in screenshots
+  ([WEAPON_EFFECTS.md](WEAPON_EFFECTS.md)).
+- Acceptance evidence ([GOODSPRINGS_ROUTE.md](GOODSPRINGS_ROUTE.md)): with
+  dialogue choices replayed by `--run` lines, Ghost Town Gunfight reaches
+  stage 100 (XP +50) on the integration build; Back in the Saddle completes
+  with several steps forced by console lines.
+- Blockers: starting VCG02 by talking to Sunny (greeting order traced and
+  matching; needs an original-game check), long outdoor NPC paths (agent
+  on `claude/m2-long-paths`), NPC aim far too accurate (agent on
+  `claude/m2-npc-aim`), eyes not moving (FaceGen eye update untraced),
+  explosion visuals, Pip-Boy local-map quest markers (world map done on
+  `claude/m2-pipboy-complete`).
+**Next action:** review and merge the `claude/m*-*` PRs into `main`, then
+play the Goodsprings route in the play copy and file F12 reports.
+
+Chazm's pull request (slaterain/nv-rs#11), 2026-10-06 (merged on
+`claude/contrib-chazm`, not yet in the integration branch): the Bink intro
+movie (bit-exact decoder, played on `--new-game`), crafting, terminal
+hacking and the terminal menu, item scripts, Repair, weapon mods, attack
+noise, companions (trading, the wheel), Caravan, casino rules and slot
+machines. Where the Dead Money merge already had a version (crafting,
+caravan cards, companion and terminal functions, casino menus) one
+implementation is kept, Chazm's traced one with the other's traced details
+folded in; the Pip-Boy's Drop is one path (mouse and pad X); his mouse
+capture is replaced by ours. Unit tests pass; not compared with the
+original game. Triage and what was rejected:
+[CONTRIB_CHAZM.md](CONTRIB_CHAZM.md). **Next action:** the lead merges
+`claude/contrib-chazm` into the integration branch after reviewing the
+acceptance results.
+
+Look-IK batch, 2026-10-06 (local session, branch `claude/m1-look-ik`).
+Corrections: ADR-0004 (restructure) was rejected on 2026-10-06 and the
+layout stays; `codex/m1-reload-update-order` was dropped unmerged; Codex is
+no longer used. The Xbox 360 prototype's PDB confirmed the
+`bhkRagdollController` (Xbox PDB) field names and the look-IK function pairs
+in the PC disassembly. Native head and eye tracking is now ported in
+`world::look_ik` and runs on placed people in the viewer. Its helpers and
+the direction solve are checked against FalloutNV.exe with `nv-call` (the
+first runs of the oracle tools against the real executable). Root clippy
+and the look-IK tests pass. Doc's tracking has not been compared with the
+original game. Not yet done: the target choice of 008a3100 (the player is
+the only supported target), eye meshes (FaceGen eye update), and
+`nv-probe` recordings in a private game copy. Evidence:
+[OPENING_LOOK_IK.md](OPENING_LOOK_IK.md). Parallel batches (each on its own
+`claude/m1-*` branch) cover dialogue exit and fidelity, couch sitting,
+Pip-Boy mouse input and player movement. **Next action:** record Doc's
+look-IK in a private game copy with `nv-probe` and compare.
+
+Look-IK reconcile, 2026-10-06 (`claude/m1-lookik-reconcile`, unmerged):
+the contributor's head-track target choice, actor look anchors, FaceGen
+eye darting and eye limits (`playcon/claude/*`, 9defa47, 5dfb5d9,
+ae5b593, ddc0d59) are ported onto the native controller after re-checking
+them in Ghidra; where the two ports disagreed the executable settled it
+(the eye chain runs for people, so eyes aim at the target; the tracking
+distance is between positions). Doc, Sunny and Goodsprings NPCs track
+the player and each other in the viewer; 0064c410 and the eye-range
+helpers are nv-call regression vectors. Not compared with the original.
+**Next action:** record Doc's look in a private game copy with `nv-probe`.
 
 The published baseline includes the opening package look lock, Doc's queued
 chair exit, native Info HUD and tester bounds correction, SPECIAL interface,
@@ -82,12 +161,66 @@ in a four-export probe. Full indexing is deferred; source snapshots, hashes,
 DB and inventory remain private. Shared query workflow and limitations:
 [RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md).
 
+Movement batch (`claude/m1-movement`, unmerged): the player's speed now
+follows `00647d10` in `world::locomotion` (weapon away × 1.1, armour and
+drawn-weapon penalties, run perk on running only); over-encumbered blocks
+running and jumping; a jump drops the run-up and air steering closes 0.3
+of the gap a frame. Tested, not compared. Evidence and gaps (slopes,
+per-direction animation speeds, camera): [MOVEMENT.md](MOVEMENT.md).
+
+Player furniture batch, 2026-10-06 (`claude/m1-sitting`): E on furniture
+now runs the game's own activation and sit procedure for the player
+(`TESFurniture::Activate` `005095b0`, approach `00904f50`, temporary third
+person `00950340`/`009503d0`, activate-key gate, seated pitch limit,
+first-person seated loop with its Camera1st track); E on nothing while
+seated gets up. Unit and generated-plugin regressions pass; no live couch
+run or original comparison yet; no third-person camera exists for the
+entry/exit. Evidence and gaps: [FURNITURE.md](FURNITURE.md). **Next:** live
+`--stage VCG01 27` couch run through Doc's questionnaire.
+
+Third-person batch, 2026-10-06 (`claude/m2-third-person`, unmerged): the
+player camera's first/third person, view key (F; walk/fly moved to `),
+wheel zoom, vanity mode, temporary views (furniture, Pip-Boy, dialogue)
+and the chase camera with wall collision are translated from
+`0094ae40`/`0094a0c0`/`00950110`… into `world::player_camera`; the
+player's third-person body is built from the record and game state
+(`world::actor::player_look`) and animated through the NPC path
+(idle, directional walk/run, weapon, sitting). Tested, not compared.
+Evidence and gaps (sneak/jump groups, body fade, pivot node term):
+[CAMERA.md](CAMERA.md). **Next:** compare F/wheel/wall behaviour and the
+couch entry framing in the original.
+
+Movie batch, 2026-10-06 (Claude, branch `claude/m1-bink-intro`): new
+`crates/bink` decodes Bink 1 video with tables read from the install's
+`binkw32.dll`; `nvinspect <movie.bik> info|frames` and the 32-bit
+`research/nv-oracle` tool `nv-bink` (the game's own library as oracle)
+compare them frame by frame. All 8,692 intro frames match in Y, U and V;
+982 core tests pass. The shipped `VCG00` plays `FNVIntro.bik` and jumps to
+stage 90, so the burial stages (and `TriggerScreenSplatter`) never run.
+Audio (`bink::AudioDecoder`, `nvinspect <movie.bik> audio`) matches the
+DLL's `BinkGetTrackData` output in length and within one step on all
+27.8 million samples. Colour conversion matches the DLL's 32-bit output on
+all frames. `PlayBink`'s four flags (interruptible, mute, pause music,
+letterbox) and the game's tiles, filtering and placement were read from the
+exe; the viewer now plays the intro on `--new-game` (`viewer/src/movie.rs`)
+with the game's clock stopped and input withheld, and the game continues
+into Doc's wake-up afterwards (full 290 s run). The command tables were
+confirmed at 40-byte entries. Evidence: [MOVIES.md](MOVIES.md). **Next
+action:** crafting (`ShowRecipeMenu`, M2's campfire tutorial).
+
 Outstanding M1 gates:
 - Exact opening camera transition replay and Doc/player assistance timing.
-- Native Doc head/eye tracking; final rotation math remains unresolved
-  ([OPENING_LOOK_IK.md](OPENING_LOOK_IK.md)).
-- Original face editor instead of auto-accept, and opening movie playback
+- Doc head/eye tracking: ported, unit-tested and seen in the viewer,
+  with whom actors look at and the FaceGen eyes (reconciled with a
+  contributor's branches, 2026-10-06, `claude/m1-lookik-reconcile`); the
+  original-game comparison remains
+  ([OPENING_LOOK_IK.md](OPENING_LOOK_IK.md),
+  [HEAD_TRACK_TARGET.md](HEAD_TRACK_TARGET.md)).
+- Original face editor instead of auto-accept
   ([FACE_CREATION.md](FACE_CREATION.md)).
+- Opening movie playback ([MOVIES.md](MOVIES.md)): done in the viewer
+  with the game's presentation; remaining differences (filtering in linear
+  light, the handler's sound fade) are listed there.
 - In-progress animation save restoration, full character-creation route,
   exit to Goodsprings and save/restart/reload acceptance.
 - SPECIAL's remaining visual/input fidelity and progression comparison
@@ -112,6 +245,401 @@ have since merged; check their build publication against the Codex branch. See
 constructors are now identified; runtime configuration and original comparison
 remain unverified. Do not repeat the established
 package-look lock or tester activation fixes.
+
+Pip-Boy input batch (`claude/m1-pipboy`): the mouse now drives the
+Pip-Boy (screen picking, rows, tabs, model buttons, world-map markers,
+wheel, drags) through the interface, F1-F3 and Tab release work, and the
+arm's field-of-view scale is fixed. Traced and unit-tested, not compared
+with the original game; gaps in [PIPBOY.md](PIPBOY.md). **Next action:**
+live comparison of the mouse paths in the original game.
+
+Pip-Boy live batch, 2026-10-06 (`claude/m2-pipboy-live`): driving the
+release viewer with injected Windows input showed no Pip-Boy click ever
+completed (the buttons were cleared every frame, so no release was seen);
+fixed by reading the button events. Added, traced: the fast-travel
+question, the player's own map marker (right button, set/move/remove
+questions, saved), world-map zoom (wheel, Page Up/Down), the world map's
+picture border for markers, ITEMS Drop (right button, quest-item refusal,
+"how many?"), the keyring, ITEMS' button states, STATS healing mode (a
+Stimpak aimed at a limb, `0082b970`), boxes over the Pip-Boy taking the
+input. Each verified live in the viewer; none compared with the original
+game. Gaps (Repair/Mod menus, hot keys, local map, radio, the light):
+[PIPBOY.md](PIPBOY.md). **Next action:** compare these paths in the
+original game, then the Repair menu.
+
+Pip-Boy completion batch, 2026-10-06 (`claude/m2-pipboy-complete`): hot
+keys (wheel, assignment, use with the Pip-Boy away), notes by kind (text,
+image, audio with its countdown), world-map quest target markers, the
+aimed limb's blink, knobs and rad needle turning, the Pip-Boy light
+lighting the place, dropped items resting on the floor and taken back
+with E. Verified live in the viewer (except the blink and needle, tested
+only); none compared with the original game. Repair/Mod belong to another
+contributor's branch. Still missing: the start menu on Escape, the radio,
+the local map. **Next action:** the start menu (`007cb7d0`, `007cc6e0`).
+
+Start menu, radio and local map batch, 2026-10-06
+(`claude/m2-startmenu-radio-map`): Escape opens the pause menu
+(`StartMenu` 1013) with its background, settings pages, the viewer's
+saves (save / load / confirmations) and Quit; DATA › Radio (stations in
+range, tuning, songs and programmes, playing with the Pip-Boy away); DATA
+› Local Map (pictures from above, fog of war, doors, quest markers, the
+arrow, zoom) indoors and outdoors; hot key controls read through
+`controls.rs`. Verified live in the viewer only; none compared with the
+game. Details and gaps: [START_MENU.md](START_MENU.md),
+[PIPBOY.md](PIPBOY.md). **Next action:** compare the local map and
+pause menu with the game; Radio New Vegas's news live.
+
+Radio and 2 key batch, 2026-10-06 (`claude/m2-radio-unify`): one radio
+state. The Dead Money contributor's radio script functions now act on the
+Pip-Boy's radio (`world::radio`): `PipboyRadio` / `PipBoyRadioOff` tune
+and stop what DATA › Radio shows and plays, `StartRadioConversation`
+replaces a station's programme, `SetNPCRadio` makes a person a receiver
+playing the station's lines (mono songs) near the player (`00835810`,
+`00834260`); old `scriptradio` saves load. The 2 key traced
+(`0077da60`, `00781ba0`): it swaps ammunition, and as hot key slot 1
+(which nothing can be put on) does nothing, tap or hold. Seen live in the
+viewer (script tune / off, Sunny's radio, the 2 key's swap); tested; not
+compared with the game. Gaps (falloff, lip-synced receivers, radio
+templates): [PIPBOY.md](PIPBOY.md). **Next action:** compare a receiver
+(Dead Money's Starlet at the fountain) in the original game.
+
+Dialogue batch, 2026-10-06 (`claude/m1-dialogue`): Doc's farewell at the
+front door could not be left because line follow-ups (`TCFU`) were not
+read. Follow-ups, Goodbye states, random runs and Intelligence classes are
+now traced from `00762ff0`/`0061af30`/`0061a7d0` and implemented, with
+generated regressions; a real-data walk of the chain reaches the Goodbye
+line, which un-destroys the house door. Not yet compared with the original
+game. Evidence and gaps: [DIALOGUE.md](DIALOGUE.md). **Next action:** play
+the route through the door with installed data.
+
+M2 blocker batch, 2026-10-06 (`claude/m2-cell-scripts`): object scripts
+now run for every attached cell (the interior, or the 5×5 grid with the
+game's re-centring margin, including persistent objects), disabled ones
+too; `OnLoad` fires once per cell attach or enable; triggers follow the
+traced one-event-per-step occupancy; the pass stops after `Activate`/
+`MoveTo`-type commands. Traced addresses, tests and gaps:
+[SCRIPTS_RUNTIME.md](SCRIPTS_RUNTIME.md). Generated-world tests only; not
+compared with the original. **Next action:** play Goodsprings to VCG02
+stage 20 and compare trigger/`OnLoad` timing with the original.
+
+M2 blocker batch `claude/m2-explosives` (Ghost Town Gunfight dynamite):
+thrown weapons, grenade flight and explosion damage traced and implemented
+with generated regressions; not compared with the original game. Evidence,
+gaps and next action: [EXPLOSIVES.md](EXPLOSIVES.md).
+
+M2 blocker batch (branch `claude/m2-quest-targets`): quest targets (`QSTA`),
+the active quest, the door the compass follows and the blinking compass
+quest icons, traced and translated; generated-data tests and an
+installed-data check pass; not compared with the game; Pip-Boy map quest
+markers and the navmesh-level path search remain. See
+[QUEST_TARGETS.md](QUEST_TARGETS.md).
+
+Dialogue NPC batch, 2026-10-06 (`claude/m1-dialogue-npc`, on
+`claude/m1-dialogue`): the menu's zoom in/out (`00762950`), the player's
+view focused on the speaker's head (`00953060`), the speaker's in-menu
+turn (`008a5580`, replacing the inferred rule) and the main topic list
+as the player's topics (`0083ec30`/`0083ed50`/`00619030`, dropping the
+opening-follow-ups guess) are traced, implemented and unit-tested; not
+compared with the original. **Next action:** record a Doc Mitchell and a
+Sunny Smiles conversation in the original and compare zoom, turn and list.
+
+B13 barter over dialogue, 2026-10-07 (`claude/b13-barter-menu`): service
+menus (barter, recipes) now fade the dialogue menu out and back in as the
+game does (`00763ff0`/`007640a0`, menu fades `00a1d910`/`00a1db20`);
+unit-tested and verified live with Chet; details and gaps in
+[DIALOGUE.md](DIALOGUE.md).
+
+B16 local map, 2026-10-07 (`claude/b16-local-map`): the Pip-Boy local map's
+scale, zoom limits and steps re-traced and found as implemented (see
+[PIPBOY.md](PIPBOY.md)); fixed the map running off to its limits after any
+drag (the drag's movement was added on every refresh, not once), a drag
+flung off when the pointer left the Pip-Boy's screen, the map not centred
+again when DATA / the tab is shown or the pictures finish, and added the
+pad's sticks (zoom, pan); unit-tested, verified live with the mouse; not
+compared with the original.
+
+## M2 blocker batch: gunfight packages
+
+`claude/m2-packages` (2026-10-06): flee, guard, procedure lists, package
+type data (`PKW3`, `PKPT`, `PLD2`...) and begin/end/change action dispatch
+traced and implemented for Ghost Town Gunfight (`VMS16`). Generated
+regressions pass; not compared with the original. Finding: the gunfight's
+flee packages have no target or place, so the settlers just stop and
+stand; CF/AM guard packages send settlers back to their editor location
+after stage 70's `MoveTo`. Evidence and gaps: [PACKAGES.md](PACKAGES.md).
+**Next action:** compare both `bTrudyHelp` branches in the original game.
+
+## M2 blocker batch: NPC combat
+
+`claude/m2-npc-combat` (2026-10-06): people now choose their weapon the
+way the combat controller rates it (`009993c0`, DPS `00645380`/`00646060`,
+weapon kinds `00522c80`, planner costs `011a4280`), switch when out of
+reach or ammunition, empty and reload clips, and only use rounds up for
+"NPCs use ammo" weapons (dynamite) or teammates (`008a8dd0`);
+`GetShouldAttack` (`0059ed30`), `OnStartCombat` (`00980830`/`009887b0`)
+and `SetUnconscious` ending the fight (`005d0760`) are in. Generated
+regressions pass; not compared with the original. The planner's search
+beyond its action costs is inferred. Evidence and gaps:
+[NPC_COMBAT.md](NPC_COMBAT.md). **Next action:** record a powder-ganger
+fight in the original game and compare weapon switches and dynamite
+throws.
+
+M2 route batch (`claude/m2-vcg02-route`): Back in the Saddle (`VCG02`)
+driven in the viewer with installed data and completed in one run, with
+the quest start, bottle hits, two package end actions, the walk to the
+first well, the kills and the reward request simulated by console lines
+(new `--run-at`/`--say` testing aids). Fixed: people walking into the
+place joining trigger/talk lists, drawing references enabled after load
+(bottles, geckos), `KillActor`'s `OnDeath`, shots at disabled objects.
+Blockers: Sunny's first greeting (traced order says "Everything all
+right?", which can't start the quest), no long-distance paths, package end
+actions. Not compared with the original. Evidence:
+[GOODSPRINGS_ROUTE.md](GOODSPRINGS_ROUTE.md). **Next action:** record
+Sunny's first greeting in the original game.
+
+## M2 blocker batch: NPC aim and next target
+
+`claude/m2-npc-aim` (2026-10-06): people's shots now fly as the game aims
+them (`00523150` NPC branch: aim point `009a8460`, cone = weapon min
+spread + gun wobble × `fNPCMaxGunWobbleAngle`, iron sights past 512 ×
+sight usage `008f74c0`) as rays to the first body, object or wall, with
+the line-of-fire hold (`009a6e90`); after a kill or give-up fighters take
+the best of their remaining targets (`CombatGroup::GetBestTarget`,
+`00986c60`). Gangers' leveled guns are now resolved (they had chosen
+fists). Gunfight re-run: both `bTrudyHelp` branches reach stage 100; the
+varmint-rifle ganger hits the player 1–3 times in 9 shots at 3000–2000
+units (was 10/10). Generated regressions pass; not compared with the
+original. Evidence and gaps: [NPC_COMBAT.md](NPC_COMBAT.md). **Next
+action:** record ganger hit rates at range in the original game.
+
+NPC hits batch (`claude/m2-npc-hits`, 2026-10-06): people's shots passed
+through the Powder Gangers because the gangers, enabled by script after
+their squares loaded, dropped out of the place's people at the next square
+change (shots only test those bodies). Fixed; Ghost Town Gunfight passed 3
+of 3 acceptance runs (people-at-people shots under 400 units: 0 of 95 hit
+before, 27 of 57 after), `doc` and `vcg02` pass. Line of fire traced
+(`009a6e90` ray pick, `bTargetBlocked` → planner `ACQUIRE_LINE_OF_SIGHT`,
+not done). Not compared with the original. Evidence:
+[NPC_COMBAT.md](NPC_COMBAT.md). **Next action:** trace the combat
+planner's blocked-target actions.
+
+M2 blocker batch (`claude/m2-long-paths`, 2026-10-06): long outdoor
+walks. The game's high-level route over the navmesh info map (`NAVI`,
+`NavMeshInfoSearch` (Xbox PDB) `006b8c50`/`006b8490`), the detailed path
+only over attached cells (`006c9fc0`) and the virtual handler's node walk
+out of sight (`009ea8a0`) are traced and implemented; the viewer's
+navmesh is now the attached cells' and people beyond them walk out of
+sight. Sunny's VCG02 walks (both wells, sneak, wells 2 and 3) complete by
+themselves with the player following or ahead; one run completed VCG02.
+Generated regressions pass; not compared with the original. Evidence:
+[PATHING.md](PATHING.md), [GOODSPRINGS_ROUTE.md](GOODSPRINGS_ROUTE.md).
+**Next action:** record where Sunny stops in the original when the player
+stays behind the saloon.
+
+NPC animation batch (`claude/m2-npc-anims`, 2026-10-06): Doc's chair
+"jump" was the entry easing out over 0.5 s after the heading had turned
+half a turn; the game swaps without a blend there (`cSkipNextBlend`,
+`004974a0`, set by `009213e0`/`00921e80`), now carried out. People in the
+dialogue menu were frozen because the dialogue menu's own screen counted
+as a menu for animation; the speaker now animates and plays the game's
+talking idles (`008a5580`/`008a20d0`/`008dab40`, `SNAM` speaker idles,
+`MenuMode`/`IsTalking`/`GetDialogueEmotion`). Verified live with screen
+captures (chair before/after, Sunny and seated Doc talking); not compared
+with the original. Evidence and gaps (lines outside the menu, listener
+idles, holstering): [ANIMATION.md](ANIMATION.md). **Next action:** record
+Doc sitting down and a Sunny conversation in the original and compare.
+
+M2 batch `claude/m2-player-actions` (2026-10-06): the crosshair's Info
+panel from `00579280`/`00775a00` (Sit, Sleep, Take, Open, Talk, Search,
+Pickpocket/Steal, "Door to Goodsprings", lock and Empty lines, weight and
+value), pickups' "added" message and sound, the Sneak toggle with the
+lower eye and the sneak meter, iron sights (Aim control, FOV, `IS`
+animations, true iron sights), mouse look with the right button free,
+Always Run and Auto Move. Seen live in the viewer (couch sit/stand,
+stimpak pickup, Sunny talk/pickpocket, [HIDDEN], varmint rifle sights);
+not compared with the original. Evidence and gaps (scopes, sway,
+hotkeys): [PLAYER_ACTIONS.md](PLAYER_ACTIONS.md). **Next action:**
+compare those screens in the original game.
+
+M2 blocker batch (`claude/m2-npc-nav`, 2026-10-06): NPC routes and
+collision. People were set along their path points with no collision, on
+a stand-in search and funnel. Now the game's navmesh search costs
+(`006a6fa0`), its `PathSmootherPOVSearch` (`006ad770`: corner circles of
+1.2 × the request radius, side clearance, tangents, retries keeping off
+narrow edges), the straight-line test with side lines (`006cd1f0`), the
+stuck test (`009e4cf0`) and the player's character controller for every
+person (`009ddc00` → `00930c70`) are implemented. Live: Doc walks to his
+door and talks, Sunny's VCG02 runs to stage 45 by herself, settler 04
+goes through the saloon door. Generated regressions pass; not compared
+with the original. Gaps: light clutter blocks people (Easy Pete stuck at
+his eating marker), door triangle registration, off-navmesh ends.
+Evidence: [PATHING.md](PATHING.md). **Next action:** record Doc's walk
+and Easy Pete's approach in the original.
+
+M2 blocker batch (`claude/m2-npc-nav-2`, 2026-10-06): NPC navigation
+gaps. Closed doors marked on the navmesh as the obstacle manager does
+(`006997e0`), locations resolved by the game's height window (`00696a50`)
+and ends off the navmesh joined by its ray-cast way (`006caa40`,
+`006cac90`, `006e6e40`), travel/follow/long-way searches on a path-manager
+worker (`006eb9d0`), combat/sitting walks with the actor's radius and no
+straight-line fallback, people pushing clutter through the physics
+batch's movers. Live: the gunfight replay completes ("Defeat the Powder
+Gangers", XP +50, ~100 s; 7 dead), Doc walks to the door and talks, Easy
+Pete reaches his place in the saloon, Sunny walks the long way. Not
+compared with the original. Gaps: door-detection box, `PATHPICK` layers,
+the move into the high process (a viewer bridge puts people back from
+offstage onto the navmesh), push mass limit on the physics side. Evidence:
+[PATHING.md](PATHING.md). **Next action:** record where an actor coming
+into the high process stands (Sunny after `MoveTo SunnySpawnMarker`).
+
+M2 batch (`claude/m2-physics`, 2026-10-06): clutter physics. Rigid body
+values read from the models; free bodies simulated at the game's Havok
+step clock (`00c66760`) against the cell's collision, each other and the
+player; shot pushes (`009c2e80`), explosion pushes (`009b0920`) and the
+gameplay impulse scaling (`0062b520`) translated; moved objects kept in
+the state and saves. The VCG02 bottles are plain Havok clutter (no `DEST`):
+verified live, a varmint rifle shot tips one off the fence onto the ground
+behind it and F5/F9 keeps it there. Solver internals are this solver's,
+labelled; not compared with the original. Evidence and gaps:
+[PHYSICS.md](PHYSICS.md). **Next action:** record a bottle shot off the
+fence in the original game and compare.
+
+M2 batch `claude/m2-player-actions-2` (2026-10-06): scopes (the weapon's
+`MOD3` overlay framed as `0076bfe0`/`0077ee50`/`00709d50` set it up, HUD
+mode 0x17, hidden arms, `ScopeWobble.nif` sway on the view), the gun's
+first-person sway (`00962de0`, `WeaponWobbles`), blocking (`BlockIdle`,
+the threshold bonus of `009b5a30` in the hit cone of `009a6ae0`, the
+block hit and counter timer), power attacks (`00948310`: hold delay,
+directions, sneak attacks, perk customs, × `fDamagePowerAttackBonus`),
+the Ammo Swap control with the HUD's `AmmoTypeLabel`, and death
+(`fPlayerDeathReloadTime`, then the most recent save). Seen live in the
+viewer (scope, block, forward power attack, swap to hollow points,
+death → reload, [DANGER], third-person sneak pose); not compared with the
+original. `WG`/`VAL` re-checked: invisible by data and code. Evidence
+and gaps: [PLAYER_ACTIONS.md](PLAYER_ACTIONS.md). **Next action:**
+compare the scope, block/power attack and death timing in the original.
+
+NPC animation batch 2 (`claude/m2-npc-anims-2`, 2026-10-06):
+`Actor::PickAnimations` (`00895110`) is now translated whole for
+standing, walking, running, sneaking, turning and the weapon: every
+`.kf` of the actor's folders indexed by group id (weapon kind, movement
+kind) with the game's lookup and fallbacks (`00495740`); drawing and
+putting away (`Equip`/`Unequip`, the weapon in hand at `Attach`); the aim
+over a drawn weapon; NPC sneak and weapon-out rules (`00888b50`,
+`008eeec0`); the strafe/back choice facing a target (`009e2aa0`); idles
+in their record's section (upper-body greets, movement-section hit
+reactions); the say's speaker/listener requests outside the menu
+(`008a20d0`, GREET, conversations); hit reactions (`0089a760`); the
+player's third-person body on the same path with `cSkipNextBlend`.
+Verified live in the gunfight and with injected keys in third person;
+not compared with the original. Evidence and gaps:
+[ANIMATION.md](ANIMATION.md). **Next action:** record a ganger drawing
+and a settler greeting in the original and compare.
+
+Third-person weapon fix (`claude/m2-third-person-weapon`, 2026-10-06):
+the player's gun floated in front of a fists-up body. Fixed as traced:
+another weapon in hand restarts the weapon section and puts the weapon
+where its drawn state has it (`004ab750` → `ForceWeaponDrawnSheathed`
+`009231d0` → `ReparentWeapon` `00923960`: the kind's `Equip` plays), so
+the pistol's or rifle's aim replaces the fists' guard; the `Weapon` bone
+hangs under the `prn:` node of the group that put it there (`005f3a20`;
+holsters: pistol hip, rifle back, heavy weapons hand); the third-person
+reload plays; a gun is put away after R is held `fPlayerWeaponReloadTimer`
+(0.5 s, `009466d0`). `--key-at` drives keys for pictures. Verified live
+in third person (pistol and varmint rifle drawn and holstered, fists,
+attack 0x0420, reload 0x04bc); not compared with the original. Details:
+[ANIMATION.md](ANIMATION.md). **Next action:** compare the drawn and
+holstered poses with the original game.
+
+M2 batch (`claude/m2-physics-2`, 2026-10-06): physics completion. Traced
+and translated: the collision filter's layer table (`00c828f0`, shots
+cast on the projectile layer), contact friction/restitution (`00cfd800`),
+the land body's friction, the Z-key grab and Havok's mouse spring
+(`0095f6c0`…`00961280`, `00cbb1e0`), impact sounds by material
+(`00837550`, `00839e00`), physics damage (`006238b0`, `0062be90`),
+saved velocities (`00563220`/`00563380`), the walkers' move limit
+(`fMoveLimitMass`). Fixed: moved bodies hit and picked where they are; no
+prompt on destroyed references (the swinging-door pick took clutter for
+doors). Verified live: shot/second shot, no prompt, Z grab and carry,
+dynamite moving the bottles, F5/F9 of flying bodies, walking into a
+tumbleweed, contact sounds logged. Not compared with the original;
+Havok's solver, deactivation and constraints aren't reproduced. Evidence
+and gaps: [PHYSICS.md](PHYSICS.md). **Next action:** record a bottle shot
+and a Z-grab carry in the original game and compare.
+
+## Contributor merge: Playcon Dead Money (`claude/contrib-playcon`, 2026-10-06)
+
+The outside contributor's branches (remote `playcon`, based on old main
+`647af94`) were merged in stack order with their history kept; triage
+table, conflicts and guesses in [CONTRIB_PLAYCON.md](CONTRIB_PLAYCON.md).
+Taken: the Dead Money stack (`dlc-dead-money` … `dm-casino-character`:
+radio script state, LOS/IsAnimPlaying, shaders, terminal back, caravan
+cards, companion/actor functions, dispel, traps, VATS conditions, recipe
+and casino menus' script side, `--character`, intro slideshow and
+`SayToDone`, talking activators, `--choose`, crafting, test characters),
+`teammate-wait`, `viewer-use-flag`, `dialogue-info-links` (`INFC`),
+`dm-coverage`, `dm-handoff`, `script-transpiler` (`scriptgen`), and from
+the face branches `RACE_SEX_MENU.md` and the `SI.CTL` FaceGen controls.
+Dropped as duplicates of our traced work: player sitting, Pip-Boy voice
+notes, `bring_in_enabled`, per-cell script refresh and its grid-lag fix,
+`package-end-action`, `brought-in-talkers`, the look-IK/eyes branches,
+`research-tools`, `focused-edison`, `fit_to_race`; dropped as unsafe: the
+shared texture/material caches. Their radio module stays isolated from
+the Pip-Boy (the radio agent's branch owns that); `sounds::play` no longer
+takes Bevy's Ogg assets (Ogg is decoded in the viewer), which that branch
+will need to follow. Guesses traced here: essential knock-down
+(`0089d900`, 10 s, full restore) and a line's voice type (`00616fa0`,
+`INFO` `ANAM`). Still untraced and behind `world::guesses`
+(`NV_GUESSES=1`, off on base-game routes): teammate follow at 200 and the
+wait rule, teammates coming along, a person's `IsAnimPlaying`, scripts
+opening the recipe menu. Checks: root 1255 passed / 1 failed (the
+worktree-only `repo_hygiene` `.git` pointer), viewer 133 passed, both
+clippy and fmt clean, release viewer built. Live: the Ghost Town Gunfight
+replay reaches `XP +50`; `--new-game` in Doc Mitchell's house runs Doc's
+`VCG01Intro` SayTo lines to stage 10 and the name entry, as the
+integration build does; Dead Money's Villa arrival
+(`DLC01StartMarker --official --character characters\dead-money-villa.txt`)
+reaches Elijah's hologram and his dialogue menu. `INFC`: greetings of nine
+Goodsprings NPCs unchanged. **Next action:** trace `RecipeMenu` (`007274b0`)
+and the follower rules so the Dead Money routes run without guesses.
+
+M2 batch (`claude/m2-physics-3`, 2026-10-06): playtest physics fixes.
+Traced and fixed: a loading place's bodies go into Havok asleep
+(`00c674d0`, `00c6b0a0`; Doc Mitchell's clutter, the rail bottle and the
+pickets no longer move on load), statics' bodies are fixed (`005768b0`),
+the wind listener rolls `WIND`-flagged bodies (tumbleweeds; `00c74570`,
+`00c74550`, the NIF body flags read by `00c8ea30`), dog ragdolls keep
+their `bhkRigidBodyT` torso (all 20 joints), one ragdoll's bodies meet by
+the part table (`00c84740`, `00624070`), unskinned biped pieces hang from
+their slot's bone and FaceGen-flagged ones are head parts (`004ac1e0`,
+`01188be8`; Easy Pete's hat). Verified live with screenshots and logs; a
+console-killed Cheyenne still stands in her death pose (the death
+animation through the ragdoll isn't traced). Evidence and gaps:
+[PHYSICS.md](PHYSICS.md). **Next action:** trace how the game drives a
+dying creature's ragdoll with its death animation.
+
+M2 batch (`claude/m2-death-ragdoll`, 2026-10-07): death → ragdoll traced
+(`0089d900`): ragdolls play no `Death` animation, every body goes dynamic
+from its pose with the death nudge (`fDeathForceForceMin`), a killing
+hit's push only after a hit; the dead go limp with the AI held still
+(Cheyenne and Easy Pete seen falling live). Details: [PHYSICS.md](PHYSICS.md).
+**Next action:** trace which `00c65b00` branch the living biped takes
+(the bodies' velocity handed to the ragdoll).
+
+B12 (`claude/b12-doc-dialogue`): Doc's door conversation no longer restarts forever: a dialogue package that has talked is finished (`005fa330` saves it at DONE, `008b1070`/`00913250` restore it, `0090a1a0` keeps the same package), the menu opens an update after `InitiateDialogue`, AI holds still under message boxes, and an own-delay quest's first run is traced (`005ac1e0`). Verified live: hardcore box, no new conversation, VCG01 completes, Doc sandboxes; not compared with the original ([DIALOGUE.md](DIALOGUE.md)). **Next action:** watch the farewell in the original game.
+
+B3 (`claude/b3-crosshair-pick`, 2026-10-07): the crosshair pick is the
+game's view caster (`0070bc20` → `00631d60`: layer-40 sphere cast, exact
+ray/NiPick per hit, fuzzy fallback for statics), one pick for talk, doors,
+objects, HUD and Grab; live in Doc's house and the Prospector Saloon
+([PLAYER_ACTIONS.md](PLAYER_ACTIONS.md)). **Next action:** compare the
+pick's fuzzy cases with the original game.
+
+B10 (`claude/b10-greetings`): greetings traced (`008eeec0`, `008bc3d0`): one GREET line to the player at a time, a 30 s player-wide `fHelloCooldownTime` after any greeting (`008bc520`/`008bc560`, player update `00944179`), the greeter's 20 s counted from the line's end, the package's hello/chatter flags; activating someone whose greeting is a one-response Goodbye line only says it (`005fa330`), and saying stops the speech in progress (`00934250`). Verified live: settler says a line without the menu, Easy Pete opens it, greetings 30+ s apart; not compared with the original ([DIALOGUE.md](DIALOGUE.md)). **Next action:** record a Goodsprings walk in the original and count greetings.
+
+B11 (`claude/b11-voice-skip`): lines after a skip were silent because the voice file name was wrong for short quest names with long topics (Doc's psych test, his Pip-Boy line), not because of the skip: the name rule is now translated from `006172c0` (a quest under 11 bytes keeps whole, the topic gets the rest of 25). Verified live: every response of Doc's psych test and farewell plays its voice with every line skipped; not compared with the original ([DIALOGUE.md](DIALOGUE.md)). **Next action:** check all voice file names against the voice archives.
+
+B4 (`claude/b4-npc-ground`, 2026-10-07): people back from a walk out of sight (Ringo in the gunfight, 64-75 under the land) had no controller and walked under the ground for good; `MobileObject::Move`'s two rules are now followed (`0092f260`: outdoors, feet more than 30 under the land are put on it, the player's too; further than `fCharControllerWarpDistSqr` (2449.5) from the camera people walk on the navmesh's height without their controller). Verified live (gunfight, Back in the Saddle, the player started under the land); not compared with the original ([PHYSICS.md](PHYSICS.md)). **Next action:** a ragdoll seen sunk to the waist after the gunfight (B1's solver).
 
 ## Deferred
 

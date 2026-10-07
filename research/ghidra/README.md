@@ -253,9 +253,10 @@ The entry layout for stride 40 is an ABI fact documented by xNVSE's
 (u16), `+20` parameter list pointer, `+24` execute function, `+28` parse
 function, `+32` eval function, `+36` flags.
 
-**The stride is an argument because this repository's notes disagree.**
+**The stride is an argument because this repository's notes disagreed.**
 `docs/ENGINE_REFERENCE.md` describes console command entries as 48 bytes,
-while the public xNVSE structure is 40 bytes. The script reads the same
+while the public xNVSE structure is 40 bytes. The real tables settle it at
+40 (see "What was not tested here" below). The script reads the same
 field offsets whatever the stride, so a stride other than 40 is only a
 probe: the right stride gives a valid long name for every real entry, and a
 wrong one gives mostly invalid entries.
@@ -358,6 +359,17 @@ Windows Ghidra). They are the same `analyzeHeadless` invocations the tests
 make on Linux, written for PowerShell. Check the quoting once with a small
 run first; avoid `%`, `|` and `^` in arguments, and prefer paths without
 spaces.
+
+**Arguments with `=` are split on Windows.** Found on 2026-10-06 with Ghidra
+12.0.4: `analyzeHeadless.bat` and `launch.bat` read their arguments with
+`%1`, and `cmd` treats `=` as a separator, so an unquoted `out=C:\x` reaches
+the script as `out` and `C:\x`, and the scripts throw "argument 'out' is not
+key=value". Git Bash passes such an argument without quotes (tested);
+PowerShell is expected to as well, since it quotes only arguments that
+contain spaces (not tested). What worked: write the whole call into a one-off `.cmd` file with
+every argument in double quotes (`call "...\analyzeHeadless.bat" "C:\..."
+"out=C:\..."`) and run that. With that, `NvExportProgram` and a dry run of
+`NvLabelCommandTables` ran on Ghidra 12.0.4 on Windows.
 
 ```powershell
 # Edit these to match your layout. Close Ghidra's GUI first: a project that
@@ -655,11 +667,12 @@ earlier one):
 The container has no game files and no `FalloutNV.exe`. The scripts were
 tested only on the synthetic MinGW program above. On the Windows machine:
 
-- **The command-table stride and addresses.** Run the stride check above on
-  `FalloutNV.exe` 1.4.0.525 (console table `0x0118E8E0`, script table
-  `0x01190910`, both from public xNVSE sources, not verified by us). The
-  fixture proves the layout code reads a 40-byte layout correctly; it cannot
-  say what the real table uses.
+- **The command-table stride and addresses.** Checked on 2026-10-06 on
+  `FalloutNV.exe` 1.4.0.525 (SHA-256 `19406942...739F`, Ghidra 12.0.4 dry
+  runs): stride 40 gives 206 of 206 valid entries at `0x0118E8E0` and 640 of
+  640 at `0x01190910`; stride 48 gives 42 and 116. The entries are 40 bytes,
+  as xNVSE says; `docs/ENGINE_REFERENCE.md`'s 48 is wrong (that file is kept
+  verbatim as history).
 - **Scale and time.** The fixture has 148 internal functions (197 with the
   external ones). A full export of the real program has tens of thousands;
   the time, memory use and the number of `timeout` and `error` statuses are

@@ -56,7 +56,41 @@ pub struct StatsMenu {
     description: Option<TileId>,
     /// What the lists were last filled from (refilled only when it
     /// changes, so choices and scrolling stay).
-    filled: Option<PipboyInput>,
+    filled: Option<ListSources>,
+    /// Per page, the last row the pointer was over (`007dfd20`'s
+    /// `011dad60` .. `011dad70`).
+    pub(crate) hovered: [Option<usize>; 5],
+    /// Healing mode (`+0x2a0`, `StatsMenu::ToggleHealingMode` (Xbox PDB)
+    /// `007e0230`) and the limb it aims at (the body part controller,
+    /// `007db1c0` / `007dbfa0`; by `LIMB_IDS`' order).
+    pub healing: bool,
+    pub part: Option<usize>,
+}
+
+/// What the STATS lists are made from: the rest of the game's state
+/// (health, the date, ...) changes without the rows being made again, so
+/// the pointer's row and the scrolling stay.
+#[derive(Debug, Clone, PartialEq)]
+struct ListSources {
+    special: Vec<StatLine>,
+    skills: Vec<StatLine>,
+    perks: Vec<StatLine>,
+    general: Vec<StatLine>,
+    reputations: Vec<super::ReputationLine>,
+    effects: Vec<(String, String)>,
+}
+
+impl ListSources {
+    fn of(input: &PipboyInput) -> ListSources {
+        ListSources {
+            special: input.special.clone(),
+            skills: input.skills.clone(),
+            perks: input.perks.clone(),
+            general: input.general.clone(),
+            reputations: input.reputations.clone(),
+            effects: input.effects.clone(),
+        }
+    }
 }
 
 impl StatsMenu {
@@ -95,6 +129,9 @@ impl StatsMenu {
             badge: by_id(ui, menu, 52),
             description: ui.find(menu, "stats_description"),
             filled: None,
+            hovered: [None; 5],
+            healing: false,
+            part: None,
         };
         let set = |ui: &mut Ui, tile: Option<TileId>, trait_id: i32, setting: &str| {
             if let Some(tile) = tile {
@@ -258,9 +295,10 @@ impl StatsMenu {
         if let Some(title) = by_id(ui, m, 37) {
             ui.set_string(title, t::STRING, &input.karma_title);
         }
-        if self.filled.as_ref() != Some(input) {
+        let sources = ListSources::of(input);
+        if self.filled.as_ref() != Some(&sources) {
             self.fill_lists(ui, input);
-            self.filled = Some(input.clone());
+            self.filled = Some(sources);
         }
     }
 
@@ -458,6 +496,17 @@ impl StatsMenu {
     /// tail line's buttons (ids 0–4) turn to their page.
     pub fn click(&mut self, ui: &mut Ui, id: i32, input: &PipboyInput) -> Vec<Action> {
         let mut out = Vec::new();
+        // A limb clicked in healing mode (`007db380`'s end): the Stimpak's
+        // button (10), in hardcore the Doctor's Bag's (0x3b), pressed for
+        // it.
+        let limb = (12..=24).contains(&id) && id % 2 == 0;
+        if limb && self.page == 0 {
+            if self.healing {
+                let button = if input.hardcore { 0x3b } else { 10 };
+                return self.click(ui, button, input);
+            }
+            return out;
+        }
         if let Some(slot) = AID_BUTTONS.iter().position(|&b| b == id) {
             if aid_count(input, slot) > 0 {
                 if let Some(form) = input.aid[slot] {
@@ -472,9 +521,129 @@ impl StatsMenu {
         } else if (0..5).contains(&id) {
             self.set_page(ui, id as usize, Some(input));
             out.push(Action::Sound("UIPipBoyTab".into()));
+        } else if let Some(mode) = status_mode_of(id) {
+            // `007e0060`: a mode the page has (CND, RAD, EFF; the three
+            // needs only in hardcore) other than the one shown becomes the
+            // status tile's `user0`. (The buttons' own `clicksound`,
+            // `UIPipboySelect`, is the file's: the interface plays it.)
+            let last = if input.hardcore { 5 } else { 2 };
+            if mode <= last && mode != self.status_mode {
+                self.status_mode = mode;
+                if let Some(s) = self.status {
+                    ui.set_number(s, t::USER0, mode as f32);
+                }
+            }
         }
         out
     }
+
+    /// The pointer onto a tile (`007dc1b0`, slot 0x10): on the
+    /// S.P.E.C.I.A.L., Skills, Perks and General pages a row of the page's
+    /// list becomes the chosen one and its picture and description show;
+    /// the knob clicks (`007dfd20` → `007f8610`, `UIPipBoyScroll`) when its
+    /// `listindex` differs from the last one the pointer was over on that
+    /// page. On the Status page a damaged limb aims healing mode at it.
+    /// (The aimed limb's picture blinking, `007dbfe0` animating its alpha,
+    /// isn't here.)
+    pub fn mouseover(&mut self, ui: &mut Ui, tile: TileId, input: &PipboyInput) -> Vec<Action> {
+        let mut out = Vec::new();
+        // The Status page (`007dc1b0` case 0): the pointer onto a limb
+        // (only damaged ones are targets, the file's `target`) with a
+        // Stimpak to use (a Doctor's Bag in hardcore, `004d1360`) aims the
+        // body part controller at it with `UIPipBoyHighlight` and turns
+        // healing mode on when it's off.
+        if self.page == 0 {
+            if let Some(part) = limb_of(ui, tile) {
+                let have = if input.hardcore {
+                    input.doctors_bags
+                } else {
+                    input.stimpaks
+                };
+                if have > 0 {
+                    self.part = Some(part);
+                    out.push(Action::Sound("UIPipBoyHighlight".into()));
+                    if !self.healing {
+                        self.healing = true;
+                    }
+                }
+            }
+            return out;
+        }
+        let page = self.page;
+        let Some(list) = self.page_list(ui) else {
+            return out;
+        };
+        let Some(index) = list.index_of(tile) else {
+            return out;
+        };
+        list.choose(ui, Some(index));
+        let last = &mut self.hovered[page.min(4)];
+        if *last != Some(index) {
+            *last = Some(index);
+            out.push(Action::Sound("UIPipBoyScroll".into()));
+        }
+        self.show_selected(ui, input);
+        out
+    }
+}
+
+impl StatsMenu {
+    /// The pointer off a tile (`007dc490`, slot 0x14): leaving a limb in
+    /// healing mode turns it off.
+    pub fn unmouseover(&mut self, ui: &mut Ui, tile: TileId) {
+        if self.healing && limb_of(ui, tile).is_some() {
+            self.healing = false;
+        }
+    }
+
+    /// The limb healing mode aims at, as its condition's actor value (25
+    /// head .. 30 right leg, `007e06b0`), while it's on.
+    pub fn healing_part(&self) -> Option<u16> {
+        self.part
+            .filter(|_| self.healing)
+            .map(|i| LIMB_CONDITION_AVS[i])
+    }
+}
+
+/// The limbs' condition actor values in `LIMB_IDS`' order (the meters
+/// `007dd090` fills: 25 head, 26 torso, 27 left arm, 28 right arm, 29
+/// left leg, 30 right leg).
+const LIMB_CONDITION_AVS: [u16; 6] = [25, 26, 27, 28, 29, 30];
+
+/// The limb a Status-page tile is (`007db630` against the controller's
+/// tiles): a limb picture's `id`, the face (24, part of the head).
+/// The body part controller's tiles for a limb (its picture; the head's
+/// face too), which blink while healing mode aims at it (`007dbfe0`).
+pub fn limb_tiles(ui: &Ui, menu: TileId, part: usize) -> Vec<TileId> {
+    let mut ids = vec![LIMB_IDS[part].0];
+    if part == 0 {
+        ids.push(24);
+    }
+    ids.into_iter()
+        .filter_map(|id| by_id(ui, menu, id))
+        .collect()
+}
+
+fn limb_of(ui: &mut Ui, tile: TileId) -> Option<usize> {
+    let id = ui.number(tile, t::ID) as i32;
+    if id == 24 {
+        return Some(0);
+    }
+    LIMB_IDS.iter().position(|&(picture, _)| picture == id)
+}
+
+/// The Status page's mode buttons by `id` (`007e0160`): 0x1c CND, 0x1d
+/// RAD, 0x1e EFF, then the hardcore needs 0x35, 0x37, 0x39.
+fn status_mode_of(id: i32) -> Option<usize> {
+    Some(match id {
+        0x1c => 0,
+        0x1d => 1,
+        0x1e => 2,
+        0x35 => 3,
+        0x37 => 4,
+        0x39 => 5,
+        _ => return None,
+    })
 }
 
 /// The aid buttons' `id`s by slot: Stimpak, Doctor's Bag, RadAway, Rad-X
@@ -604,6 +773,43 @@ pub(crate) mod tests {
         assert_eq!(ui.string(icon, t::FILENAME).unwrap(), "Perception.dds");
         let d = ui.find(m, "stats_description").unwrap();
         assert_eq!(ui.string(d, t::STRING).unwrap(), "Perception is a measure.");
+    }
+
+    /// `007dc1b0` / `007dc490` / `007db380`: the pointer onto a limb with
+    /// Stimpaks turns healing mode on aimed at it; a click on it uses a
+    /// Stimpak (its effects then aimed at that limb's condition); leaving
+    /// it turns healing mode off; without Stimpaks nothing happens.
+    #[test]
+    fn healing_mode_aims_a_stimpak_at_a_limb() {
+        let mut ui = crate::pipboy::tests::ui();
+        let mut read = |p: &str| (p == crate::pipboy::STATS_FILE).then(|| MENU.as_bytes().to_vec());
+        let mut s = StatsMenu::load(&mut ui, &mut read).unwrap();
+        let input = input();
+        s.fill(&mut ui, &input);
+        let torso = by_id(&ui, s.menu, 14).unwrap();
+        assert_eq!(
+            s.mouseover(&mut ui, torso, &input),
+            [Action::Sound("UIPipBoyHighlight".into())]
+        );
+        assert!(s.healing);
+        assert_eq!(s.healing_part(), Some(26));
+        assert_eq!(s.click(&mut ui, 14, &input), [Action::Use(0x15169)]);
+        // The face is the head's.
+        let face = by_id(&ui, s.menu, 24).unwrap();
+        s.mouseover(&mut ui, face, &input);
+        assert_eq!(s.healing_part(), Some(25));
+        s.unmouseover(&mut ui, face);
+        assert!(!s.healing);
+        assert_eq!(s.healing_part(), None);
+        // Not in healing mode, a limb click does nothing.
+        assert!(s.click(&mut ui, 14, &input).is_empty());
+        // No Stimpaks: no healing mode.
+        let none = PipboyInput {
+            stimpaks: 0,
+            ..input.clone()
+        };
+        assert!(s.mouseover(&mut ui, torso, &none).is_empty());
+        assert!(!s.healing);
     }
 
     #[test]

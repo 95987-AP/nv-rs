@@ -40,6 +40,8 @@ const NIFZ: FourCC = FourCC::new(b"NIFZ");
 const BMDT: FourCC = FourCC::new(b"BMDT");
 const MOD3: FourCC = FourCC::new(b"MOD3");
 const MODL: FourCC = FourCC::new(b"MODL");
+const MODD: FourCC = FourCC::new(b"MODD");
+const MOSD: FourCC = FourCC::new(b"MOSD");
 const ICON: FourCC = FourCC::new(b"ICON");
 const INDX: FourCC = FourCC::new(b"INDX");
 const NAM0: FourCC = FourCC::new(b"NAM0");
@@ -84,9 +86,14 @@ pub const USE_BASE_DATA: u16 = 0x80;
 /// The record an actor takes some of its data from: its template's
 /// (following `TPLT` and leveled lists) when its template flags have
 /// `flag`, else its own.
-pub fn data_record(order: &LoadOrder, base: FormId, flag: u16) -> Option<(RecordRef<'_>, Record)> {
+/// (Decoded once and shared: asked for every frame.)
+pub fn data_record(
+    order: &LoadOrder,
+    base: FormId,
+    flag: u16,
+) -> Option<(RecordRef<'_>, std::sync::Arc<Record>)> {
     let rr = order.get(base)?;
-    let record = rr.record().ok()?;
+    let record = rr.record_shared().ok()?;
     match template_for(order, &rr, &record, flag, 0) {
         Some(t) => Some(t),
         None => Some((rr, record)),
@@ -125,6 +132,41 @@ pub struct ActorPart {
     /// A rigid piece held at this bone, in the bone's own axes (a weapon
     /// at `Weapon`); other rigid pieces name their bone themselves (`Prn`).
     pub bone: Option<String>,
+    /// For clothes and armour: the bone the game hangs the model's
+    /// unskinned pieces from, with its top node kept, by the body slot it
+    /// fills ([`slot_parent_bone`]).
+    pub parent_bone: Option<String>,
+}
+
+/// The bones the game hangs biped models' unskinned pieces from
+/// (`01188b74`), and for each of the 20 body slots the one it uses, or
+/// none (`01188be8`, −1: the piece should be skinned): head, hair →
+/// `Bip01 Head`; upper body, hands → none; weapon → `Weapon`; Pip-Boy →
+/// `Bip01 L ForeTwist`; backpack → `Bip01 Spine2`; necklace →
+/// `Bip01 Neck1`; headband, hat, eyeglasses, nose ring, earrings, mask,
+/// choker, mouth object → `Bip01 Head`; the three body add-ons → none.
+/// The game's biped loop (`004ac1e0`) attaches a part's model under that
+/// bone when the model isn't skinned (to the skeleton's root when the bone
+/// isn't found), after any `Prn` attachment (`004ae250`).
+pub const PARENT_BONES: [&str; 5] = [
+    "Bip01 Head",
+    "Weapon",
+    "Bip01 L ForeTwist",
+    "Bip01 Spine2",
+    "Bip01 Neck1",
+];
+pub const SLOT_BONES: [i8; 20] = [
+    0, 0, -1, -1, -1, 1, 2, 3, 4, 0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1,
+];
+
+/// The parent bone for an armour covering `slots` (`BMDT` flags): that of
+/// its lowest slot ([`SLOT_BONES`]). The game walks the slots in order
+/// (`004ac1e0`); taking the model as held by the first of an armour's
+/// slots is an inference (every head slot names the same bone).
+pub fn slot_parent_bone(slots: u32) -> Option<&'static str> {
+    let slot = (0..20).find(|s| slots >> s & 1 == 1)?;
+    let bone = SLOT_BONES[slot];
+    (bone >= 0).then(|| PARENT_BONES[bone as usize])
 }
 
 /// An NPC's face tint file: `textures\characters\facemods\` + the plugin
@@ -312,8 +354,8 @@ pub const FIRST_PERSON_SKELETON: &str = "Characters\\_1stPerson\\Skeleton.NIF";
 /// (`WEAP` `DNAM`): `<kind>aim.kf` beside the first-person skeleton, the
 /// kinds the game ships (h2h fists, 1hm and 2hm melee, 1hp pistols, 2hr
 /// rifles, 2ha automatic rifles, 2hh handles, 2hl launchers, 1gt thrown,
-/// 1lm land mines, 1md mine drops). That energy pistols share 1hp and
-/// energy rifles 2hr, as their names' families suggest, is a guess.
+/// 1md mines, 1lm lunchbox mines): the game's table of weapon kinds by
+/// animation type (`0118a838`, `world::animation::groups::weapon_kind`).
 pub fn first_person_pose(animation: Option<u32>) -> String {
     format!(
         "Characters\\_1stPerson\\{}aim.kf",
@@ -321,7 +363,10 @@ pub fn first_person_pose(animation: Option<u32>) -> String {
     )
 }
 
-/// The first-person animations' prefix for a weapon's animation type.
+/// The animations' prefix for a weapon's animation type: its weapon kind's
+/// name (`0118a838`, the names at `011977a4`): energy pistols as pistols,
+/// energy rifles as rifles, thrown weapons as grenades, `OneHandMine` 1md
+/// and `OneHandLunchboxMine` 1lm.
 pub fn first_person_kind(animation: Option<u32>) -> &'static str {
     match animation {
         Some(1) => "1hm",
@@ -332,8 +377,8 @@ pub fn first_person_kind(animation: Option<u32>) -> &'static str {
         Some(8) => "2hh",
         Some(9) => "2hl",
         Some(10 | 13) => "1gt",
-        Some(11) => "1lm",
-        Some(12) => "1md",
+        Some(11) => "1md",
+        Some(12) => "1lm",
         _ => "h2h",
     }
 }
@@ -439,6 +484,7 @@ pub fn first_person_look(
         facegen: false,
         face_tint: None,
         bone,
+        parent_bone: None,
     };
     for &item in worn {
         let Some(armor) = Armor::load(order, item) else {
@@ -527,6 +573,7 @@ fn creature_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Opti
                     facegen: false,
                     face_tint: None,
                     bone: None,
+                    parent_bone: None,
                 })
                 .collect()
         })
@@ -554,7 +601,7 @@ fn template_for<'a>(
     record: &Record,
     flag: u16,
     depth: u8,
-) -> Option<(RecordRef<'a>, Record)> {
+) -> Option<(RecordRef<'a>, std::sync::Arc<Record>)> {
     if depth > MAX_DEPTH {
         return None;
     }
@@ -572,12 +619,16 @@ fn template_for<'a>(
 }
 
 /// An actor record, following leveled actor lists to their first entry.
-fn first_actor(order: &LoadOrder, id: FormId, depth: u8) -> Option<(RecordRef<'_>, Record)> {
+fn first_actor(
+    order: &LoadOrder,
+    id: FormId,
+    depth: u8,
+) -> Option<(RecordRef<'_>, std::sync::Arc<Record>)> {
     if depth > MAX_DEPTH {
         return None;
     }
     let rr = order.get(id)?;
-    let record = rr.record().ok()?;
+    let record = rr.record_shared().ok()?;
     let kind = rr.entry.header.kind;
     if kind == LVLN || kind == LVLC {
         let entry = record.get_all(LVLO).find(|s| s.data.len() >= 8)?;
@@ -587,15 +638,57 @@ fn first_actor(order: &LoadOrder, id: FormId, depth: u8) -> Option<(RecordRef<'_
     (kind == NPC_ || kind == CREA).then_some((rr, record))
 }
 
+/// The player as seen in third person: assembled as people are
+/// ([`actor_look`]) from the player's record (`PLAYER_BASE`: race, face,
+/// hair, eyes, head parts, height), but with the sex the game has
+/// (`SexChange`, the face menu), the clothes and armour the player wears
+/// (`worn`, in order) instead of the record's inventory, and the weapon in
+/// hand (`weapon`), if any.
+pub fn player_look(
+    order: &LoadOrder,
+    female: bool,
+    worn: &[FormId],
+    weapon: Option<FormId>,
+) -> Option<ActorLook> {
+    let rr = order.get(crate::dialogue::PLAYER_BASE)?;
+    let record = rr.record().ok()?;
+    npc_look_dressed(
+        order,
+        &rr,
+        &record,
+        Some(Dressing {
+            female,
+            worn,
+            weapon,
+        }),
+    )
+}
+
+/// What the game state says the player is and wears ([`player_look`]).
+struct Dressing<'a> {
+    female: bool,
+    worn: &'a [FormId],
+    weapon: Option<FormId>,
+}
+
 fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<ActorLook> {
+    npc_look_dressed(order, rr, record, None)
+}
+
+fn npc_look_dressed(
+    order: &LoadOrder,
+    rr: &RecordRef<'_>,
+    record: &Record,
+    dressing: Option<Dressing>,
+) -> Option<ActorLook> {
     let base = rr.form_id;
     let traits = template_for(order, rr, record, USE_TRAITS, 0);
-    let (trr, traits_record) = match &traits {
+    let (trr, traits_record): (&RecordRef<'_>, &Record) = match &traits {
         Some((r, rec)) => (r, rec),
         None => (rr, record),
     };
     let inventory = template_for(order, rr, record, USE_INVENTORY, 0);
-    let (irr, inventory_record) = match &inventory {
+    let (irr, inventory_record): (&RecordRef<'_>, &Record) = match &inventory {
         Some((r, rec)) => (r, rec),
         None => (rr, record),
     };
@@ -606,10 +699,15 @@ fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<Ac
         .or_else(|| zstring(record, MODL))
         .unwrap_or_else(|| "Characters\\_Male\\Skeleton.NIF".into());
 
-    let female = traits_record
-        .get(ACBS)
-        .filter(|s| s.data.len() >= 4)
-        .is_some_and(|s| le_u32(&s.data, 0) & FEMALE != 0);
+    let female = dressing.as_ref().map_or_else(
+        || {
+            traits_record
+                .get(ACBS)
+                .filter(|s| s.data.len() >= 4)
+                .is_some_and(|s| le_u32(&s.data, 0) & FEMALE != 0)
+        },
+        |d| d.female,
+    );
     let race = form(trr, traits_record, RNAM).and_then(|id| Race::load(order, id));
     let hair_tint = traits_record
         .get(HCLR)
@@ -621,7 +719,10 @@ fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<Ac
     let mut parts = Vec::new();
     // The NPC's body tint, for the skin pieces of everything below the head.
     let body_tint = body_tint_path(order, trr.form_id, female);
-    let carried = inventory_items(order, irr, inventory_record);
+    let carried = match &dressing {
+        Some(d) => d.worn.iter().map(|&w| (w, 1)).collect(),
+        None => inventory_items(order, irr, inventory_record),
+    };
     for &(item, _) in &carried {
         let Some(armor) = Armor::load(order, item) else {
             continue;
@@ -633,7 +734,8 @@ fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<Ac
         if pieces.is_empty() {
             continue;
         }
-        for (slots, model) in pieces {
+        let facegen = armor.pieces_facegen(female);
+        for ((slots, model), facegen) in pieces.into_iter().zip(facegen) {
             covered |= slots;
             parts.push(ActorPart {
                 model,
@@ -641,9 +743,10 @@ fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<Ac
                 texture: None,
                 hide_mesh: None,
                 hair_tint: None,
-                facegen: false,
+                facegen,
                 face_tint: body_tint.clone(),
                 bone: None,
+                parent_bone: slot_parent_bone(slots).map(str::to_string),
             });
         }
     }
@@ -668,6 +771,7 @@ fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<Ac
                     facegen: false,
                     face_tint: body_tint.clone(),
                     bone: None,
+                    parent_bone: None,
                 });
             }
         }
@@ -695,6 +799,7 @@ fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<Ac
                             None
                         },
                         bone: None,
+                        parent_bone: None,
                     });
                 }
             }
@@ -720,6 +825,7 @@ fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<Ac
                         facegen: true,
                         face_tint: None,
                         bone: None,
+                        parent_bone: None,
                     });
                 }
             }
@@ -742,13 +848,18 @@ fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<Ac
                     facegen: true,
                     face_tint: None,
                     bone: None,
+                    parent_bone: None,
                 });
             }
         }
     }
     // The weapon they fight with ([`best_weapon`]), at the right hand's
     // `Weapon` node.
-    let weapon = best_weapon(order, &carried).and_then(|item| held_weapon(order, &skeleton, item));
+    let weapon = match &dressing {
+        Some(d) => d.weapon,
+        None => best_weapon(order, &carried),
+    }
+    .and_then(|item| held_weapon(order, &skeleton, item));
     if let Some((model, _)) = &weapon {
         parts.push(ActorPart {
             model: model.clone(),
@@ -759,6 +870,7 @@ fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<Ac
             facegen: false,
             face_tint: None,
             bone: Some("Weapon".into()),
+            parent_bone: None,
         });
     }
     let height = traits_record
@@ -883,6 +995,12 @@ pub struct Armor {
     pub slots: u32,
     pub male: Option<String>,
     pub female: Option<String>,
+    /// The biped model's flags' bit 0 (`MODD`, `MOSD`; the game's
+    /// `TESModel` `+0x14` bit 0, read by `004ae8f0`): a FaceGen part,
+    /// given the NPC's face shape and hung as the head's parts are (a
+    /// hat, `CowboyHat02`).
+    pub male_facegen: bool,
+    pub female_facegen: bool,
     /// Armour addons (`ARMA`) its biped model list names (`BIPL`, a form
     /// list): pieces put on with it, each with its own slots and models.
     /// Leather armour's are its gloves (`LeatherArmorGloveR`, slot 0x10,
@@ -898,6 +1016,16 @@ pub struct ArmorAddon {
     pub slots: u32,
     pub male: Option<String>,
     pub female: Option<String>,
+    pub male_facegen: bool,
+    pub female_facegen: bool,
+}
+
+/// A record's one-byte flags subrecord (0 without it).
+fn flag_byte(record: &Record, kind: FourCC) -> u8 {
+    record
+        .get(kind)
+        .and_then(|s| s.data.first().copied())
+        .unwrap_or(0)
 }
 
 impl Armor {
@@ -928,6 +1056,8 @@ impl Armor {
                                 .map_or(0, |s| le_u32(&s.data, 0)),
                             male: zstring(&r, MODL),
                             female: zstring(&r, MOD3),
+                            male_facegen: flag_byte(&r, MODD) & 1 != 0,
+                            female_facegen: flag_byte(&r, MOSD) & 1 != 0,
                         })
                         .collect(),
                 )
@@ -937,6 +1067,8 @@ impl Armor {
             slots,
             male: zstring(&record, MODL),
             female: zstring(&record, MOD3),
+            male_facegen: flag_byte(&record, MODD) & 1 != 0,
+            female_facegen: flag_byte(&record, MOSD) & 1 != 0,
             addons,
         })
     }
@@ -960,6 +1092,31 @@ impl Armor {
                     .filter_map(|a| pick(&a.male, &a.female).map(|m| (a.slots, m))),
             )
             .collect()
+    }
+
+    /// For each of [`Self::pieces`], whether its model is a FaceGen part
+    /// (the flag of the model picked).
+    pub fn pieces_facegen(&self, female: bool) -> Vec<bool> {
+        let pick = |male: &Option<String>, f: &Option<String>, mf: bool, ff: bool| {
+            if female && f.is_some() {
+                Some(ff)
+            } else {
+                male.as_ref().map(|_| mf)
+            }
+        };
+        pick(
+            &self.male,
+            &self.female,
+            self.male_facegen,
+            self.female_facegen,
+        )
+        .into_iter()
+        .chain(
+            self.addons
+                .iter()
+                .filter_map(|a| pick(&a.male, &a.female, a.male_facegen, a.female_facegen)),
+        )
+        .collect()
     }
 }
 
@@ -1082,6 +1239,20 @@ impl Race {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unskinned_biped_pieces_hang_from_their_slots_bone() {
+        // Easy Pete's Cattleman Cowboy Hat (`CowboyHat02`, `BMDT` 0x602:
+        // hair, headband, hat): the head.
+        assert_eq!(slot_parent_bone(0x602), Some("Bip01 Head"));
+        // Body clothes should be skinned: no bone.
+        assert_eq!(slot_parent_bone(slots::UPPER_BODY), None);
+        // Pip-Boy (slot 6), backpack (7), necklace (8).
+        assert_eq!(slot_parent_bone(1 << 6), Some("Bip01 L ForeTwist"));
+        assert_eq!(slot_parent_bone(1 << 7), Some("Bip01 Spine2"));
+        assert_eq!(slot_parent_bone(1 << 8), Some("Bip01 Neck1"));
+        assert_eq!(slot_parent_bone(0), None);
+    }
 
     #[test]
     fn first_person_animations_are_named_as_the_games_files() {

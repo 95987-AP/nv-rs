@@ -209,7 +209,7 @@ pub fn ai(
     }
     let Some((to, radius)) = destination(order, &state, reference, &pkg) else {
         // Somewhere else: through a door.
-        let way = world::ai::target_place(order, &state, &pkg)
+        let way = world::ai::target_place(order, &state, reference, &pkg)
             .and_then(|(space, _)| world::ai::door_toward(order, &state, reference, space));
         match way {
             Some(d) => writeln!(
@@ -1019,10 +1019,36 @@ pub fn play(
     seconds: f32,
     stage: Option<(&str, u16)>,
     show: usize,
+    character: Option<&std::path::Path>,
+    cell: Option<&str>,
 ) -> Result<(), CliError> {
     let started = Instant::now();
     let scripts = ScriptCache::default();
     let mut state = GameState::new(order);
+    if let Some(cell) = cell {
+        let id = order
+            .form_by_editor_id(cell)
+            .ok_or_else(|| CliError::NotFound(format!("no cell '{cell}'")))?;
+        state.player_cell = Some(id);
+        state.player_world = None;
+        writeln!(out, "The player is in {cell}.")?;
+    }
+    if let Some(path) = character {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| CliError::Usage(format!("can't read {}: {e}", path.display())))?;
+        let problems = world::character::apply(order, &scripts, &mut state, &text);
+        writeln!(
+            out,
+            "Character {}: {} problem(s)",
+            path.display(),
+            problems.len()
+        )?;
+        for p in problems {
+            writeln!(out, "  line {}: {} ({})", p.line, p.text, p.why)?;
+        }
+        // What it set up happened before; only what follows is news.
+        state.events.clear();
+    }
     writeln!(
         out,
         "A new game: {} quests running, {} globals",
@@ -1105,6 +1131,39 @@ pub fn play(
             ),
             Event::CharacterMenu(m) => format!("character menu opened: {m:?}"),
             Event::Barter(m) => format!("trading with {}", describe_id(order, *m)),
+            Event::KnockedOut { who } => format!("{} is down", describe_id(order, *who)),
+            Event::GotUp { who } => format!("{} gets up", describe_id(order, *who)),
+            Event::RecipeMenu { actor, category } => format!(
+                "crafting ({}) for {}",
+                describe_id(order, *category),
+                describe_id(order, *actor)
+            ),
+            Event::TeammateContainer(m) => {
+                format!("trading things with {}", describe_id(order, *m))
+            }
+            Event::Caravan {
+                npc,
+                deck,
+                difficulty,
+                share,
+            } => format!(
+                "Caravan against {} ({}, difficulty {difficulty}, betting {share})",
+                describe_id(order, *npc),
+                describe_id(order, *deck)
+            ),
+            Event::RepairServices(m) => {
+                format!("{}'s repair services", describe_id(order, *m))
+            }
+            Event::Casino {
+                game,
+                casino,
+                min_bet,
+                max_bet,
+                min_winnings,
+            } => format!(
+                "{game:?} at {} (bets {min_bet} to {max_bet}, least winnings {min_winnings})",
+                describe_id(order, *casino)
+            ),
             Event::Died { who, by } => format!(
                 "{} killed by {}",
                 describe_id(order, *who),
@@ -1158,6 +1217,7 @@ pub fn play(
                 format!("the {} menu opens", if *sleep { "sleep" } else { "wait" })
             }
             Event::More(shown) => world::more_functions::describe(order, &state, shown),
+            Event::TerminalBack => "the terminal menu goes back a screen".to_string(),
             Event::Enable(r, on) => format!(
                 "{} {}",
                 describe_id(order, *r),
@@ -1178,7 +1238,7 @@ pub fn play(
                 describe_id(order, *m),
                 if *on { "applied" } else { "removed" }
             ),
-            Event::Video(file) => format!("video {file}"),
+            Event::Video(v) => format!("video {}", v.file),
             Event::Music(m) => format!("music {}", describe_id(order, *m)),
             Event::Weather(w) => match w {
                 Some(w) => format!("weather forced to {}", describe_id(order, *w)),
@@ -1223,6 +1283,88 @@ pub fn play(
         for (owner, e) in state.broken.iter().take(show) {
             writeln!(out, "  {}: {e}", describe_id(order, *owner))?;
         }
+    }
+    Ok(())
+}
+
+/// `recipes <CATEGORY> [ITEM:N ...] [AV=VALUE ...]`: what the crafting menu
+/// of a category shows a new character (`world::crafting`), after giving
+/// items and setting actor values (skills by number, 32 Barter to 45
+/// Unarmed).
+pub fn recipes(
+    out: &mut impl Write,
+    order: &LoadOrder,
+    category: &str,
+    extra: &[String],
+) -> Result<(), CliError> {
+    use world::crafting;
+    use world::dialogue::PLAYER_REF;
+    let cat = crate::records::find_record(order, category)?.form_id;
+    let mut state = GameState::new(order);
+    state.stock(order, PLAYER_REF);
+    for e in extra {
+        if let Some((av, v)) = e.split_once('=') {
+            let av: u16 = av
+                .parse()
+                .map_err(|_| CliError::Usage(format!("'{av}' isn't an actor value number")))?;
+            let v: f64 = v
+                .parse()
+                .map_err(|_| CliError::Usage(format!("'{v}' isn't a number")))?;
+            state.actor_values.insert((PLAYER_REF, av), v);
+        } else {
+            let (item, n) = e.split_once(':').unwrap_or((e.as_str(), "1"));
+            let id = crate::records::find_record(order, item)?.form_id;
+            let n: i32 = n
+                .parse()
+                .map_err(|_| CliError::Usage(format!("'{n}' isn't a count")))?;
+            *state.items.entry((PLAYER_REF, id)).or_insert(0) += n;
+        }
+    }
+    let list = crafting::listing(order, &state, PLAYER_REF, cat, None);
+    writeln!(
+        out,
+        "{} ({}): {} recipes listed, {} can be made; filter: {}",
+        crafting::category_name(order, cat),
+        describe_id(order, cat),
+        list.lines.len(),
+        list.makeable,
+        list.subcategories
+            .iter()
+            .map(|s| crafting::category_name(order, *s))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )?;
+    for line in &list.lines {
+        let r = crafting::Recipe::load(order, line.recipe)
+            .ok_or_else(|| CliError::NotFound(format!("recipe {} vanished", line.recipe)))?;
+        let skill = match r.skill {
+            Some(s) => format!(
+                "{} {}",
+                world::chargen::actor_value_name(order, s),
+                r.skill_level
+            ),
+            None => "no skill".into(),
+        };
+        let parts = |cs: &[crafting::Component]| {
+            cs.iter()
+                .map(|c| format!("{} x{}", describe_id(order, c.item), c.count))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        };
+        writeln!(
+            out,
+            "  {:<32} {:>3}  [{}] {} -> {}{}",
+            line.text,
+            line.makeable,
+            skill,
+            parts(&r.ingredients),
+            parts(&r.outputs),
+            if r.conditions.is_empty() {
+                String::new()
+            } else {
+                format!("  ({} conditions)", r.conditions.len())
+            }
+        )?;
     }
     Ok(())
 }

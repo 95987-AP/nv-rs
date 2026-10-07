@@ -30,10 +30,10 @@
 //! `0088e8d0`, the hurt line from `0089a760`; on death `0089d900`. **A hit
 //! on the world** ([`surface_impact`]): `009c20e0`.
 //!
-//! The viewer plays the sounds, lines and the player's hit modifier; the
-//! effect models, decals and screen blood these rules choose aren't drawn
-//! yet (they need the game's controllers, billboards, particles and decal
-//! system run as it runs them).
+//! The viewer plays the sounds, lines and the player's hit modifier, and
+//! draws the effect models (`cellview::impacts`) and world decals
+//! ([`crate::decals`]) these rules choose; decals on skin and screen blood
+//! aren't drawn.
 
 use esm::{FormId, FourCC, LoadOrder, Record, RecordRef};
 
@@ -413,7 +413,7 @@ pub fn weapon_impact_set(order: &LoadOrder, weapon: FormId) -> Option<FormId> {
 /// guess at which template flag covers the impact material, impact set and
 /// sounds: the game's own split isn't traced; the spawned creatures, with
 /// every flag set, are the same either way).
-fn look_record(order: &LoadOrder, who: FormId) -> Option<(RecordRef<'_>, Record)> {
+fn look_record(order: &LoadOrder, who: FormId) -> Option<(RecordRef<'_>, std::sync::Arc<Record>)> {
     let is_base = order
         .get(who)
         .is_some_and(|r| r.entry.header.kind == NPC_ || r.entry.header.kind == CREA);
@@ -608,7 +608,7 @@ pub fn creature_sounds(order: &LoadOrder, who: FormId, kind: u32) -> Vec<(FormId
             let Some(r) = order.get(next) else {
                 return Vec::new();
             };
-            let Ok(rec) = r.record() else {
+            let Ok(rec) = r.record_shared() else {
                 return Vec::new();
             };
             at = (r, rec);

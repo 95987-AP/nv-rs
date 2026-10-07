@@ -164,7 +164,7 @@ impl Settings {
 pub fn package_flags(order: &LoadOrder, package: FormId) -> u16 {
     order
         .get(package)
-        .and_then(|rr| rr.record().ok())
+        .and_then(|rr| rr.record_shared().ok())
         .and_then(|r| {
             r.get(esm::FourCC::new(b"PKDT"))
                 .filter(|s| s.data.len() >= 10)
@@ -279,6 +279,7 @@ pub fn take_food(
     }
     state.stock(order, who);
     *state.items.entry((who, item)).or_insert(0) += 1;
+    state.added(order, who, item, 1);
     state.disabled.insert(reference, true);
     state
         .events
@@ -481,7 +482,7 @@ pub fn may_use(order: &LoadOrder, state: &GameState, actor: FormId, reference: F
     let xown = esm::FourCC::new(b"XOWN");
     let owner_of = |id: FormId| {
         let rr = order.get(id)?;
-        let record = rr.record().ok()?;
+        let record = rr.record_shared().ok()?;
         let s = record.get(xown).filter(|s| s.data.len() >= 4)?;
         Some(rr.plugin.to_global(FormId(crate::cell::le_u32(&s.data, 0))))
     };

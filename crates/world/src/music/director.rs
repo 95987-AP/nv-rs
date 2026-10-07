@@ -191,6 +191,9 @@ pub struct MusicDirector {
     was_dead: bool,
     rng: u64,
     events: Vec<MusicEvent>,
+    /// The Pip-Boy radio is on (`011dd313`, set by `008325a0`): the
+    /// manager's frame (`0082fb70`) returns at once.
+    pub suspended: bool,
 }
 
 /// A float time in ms as the game rounds one (`fistp`, to nearest).
@@ -236,7 +239,33 @@ impl MusicDirector {
             was_dead: false,
             rng: seed.max(1),
             events: Vec::new(),
+            suspended: false,
         }
+    }
+
+    /// The radio's song (`008331c0` → `008300c0(7, data\sound\…, 500,
+    /// no loop, forced, 0 dB, the item's start)`): onto a deck as type 7,
+    /// in step with `sync`.
+    pub fn radio_song(&mut self, path: &str, sync: u64, now: u64, files: &mut dyn MusicFiles) {
+        self.request(
+            kind::RADIO,
+            Some(path),
+            500,
+            false,
+            true,
+            0.0,
+            sync,
+            now,
+            files,
+        );
+    }
+
+    /// Both decks cleared at once (`008304a0`: the radio turned on or off,
+    /// an item's end).
+    pub fn clear_decks(&mut self) {
+        self.decks
+            .request(kind::CLEAR, None, None, 0, false, true, 0.0, 0, 0);
+        self.current = None;
     }
 
     /// What happened since last asked.
@@ -547,6 +576,9 @@ impl MusicDirector {
     /// The decks then play on with [`Self::tick`].
     pub fn update(&mut self, order: &LoadOrder, inputs: &MusicInputs, files: &mut dyn MusicFiles) {
         let now = inputs.now_ms;
+        if self.suspended {
+            return;
+        }
         // The player's death (`0089d900`): every deck fades out over 1 s,
         // and `MUSDeath` plays.
         if inputs.dead && !self.was_dead {

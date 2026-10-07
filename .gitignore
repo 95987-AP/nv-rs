@@ -38,3 +38,5 @@ __pycache__/
 # Claude Code local state
 .claude/settings.local.json
 .claude/worktrees/
+# Output of scripts/dlc-data-pass.ps1 (game data: never commit)
+dlc-data-pass.txt

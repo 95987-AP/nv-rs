@@ -205,6 +205,20 @@ impl IdleClock {
         });
     }
 
+    /// An idle requested by name or by the dialogue menu went to the
+    /// actor's special-idle section (its own clock is the animation's):
+    /// it's the last idle played and waits out its replay delay, as one
+    /// the clock started does (`00498290`).
+    pub fn played(&mut self, idle: &Idle) {
+        if idle.replay_delay() > 0 {
+            self.delays.retain(|d| d.0 != idle.form_id);
+            self.delays
+                .push((idle.form_id, f32::from(idle.replay_delay())));
+        }
+        self.playing = None;
+        self.last = Some(idle.form_id);
+    }
+
     /// Stops the idle playing (a fight, getting up for good).
     pub fn stop(&mut self) {
         if let Some(p) = self.playing.take() {
@@ -490,7 +504,34 @@ pub struct IdleQuestion {
     pub player: bool,
     /// `IsChild` (the race's child flag, [`is_child`]).
     pub child: bool,
+    /// `IsPC1stPerson`: the player's view is first person. Only asked
+    /// about the player here (people's questions leave it false, as
+    /// before; whether the PC's view changes their picks isn't checked).
+    pub first_person: bool,
+    /// `MenuMode`: the menu open (the dialogue menu, [`DIALOG_MENU`],
+    /// while the player talks to someone), as the condition answers it
+    /// (`0059c380`: 0 any menu, else that menu).
+    pub menu: Option<u16>,
+    /// `GetDialogueEmotion` (`005a4480`): the emotion of the response the
+    /// actor last said, when that response's emotion is to be used
+    /// ([`crate::dialogue::Response::use_emotion`]); else −1.
+    pub emotion: Option<u32>,
+    /// `GetHitLocation` (`005a3c30`): the body part of the hit being
+    /// taken (the process's last hit data, set while the damage is dealt,
+    /// `0089a760`), else −1.
+    pub hit_location: Option<i32>,
+    /// `IsSneaking` and `IsRunning`: the movement flags 0x400 (without
+    /// 0x800) and 0x200.
+    pub sneaking: bool,
+    pub running: bool,
+    /// `IsGreetingPlayer` (`005a5330`): the process's greeting flag
+    /// (vtable +0x30c) with the player as the one greeted.
+    pub greeting_player: bool,
 }
+
+/// The dialogue menu's number (`MenuMode 1009`; the idle tree's
+/// `DialogueIdles` and `TalkToPlayer` ask for it).
+pub const DIALOG_MENU: u16 = 1009;
 
 /// Asks the idle tree's conditions about one actor: what
 /// [`IdleQuestion`] knows, then the general functions (`facts`, asked
@@ -548,21 +589,30 @@ impl<'a> IdleAsker<'a> {
                 "IsLastIdlePlayed" => Some(yes(a.last_idle == Some(c.param_forms[0]))),
                 "GetIsUsedItem" => Some(yes(a.used_item == Some(c.param_forms[0]))),
                 "IsChild" => Some(yes(a.child)),
-                // Nothing hit, knocked down, greeting, in a menu, in first
-                // person, using an item or in VATS here.
-                "GetHitLocation" => Some(-1.0),
+                "IsPC1stPerson" => Some(yes(a.first_person)),
+                // Translated from 0059c380 (decompiled, FalloutNV.exe
+                // 1.4.0.525): 0 any menu, else that menu open.
+                "MenuMode" => Some(yes(match c.params[0] {
+                    0 => a.menu.is_some(),
+                    n => a.menu.is_some_and(|m| u32::from(m) == n),
+                })),
+                // Translated from 005a4480 (decompiled, FalloutNV.exe
+                // 1.4.0.525): the speaking emotion, −1 when not used.
+                "GetDialogueEmotion" => Some(a.emotion.map_or(-1.0, f64::from)),
+                "GetHitLocation" => Some(f64::from(a.hit_location.unwrap_or(-1))),
+                "IsSneaking" => Some(yes(a.sneaking)),
+                "IsRunning" => Some(yes(a.running)),
+                // Nothing knocked down, greeting, using an item or in VATS
+                // here.
+                "IsGreetingPlayer" => Some(yes(a.greeting_player)),
                 "GetKnockedState"
-                | "IsGreetingPlayer"
-                | "MenuMode"
-                | "IsPC1stPerson"
+                | "GetForceHitReaction"
                 | "GetUsedItemActivate"
                 | "GetIsUsedItemType"
                 | "GetVATSMode"
                 | "GetCannibal"
                 | "GetSandman"
-                | "GetPlantedExplosive"
-                | "IsRunning"
-                | "IsSneaking" => Some(0.0),
+                | "GetPlantedExplosive" => Some(0.0),
                 "GetIsSex" if self.facts.is_none() => Some(yes(u32::from(a.female) == c.params[0])),
                 "GetIsID" if self.facts.is_none() => Some(yes(
                     a.player && c.param_forms[0] == crate::dialogue::PLAYER_BASE
@@ -612,14 +662,14 @@ pub fn is_child(order: &LoadOrder, actor: FormId) -> bool {
         return false;
     };
     let race = order.get(base).and_then(|rr| {
-        let record = rr.record().ok()?;
+        let record = rr.record_shared().ok()?;
         let s = record
             .get(FourCC::new(b"RNAM"))
             .filter(|s| s.data.len() >= 4)?;
         Some(rr.plugin.to_global(FormId(le_u32(&s.data, 0))))
     });
     race.and_then(|r| order.get(r))
-        .and_then(|rr| rr.record().ok())
+        .and_then(|rr| rr.record_shared().ok())
         .and_then(|record| {
             let d = record.get(esm::sig::DATA).filter(|s| s.data.len() >= 36)?;
             Some(le_u32(&d.data, 32) & 0x04 != 0)
@@ -1035,6 +1085,120 @@ mod tests {
         assert!(clock.is_delayed(FormId(11)));
         clock.advance(10.0);
         assert!(!clock.is_delayed(FormId(11)));
+    }
+
+    #[test]
+    fn is_pc_1st_person_answers_the_players_view() {
+        let index = (0..u16::MAX)
+            .find(|&i| crate::functions::function_name(i) == "IsPC1stPerson")
+            .unwrap();
+        let c = condition(index, Comparison::Equal, 1.0);
+        let ask = |first_person: bool| {
+            IdleAsker::new(
+                crate::dialogue::PLAYER_REF,
+                IdleQuestion {
+                    player: true,
+                    first_person,
+                    ..IdleQuestion::default()
+                },
+                None,
+                1,
+            )
+            .value(&c)
+        };
+        assert_eq!(ask(true), 1.0);
+        assert_eq!(ask(false), 0.0);
+        assert!(!IdleQuestion::default().first_person);
+    }
+
+    /// A branch shaped like the game's `DialogueIdles` (`GetCurrentAIProcedure`
+    /// 4 OR `MenuMode 1009`) with a happy talk (`IsTalking` 1,
+    /// `GetDialogueEmotion` 5), a plain talk (`IsTalking` 1) and a listen.
+    #[test]
+    fn the_dialogue_branch_asks_the_menu_talking_and_the_emotion() {
+        let index = |name: &str| {
+            (0..u16::MAX)
+                .find(|&i| crate::functions::function_name(i) == name)
+                .unwrap()
+        };
+        let mut root = idle(20, "DialogueIdles", "Characters\\_Male\\IdleAnims", 0, 0);
+        let mut procedure = condition(index("GetCurrentAIProcedure"), Comparison::Equal, 4.0);
+        procedure.or = true;
+        let mut menu = condition(index("MenuMode"), Comparison::Equal, 1.0);
+        menu.params[0] = u32::from(DIALOG_MENU);
+        root.conditions = vec![procedure, menu];
+        let talking = condition(index("IsTalking"), Comparison::Equal, 1.0);
+        let mut happy = idle(21, "Happy", "Characters\\_Male\\IdleAnims\\Happy.kf", 20, 0);
+        happy.conditions = vec![
+            talking.clone(),
+            condition(index("GetDialogueEmotion"), Comparison::Equal, 5.0),
+        ];
+        let mut talk = idle(22, "Talk", "Characters\\_Male\\IdleAnims\\Talk.kf", 20, 21);
+        talk.conditions = vec![talking];
+        let listen = idle(
+            23,
+            "Listen",
+            "Characters\\_Male\\IdleAnims\\Listen.kf",
+            20,
+            22,
+        );
+        let tree = IdleTree::from_idles(
+            [root, happy, talk, listen]
+                .into_iter()
+                .map(|i| (i.form_id, i))
+                .collect(),
+        );
+        let roots = tree.roots_for("Characters\\_Male\\Skeleton.nif");
+        let pick = |about: IdleQuestion| {
+            let asker = IdleAsker::new(FormId(1), about, None, 3);
+            tree.evaluate(&roots, &|i| asker.passes(i), &|_| false)
+                .map(|i| i.editor_id.clone())
+        };
+        let in_menu = IdleQuestion {
+            menu: Some(DIALOG_MENU),
+            procedure: procedures::NONE,
+            ..IdleQuestion::default()
+        };
+        // Out of the menu and not in a dialogue procedure: nothing.
+        assert_eq!(
+            pick(IdleQuestion {
+                procedure: procedures::NONE,
+                ..IdleQuestion::default()
+            }),
+            None
+        );
+        // Another menu doesn't count.
+        assert_eq!(
+            pick(IdleQuestion {
+                menu: Some(1003),
+                ..in_menu
+            }),
+            None
+        );
+        assert_eq!(pick(in_menu).as_deref(), Some("Listen"));
+        let saying = IdleQuestion {
+            talking: true,
+            ..in_menu
+        };
+        // No emotion to use (−1): the plain talk.
+        assert_eq!(pick(saying).as_deref(), Some("Talk"));
+        assert_eq!(
+            pick(IdleQuestion {
+                emotion: Some(5),
+                ..saying
+            })
+            .as_deref(),
+            Some("Happy")
+        );
+        // A dialogue procedure (people talking) passes without the menu.
+        assert_eq!(
+            pick(IdleQuestion {
+                procedure: procedures::DIALOGUE,
+                ..IdleQuestion::default()
+            })
+            .as_deref(),
+            Some("Listen")
+        );
     }
 
     #[test]

@@ -27,9 +27,22 @@
 //!   (`DM_ClickRect`, id 0) while a line shows, moves on; Enter does the
 //!   same (`007628c0`: special code 9 clicks the chosen topic, or the screen
 //!   while a line shows).
+//! * a service menu over the conversation (`00763ff0`, called as the
+//!   barter menu `0072d250`, the recipe menu `00726ff0`, a companion's
+//!   trade `0075bc80` mode 3, the repair menu `007b7570` and the face menu
+//!   from dialogue `00705870` are made): unless the conversation is ending
+//!   (`+0x2c`), `+0x138` and `+0x13a` set, the line being said cut short
+//!   (`0083e4c0`: the speaker stops, `+0x7c` done) and the menu faded out
+//!   (`00a1d910`; without trait 6002 it stays open, hidden). Every frame
+//!   (`00762950`) state 2 with both flags becomes 5 (`eServiceFadeOut`
+//!   (Xbox PDB)); once faded out (`+0x24` 4) the topics are loaded again
+//!   (`00762ff0`), `+0x13a` cleared, back to 2. The service menu closing
+//!   (`0072d6d0`, `00727430`, `0075b750` mode 3, `007b78e0`, `007ada40`)
+//!   calls `007640a0`: `+0x138` cleared and the menu faded back in
+//!   (`00a1db20`).
 
 use crate::list::{set_keeping_operators, ListBox};
-use crate::menu::{special, MenuCode};
+use crate::menu::{special, Fade, MenuCode, Showing};
 use crate::names::t;
 use crate::tile::{TileId, Ui};
 
@@ -103,6 +116,13 @@ pub struct DialogMenu {
     pub answer: Option<Answer>,
     /// Closed: the caller takes the menu off the screen.
     pub closed: bool,
+    /// A service menu is over the conversation (`+0x138`).
+    pub in_service: bool,
+    /// The line being said was cut short when the service menu opened
+    /// (`00763ff0`), for the conversation to take.
+    pub cut_line: bool,
+    /// Faded out under a service menu and back (`+0x24`).
+    pub fade: Fade,
 }
 
 impl DialogMenu {
@@ -118,6 +138,9 @@ impl DialogMenu {
             topics_at: None,
             answer: None,
             closed: false,
+            in_service: false,
+            cut_line: false,
+            fade: Fade::default(),
         }
     }
 
@@ -220,6 +243,40 @@ impl DialogMenu {
         }
     }
 
+    /// A service menu (barter, recipes, ...) opens over the conversation
+    /// (`00763ff0`): unless it is ending (`+0x2c`; here zooming out), the
+    /// menu is marked in service, the line being said is cut short
+    /// ([`DialogMenu::cut_line`]) and the menu fades out, staying open.
+    /// True when it did.
+    pub fn service_opened(&mut self, ui: &mut Ui) -> bool {
+        if self.state == State::Closing || self.closed {
+            return false;
+        }
+        self.in_service = true;
+        if self.state == State::Line {
+            self.cut_line = true;
+        }
+        self.fade.fade_out(ui, self.menu);
+        true
+    }
+
+    /// The service menu closed (`007640a0`): no longer in service, and the
+    /// menu fades back in (`00a1db20`).
+    pub fn service_closed(&mut self, ui: &mut Ui) {
+        if !self.in_service {
+            return;
+        }
+        self.in_service = false;
+        self.fade.fade_in(ui, self.menu);
+    }
+
+    /// Whether the menu is under a service menu or faded out of sight, so
+    /// nothing can be chosen in it (the input goes to the top menu shown
+    /// and not closing, `00720e60`: the service menu).
+    pub fn hidden(&self) -> bool {
+        self.in_service || matches!(self.fade.showing, Showing::FadingOut | Showing::Hidden)
+    }
+
     /// One frame (`00762950`): the zoom in or out, and `_DialogVisible`.
     /// `zoom_in` / `zoom_out` are the settings' seconds. Returns true when
     /// the first line, which waited for the zoom, can now be shown.
@@ -272,7 +329,7 @@ impl MenuCode for DialogMenu {
 
     /// `007624f0`.
     fn click(&mut self, ui: &mut Ui, id: i32, tile: Option<TileId>, now: f64) {
-        if matches!(self.state, State::ZoomIn | State::Closing) {
+        if matches!(self.state, State::ZoomIn | State::Closing) || self.hidden() {
             return;
         }
         if let Some(at) = self.topics_at {
@@ -412,5 +469,64 @@ mod tests {
         assert!(m.special_key(&mut ui, special::A, 21.0));
         assert_eq!(m.answer, Some(Answer::Skip));
         assert!(!m.special_key(&mut ui, special::UP, 21.0));
+    }
+
+    /// `00763ff0`: a service menu opening over the topics fades the menu
+    /// out over `menufade` (0.25 by default) and leaves it open but hidden,
+    /// taking no clicks; `007640a0` on the service menu's close fades it
+    /// back in (`00a1db20`), the topics still there (`00711ea0`: alpha
+    /// 1 − t out, t in).
+    #[test]
+    fn a_service_menu_hides_the_conversation_until_it_closes() {
+        let (mut ui, mut m) = opened();
+        for _ in 0..20 {
+            m.update(&mut ui, 0.1, ZOOM_IN_SECONDS, ZOOM_OUT_SECONDS);
+        }
+        m.show_topics(&mut ui, &topics(), 10.0);
+        assert_eq!(ui.number(m.menu, t::MENUFADE), 0.25);
+        assert!(m.service_opened(&mut ui));
+        assert!(m.in_service && m.hidden() && !m.cut_line);
+        assert_eq!(m.fade.showing, Showing::FadingOut);
+        let half = m.fade.frame(&mut ui, m.menu, 0.125);
+        assert!((half - 0.5).abs() < 1e-6);
+        assert_eq!(ui.number(m.menu, t::VISIBLE), 1.0);
+        assert_eq!(m.fade.frame(&mut ui, m.menu, 0.2), 0.0);
+        assert_eq!(m.fade.showing, Showing::Hidden);
+        assert_eq!(ui.number(m.menu, t::VISIBLE), 0.0);
+        assert!(!m.closed);
+        // No choosing while it's hidden.
+        let first = m.list.items[0].tile;
+        m.click(&mut ui, -1, Some(first), 20.0);
+        assert_eq!(m.answer, None);
+        // The service menu closes: back in, the same topics.
+        m.service_closed(&mut ui);
+        assert!(!m.in_service && !m.hidden());
+        assert_eq!(m.fade.showing, Showing::FadingIn);
+        let quarter = m.fade.frame(&mut ui, m.menu, 0.0625);
+        assert!((quarter - 0.25).abs() < 1e-6);
+        assert_eq!(ui.number(m.menu, t::VISIBLE), 1.0);
+        assert_eq!(m.fade.frame(&mut ui, m.menu, 0.25), 1.0);
+        assert_eq!(m.fade.showing, Showing::Shown);
+        assert_eq!(m.list.items.len(), 2);
+        m.click(&mut ui, -1, Some(first), 21.0);
+        assert_eq!(m.answer, Some(Answer::Topic(0)));
+    }
+
+    /// `00763ff0` cuts the line being said short; a conversation already
+    /// ending (`+0x2c` set: zooming out here) isn't hidden.
+    #[test]
+    fn a_service_cuts_the_line_but_not_an_ending() {
+        let (mut ui, mut m) = opened();
+        for _ in 0..20 {
+            m.update(&mut ui, 0.1, ZOOM_IN_SECONDS, ZOOM_OUT_SECONDS);
+        }
+        m.show_line(&mut ui, "Let's see what you've got.");
+        assert!(m.service_opened(&mut ui));
+        assert!(m.cut_line);
+        let (mut ui, mut m) = opened();
+        m.end();
+        assert!(!m.service_opened(&mut ui));
+        assert!(!m.in_service && !m.hidden());
+        assert_eq!(m.fade.showing, Showing::Shown);
     }
 }

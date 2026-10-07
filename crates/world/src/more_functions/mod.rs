@@ -16,10 +16,14 @@
 //! no procedure (as the game's handlers answer for someone without an AI
 //! process).
 
+pub mod actors;
 pub mod challenges;
 pub mod destruction;
 pub mod placed;
 pub mod procedures;
+pub mod radio;
+pub mod shaders;
+pub mod traps;
 
 use std::collections::{HashMap, HashSet};
 
@@ -46,6 +50,26 @@ pub enum Shown {
     ActorAlpha { who: FormId, alpha: f32 },
     /// `SetGhost`: someone became a ghost (true) or stopped being one.
     Ghost { who: FormId, on: bool },
+    /// `PlayMagicShaderVisuals`: an effect shader (`EFSH`) runs on a
+    /// reference, for `seconds` or (`None`) until stopped.
+    ShaderVisual {
+        reference: FormId,
+        shader: FormId,
+        seconds: Option<f32>,
+    },
+    /// `StopMagicShaderVisuals`: the reference's effects with that shader
+    /// ended.
+    ShaderVisualStopped { reference: FormId, shader: FormId },
+    /// `PushActorAway`: `who` is knocked down (the AI process's knock
+    /// state 2) and thrown as a ragdoll from `from`'s centre with this
+    /// force ([`actors::push_force`]).
+    PushedAway {
+        who: FormId,
+        from: FormId,
+        force: f32,
+    },
+    /// `FireWeapon`: a placed object fires a weapon ([`traps::shot_from`]).
+    WeaponFired { from: FormId, weapon: FormId },
     /// `Autosave`, `ForceSave`, `SystemSave`: a save the game asks for.
     Save(SaveKind),
     /// `SetGlobalTimeMultiplier`: everything runs this much faster.
@@ -121,6 +145,9 @@ pub struct State {
     /// (`SetActorRefEssential`: actor +0x140 bit 31).
     pub essential_bases: HashMap<FormId, bool>,
     pub essential_refs: HashSet<FormId>,
+    /// Essential people brought to 0 health and down for now, with the
+    /// seconds till they get up (`world::combat::hurt`).
+    pub down: HashMap<FormId, f32>,
     /// People whose lines always show subtitles (actor +0x140 bit 30).
     pub always_subtitles: HashSet<FormId>,
     /// Combat styles scripts gave people (`SetCombatStyle`: extra data
@@ -131,6 +158,10 @@ pub struct State {
     pub speakers: HashMap<FormId, FormId>,
     /// Radio stations switched on or off (`SetBroadcastState`), by base.
     pub broadcasting: HashMap<FormId, bool>,
+    /// `ResetPipboyManager` asked the player's Pip-Boy manager to reset
+    /// (its +0x16c; what reads it isn't traced). The radio functions act
+    /// on `GameState::radio` ([`radio`]).
+    pub pipboy_reset: bool,
     /// People's critical stage (actor +0x10c: 1 goo start, 2 goo end, 3
     /// disintegrate start, 4 disintegrate end).
     pub critical_stage: HashMap<FormId, i32>,
@@ -152,6 +183,31 @@ pub struct State {
     pub all_visible: bool,
     /// What the viewer last saw of people (not saved).
     pub seen: HashMap<FormId, Seen>,
+    /// The sequences active on placed objects' models this frame, by
+    /// reference, as the viewer last reported them ([`report_sequences`];
+    /// not saved). An object missing here has no 3D loaded.
+    pub sequences: HashMap<FormId, Vec<String>>,
+    /// The line of sight each actor's last detection run found to another
+    /// (`GetLineOfSight` asks it, [`crate::sight`]), by (who, whom), as the
+    /// viewer reports it ([`report_detection_sight`]; not saved).
+    pub detection_sight: HashMap<(FormId, FormId), bool>,
+    /// References with 3D loaded now (in an attached cell), as the viewer
+    /// last reported them ([`report_loaded`]; not saved).
+    pub loaded: HashSet<FormId>,
+    /// Whether each person's spine faces up (`IsFacingUp`), as the viewer
+    /// last reported it ([`report_facing_up`]; not saved). Someone missing
+    /// has no 3D.
+    pub facing_up: HashMap<FormId, bool>,
+    /// Effect shaders scripts put on references ([`shaders`]; not saved).
+    pub shader_visuals: Vec<shaders::ShaderVisual>,
+    /// What scripts did to people's dispositions toward the player
+    /// ([`actors`]), saved.
+    pub dispositions: actors::Dispositions,
+    /// How people died ([`actors::cause`]; the dismembered limbs extra
+    /// data's +0x10), saved.
+    pub cause_of_death: HashMap<FormId, i32>,
+    /// References `SetVATSTarget` turned ([`traps`]), saved.
+    pub vats_overrides: traps::VatsOverrides,
     /// The menu open now, while its `MenuMode` blocks run or the viewer
     /// shows it (not saved).
     pub menu_open: Option<u16>,
@@ -166,6 +222,10 @@ pub struct State {
     /// → `00753420`, kind 0 SPECIAL, 1 tag skills).
     pub special_points: i32,
     pub tag_points: i32,
+    /// Bases whose value `SetItemValue` changed (`005d3e30` → `0048e960`:
+    /// the form's value data, +4, for every one of them; the form marked
+    /// changed, so saved).
+    pub item_values: HashMap<FormId, i32>,
     /// The seconds the effect script running now covers
     /// (`ScriptEffectElapsedSeconds`; `None` outside one; not saved).
     pub effect_seconds: Option<f32>,
@@ -211,6 +271,23 @@ pub fn describe(order: &LoadOrder, state: &GameState, shown: &Shown) -> String {
             }
         ),
         Shown::TimeMultiplier(m) => format!("time runs {m}x as fast"),
+        Shown::ShaderVisual {
+            reference,
+            shader,
+            seconds,
+        } => match seconds {
+            Some(t) => format!("{} shows {} for {t} s", name(*reference), name(*shader)),
+            None => format!("{} shows {}", name(*reference), name(*shader)),
+        },
+        Shown::ShaderVisualStopped { reference, shader } => {
+            format!("{} stops showing {}", name(*reference), name(*shader))
+        }
+        Shown::PushedAway { who, from, force } => {
+            format!("{} pushes {} away (force {force})", name(*from), name(*who))
+        }
+        Shown::WeaponFired { from, weapon } => {
+            format!("{} fires {}", name(*from), name(*weapon))
+        }
         Shown::Destruction {
             what,
             stage,
@@ -243,6 +320,33 @@ pub fn report(state: &mut GameState, who: FormId, seen: Seen) {
     state.more.seen.insert(who, seen);
 }
 
+/// The viewer tells which sequences are active on each placed object's
+/// model this frame (`NiControllerSequence` state, +0x44, not inactive),
+/// replacing the last report: a script's `PlayGroup` sequence, held at its
+/// end once played, or the ones the model plays from the start.
+pub fn report_sequences(state: &mut GameState, sequences: HashMap<FormId, Vec<String>>) {
+    state.more.sequences = sequences;
+}
+
+/// The viewer tells which references have 3D loaded now, replacing the
+/// last report.
+pub fn report_loaded(state: &mut GameState, loaded: HashSet<FormId>) {
+    state.more.loaded = loaded;
+}
+
+/// The viewer tells, for each person with 3D, whether their spine node
+/// (`Bip01 Spine`, else `Bip01 Spine01`) faces up: its world rotation's
+/// [2][1] above 0 (`00c6b7b0`, the node's +0x84). Replaces the last report.
+pub fn report_facing_up(state: &mut GameState, facing: HashMap<FormId, bool>) {
+    state.more.facing_up = facing;
+}
+
+/// The viewer tells what `who`'s detection run found of `other`: whether
+/// it had a line of sight (kept with its detection data, `008f6930`).
+pub fn report_detection_sight(state: &mut GameState, who: FormId, other: FormId, sight: bool) {
+    state.more.detection_sight.insert((who, other), sight);
+}
+
 /// The functions answered ([`value`]), by the game's own names.
 pub const READS: &[&str] = &[
     "GetIsGhost",
@@ -252,6 +356,8 @@ pub const READS: &[&str] = &[
     "IsActorTalkingThroughActivator",
     "GetBroadcastState",
     "IsLimbGone",
+    "GetCauseofDeath",
+    "IsFacingUp",
     "IsInCriticalStage",
     "IsSneaking",
     "IsRunning",
@@ -279,6 +385,8 @@ pub const READS: &[&str] = &[
     "GetFactionRankDifference",
     "IsCombatTarget",
     "IsIdlePlaying",
+    "IsAnimPlaying",
+    "GetIsAlignment",
 ];
 
 /// The functions that change things ([`change`]), by the game's own names.
@@ -325,7 +433,15 @@ pub const CHANGES: &[&str] = &[
 
 /// Every function here.
 pub fn handled() -> impl Iterator<Item = &'static str> {
-    READS.iter().chain(CHANGES).copied()
+    READS
+        .iter()
+        .chain(CHANGES)
+        .chain(radio::CHANGES)
+        .chain(shaders::CHANGES)
+        .chain(actors::FUNCTIONS)
+        .chain(traps::FUNCTIONS)
+        .chain(crate::sight::FUNCTIONS)
+        .copied()
 }
 
 /// The game's form type numbers (the byte at form +4), by record type:
@@ -532,6 +648,23 @@ fn read(facts: &Facts, name: &str, on: Option<FormId>, args: &[Value]) -> Option
                 flag((from..=to).any(gone))
             }
         }
+        // `005be740` → `005a3d30` → `005730d0`: a person or creature's
+        // cause of death (dismembered limbs extra data +0x10); −1 when
+        // none was kept or for anything else.
+        "GetCauseofDeath" => {
+            let who = on?;
+            match s.more.cause_of_death.get(&who) {
+                Some(&c) if actor(who) => f64::from(c),
+                _ => -1.0,
+            }
+        }
+        // `005cb720` → `005a0710`: on a person or creature, 1 when the
+        // spine node faces up ([`report_facing_up`]) or isn't there (no
+        // 3D, or neither node in it); 0 for anything else.
+        "IsFacingUp" => {
+            let who = on?;
+            flag(actor(who) && s.more.facing_up.get(&who).copied().unwrap_or(true))
+        }
         // `005a2910`: the actor's critical stage is this one.
         "IsInCriticalStage" => {
             let who = on?;
@@ -715,11 +848,54 @@ fn read(facts: &Facts, name: &str, on: Option<FormId>, args: &[Value]) -> Option
             let who = on?;
             flag(actor(who) && s.more.seen.get(&who).is_some_and(|x| x.idle_playing))
         }
+        // `005c14a0`: on an object, whether its model's sequence for the
+        // group (looked up by the group's name, `00438170` →
+        // `0047a520`) is active, or without a group any of them
+        // (`00495d00`/`00495d20`); "active" is the sequence's state
+        // (+0x44, read by `008041a0`) not 0. Nothing in the executable
+        // deactivates a clamped sequence at its end (only `00a35030`, on
+        // request, or an ease-out), so a played `Forward` stays active
+        // until another sequence replaces it. No 3D loaded: 0. People's
+        // animation data (vtable +0x1e4: eight sequence slots) aren't
+        // carried out.
+        "IsAnimPlaying" => {
+            let r = on?;
+            // A person's animation data aren't carried out: one who is down
+            // isn't animating, one on their feet is (their idle). [G] Not
+            // traced, so only with `crate::guesses` on; else the script
+            // stops as before.
+            if actor(r) {
+                return match arg(0) {
+                    _ if !crate::guesses::enabled() => None,
+                    Value::Text(_) => None,
+                    _ => Some(flag(!s.more.down.contains_key(&r) && !s.dead.contains(&r))),
+                };
+            }
+            let playing = s.more.sequences.get(&r);
+            flag(match arg(0) {
+                Value::Text(group) => {
+                    playing.is_some_and(|v| v.iter().any(|n| n.eq_ignore_ascii_case(&group)))
+                }
+                _ => playing.is_some_and(|v| !v.is_empty()),
+            })
+        }
         // `005a53e0` → `008bc700`: the caller is fighting and targets this
         // one.
         "IsCombatTarget" => {
             let who = on?;
             flag(actor(who) && s.combat.get(&who) == Some(&arg(0).form()))
+        }
+        // `005a4dd0`: whether the caller's Karma (actor value 23) is in the
+        // band asked (`0047e040`, [`crate::reputation::alignment`]: 0 good,
+        // 1 neutral, 2 evil, 3 very good, 4 very evil).
+        "GetIsAlignment" => {
+            let who = on?;
+            let karma = facts.current_actor_value(who, 23).unwrap_or(0.0) as f32;
+            flag(
+                actor(who)
+                    && i64::from(crate::reputation::alignment(order, karma))
+                        == arg(0).number() as i64,
+            )
         }
         _ => return None,
     })
@@ -800,6 +976,23 @@ pub(crate) fn change(
         // The script's version (`005deef0`): completed or recurred.
         let c = args.first().map(Value::form).filter(|f| f.0 != 0);
         return Some(c.map(|c| flag(challenges::completed_for_scripts(runner.state, c))));
+    }
+    if name == "GetLineOfSight" {
+        // `005c1ce0`: on the caller, with whom it looks for.
+        let whom = args.first().map(Value::form).unwrap_or(FormId(0));
+        return Some(crate::sight::line_of_sight(runner, target, whom));
+    }
+    if radio::CHANGES.contains(&name) {
+        return Some(radio::carry_out(runner, name, target, args));
+    }
+    if actors::FUNCTIONS.contains(&name) {
+        return Some(actors::carry_out(runner, name, target, args));
+    }
+    if traps::FUNCTIONS.contains(&name) {
+        return Some(traps::carry_out(runner, name, target, args));
+    }
+    if shaders::CHANGES.contains(&name) {
+        return Some(shaders::carry_out(runner, name, target, args));
     }
     CHANGES
         .contains(&name)
@@ -1111,6 +1304,11 @@ pub(crate) fn save_lines(state: &GameState, line: &mut dyn FnMut(String)) {
     for (base, on) in v {
         line(format!("broadcast {} {}", id(*base), u8::from(*on)));
     }
+    let mut v: Vec<_> = m.item_values.iter().collect();
+    v.sort_by_key(|(k, _)| **k);
+    for (base, value) in v {
+        line(format!("itemvalue {} {value}", id(*base)));
+    }
     for (word, map) in [("combatstyle", &m.combat_styles), ("speaker", &m.speakers)] {
         let mut v: Vec<_> = map.iter().collect();
         v.sort_by_key(|(k, _)| **k);
@@ -1156,14 +1354,20 @@ pub(crate) fn save_lines(state: &GameState, line: &mut dyn FnMut(String)) {
     }
     placed::save_lines(state, line);
     destruction::save_lines(state, line);
+    radio::save_lines(state, line);
+    actors::save_lines(state, line);
+    traps::save_lines(state, line);
 }
 
 /// A saved line back: `None` if the word isn't one of these.
 pub(crate) fn load_line(state: &mut GameState, raw: &str) -> Option<Result<(), String>> {
     let parts: Vec<&str> = raw.split_whitespace().collect();
     let word = *parts.first()?;
-    if let Some(r) =
-        placed::load_line(state, &parts).or_else(|| destruction::load_line(state, &parts))
+    if let Some(r) = placed::load_line(state, &parts)
+        .or_else(|| destruction::load_line(state, &parts))
+        .or_else(|| radio::load_line(state, &parts))
+        .or_else(|| actors::load_line(state, &parts))
+        .or_else(|| traps::load_line(state, &parts))
     {
         return Some(r);
     }
@@ -1213,6 +1417,9 @@ pub(crate) fn load_line(state: &mut GameState, raw: &str) -> Option<Result<(), S
             }
             "combatstyle" => {
                 m.combat_styles.insert(form(1)?, form(2)?);
+            }
+            "itemvalue" => {
+                m.item_values.insert(form(1)?, num(2)? as i32);
             }
             "speaker" => {
                 m.speakers.insert(form(1)?, form(2)?);

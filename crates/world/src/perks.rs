@@ -192,9 +192,14 @@ pub mod entry {
     /// The attacker's perks against the target's damage threshold
     /// (`009b5a30`: attacker, weapon, target).
     pub const MODIFY_DAMAGE_THRESHOLD_ATTACKER: u8 = 58;
+    /// A throw's speed (`009bca60`: thrower, weapon).
+    pub const MODIFY_THROWING_VELOCITY: u8 = 59;
     /// What an item loses when damaged (`00891360`: owner).
     pub const MODIFY_ITEM_DAMAGE: u8 = 68;
     pub const HAS_IMPROVED_DETECTION: u8 = 69;
+    /// The player's explosions' radius (`009ac9c0`: the player, the
+    /// weapon).
+    pub const ADJUST_EXPLOSION_RADIUS: u8 = 72;
     /// Heavy weapons' weight (`004d0900`: weapons of 10 or more).
     pub const ADJUST_HEAVY_WEAPON_WEIGHT: u8 = 73;
 }

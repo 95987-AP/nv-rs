@@ -719,11 +719,29 @@ fn reads_collision_shapes_in_game_units() {
     object.extend(2i32.to_le_bytes());
     b.set(1, "bhkCollisionObject", object);
     let s = std::f32::consts::FRAC_1_SQRT_2;
-    b.set(
-        2,
-        "bhkRigidBodyT",
-        rigid_body(3, 4, [1.0, 0.0, 0.0], [0.0, 0.0, s, s], 1),
-    );
+    let mut body = rigid_body(3, 4, [1.0, 0.0, 0.0], [0.0, 0.0, s, s], 1);
+    // Its physics values: inertia rows (diagonal 1, 2, 3), the centre of
+    // mass 1 Havok unit up, mass 2, damping, friction, restitution, most
+    // speeds, penetration depth, then deactivator, solver deactivation
+    // and quality after the motion system.
+    for (at, x) in [
+        (116, 1.0f32),
+        (136, 2.0),
+        (156, 3.0),
+        (172, 1.0),
+        (180, 2.0),
+        (184, 0.1),
+        (188, 0.05),
+        (192, 0.5),
+        (196, 0.4),
+        (200, 100.0),
+        (204, 31.57),
+        (208, 0.15),
+    ] {
+        body[at..at + 4].copy_from_slice(&x.to_le_bytes());
+    }
+    body[213..216].copy_from_slice(&[2, 2, 3]);
+    b.set(2, "bhkRigidBodyT", body);
     // A box 2 x 1 x 0.5 Havok units across (half sizes 1, 0.5, 0.25), of
     // Havok material 9 (wood).
     let mut boxed = vec![0u8; 16];
@@ -782,6 +800,39 @@ fn reads_collision_shapes_in_game_units() {
     // along x by its body; the top node's transform left out.
     let boxed = &collision.parts[0];
     assert_eq!((boxed.layer, boxed.dynamic), (4, true));
+    // The body's values: in game units, its centre placed with the body
+    // (1 Havok unit along x, then up), its tensor turned 90° about z (x
+    // and y swap) and scaled by 7².
+    let body = &boxed.body;
+    assert_eq!((body.block, body.mass, body.motion), (2, 2.0, 1));
+    assert_eq!(
+        (body.deactivator, body.solver_deactivation, body.quality),
+        (2, 2, 3)
+    );
+    assert!(close(body.center, [H, 0.0, H]), "{:?}", body.center);
+    let h2 = H * H;
+    assert!(
+        (body.inertia[0][0] - 2.0 * h2).abs() < 1e-3,
+        "{:?}",
+        body.inertia
+    );
+    assert!((body.inertia[1][1] - 1.0 * h2).abs() < 1e-3);
+    assert!((body.inertia[2][2] - 3.0 * h2).abs() < 1e-3);
+    assert!(body.inertia[0][1].abs() < 1e-3);
+    assert_eq!(
+        (
+            body.linear_damping,
+            body.angular_damping,
+            body.friction,
+            body.restitution
+        ),
+        (0.1, 0.05, 0.5, 0.4)
+    );
+    assert!((body.max_linear_speed - 100.0 * H).abs() < 1e-2);
+    assert!((body.max_angular_speed - 31.57).abs() < 1e-5);
+    assert!((body.penetration_depth - 0.15 * H).abs() < 1e-5);
+    // Parts of the floor's body name its own block.
+    assert_eq!(collision.parts[1].body.block, 7);
     // Each part keeps its shape's (or sub-part's) Havok material.
     assert_eq!(boxed.material, 9);
     assert_eq!(
@@ -1486,4 +1537,66 @@ fn reads_a_models_lights() {
     assert_eq!(a.attenuation, None);
     // Lights aren't drawn meshes.
     assert!(nif.scene().unwrap().meshes.is_empty());
+}
+
+#[test]
+fn finds_a_placed_node_by_name() {
+    // Root (moved, left out when placed) → "Barrel" (up 2) → a hidden
+    // "ProjectileNode" (forward 3).
+    let mut b = Builder::new();
+    b.reserve(3);
+    let moved = Xf {
+        translation: [5.0, 0.0, 0.0],
+        ..NO_XF
+    };
+    let root = b.node("Root", 0, &moved, &[], &[1]);
+    b.set(0, "NiNode", root);
+    let up = Xf {
+        translation: [0.0, 0.0, 2.0],
+        ..NO_XF
+    };
+    let barrel = b.node("Barrel", 0, &up, &[], &[2]);
+    b.set(1, "NiNode", barrel);
+    let ahead = Xf {
+        translation: [0.0, 3.0, 0.0],
+        ..NO_XF
+    };
+    let muzzle = b.node("ProjectileNode", 1, &ahead, &[], &[]);
+    b.set(2, "NiNode", muzzle);
+    let nif = Nif::parse(b.build()).unwrap();
+    let found = nif.placed_node("projectilenode").unwrap();
+    assert!(
+        close(found.translation, [0.0, 3.0, 2.0]),
+        "{:?}",
+        found.translation
+    );
+    assert!(nif.placed_node("##ProjectileNode").is_none());
+}
+
+#[test]
+fn a_models_own_controllers_play_as_one_sequence() {
+    // The impact effects' way: a transform controller on the root node and
+    // an alpha controller on the shape's material, outside any sequence.
+    let nif = Nif::parse(testdata::impacts::controlled_effect_nif()).unwrap();
+    assert!(nif.sequences().unwrap().is_empty());
+    let s = nif.own_controllers().unwrap().expect("its controllers");
+    assert_eq!((s.start, s.stop), (0.0, 0.3));
+    assert!(!s.looping, "cycle type 2 clamps");
+    let [grow] = &s.tracks[..] else {
+        panic!("{:?}", s.tracks);
+    };
+    assert_eq!(grow.node, "Root");
+    let scale = grow.sample(0.15).scale.unwrap();
+    assert!((scale - 2.0).abs() < 1e-5, "{scale}");
+    let [fade] = &s.materials[..] else {
+        panic!("{:?}", s.materials);
+    };
+    assert_eq!(
+        (fade.node.as_str(), fade.target),
+        ("Quad", nif::MaterialTarget::Alpha)
+    );
+    assert!((fade.float_at(0.15).unwrap() - 0.5).abs() < 1e-5);
+    // A model without controllers has none.
+    let still = Nif::parse(testdata::impacts::animated_effect_nif(&[])).unwrap();
+    assert!(still.own_controllers().unwrap().is_none());
 }

@@ -167,6 +167,106 @@ fn the_sit_procedure_asks_the_tree_and_scripts_see_get_sitting() {
     assert!(!state.furniture.contains_key(&me));
 }
 
+/// The player activating a chair from across the room, as
+/// `TESFurniture::Activate` and the player's sit procedure have it: put on
+/// the marker, the entry played in a temporary third-person view, seated
+/// in first person, E refused only between states, and E again gets them
+/// up through the exit; scripts see each step.
+#[test]
+fn the_player_sits_and_stands_through_the_games_procedure() {
+    use world::dialogue::PLAYER_REF;
+    use world::furniture::{Activation, TempThirdPerson};
+    let (_data, order) = order("sitting-player");
+    let tree = IdleTree::load(&order);
+    let mut state = GameState::new(&order);
+    let chair = FormId(CHAIR_REF);
+    let marker = nif::FurnitureMarker {
+        offset: [0.0, 60.0, -30.0],
+        heading: 3141.0 / 1000.0,
+        marker: 14,
+    };
+    let flags = furniture::marker_flags(&order, FormId(CHAIR));
+    let placed = furniture::place_markers(&[marker], [100.0, 0.0, 0.0], 0.0, 1.0);
+    let feet = [400.0, 300.0, 0.0];
+    let nearest = furniture::nearest_free(&placed, flags, |_| false, feet);
+    let Activation::Sit(m) = furniture::activate(SitState::Normal, nearest) else {
+        panic!("a chair's front marker is a sit marker");
+    };
+    let mut view = TempThirdPerson::default();
+    assert!(view.begin(false, false));
+    let settings = MarkerSettings::read(&order, 14);
+    let mut sitter = Sitter::new(chair, m, settings, feet, 0.5);
+    state.furniture.insert(PLAYER_REF, chair);
+    let get_sitting = |state: &GameState| {
+        Facts {
+            order: &order,
+            state,
+            speaker: None,
+        }
+        .value(159, Some(PLAYER_REF), &[])
+        .unwrap()
+    };
+    state.sitters.insert(PLAYER_REF, sitter.clone());
+    assert_eq!(get_sitting(&state), 0.0);
+    // 400 units away: put on the marker, facing it.
+    assert!(furniture::player_approach(&mut sitter));
+    assert_eq!((sitter.position, sitter.heading), (m.position, m.heading));
+    let step = |sitter: &mut Sitter, state: &GameState, dt: f32, first_person: bool| {
+        let mut ask = |sitting: u8, sleeping: u8, number: u8| {
+            let facts = Facts {
+                order: &order,
+                state,
+                speaker: None,
+            };
+            let about = IdleQuestion {
+                sitting,
+                sleeping,
+                marker: number,
+                procedure: world::idles::procedures::NONE,
+                player: true,
+                first_person,
+                ..IdleQuestion::default()
+            };
+            let asker = IdleAsker::new(PLAYER_REF, about, Some(&facts), 7);
+            let roots = tree.roots_for(SKELETON);
+            tree.evaluate(&roots, &|i| asker.passes(i), &|_| false)
+                .map(|i| (i.form_id, i.model.clone()))
+        };
+        sitter.update(dt, false, &mut ask, &mut Anims)
+    };
+    assert_eq!(step(&mut sitter, &state, 0.0, false), Step::Busy);
+    state.sitters.insert(PLAYER_REF, sitter.clone());
+    assert_eq!(get_sitting(&state), 2.0);
+    assert!(furniture::player_activation_blocked(sitter.state));
+    // The view stays third person while the entry plays.
+    assert!(!view.update(sitter.playing.is_some(), false, false));
+    assert_eq!(step(&mut sitter, &state, 2.5, false), Step::Settled);
+    state.sitters.insert(PLAYER_REF, sitter.clone());
+    assert_eq!(get_sitting(&state), 3.0);
+    assert!(view.update(sitter.playing.is_some(), false, false));
+    assert!(!furniture::player_activation_blocked(sitter.state));
+    // Seated pitch limit, then E: up.
+    let down = furniture::clamp_pitch(1.0, sitter.state, 40.0);
+    assert!((down - 40f32.to_radians()).abs() < 1e-5);
+    assert_eq!(furniture::activate(sitter.state, None), Activation::StandUp);
+    assert!(view.begin(false, false));
+    sitter.stand_up();
+    step(&mut sitter, &state, 0.1, false);
+    state.sitters.insert(PLAYER_REF, sitter.clone());
+    assert_eq!(get_sitting(&state), 4.0);
+    assert!(furniture::player_activation_blocked(sitter.state));
+    assert_eq!(step(&mut sitter, &state, 2.0, false), Step::Released);
+    state.stand(PLAYER_REF);
+    assert_eq!(get_sitting(&state), 0.0);
+    assert!(view.update(false, false, false));
+    // Back on the marker after the exit's root travel, facing away.
+    let d = (0..2)
+        .map(|k| (sitter.position[k] - m.position[k]).powi(2))
+        .sum::<f32>()
+        .sqrt();
+    assert!(d < 1.0, "{:?} vs {:?}", sitter.position, m.position);
+}
+
 #[test]
 fn idle_markers_and_settings_are_read_from_their_records() {
     let (_data, order) = order("sitting-records");

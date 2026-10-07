@@ -255,6 +255,42 @@ fn crippled_legs_slow_and_the_player_takes_half_limb_damage() {
     assert!((state.value_damage[&(p, 30)] - 117.0).abs() < 1e-6);
     // Whole parts stay whole.
     assert!(!state.value_damage.contains_key(&(p, 25)));
+    // Aimed at the right leg from the Pip-Boy's healing mode (`00823210`,
+    // `0082b970`): that leg gets all 30, health a tenth, the left leg
+    // nothing; and the aim is kept with the effect in a save.
+    state.damage.insert(p, 10.0);
+    state.healing_part = Some(30);
+    state.items.insert((p, FormId(STIMPAK)), 1);
+    world::items::use_item(&order, &mut state, p, FormId(STIMPAK)).unwrap();
+    assert!((state.value_damage[&(p, 30)] - 87.0).abs() < 1e-6);
+    assert!((state.value_damage[&(p, 29)] - 97.0).abs() < 1e-6);
+    assert!((state.damage[&p] - 7.0).abs() < 1e-6);
+}
+
+/// An effect aimed at a part keeps its aim in a save (`effect` line's
+/// fourteenth field; older saves without it aim at none).
+#[test]
+fn an_aimed_effect_keeps_its_part_in_a_save() {
+    let mut state = GameState::default();
+    state.active_effects.push(world::magic::ActiveEffect {
+        target: PLAYER_REF,
+        source: FormId(0x10),
+        effect: FormId(0x11),
+        actor_value: 16,
+        magnitude: 3.0,
+        detrimental: false,
+        recover: false,
+        archetype: world::magic::archetype::VALUE_AND_PARTS,
+        resist: -1,
+        script: None,
+        remaining: 5.0,
+        started: false,
+        locals: Default::default(),
+        part: 27,
+    });
+    let saved = world::save::save(&state, None);
+    let (back, _) = world::save::load(&saved).unwrap();
+    assert_eq!(back.active_effects[0].part, 27);
 }
 
 #[test]

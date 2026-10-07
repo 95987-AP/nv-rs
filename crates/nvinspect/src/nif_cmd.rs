@@ -705,7 +705,8 @@ fn camera_summary(out: &mut impl Write, nif: &Nif) -> Result<(), CliError> {
         .translation
         .as_ref()
         .map_or(0.0, |(t, _)| t.stop)
-        .max(cam.fov.as_ref().map_or(0.0, |(t, _)| t.stop));
+        .max(cam.fov.as_ref().map_or(0.0, |(t, _)| t.stop))
+        .max(cam.rotation.as_ref().map_or(0.0, |(t, _)| t.stop));
     let steps = 8;
     for i in 0..=steps {
         let time = end * i as f32 / steps as f32;

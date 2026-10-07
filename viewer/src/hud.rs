@@ -58,28 +58,16 @@ const SHADER: Handle<Shader> = weak_handle!("3c8e51d2-7a4f-4b19-9e06-5d2b8f17a6c
 /// The render layer only the HUD's camera sees.
 const HUD_LAYER: usize = 23;
 
-/// Ordinary action classes (`00579280`, `00f80050`). Ownership is applied
-/// separately, using the same crime rules as activation (`00579690`).
-fn supported_activation(
-    order: &esm::LoadOrder,
-    reference: esm::FormId,
-) -> Option<(esm::FormId, &'static str, &'static str)> {
-    let base = world::scripting::base_of(order, reference)?;
-    let rr = order.get(base)?;
-    let (setting, default) = match rr.entry.header.kind {
-        kind if kind == esm::FourCC::new(b"ACTI") => ("sTargetTypeActivate", "Activate"),
-        kind if kind == esm::FourCC::new(b"CONT") => ("sTargetTypeOpen", "Open"),
-        kind if kind == esm::FourCC::new(b"BOOK") => ("sTargetTypeRead", "Read"),
-        kind if world::scripting::is_item(kind) => ("sTargetTypeTake", "Take"),
-        // Furniture Sit/Sleep and terminal state branches remain unported.
-        _ => return None,
-    };
-    Some((base, setting, default))
-}
-
 /// The HUD's picture, which the image space pass lays over the scene.
 #[derive(Resource, Clone, ExtractResource)]
 pub struct HudLayer(pub Handle<Image>);
+
+/// The HUD's camera (it writes the HUD's picture each frame; while a menu's
+/// 3D scene is drawn into it first it blends over it: `caravan_table`). It
+/// clears its picture first, except while a scope is up, when the scope's
+/// overlay camera has cleared it (`scope::update_scope`).
+#[derive(Component)]
+pub struct HudCamera;
 
 /// Whether the game's HUD is drawn (`--no-hud` turns it off).
 #[derive(Resource)]
@@ -92,6 +80,8 @@ pub struct ShowHud(pub bool);
 pub struct HudMessages {
     pub on: bool,
     pub queue: Vec<String>,
+    /// Messages with their own icon (text, icon path).
+    pub with_icon: Vec<(String, String)>,
 }
 
 pub struct HudPlugin;
@@ -121,6 +111,7 @@ pub struct TileParams {
 
 /// One HUD piece's material: its texture, colour and shader.
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
+#[bind_group_data(TileBlend)]
 pub struct TileMaterial {
     #[uniform(0)]
     pub(crate) params: TileParams,
@@ -130,6 +121,37 @@ pub struct TileMaterial {
     #[texture(3)]
     #[sampler(4)]
     pub(crate) alpha_map: Handle<Image>,
+    /// A model piece's own blending (`ui::DrawKind::Model`): Gamebryo's
+    /// source and destination factors; `None` the HUD's.
+    pub(crate) blend: Option<(u8, u8)>,
+}
+
+/// The pipeline key: a piece's blending.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TileBlend(Option<(u8, u8)>);
+
+impl From<&TileMaterial> for TileBlend {
+    fn from(m: &TileMaterial) -> Self {
+        TileBlend(m.blend)
+    }
+}
+
+/// Gamebryo's blend factor numbers (`NiAlphaProperty`) as wgpu's.
+fn blend_factor(n: u8) -> bevy::render::render_resource::BlendFactor {
+    use bevy::render::render_resource::BlendFactor as F;
+    match n {
+        0 => F::One,
+        1 => F::Zero,
+        2 => F::Src,
+        3 => F::OneMinusSrc,
+        4 => F::Dst,
+        5 => F::OneMinusDst,
+        6 => F::SrcAlpha,
+        7 => F::OneMinusSrcAlpha,
+        8 => F::DstAlpha,
+        9 => F::OneMinusDstAlpha,
+        _ => F::SrcAlphaSaturated,
+    }
 }
 
 impl TileMaterial {
@@ -145,6 +167,7 @@ impl TileMaterial {
             },
             texture,
             alpha_map: white,
+            blend: None,
         }
     }
 }
@@ -158,7 +181,38 @@ impl Material2d for TileMaterial {
         // Source alpha over inverse source alpha, as the game's HUD.
         AlphaMode2d::Blend
     }
+
+    fn specialize(
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::render::mesh::MeshVertexBufferLayoutRef,
+        key: bevy::sprite::Material2dKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        use bevy::render::render_resource::{BlendComponent, BlendOperation, BlendState};
+        if let (Some((src, dst)), Some(fragment)) =
+            (key.bind_group_data.0, &mut descriptor.fragment)
+        {
+            for target in fragment.targets.iter_mut().flatten() {
+                target.blend = Some(BlendState {
+                    color: BlendComponent {
+                        src_factor: blend_factor(src),
+                        dst_factor: blend_factor(dst),
+                        operation: BlendOperation::Add,
+                    },
+                    // The picture's coverage stays what's under the piece.
+                    alpha: BlendComponent {
+                        src_factor: bevy::render::render_resource::BlendFactor::Zero,
+                        dst_factor: bevy::render::render_resource::BlendFactor::One,
+                        operation: BlendOperation::Add,
+                    },
+                });
+            }
+        }
+        Ok(())
+    }
 }
+
+/// A piece on screen: its entity and assets.
+type Drawn = (Entity, Handle<Mesh>, Handle<TileMaterial>);
 
 /// The HUD as built for the window's size, and what's on screen of it.
 struct Built {
@@ -173,9 +227,9 @@ struct Built {
     images: HashMap<(String, bool, bool), Option<Handle<Image>>>,
     /// Font pictures by font (1 to 8) and picture number.
     font_images: HashMap<(usize, u32), Option<Handle<Image>>>,
-    /// The draw list on screen, and its entities and assets.
+    /// The draw list on screen, and each item's entities and assets.
     last: Vec<DrawItem>,
-    drawn: Vec<(Entity, Handle<Mesh>, Handle<TileMaterial>)>,
+    drawn: Vec<Vec<Drawn>>,
     /// V.A.T.S.'s menu (`ui::vats`), laid out with the HUD, and what the
     /// HUD's mask hid while V.A.T.S. is on.
     vats: Option<ui::vats::VatsMenu>,
@@ -222,6 +276,10 @@ fn setup_hud_layer(
         TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
     let layer = images.add(image);
     commands.insert_resource(HudLayer(layer.clone()));
+    // The scope's overlay is drawn onto the picture first and clears it
+    // while a scope is up (`scope`); the HUD's pieces go over it. The rest
+    // of the time the HUD's camera clears it.
+    crate::scope::spawn_camera(&mut commands, layer.clone());
     commands.spawn((
         Camera2d,
         Camera {
@@ -231,7 +289,8 @@ fn setup_hud_layer(
             // (`lockpick`).
             order: -4,
             // A float picture: stored values kept as they are, blended as
-            // they are.
+            // they are. Cleared here, or by the scope's camera while it's
+            // on (`scope::update_scope`).
             hdr: true,
             clear_color: ClearColorConfig::Custom(Color::NONE),
             ..default()
@@ -240,6 +299,7 @@ fn setup_hud_layer(
         DebandDither::Disabled,
         Msaa::Off,
         RenderLayers::layer(HUD_LAYER),
+        HudCamera,
     ));
     let mut white = Image::new_fill(
         Extent3d {
@@ -378,6 +438,43 @@ pub(crate) fn upload_font_picture(
     Some(images.add(image))
 }
 
+/// A model piece's triangles in menu units ((x, y), (u, v)) as a mesh in
+/// the HUD camera's pixels, the same way as [`quads_mesh`].
+pub(crate) fn triangles_mesh(
+    triangles: &[[([f32; 2], [f32; 2]); 3]],
+    alpha: &[[f32; 3]],
+    k: f32,
+    size: UVec2,
+) -> Mesh {
+    let (w, h) = (size.x as f32, size.y as f32);
+    let point = |p: [f32; 2]| [p[0] * k + 0.5 - w / 2.0, h / 2.0 - (p[1] * k + 0.5), 0.0];
+    let mut positions = Vec::with_capacity(triangles.len() * 3);
+    let mut uvs = Vec::with_capacity(triangles.len() * 3);
+    for tri in triangles {
+        for (p, uv) in tri {
+            positions.push(point(*p));
+            uvs.push(*uv);
+        }
+    }
+    let indices: Vec<u32> = (0..positions.len() as u32).collect();
+    let mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_indices(Indices::U32(indices));
+    // Each corner's alpha (the local map's fog of war) as a vertex colour.
+    if alpha.len() == triangles.len() {
+        let colors: Vec<[f32; 4]> = alpha
+            .iter()
+            .flat_map(|a| a.map(|v| [1.0, 1.0, 1.0, v]))
+            .collect();
+        return mesh.with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    }
+    mesh
+}
+
 /// Quads in menu units (x, y, width, height; texture coordinates of the
 /// top-left, top-right, bottom-left and bottom-right corners) as a mesh in
 /// the HUD camera's pixels: `k` pixels a unit, half a pixel right and down
@@ -407,6 +504,40 @@ pub(crate) fn quads_mesh(quads: &[Quad], k: f32, size: UVec2) -> Mesh {
     .with_inserted_indices(Indices::U32(indices))
 }
 
+/// The active quest's targets for the compass (`world::quest_targets`):
+/// where each followed reference stands this frame.
+#[derive(Resource, Default)]
+pub struct QuestCompass {
+    tracker: world::quest_targets::Tracker,
+    pub positions: Vec<[f32; 3]>,
+}
+
+/// Every frame: the current targets and what each points at (the first
+/// door on the way, else the target), placed where it stands now (people
+/// on screen where they walk, everything else where the game state has
+/// it).
+pub fn follow_quest_targets(
+    game: Res<GameFiles>,
+    state: Res<DialogueState>,
+    talkers: Res<Talkers>,
+    mut compass: ResMut<QuestCompass>,
+) {
+    let order = &game.0.order;
+    let state = &state.0;
+    let shown = compass.tracker.shown(order, state);
+    compass.positions = shown
+        .iter()
+        .filter_map(|s| {
+            talkers
+                .0
+                .iter()
+                .find(|t| t.reference == s.follow)
+                .map(|t| t.position)
+                .or_else(|| state.place(order, s.follow).map(|p| p.2))
+        })
+        .collect();
+}
+
 /// What the HUD shows, read from the game's state.
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct HudState<'w, 's> {
@@ -418,20 +549,31 @@ pub struct HudState<'w, 's> {
     talk_target: Res<'w, TalkTarget>,
     activatable: Res<'w, crate::scripts::Activatable>,
     doors: Res<'w, crate::walk::Doors>,
-    collision: Res<'w, crate::walk::CellCollision>,
+    /// What the crosshair is on (crosshair, the game's view caster).
+    crosshair: Res<'w, crate::crosshair::Crosshair>,
     menus: Res<'w, crate::menus::Menus>,
     talkers: Res<'w, Talkers>,
     markers: Res<'w, crate::map::MapMarkers>,
+    quest_compass: Res<'w, QuestCompass>,
     exterior: Option<Res<'w, crate::exterior::Exterior>>,
     cameras: Query<'w, 's, &'static Transform, With<FlyCamera>>,
     /// The game's menus open, drawn over the HUD (`game_menus`).
     game_menus: Res<'w, crate::game_menus::MenuDraw>,
+    /// The sights' node kept (`viewmodel::SightingNode`): no crosshair.
+    sighting: Res<'w, crate::viewmodel::SightingNode>,
+    /// The player sneaking (`walk::Player`), and the people who may
+    /// detect them (`ai::Walker::detected_player`), for the sneak meter.
+    player: Res<'w, crate::walk::Player>,
+    walkers: Query<'w, 's, &'static crate::ai::Walker>,
+    /// Through a scope (`viewmodel::Scoped`): HUD mode 0x17.
+    scoped: Res<'w, crate::viewmodel::Scoped>,
 }
 
 impl HudState<'_, '_> {
-    /// The native rollover prompt, matching the viewer's E dispatch order:
-    /// person, load/swing door, then a supported activatable. The Activatable text
-    /// resource is deliberately ignored; its name is built from the base record.
+    /// The reference under the crosshair, in the viewer's E dispatch order
+    /// (a person, a load door, a door that swings, an object), and what
+    /// the Info panel says about it (`world::activation::info`, the game's
+    /// `00775a00`).
     fn info_prompt(&self) -> Option<ui::hud::InfoPrompt> {
         if self.conversation.0.is_some()
             || self.menus.is_open()
@@ -442,65 +584,86 @@ impl HudState<'_, '_> {
             return None;
         }
         let order = &self.game.0.order;
-        let camera = self.cameras.single().ok()?;
-        let eye = crate::walk::game_point(camera.translation);
-        let f = camera.forward().as_vec3();
-        let direction = [f.x, -f.z, f.y];
-        let choice = if let Some((talker, _)) = &self.talk_target.0 {
-            Some((talker.base, "sTargetTypeTalk", "Talk", false))
-        } else if let Some(door) =
-            crate::walk::door_in_view(&self.doors.0, &self.collision.0, eye, direction)
+        let reference = if let Some((talker, _)) = &self.talk_target.0 {
+            talker.reference
+        } else if let Some(door) = crate::walk::door_in_view(&self.doors.0, &self.crosshair) {
+            esm::FormId(door.reference)
+        } else if let Some(reference) = crate::walk::opening_door_in_view(&self.crosshair)
+            .filter(|&r| crate::walk::is_door(order, r))
         {
-            Some((
-                esm::FormId(door.reference),
-                "sTargetTypeOpenDoor",
-                "Open",
-                true,
-            ))
-        } else if let Some(reference) =
-            crate::walk::opening_door_in_view(&self.collision.0, eye, direction)
-        {
-            Some((reference, "sTargetTypeOpen", "Open", true))
+            reference
         } else {
-            self.activatable.0.as_ref().and_then(|(reference, _)| {
-                let (base, setting, default) = supported_activation(order, *reference)?;
-                Some((base, setting, default, false))
-            })
-        }?;
-        let (base, setting, exe_default, resolve_target_base) = choice;
-        let base = if resolve_target_base {
-            world::scripting::base_of(order, base)?
-        } else {
-            base
+            self.activatable.0.as_ref()?.0
         };
-        let target = order.get(base)?.record().ok()?.full_name()?;
-        let crime = self.activatable.0.as_ref().is_some_and(|(reference, _)| {
-            world::scripting::base_of(order, *reference) == Some(base)
-                && order.get(base).is_some_and(|r| {
-                    world::scripting::is_item(r.entry.header.kind)
-                        || r.entry.header.kind == esm::FourCC::new(b"CONT")
-                })
-                && !world::crime::may_take(
-                    order,
-                    &self.state.0,
-                    world::crime::owner_of(order, &self.state.0, *reference),
-                )
-        });
-        let (setting, exe_default) = if crime {
-            ("sSteal", "Steal")
-        } else {
-            (setting, exe_default)
-        };
-        let action = world::scripting::game_setting_text(order, setting)
-            .unwrap_or_else(|| exe_default.to_string());
+        let info = world::activation::info(order, &self.state.0, reference)?;
         Some(ui::hud::InfoPrompt {
-            action,
-            target,
-            // The current viewer action handler is KeyE; display that same
-            // input until key rebinding is implemented end to end.
+            action: info.action,
+            target: info.target,
+            // The Activate control's key (control 5, `00877720(5, 0)`'s
+            // name, then ")"); the viewer's binding is E.
             shortcut: Some("E".to_string()),
-            crime,
+            crime: info.crime,
+            lock: info.lock,
+            empty: info.empty,
+            weight_value: info
+                .weight_value
+                .map(|w| [w.weight, w.weight_label, w.value, w.value_label]),
         })
+    }
+    /// What the sneak meter says while the player sneaks (`007732d0`):
+    /// in combat when someone fights the player (`009444d0` counting them
+    /// through `009931c0`), all of them searching when none has seen the
+    /// player for over `fCombatDetectionLostTime`; the highest detection
+    /// level of the people about (`00973710`: each one's detection of the
+    /// player, kept −100 … 100, 100 for one fighting the player); and the
+    /// hostile detection flag (player +0x5f8, set there when a hostile one
+    /// detects the player: `008b06d0`'s hostility test isn't followed;
+    /// whether they would attack on sight stands for it). `None` when not
+    /// sneaking.
+    fn sneak_meter(&self) -> Option<ui::hud::SneakMeterState> {
+        if !self.player.sneaking || !self.player.walking {
+            return None;
+        }
+        let order = &self.game.0.order;
+        let state = &self.state.0;
+        let now = self.time.elapsed_secs();
+        let lost =
+            world::scripting::game_setting(order, "fCombatDetectionLostTime").unwrap_or(15.0);
+        let mut fighters = 0;
+        let mut searching = 0;
+        let mut level = i32::MIN;
+        let mut hostile = false;
+        for w in self.walkers.iter() {
+            if state.dead.contains(&w.reference) {
+                continue;
+            }
+            let fight = w.fight.as_ref().filter(|f| f.memory.target == PLAYER_REF);
+            let detected = if let Some(f) = fight {
+                fighters += 1;
+                if f.memory.unseen_for(now) > lost {
+                    searching += 1;
+                }
+                100
+            } else if w.detected_player == i32::MIN {
+                continue;
+            } else {
+                w.detected_player.clamp(-100, 100)
+            };
+            if detected > 0
+                && world::factions::attacks_on_sight(order, state, w.reference, PLAYER_REF)
+            {
+                hostile = true;
+            }
+            level = level.max(detected);
+        }
+        let level = if level == i32::MIN { 0 } else { level };
+        let in_combat = fighters > 0;
+        Some(ui::hud::SneakMeterState::of(
+            in_combat,
+            in_combat && searching == fighters,
+            hostile,
+            level,
+        ))
     }
 
     /// The HUD's input this frame (`opacity`: `fHudOpacity`).
@@ -524,9 +687,17 @@ impl HudState<'_, '_> {
                 let clip = (self.attack.in_clip().unwrap_or(w.clip) as i32).min(held);
                 (clip, held - clip)
             });
+            // The loaded ammunition's abbreviation (`QNAM`), for the
+            // ammunition type label (`007721c0`).
+            let ammo_abbrev = w
+                .ammo_in_use(order, state, PLAYER_REF)
+                .and_then(|a| order.get(a))
+                .and_then(|r| r.record().ok())
+                .and_then(|r| r.get(esm::FourCC::new(b"QNAM")).map(|s| s.zstring()));
             WeaponState {
                 id: w.form_id.0,
                 ammo,
+                ammo_abbrev,
                 condition: combat::weapon_condition(state, PLAYER_REF, w.form_id),
             }
         });
@@ -599,8 +770,16 @@ impl HudState<'_, '_> {
             interior: !outdoors,
             markers,
             actors,
+            quests: self
+                .quest_compass
+                .positions
+                .iter()
+                .map(|&position| ui::compass::CompassQuest { position })
+                .collect(),
             opacity,
-            crosshair: !dead,
+            // Hidden with the sights' node kept (`00771700` clears the
+            // reticle's bit when player +0xe34 is set in first person).
+            crosshair: !dead && !self.sighting.0 && self.scoped.0.is_none(),
             subtitle: None,
             experience: Some(experience),
             menu_open: self.menu_hides_xp(),
@@ -626,7 +805,11 @@ impl HudState<'_, '_> {
     /// menu that opened from the game), and whether it's the dialogue menu.
     fn parts(&self) -> (u32, bool) {
         let first = self.game_menus.1.first().copied();
-        let parts = if first.is_none() {
+        let parts = if first.is_none() && self.scoped.0.is_some() {
+            // Through a scope (`00771700` mode 0x17): mask 8, the enemy's
+            // health only.
+            ui::hud::part::ENEMY_HEALTH
+        } else if first.is_none() {
             ui::hud::gameplay_parts(
                 self.state.0.controls_off[world::scripting::controls::MOVEMENT],
                 self.state.0.controls_off[world::scripting::controls::ROLLOVER],
@@ -758,7 +941,7 @@ fn update_hud(
     if built.as_ref().is_none_or(|b| b.size != size) {
         // A new size lays everything out again.
         if let Some(old) = built.take() {
-            for (e, mesh, material) in old.drawn {
+            for (e, mesh, material) in old.drawn.into_iter().flatten() {
                 commands.entity(e).despawn();
                 meshes.remove(&mesh);
                 materials.remove(&material);
@@ -825,11 +1008,17 @@ fn update_hud(
                 .queue_message(&mut b.ui, &text, None, ui::hud::MESSAGE_SECONDS);
         }
     }
+    for (text, icon) in messages.with_icon.drain(..) {
+        b.hud
+            .queue_message(&mut b.ui, &text, Some(&icon), ui::hud::MESSAGE_SECONDS);
+    }
     let input = from.input(b.opacity);
     // Restore each prior mask before this frame writes tile visibility, then
     // save the fresh state under the mask selected below.
     b.hud.lift_mask(&mut b.ui, &mut b.masked);
     b.hud.update(&mut b.ui, &input);
+    b.hud
+        .update_sneak(&mut b.ui, from.sneak_meter(), b.opacity, input.time);
     let info = from.info_prompt();
     b.hud.update_info(&mut b.ui, info.as_ref(), b.opacity);
     // V.A.T.S. on, or one of the game's menus open: the HUD shows only what
@@ -857,6 +1046,7 @@ fn update_hud(
                 interior: input.interior,
                 markers: input.markers.clone(),
                 actors: input.actors.clone(),
+                quests: input.quests.clone(),
                 opacity: input.opacity * 255.0,
             };
             menu.update(&mut b.ui, &wanted);
@@ -890,17 +1080,35 @@ fn update_hud(
         return;
     }
 
-    // Something changed: the pieces again.
-    for (e, mesh, material) in b.drawn.drain(..) {
-        commands.entity(e).despawn();
-        meshes.remove(&mesh);
-        materials.remove(&material);
+    // Something changed. With as many items as before, the pieces of
+    // those that changed are made again, each in its place in the list (a
+    // meter or marker moving doesn't make the rest again every frame);
+    // otherwise all of them.
+    let changed: Option<Vec<bool>> = (items.len() == b.last.len() && b.drawn.len() == items.len())
+        .then(|| items.iter().zip(&b.last).map(|(a, l)| a != l).collect());
+    if changed.is_none() {
+        for (e, mesh, material) in b.drawn.drain(..).flatten() {
+            commands.entity(e).despawn();
+            meshes.remove(&mesh);
+            materials.remove(&material);
+        }
+        b.drawn = vec![Vec::new(); items.len()];
     }
     let compressed = device
         .as_ref()
         .is_none_or(|d| d.features().contains(WgpuFeatures::TEXTURE_COMPRESSION_BC));
     let k = 1.0 / b.ui.screen_size.resolution_converter();
     for (i, item) in items.iter().enumerate() {
+        if let Some(changed) = &changed {
+            if !changed[i] {
+                continue;
+            }
+            for (e, mesh, material) in b.drawn[i].drain(..) {
+                commands.entity(e).despawn();
+                meshes.remove(&mesh);
+                materials.remove(&material);
+            }
+        }
         let tint = Vec4::from_array(item.color);
         let mut pieces: Vec<Piece> = Vec::new();
         match &item.kind {
@@ -986,6 +1194,48 @@ fn update_hud(
                     }
                 }
             }
+            DrawKind::Model {
+                texture,
+                triangles,
+                alpha,
+                blend,
+            } => {
+                let texture = match texture {
+                    Some(path) => {
+                        let key = (path.clone(), false, false);
+                        b.images
+                            .entry(key)
+                            .or_insert_with(|| {
+                                upload_picture(&mut images, game, path, (false, false), compressed)
+                            })
+                            .clone()
+                    }
+                    None => Some(white.clone()),
+                };
+                let Some(texture) = texture else {
+                    continue;
+                };
+                let mesh = meshes.add(triangles_mesh(triangles, alpha, k, size));
+                let material = materials.add(TileMaterial {
+                    params: TileParams {
+                        tint,
+                        scroll: Vec4::new(0.0, 0.0, 1.0, 1.0),
+                        mode: Vec4::ZERO,
+                    },
+                    texture,
+                    alpha_map: white.clone(),
+                    blend: *blend,
+                });
+                let entity = commands
+                    .spawn((
+                        Mesh2d(mesh.clone()),
+                        MeshMaterial2d(material.clone()),
+                        Transform::from_xyz(0.0, 0.0, i as f32 * 0.01),
+                        RenderLayers::layer(HUD_LAYER),
+                    ))
+                    .id();
+                b.drawn[i].push((entity, mesh, material));
+            }
         }
         for Piece {
             texture,
@@ -1003,6 +1253,7 @@ fn update_hud(
                 },
                 texture,
                 alpha_map: alpha_map.unwrap_or_else(|| white.clone()),
+                blend: None,
             });
             // Back to front in the list's order.
             let entity = commands
@@ -1013,7 +1264,7 @@ fn update_hud(
                     RenderLayers::layer(HUD_LAYER),
                 ))
                 .id();
-            b.drawn.push((entity, mesh, material));
+            b.drawn[i].push((entity, mesh, material));
         }
     }
     b.last = items;
@@ -1024,46 +1275,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn info_activation_resolves_reference_to_acti_base_name() {
+    fn info_activation_names_the_base_and_its_action() {
         use esm::{ActivePlugins, LoadOrder};
-        use testdata::functions::ids::{CHEST_REF, CUP_REF, HOUSE, VIGOR_TESTER_REF};
+        use testdata::functions::ids::{CHEST_REF, CUP_REF, VIGOR_TESTER_REF};
 
         let data = testdata::functions::functions("hud-info-activation");
         let order = LoadOrder::from_data_dir(data.path(), &ActivePlugins::OfficialOnly).unwrap();
-        let reference = esm::FormId(VIGOR_TESTER_REF);
-        let base = world::scripting::base_of(&order, reference).unwrap();
-        assert_ne!(base, reference);
-        assert_eq!(
-            order.get(base).unwrap().entry.header.kind,
-            esm::FourCC::new(b"ACTI")
-        );
-        assert_eq!(
-            supported_activation(&order, reference),
-            Some((base, "sTargetTypeActivate", "Activate"))
-        );
-        let target = order
-            .get(base)
-            .unwrap()
-            .record()
-            .unwrap()
-            .full_name()
-            .unwrap();
-        assert_eq!(target, "Vit-o-matic Vigor Tester");
-        assert!(order.get(esm::FormId(HOUSE)).is_some());
-        assert_eq!(
-            supported_activation(&order, esm::FormId(CUP_REF))
-                .unwrap()
-                .1,
-            "sTargetTypeTake"
-        );
-        assert_eq!(
-            supported_activation(&order, esm::FormId(CHEST_REF))
-                .unwrap()
-                .1,
-            "sTargetTypeOpen"
-        );
+        let state = world::scripting::GameState::new(&order);
+        let info = |r: u32| world::activation::info(&order, &state, esm::FormId(r)).unwrap();
+        let tester = info(VIGOR_TESTER_REF);
+        assert_eq!(tester.action.as_deref(), Some("Activate"));
+        assert_eq!(tester.target, "Vit-o-matic Vigor Tester");
+        // The cup is someone else's: "Steal", in the crime colour.
+        let cup = info(CUP_REF);
+        assert_eq!(cup.action.as_deref(), Some("Steal"));
+        assert!(cup.crime);
+        assert_eq!(info(CHEST_REF).action.as_deref(), Some("Open"));
     }
-
     #[test]
     fn quads_land_on_the_games_pixels() {
         // The HP meter at 60, 844 units, 296 x 20, on a 1920 x 1080 screen

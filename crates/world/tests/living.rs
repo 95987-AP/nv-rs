@@ -490,9 +490,9 @@ fn using_a_person_picks_their_pockets_while_sneaking() {
     assert_eq!(used(&state, mark), pickpocket::Use::Talk);
     state.player_sneaking = true;
     assert_eq!(used(&state, mark), pickpocket::Use::Pickpocket);
-    // Not the player's companions.
+    // Not the player's companions: their wheel of orders (`005fa330`).
     run(&order, &scripts, &mut state, "PalRef.SetPlayerTeammate 1");
-    assert_eq!(used(&state, FormId(PAL_REF)), pickpocket::Use::Talk);
+    assert_eq!(used(&state, FormId(PAL_REF)), pickpocket::Use::Wheel);
     assert_eq!(
         pickpocket::use_person(&order, &state, mark, true),
         pickpocket::Use::Refused("Owner is fleeing.".into())
@@ -518,12 +518,15 @@ fn the_chance_follows_the_games_settings() {
     let mark = FormId(MARK_REF);
     state.actor_values.insert((PLAYER_REF, 42), 50.0);
     // 40 + 0.6 × 50 − 0.6 × 20 − 0.5 × V.
-    let money = pickpocket::stack_value(&order, FormId(MONEY), 1);
+    let money = pickpocket::stack_value(&order, &state, FormId(MONEY), 1);
     assert_eq!(money, 10.0);
     assert_eq!(pickpocket::chance(&order, &state, mark, money), 53);
-    assert_eq!(pickpocket::stack_value(&order, FormId(MONEY), 3), 30.0);
+    assert_eq!(
+        pickpocket::stack_value(&order, &state, FormId(MONEY), 3),
+        30.0
+    );
     // Something dear: at least 5.
-    let gold = pickpocket::stack_value(&order, FormId(GOLD), 1);
+    let gold = pickpocket::stack_value(&order, &state, FormId(GOLD), 1);
     assert_eq!(pickpocket::chance(&order, &state, mark, gold), 5);
     // Placing anything is V = 1: 57.5, cut to 57.
     assert_eq!(pickpocket::chance(&order, &state, mark, 1.0), 57);

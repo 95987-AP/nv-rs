@@ -35,6 +35,8 @@ use nif::Transform;
 use crate::scripting::{game_setting, Facts, GameState};
 
 pub mod camera;
+pub mod groups;
+pub mod pick;
 pub mod snapshot;
 
 /// The animation settings the rules read: `fAnimationDefaultBlend`
@@ -350,11 +352,21 @@ pub mod section {
 /// movement section and the upper body, 21, as the weapon section:
 /// `00494740`).
 pub fn section_of(group: u8) -> u8 {
-    match GROUPS.get(usize::from(group)).map(|g| g.1) {
-        Some(20) => section::MOVEMENT,
-        Some(21) => section::WEAPON,
-        Some(s) => s,
-        None => section::IDLE,
+    slot(
+        GROUPS
+            .get(usize::from(group))
+            .map_or(section::IDLE, |g| g.1),
+    )
+}
+
+/// The section slot a section number plays in (`004301b0`, `00491040`,
+/// `0070f490`): the whole body (0x14) in the movement slot, the upper body
+/// (0x15) in the weapon slot.
+pub fn slot(section: u8) -> u8 {
+    match section {
+        20 => section::MOVEMENT,
+        21 => section::WEAPON,
+        s => s,
     }
 }
 
@@ -390,6 +402,12 @@ pub struct GroupData {
     /// skeleton's axes (zero when it stays): the group's movement vector
     /// (group +0x1c; inferred from its use as velocity × dt).
     pub travel: [f32; 3],
+    /// An equip's `Attach` or an unequip's `Detach` key (their kinds'
+    /// second action, `01199a50`): when the weapon goes to the hand or
+    /// back (`00491180` counts the keys passed, `00895110` acts on the
+    /// first). The parser's key array starts zeroed (`005f2450`), so a file
+    /// without one attaches at once (0).
+    pub attach: f32,
 }
 
 impl GroupData {
@@ -404,6 +422,7 @@ impl GroupData {
             loop_start: f32::NAN,
             loop_end: f32::NAN,
             travel: [0.0; 3],
+            attach: 0.0,
         };
         let number = |rest: &str| -> u8 {
             let rest = rest.trim();
@@ -427,6 +446,8 @@ impl GroupData {
                 d.loop_start = *time;
             } else if lower == "endloop" {
                 d.loop_end = *time;
+            } else if lower == "attach" || lower == "detach" {
+                d.attach = *time;
             }
         }
         // The parser's fixes for special idles: a loop start before the
@@ -672,6 +693,19 @@ pub struct Player {
     pub movement_rate: f32,
     /// The weapon animations' rate (+0x110).
     pub weapon_rate: f32,
+    /// `cSkipNextBlend` (Xbox PDB name of `Animation` +0x120, the same
+    /// offset on PC): set, the next group played or section stopped
+    /// switches at once instead of blending (`004949a0` takes blend 0,
+    /// `004994f0` stops with blend 0, `00496080` deactivates at once);
+    /// cleared at the end of the next update (`00491180`). Set through
+    /// [`Self::skip_next_blend`].
+    skip_blend: bool,
+    /// The weapon is drawn (the process's `GetWeaponDrawn`, Xbox PDB,
+    /// `008a16d0`): a group that ends in the weapon section isn't eased out
+    /// but held for the aim to cross-fade from (`004994f0`: with the weapon
+    /// drawn only the weapon up and down sections stop, and `008b28c0`
+    /// plays the aim over the ended group).
+    pub weapon_drawn: bool,
 }
 
 impl Default for Player {
@@ -695,7 +729,25 @@ impl Player {
             settings,
             movement_rate: 1.0,
             weapon_rate: 1.0,
+            skip_blend: false,
+            weapon_drawn: false,
         }
+    }
+
+    /// The next group change switches without a blend, until the next
+    /// [`Self::update`] ends (`004974a0` sets `cSkipNextBlend`, Xbox PDB).
+    /// The furniture procedures set it wherever they turn the actor by the
+    /// marker's heading delta or half a turn, so the animation's body turn
+    /// and the actor's heading change in the same frame (`009213e0` after
+    /// the entry, `00921e80` as the exit starts and after it ends).
+    // Translated from 004974a0 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn skip_next_blend(&mut self) {
+        self.skip_blend = true;
+    }
+
+    /// Whether the next group change skips its blend.
+    pub fn skips_next_blend(&self) -> bool {
+        self.skip_blend
     }
 
     /// The index of the sequence playing in a section (not one easing
@@ -753,18 +805,38 @@ impl Player {
     /// many more times a looping group plays (−1 for ever). True when
     /// something started.
     pub fn play(&mut self, group: u8, seq: &Arc<Sequence>, loops: i32, bones: &[Bone]) -> bool {
-        self.play_from_pose(group, seq, loops, bones, None)
+        self.play_from_pose(group, section_of(group), seq, loops, bones, None)
+    }
+
+    /// Plays a group in a section other than its own (`004949a0` with a
+    /// section: an idle played as its `IDLE` record's section, `00498290`;
+    /// the whole body, 0x14, plays in the movement section and the upper
+    /// body, 0x15, in the weapon section).
+    pub fn play_in(
+        &mut self,
+        section: u8,
+        group: u8,
+        seq: &Arc<Sequence>,
+        loops: i32,
+        bones: &[Bone],
+    ) -> bool {
+        self.play_from_pose(group, slot(section), seq, loops, bones, None)
+    }
+
+    /// What the text keys of the sequence playing in a section say.
+    pub fn data(&self, section: u8) -> Option<GroupData> {
+        self.current(slot(section)).map(|i| self.active[i].data)
     }
 
     fn play_from_pose(
         &mut self,
         group: u8,
+        section: u8,
         seq: &Arc<Sequence>,
         loops: i32,
         bones: &[Bone],
         pose: Option<Vec<nif::Transform>>,
     ) -> bool {
-        let section = section_of(group);
         let old = self.current(section);
         if let Some(i) = old {
             let a = &self.active[i];
@@ -773,7 +845,12 @@ impl Player {
             }
         }
         let data = GroupData::read(seq);
-        let blend = blend_seconds(old.map(|i| &self.active[i].data), &data, &self.settings);
+        // `cSkipNextBlend`: no blend (`004949a0`).
+        let blend = if self.skip_blend {
+            0.0
+        } else {
+            blend_seconds(old.map(|i| &self.active[i].data), &data, &self.settings)
+        };
         let bone_tracks = bone_tracks(seq, bones);
         let mut new = Active {
             seq: Some(seq.clone()),
@@ -860,9 +937,19 @@ impl Player {
     /// loaded groups, asynchronous loading and IDLE tree selection are
     /// the caller's responsibility. A repeated script request restarts.
     pub fn play_script_idle(&mut self, seq: &Arc<Sequence>, loops: i32, bones: &[Bone]) {
+        self.play_idle_in(section::SPECIAL_IDLE, seq, loops, bones);
+    }
+
+    /// Plays a loaded idle (the `SpecialIdle` group of its `.kf`) in the
+    /// section its `IDLE` record names (`00498290` → `00494740` with the
+    /// record's section: 0 the base loop, 1 or 0x14 the movement section,
+    /// 0x15 the weapon section, 7 the special idle), the old one there freed
+    /// at once and the new one blended in from the pose (`00498910(0,1)`).
+    pub fn play_idle_in(&mut self, section: u8, seq: &Arc<Sequence>, loops: i32, bones: &[Bone]) {
+        let section = slot(section);
         let pose = self.locals(bones);
-        self.active.retain(|a| a.section != section::SPECIAL_IDLE);
-        self.play_from_pose(group::SPECIAL_IDLE, seq, loops, bones, Some(pose));
+        self.active.retain(|a| a.section != section);
+        self.play_from_pose(group::SPECIAL_IDLE, section, seq, loops, bones, Some(pose));
     }
 
     /// Requests an already loaded special-idle sequence immediately.
@@ -896,28 +983,110 @@ impl Player {
         true
     }
 
+    /// [`Self::request_special_idle`] for an idle that plays in its
+    /// record's section (`00498290`: 0, 1, 7, 0x14 or 0x15) while the
+    /// current one plays in `current`: refused while the current one is
+    /// starting or is this very sequence; else the current one is freed at
+    /// once wherever it plays and the new one blended in from the pose.
+    pub fn request_idle_in(
+        &mut self,
+        current: u8,
+        section: u8,
+        seq: &Arc<Sequence>,
+        loops: i32,
+        bones: &[Bone],
+    ) -> bool {
+        let current = slot(current);
+        let is_idle = self.playing(current) == Some(group::SPECIAL_IDLE);
+        if is_idle && matches!(self.state(current), Some(State::EaseIn | State::TransDest)) {
+            return false;
+        }
+        if is_idle
+            && self
+                .sequence(current)
+                .is_some_and(|old| Arc::ptr_eq(old, seq))
+        {
+            return false;
+        }
+        if is_idle && current != slot(section) {
+            self.cut_section(current);
+        }
+        self.play_idle_in(section, seq, loops, bones);
+        true
+    }
+
     /// Releases the loaded special idle (`00498910`, non-forced path).
     /// Like a new request, freeing a sequence that just started in EaseIn
     /// or TransDest is refused. `RemoveScriptPackage` calls this for both
     /// player view skeletons (`005cc7c0`); accepted releases use the normal
     /// group blend-out. Pending asynchronous requests are outside this model.
     pub fn free_special_idle(&mut self) -> bool {
-        if matches!(
-            self.state(section::SPECIAL_IDLE),
-            Some(State::EaseIn | State::TransDest)
-        ) {
+        self.free_idle_in(section::SPECIAL_IDLE)
+    }
+
+    /// Removes everything in a section at once (a forced free,
+    /// `00498910(0,1)` → `00498670`: the sequence deactivated with no
+    /// blend).
+    pub fn cut_section(&mut self, section: u8) {
+        let section = slot(section);
+        self.active.retain(|a| a.section != section);
+    }
+
+    /// [`Self::free_special_idle`] for an idle playing in another section.
+    pub fn free_idle_in(&mut self, section: u8) -> bool {
+        let section = slot(section);
+        if matches!(self.state(section), Some(State::EaseIn | State::TransDest)) {
             return false;
         }
-        self.stop_section(section::SPECIAL_IDLE);
+        if self.playing(section) == Some(group::SPECIAL_IDLE) {
+            self.stop_section(section);
+        }
         true
     }
 
     /// Stops a section's group (`004994f0`): it eases out over its
-    /// blend-out time (the default without one).
+    /// blend-out time (the default without one). Which sections go
+    /// (`00496080`): the weapon section takes the weapon up and down ones
+    /// with it; the upper body (0x15) is the left arm and hand and the
+    /// weapon sections; the whole body (0x14) everything (the special idle,
+    /// the base loop unless `cSkipNextBlend` is set, the movement, the
+    /// upper body). (`00496080` keeps the special idle and the left arm for
+    /// one untraced state, `00702640` = 1.)
     pub fn stop_section(&mut self, section: u8) {
-        if let Some(i) = self.current(section) {
-            let blend = stop_blend_seconds(&self.active[i].data, &self.settings);
-            self.ease_out(i, blend);
+        use self::section as s;
+        let skip = self.skip_blend;
+        let all: &[u8] = match section {
+            0x14 if skip => &[s::SPECIAL_IDLE, s::MOVEMENT, 2, 3, 5, 6, s::WEAPON],
+            0x14 => &[s::SPECIAL_IDLE, s::IDLE, s::MOVEMENT, 2, 3, 5, 6, s::WEAPON],
+            0x15 => &[2, 3, 5, 6, s::WEAPON],
+            s::WEAPON => &[5, 6, s::WEAPON],
+            other => &[other][..],
+        };
+        // One blend for all (`004994f0`): the stopped section's own
+        // group's blend-out, none when it has nothing (or with
+        // `cSkipNextBlend`).
+        let blend = match self.current(slot(section)) {
+            Some(i) if !skip => stop_blend_seconds(&self.active[i].data, &self.settings),
+            _ => 0.0,
+        };
+        for &each in all {
+            if let Some(i) = self.current(each) {
+                self.ease_out(i, blend);
+            }
+        }
+    }
+
+    /// Stops the weapon up and down sections only (`004994f0` with the
+    /// weapon drawn: the weapon section itself goes on into the aim).
+    pub fn stop_weapon_up_down(&mut self) {
+        let blend = match self.current(section::WEAPON) {
+            Some(i) if !self.skip_blend => stop_blend_seconds(&self.active[i].data, &self.settings),
+            _ => 0.0,
+        };
+        for s in [section::WEAPON_UP, section::WEAPON_DOWN] {
+            if let Some(i) = self.current(s) {
+                self.ease_out(i, blend);
+            }
         }
     }
 
@@ -1010,13 +1179,23 @@ impl Player {
             self.active.remove(i);
         }
         for f in &finished {
+            if f.section == section::WEAPON && self.weapon_drawn {
+                self.stop_weapon_up_down();
+                continue;
+            }
             if let Some(i) = self.current(f.section) {
                 if self.active[i].group == f.group {
-                    let blend = stop_blend_seconds(&self.active[i].data, &self.settings);
+                    let blend = if self.skip_blend {
+                        0.0
+                    } else {
+                        stop_blend_seconds(&self.active[i].data, &self.settings)
+                    };
                     self.ease_out(i, blend);
                 }
             }
         }
+        // The update over, `cSkipNextBlend` is cleared (`00491180`).
+        self.skip_blend = false;
         finished
     }
 
@@ -1457,6 +1636,7 @@ mod tests {
             loop_start: 0.0,
             loop_end: 1.2,
             travel: [0.0; 3],
+            attach: 0.0,
         };
         let run = GroupData { blend: 9, ..walk };
         let plain = GroupData { blend: 0, ..walk };
@@ -1779,6 +1959,52 @@ mod tests {
         assert!(p.all().contains(&(group::ATTACK_RIGHT, State::EaseOut)));
         p.update(0.25);
         assert_eq!(p.all(), vec![(group::IDLE, State::Animating)]);
+    }
+
+    #[test]
+    fn skip_next_blend_switches_at_once_for_one_update() {
+        // Sitting down as the game ends it: the entry (Blend:15, 0.5 s)
+        // over the seated loop; the procedure turns the actor and sets
+        // `cSkipNextBlend` before freeing the entry (`009213e0`).
+        let bones = skeleton();
+        let seat = Arc::new(still("Seat", "Arm", [0.0, 0.0, 5.0], 35, &[(0.0, "start")]));
+        let entry = Arc::new(still(
+            "Entry",
+            "Arm",
+            [0.0, 0.0, 50.0],
+            80,
+            &[(0.0, "start"), (0.5, "Blend:15"), (1.0, "end")],
+        ));
+        let mut p = Player::default();
+        p.play(group::DYNAMIC_IDLE, &seat, -1, &bones);
+        p.play(group::SPECIAL_IDLE, &entry, 0, &bones);
+        p.update(0.6);
+        // Without the flag the entry would ease out over its 15 frames.
+        let mut eased = p.clone();
+        eased.stop_section(section::SPECIAL_IDLE);
+        assert!(eased.all().contains(&(group::SPECIAL_IDLE, State::EaseOut)));
+        // With it the entry is gone at once and the seated loop shows.
+        p.skip_next_blend();
+        p.stop_section(section::SPECIAL_IDLE);
+        assert_eq!(p.all(), vec![(group::DYNAMIC_IDLE, State::Animating)]);
+        let arm = p.locals(&bones)[1].translation;
+        assert_eq!(arm, [0.0, 0.0, 5.0]);
+        // A group started while it's set cuts in without a blend too.
+        let exit = Arc::new(still(
+            "Exit",
+            "Arm",
+            [0.0, 0.0, 40.0],
+            80,
+            &[(0.0, "start"), (0.6, "Blend:15")],
+        ));
+        assert!(p.play(group::SPECIAL_IDLE, &exit, 0, &bones));
+        assert_eq!(p.state(section::SPECIAL_IDLE), Some(State::Animating));
+        assert_eq!(p.locals(&bones)[1].translation, [0.0, 0.0, 40.0]);
+        // The update clears it: the next change blends again.
+        p.update(0.1);
+        assert!(!p.skips_next_blend());
+        p.stop_section(section::SPECIAL_IDLE);
+        assert!(p.all().contains(&(group::SPECIAL_IDLE, State::EaseOut)));
     }
 
     #[test]

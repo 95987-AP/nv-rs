@@ -10,6 +10,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bink"
+version = "0.1.0"
+
+[[package]]
 name = "bsa"
 version = "0.1.0"
 dependencies = [
@@ -59,6 +63,7 @@ name = "nvinspect"
 version = "0.1.0"
 dependencies = [
  "assets",
+ "bink",
  "bsa",
  "cellview",
  "dds",
@@ -95,6 +100,14 @@ dependencies = [
 [[package]]
 name = "script"
 version = "0.1.0"
+
+[[package]]
+name = "scriptgen"
+version = "0.1.0"
+dependencies = [
+ "esm",
+ "script",
+]
 
 [[package]]
 name = "shaders"

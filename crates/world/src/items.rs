@@ -118,6 +118,29 @@ pub fn effects(order: &LoadOrder, item: FormId) -> Vec<ItemEffect> {
     out
 }
 
+/// An item's value (its `DATA` value, as [`item_info`] reads it), or as
+/// `SetItemValue` set it; 0 for a form without one.
+pub fn value(order: &LoadOrder, state: &GameState, item: FormId) -> i32 {
+    match state.more.item_values.get(&item) {
+        Some(&v) => v,
+        None => item_info(order, item).map_or(0, |i| i.value),
+    }
+}
+
+/// A default object (the `DOBJ` record `DefaultObjectManager`: its `DATA`
+/// an array of forms, `0058db10` reading slot n): 0 the Stimpak, 2 Rad-X,
+/// 3 RadAway, 21 the Doctor's Bag (the STATS menu's aid buttons,
+/// `007da2c0`).
+pub fn default_object(order: &LoadOrder, index: usize) -> Option<FormId> {
+    let rr = order.records_of_type(FourCC::new(b"DOBJ")).next()?;
+    let rr = order.get(rr.form_id)?;
+    let record = rr.record().ok()?;
+    let data = record.get(esm::sig::DATA)?.data.clone();
+    let at = index * 4;
+    let raw = u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?);
+    (raw != 0).then(|| rr.plugin.to_global(FormId(raw)))
+}
+
 /// An aid item's (`ALCH`) `ENIT` flags (u8 at 4): 0x01 no auto-calculate,
 /// 0x02 a food item, 0x04 a medicine (the Stimpak's 0x05). `None` for
 /// anything but an aid item.
@@ -193,6 +216,40 @@ pub fn cannot_read_in_combat(order: &LoadOrder, state: &GameState) -> Option<Str
         crate::scripting::game_setting_text(order, "sCanNotReadBook")
             .unwrap_or_else(|| "You cannot read a book during combat!".to_string())
     })
+}
+
+/// Why the player can't drop an item from the Pip-Boy (ITEMS' Drop,
+/// `00780140` case 7), as the game asks in turn: a quest item
+/// (`sDropQuestItemWarning`); an equipped one while they're in the middle
+/// of an action (`008a7570` not -1: `sDropEquippedItemWarning`); in the air
+/// (`009337b0`: `sNoJumpWarning`). The game's further checks, a worn item
+/// that can't come off (`sCantRemoveWornItem`) and no room in front of them
+/// (`009614b0`: `sNotEnoughRoomWarning`), aren't asked here. The setting
+/// whose text is shown.
+pub fn drop_refusal(
+    order: &LoadOrder,
+    state: &GameState,
+    item: FormId,
+    acting: bool,
+    in_air: bool,
+) -> Option<&'static str> {
+    if crate::script_functions::is_quest_item(order, state, item) {
+        return Some("sDropQuestItemWarning");
+    }
+    if acting && state.is_equipped(crate::dialogue::PLAYER_REF, item) {
+        return Some("sDropEquippedItemWarning");
+    }
+    if in_air {
+        return Some("sNoJumpWarning");
+    }
+    None
+}
+
+/// How many the Pip-Boy drops without asking (`00780140`: more than
+/// `iInventoryAskQuantityAt`, 5, asks "How many?"; fewer drop one).
+pub fn drop_asks(order: &LoadOrder, count: i32) -> bool {
+    let at = crate::scripting::game_setting(order, "iInventoryAskQuantityAt").unwrap_or(5.0);
+    count > at as i32
 }
 
 /// The player reads a skill book (read from the game's code, `00515040`
@@ -309,7 +366,7 @@ pub fn weight(order: &LoadOrder, item: FormId, hardcore: bool) -> f32 {
     let Some(rr) = order.get(item) else {
         return NONE;
     };
-    let Ok(record) = rr.record() else {
+    let Ok(record) = rr.record_shared() else {
         return NONE;
     };
     let data = record
@@ -331,6 +388,49 @@ pub fn weight(order: &LoadOrder, item: FormId, hardcore: bool) -> f32 {
         _ => None,
     };
     w.unwrap_or(NONE)
+}
+
+/// What someone carries and can carry, as trading with a companion asks
+/// it: the most is their Carry Weight (actor value 13) through the
+/// holder's perks' "Get Max Carry Weight" (entry point 22, the player's
+/// only; `008a0c20`); what they carry is their things' weight, for anyone
+/// but the player at most that (`00577250`).
+pub fn carry(order: &LoadOrder, state: &GameState, who: FormId) -> (f32, f32) {
+    let value = crate::scripting::Facts {
+        order,
+        state,
+        speaker: None,
+    }
+    .current_actor_value(who, 13)
+    .unwrap_or(0.0) as f32;
+    let most = crate::perks::apply_for(
+        order,
+        state,
+        who,
+        crate::perks::entry::GET_MAX_CARRY_WEIGHT,
+        value,
+        &[],
+    );
+    let mut carried = state.inventory_weight(order, who);
+    if who != crate::dialogue::PLAYER_REF {
+        carried = carried.min(most);
+    }
+    (carried, most)
+}
+
+/// Whether a companion has room for `count` more of an item (`0075dc80`
+/// in mode 3): what they carry plus the item's weight × `count`, at most
+/// the most they can carry.
+pub fn has_room(
+    order: &LoadOrder,
+    state: &GameState,
+    who: FormId,
+    item: FormId,
+    count: i32,
+) -> bool {
+    let (carried, most) = carry(order, state, who);
+    let each = weight(order, item, false).max(0.0);
+    each * count as f32 + carried <= most
 }
 
 /// One thing someone holds, as the game's item menus read it (the

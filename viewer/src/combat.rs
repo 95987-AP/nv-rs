@@ -18,8 +18,12 @@
 //! view (a guess). Skeletons without bodies use their record's bounds and
 //! the nearest bone. A person who drops their weapon has its model hidden.
 //!
-//! Not yet: projectiles in flight (the game's bullets are hitscan, others
-//! fly), auto-aim (3° toward a target), scope sway, hits on a held weapon
+//! Grenades and thrown weapons (dynamite) are thrown instead: their
+//! projectiles fly and explode in `explosives`.
+//!
+//! Not yet: other projectiles in flight (the game's bullets are hitscan;
+//! missiles, flames and beams fly), auto-aim (3° toward a target), the
+//! gun sway's turn on shots (`world::gun_wobble`), hits on a held weapon
 //! outside V.A.T.S. (part 14: its collision isn't tested). V.A.T.S. is
 //! `vats`, which shoots through [`first_met`] too.
 
@@ -42,8 +46,11 @@ use crate::sounds::SoundRequests;
 use crate::walk::{game_point, CellCollision, Player};
 use crate::{FlyCamera, GameFiles};
 
+/// The critical hit message's icon (`0089a760`).
+const CRITICAL_ICON: &str = "Interface\\Icons\\Message Icons\\glow_message_vaultboy_very_happy.dds";
+
 /// How far a shot can reach when nothing else says (units).
-const SHOT_RANGE: f32 = 10_000.0;
+pub(crate) const SHOT_RANGE: f32 = 10_000.0;
 
 /// The player's attacking: when the next one can come, rounds left in the
 /// clip (`None`: a full one), and a reload under way.
@@ -83,6 +90,34 @@ pub struct PlayerAttack {
     busy_until: f32,
     /// The Ready Item key's press (`world::combat::ReadyKey`).
     ready: combat::ReadyKey,
+    /// Looking down the sights (the process's iron sights flag, vfunc
+    /// +0x404 `GetIronSights` (Xbox PDB); `world::iron_sights`): the Aim
+    /// control (right mouse button) held with a gun out.
+    pub iron_sights: bool,
+    /// Blocking (anim action 7, `world::melee`): the Aim control held with
+    /// a melee weapon or fists out.
+    pub blocking: bool,
+    /// When the last blocked hit's `BlockHit` started (first person).
+    pub block_hit_at: Option<f32>,
+    /// The counter-attack timer (player +0xe28): `fCounterAttackTimer`
+    /// after a blocked hit, counting down.
+    pub counter_timer: f32,
+    /// The Attack control's hold (`011e07b0`), for power attacks, and a
+    /// power attack waiting for the attack playing to end (`011e07ac` 2).
+    power_timer: f32,
+    power_queued: bool,
+    /// The animation group of the attack playing (`world::melee::group`;
+    /// 0x20 the default `AttackRight`, the weapon's own otherwise), and
+    /// whether it's a power attack.
+    pub attack_group: u8,
+    pub power: bool,
+    /// The attack's first-person length (the view says, knowing the
+    /// animation), for the power attack waiting on it.
+    pub attack_length: f32,
+    /// The Ammo Swap timer (player +0xd50).
+    ammo_swap_timer: f32,
+    /// After the player's death (`world::player_death`).
+    death: world::player_death::DeathReload,
     /// Bodies by base record: half width and height (from `OBND`).
     bodies: HashMap<FormId, (f32, f32)>,
     /// Body part data by person or creature (`world::body_parts`).
@@ -112,6 +147,22 @@ impl PlayerAttack {
         self.out = out;
         self.readied_at = Some((now, out));
         self.busy_until = now;
+    }
+
+    /// The player's animation action now, by the game's numbers
+    /// (`GetAnimAction`, process vfunc +0x3e4: 0 drawing the weapon, 1
+    /// putting it away, 8 reloading; the attacks and the rest aren't kept
+    /// here), for what waits on it (the Sneak control, `walk`).
+    pub fn anim_action(&self, now: f32) -> Option<u8> {
+        if self.blocking {
+            return Some(7);
+        }
+        if now < self.busy_until {
+            return self
+                .readied_at
+                .map(|(_, drawing)| if drawing { 0 } else { 1 });
+        }
+        (now < self.reloaded_at).then_some(8)
     }
 
     /// The weapon `weapon` (`None`: fists) in hand and out, without the
@@ -176,9 +227,39 @@ pub(crate) fn first_met(
     melee: bool,
     now: f32,
 ) -> Met {
+    first_met_past(
+        order,
+        state,
+        caches,
+        (talkers, cell_scripts, collision, rigs),
+        (eye, dir),
+        reach,
+        (melee, None),
+        now,
+    )
+}
+
+/// [`first_met`], passing by `skip` (someone's own shot leaving their
+/// body).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn first_met_past(
+    order: &esm::LoadOrder,
+    state: &world::scripting::GameState,
+    caches: &mut PlayerAttack,
+    (talkers, cell_scripts, collision, rigs): (
+        &Talkers,
+        &CellScripts,
+        &CellCollision,
+        &Query<(&Walker, &ActorRig)>,
+    ),
+    (eye, dir): ([f32; 3], [f32; 3]),
+    reach: f32,
+    (melee, skip): (bool, Option<FormId>),
+    now: f32,
+) -> Met {
     let mut best: Option<(f32, FormId, Option<u8>)> = None;
     for t in &talkers.0 {
-        if state.dead.contains(&t.reference) {
+        if state.dead.contains(&t.reference) || Some(t.reference) == skip {
             continue;
         }
         // Shots pass a ghost by (`SetGhost`: the projectiles' target
@@ -206,20 +287,34 @@ pub(crate) fn first_met(
             }
         }
     }
-    // Trigger volumes aren't solid: shots go through them (the player
-    // standing in one caught every shot at 0 units before).
+    let struck = cast(collision, (eye, dir), reach, melee);
     for r in cell_scripts
         .refs
         .iter()
-        .filter(|r| r.script.is_some() && r.trigger.is_none())
+        .filter(|r| meetable(order, state, r))
     {
-        if let Some(d) = r.ray_hit(eye, dir) {
-            if d <= reach && best.is_none_or(|(bd, _, _)| d < bd) {
+        // An object Havok moves (`clutter`) is met where its body is now:
+        // by its triangles in the collider, which move with it (its placed
+        // bounds stay where it stood).
+        let met = if collision.0.owns(r.reference.0) {
+            struck
+                .filter(|&(_, t)| collision.0.owner(t) == r.reference.0)
+                .map(|(d, _)| d)
+        } else {
+            r.ray_hit(eye, dir)
+        };
+        if let Some(d) = met {
+            // A person's shot leaving from inside an object's bounds (Easy
+            // Pete on his porch) isn't stopped by them: the bounds stand in
+            // for the object's collision here, and the shooter stands in
+            // that space.
+            let inside = skip.is_some() && d < 1.0;
+            if !inside && d <= reach && best.is_none_or(|(bd, _, _)| d < bd) {
                 best = Some((d, r.reference, None));
             }
         }
     }
-    let wall = collision.0.raycast(eye, dir, reach).map(|(d, _)| d);
+    let wall = struck.map(|(d, _)| d);
     match best.filter(|(d, _, _)| wall.is_none_or(|w| w >= d - 5.0)) {
         Some((distance, reference, part)) => Met::Thing {
             distance,
@@ -228,6 +323,45 @@ pub(crate) fn first_met(
         },
         None => Met::Nothing(wall.is_some()),
     }
+}
+
+/// Where a shot or blow along `(eye, dir)` meets the collider within
+/// `reach`. Shots are cast on Havok's projectile layer (6): the game's
+/// collision filter (`physics::layers`, `00c84930` for casts) lets them
+/// through bodies on layers it doesn't touch, such as a `TRANSPARENT`
+/// chain-link fence a walker can't pass. That the shot's own cast uses
+/// layer 6 is taken from the layer's name (the projectile's cast filter
+/// word isn't traced). Blows meet every surface (the melee pick's layer
+/// isn't traced).
+pub(crate) fn cast(
+    collision: &CellCollision,
+    (eye, dir): ([f32; 3], [f32; 3]),
+    reach: f32,
+    melee: bool,
+) -> Option<(f32, u32)> {
+    if melee {
+        collision.0.raycast(eye, dir, reach)
+    } else {
+        collision
+            .0
+            .raycast_layer(eye, dir, reach, physics::layers::layer::PROJECTILE)
+    }
+}
+
+/// A scripted object a shot or blow can meet. Trigger volumes aren't solid:
+/// shots go through them (the player standing in one caught every shot at
+/// 0 units before). A disabled reference has no 3D to meet (inferred from
+/// the reference-script pass `0054c740`, which treats "has 3D"
+/// (`Get3D` `0043fcd0`) and "disabled" as the two separate cases): before
+/// `VCG02BottleMarkerREF.Enable` the tutorial's unseen bottles counted hits.
+pub(crate) fn meetable(
+    order: &esm::LoadOrder,
+    state: &world::scripting::GameState,
+    r: &world::scripting::Interactive,
+) -> bool {
+    r.script.is_some()
+        && r.trigger.is_none()
+        && world::enabled_now(order, r.reference, &state.disabled)
 }
 
 /// Says what a hit did, as the attacks print it.
@@ -346,7 +480,7 @@ pub fn setup_hud(mut commands: Commands) {
 
 /// A body's half width and height from its base record's bounds (people
 /// without bounds: 25 and 130).
-fn body(order: &esm::LoadOrder, base: FormId) -> (f32, f32) {
+pub(crate) fn body(order: &esm::LoadOrder, base: FormId) -> (f32, f32) {
     order
         .get(base)
         .and_then(|r| r.record().ok())
@@ -365,7 +499,13 @@ fn body(order: &esm::LoadOrder, base: FormId) -> (f32, f32) {
 
 /// Where a ray from the eye meets an upright cylinder around someone's
 /// feet, if it does.
-fn ray_body(eye: [f32; 3], dir: [f32; 3], feet: [f32; 3], radius: f32, height: f32) -> Option<f32> {
+pub(crate) fn ray_body(
+    eye: [f32; 3],
+    dir: [f32; 3],
+    feet: [f32; 3],
+    radius: f32,
+    height: f32,
+) -> Option<f32> {
     let (ox, oy) = (eye[0] - feet[0], eye[1] - feet[1]);
     let a = dir[0] * dir[0] + dir[1] * dir[1];
     let b = 2.0 * (ox * dir[0] + oy * dir[1]);
@@ -388,6 +528,14 @@ fn ray_body(eye: [f32; 3], dir: [f32; 3], feet: [f32; 3], radius: f32, height: f
     (0.0..=height).contains(&z).then_some(t)
 }
 
+/// What the Aim control's handling needs: the view (switching or not),
+/// V.A.T.S., the bindings.
+type AimGates<'w> = (
+    Res<'w, crate::player_camera::PlayerView>,
+    Res<'w, crate::vats::Vats>,
+    Option<Res<'w, crate::controls::Controls>>,
+);
+
 /// Left click: an attack, if one is ready; R: reloading.
 #[allow(clippy::too_many_arguments)]
 pub fn player_attack(
@@ -409,6 +557,11 @@ pub fn player_attack(
     cameras: Query<&Transform, With<FlyCamera>>,
     mut hud: Query<&mut Text, With<HudText>>,
     rigs: Query<(&Walker, &ActorRig)>,
+    (aim_gates, mut messages, mut load): (
+        AimGates,
+        ResMut<crate::hud::HudMessages>,
+        ResMut<crate::scripts::LoadRequest>,
+    ),
 ) {
     let order = &game.0.order;
     let now = time.elapsed_secs();
@@ -423,6 +576,7 @@ pub fn player_attack(
         // unequipping a weapon does too).
         attack.out = false;
         attack.readied_at = None;
+        attack.iron_sights = false;
     }
     if attack.out {
         state.weapon_out.insert(PLAYER_REF);
@@ -464,14 +618,59 @@ pub fn player_attack(
     if !crippled.is_empty() {
         line.push_str(&format!("    Crippled: {}", crippled.join(", ")));
     }
-    if state.dead.contains(&PLAYER_REF) {
-        line = "You are dead. F9 loads the last quick save.".into();
+    let dead = state.dead.contains(&PLAYER_REF);
+    if dead {
+        line = "You are dead.".into();
     }
     for mut text in &mut hud {
         if text.0 != line {
             text.0 = line.clone();
         }
     }
+    // After death (`world::player_death`, `0093e860`): the scope goes,
+    // and after `fPlayerDeathReloadTime` the most recent save loads (the
+    // viewer's one save, its quick save), or with none the game's main
+    // menu would open (this viewer has none).
+    let dt = time.delta_secs();
+    let reload_time =
+        world::scripting::game_setting(order, "fPlayerDeathReloadTime").unwrap_or(5.0);
+    let save_exists = std::path::Path::new(crate::scripts::QUICKSAVE).exists();
+    match attack
+        .death
+        .update(dead, dead, dt, reload_time, save_exists)
+    {
+        world::player_death::DeathStep::Started => {
+            attack.iron_sights = false;
+            attack.blocking = false;
+        }
+        world::player_death::DeathStep::Reload => {
+            if save_exists {
+                println!("The player died: loading the most recent save.");
+                load.0 = true;
+            } else {
+                println!(
+                    "The player died with no save: the game would go back to its main menu \
+                     (`007d0a70`), which this viewer doesn't have."
+                );
+            }
+        }
+        world::player_death::DeathStep::Ask => {
+            // Only with `fPlayerDeathReloadTime` 0 or below (the data
+            // keeps 5): the game's message box isn't shown here.
+            println!("The player died: the game would ask to reload or go to the main menu.");
+        }
+        world::player_death::DeathStep::Wait => {}
+    }
+    // The counter-attack timer and the swap timer run on.
+    attack.counter_timer = (attack.counter_timer - dt).max(0.0);
+    attack.ammo_swap_timer += dt;
+    // Hits the player blocked (`world::melee`): the block hit plays and
+    // the counter-attack window opens.
+    if state.blocked_hits.contains(&PLAYER_REF) {
+        attack.block_hit_at = Some(now);
+        attack.counter_timer = world::melee::Settings::read(order).counter_attack_time;
+    }
+    state.blocked_hits.clear();
     let busy = !player.walking
         || !player.ready
         || conversation.0.is_some()
@@ -479,7 +678,98 @@ pub fn player_attack(
         || state.dead.contains(&PLAYER_REF)
         || state.controls_off[world::scripting::controls::FIGHTING];
     if busy {
+        attack.iron_sights = false;
+        attack.blocking = false;
+        state.blocking.remove(&PLAYER_REF);
         return;
+    }
+    // The Aim control (6, the right mouse button), as `0093e860` reads it
+    // (at `00941f4f`): held, a drawn gun's sights come up (`008bb650(1, 0,
+    // 0)`), unless the view is switching or V.A.T.S. is on; let go, they
+    // go down. A drawn melee weapon or fists would block (`00894cc0(1)`),
+    // which isn't here.
+    let (view, vats, controls) = aim_gates;
+    let controls = controls.map_or(crate::controls::Controls::default(), |c| *c);
+    let aim = controls.aim;
+    let switching = view.camera.want_third != view.camera.actually_third;
+    let readying_now = now < attack.busy_until;
+    let control = world::iron_sights::aim_control(weapon.as_ref().map(|w| w.animation), attack.out);
+    if aim.pressed(&keys, &mouse) {
+        if !attack.iron_sights
+            && !switching
+            && !vats.is_on()
+            && control == world::iron_sights::AimControl::IronSights
+        {
+            attack.iron_sights = true;
+        }
+        // A melee weapon or fists block (`00894cc0(1)` → `00894940`:
+        // `BlockIdle` as anim action 7), when no other action plays (anim
+        // action none, or an attack that has ended).
+        let attacking = now < attack.next;
+        if control == world::iron_sights::AimControl::Block
+            && !attack.blocking
+            && !readying_now
+            && !attacking
+            && now >= attack.reloaded_at
+            && !vats.is_on()
+        {
+            attack.blocking = true;
+        }
+    } else {
+        attack.iron_sights = false;
+        attack.blocking = false;
+    }
+    if control != world::iron_sights::AimControl::Block {
+        attack.blocking = false;
+    }
+    if attack.blocking {
+        let heading = cameras.single().map_or(0.0, |c| {
+            let f = c.forward().as_vec3();
+            f.x.atan2(-f.z)
+        });
+        state.blocking.insert(PLAYER_REF, heading);
+    } else {
+        state.blocking.remove(&PLAYER_REF);
+    }
+    // The Ammo Swap control (18; `world::ammo_swap`, `0093e860` →
+    // `009462c0`): the next carried kind loads, with the reload animation
+    // when the swap timer has passed and the weapon is out.
+    let swap_key = controls.ammo_swap;
+    if swap_key.just_pressed(&keys, &mouse) && attack.out && !readying_now {
+        if let Some(w) = weapon.as_ref() {
+            let (swap, reset) = world::ammo_swap::press(
+                order,
+                state,
+                PLAYER_REF,
+                w,
+                attack.out,
+                attack.ammo_swap_timer,
+            );
+            if reset {
+                attack.ammo_swap_timer = 0.0;
+            }
+            if let Some(swap) = swap {
+                state.ammo_loaded.insert(PLAYER_REF, swap.ammo);
+                let carried = state.item_count(order, PLAYER_REF, swap.ammo).max(0) as u32;
+                if swap.animated {
+                    let rate = combat::reload_rate(order, state, PLAYER_REF, Some(w)).max(1e-3);
+                    attack.in_clip = Some(w.clip.min(carried));
+                    attack.reloaded_at = now + w.reload_time / rate;
+                    attack.reload_started = Some(now);
+                    attack.reload_rate = rate;
+                } else {
+                    // `ReloadWeaponNV(…, 0, …)`: no reload animation (the
+                    // clip taken as filled at once: inferred).
+                    attack.in_clip = Some(w.clip.min(carried));
+                }
+                let name = order
+                    .get(swap.ammo)
+                    .and_then(|r| r.record().ok())
+                    .and_then(|r| r.get(esm::FourCC::new(b"FULL")).map(|s| s.zstring()))
+                    .unwrap_or_default();
+                println!("Ammo swap: {name}.");
+            }
+        }
     }
     // A reload takes the weapon's reload time at the reload rate
     // (`world::combat::reload_rate`: Agility and Rapid Reload).
@@ -518,8 +808,48 @@ pub fn player_attack(
         }
         combat::ReadyAction::Nothing => {}
     }
-    if !mouse.just_pressed(MouseButton::Left) || now < attack.next || now < attack.reloaded_at {
+    // Power attacks (`world::melee`, `00948310`): with a melee weapon or
+    // fists out, holding the Attack control past `fPowerAttackDelay` brings
+    // a power attack, after the attack playing ends.
+    let use_key = controls.attack;
+    let melee_out = attack.out && weapon.as_ref().is_none_or(|w| w.is_melee());
+    let melee_settings = world::melee::Settings::read(order);
+    let mut power_now = false;
+    if melee_out && use_key.pressed(&keys, &mouse) && !use_key.just_pressed(&keys, &mouse) {
+        if !attack.power && !attack.power_queued {
+            attack.power_timer += dt;
+        }
+        // Over-encumbered players don't (`0093e860`'s vfunc +0x358).
+        let heavy = state.over_encumbered(order, PLAYER_REF);
+        if !heavy && attack.power_timer > melee_settings.power_attack_delay {
+            attack.power_timer = 0.0;
+            let playing = attack
+                .fired_at
+                .is_some_and(|t| now < t + attack.attack_length.max(0.0));
+            if playing {
+                attack.power_queued = true;
+            } else {
+                power_now = true;
+            }
+        }
+    } else if !use_key.pressed(&keys, &mouse) {
+        attack.power_timer = 0.0;
+    }
+    if attack.power_queued {
+        let ended = attack
+            .fired_at
+            .is_none_or(|t| now >= t + attack.attack_length.max(0.0));
+        if ended {
+            attack.power_queued = false;
+            power_now = true;
+        }
+    }
+    let pressed = use_key.just_pressed(&keys, &mouse);
+    if !power_now && (!pressed || now < attack.next || now < attack.reloaded_at) {
         return;
+    }
+    if pressed {
+        attack.power_timer = 0.0;
     }
     // Attacking with the weapon holstered draws it instead (`00948310`:
     // the attack control just pressed and the weapon not out).
@@ -566,12 +896,91 @@ pub fn player_attack(
         let ammo = w.ammo_in_use(order, state, PLAYER_REF);
         let wear = combat::attack_wear(order, ammo);
         combat::damage_weapon(order, state, PLAYER_REF, w, wear);
+        // Heard for a while (`world::noise::attacked`).
+        world::noise::attacked(order, state, PLAYER_REF, w);
     }
     attack.next = now + weapon.as_ref().map_or(0.5, |w| w.shot_interval());
     attack.fired_at = Some(now);
     attack.attack_rate = combat::attack_rate(order, state, PLAYER_REF, weapon.as_ref());
-    if let Some(s) = weapon.as_ref().and_then(|w| w.sound) {
-        sounds.0.push(s);
+    // Attacking ends a block (`00948310`: `00894cc0(0)` in anim action 7).
+    attack.blocking = false;
+    state.blocking.remove(&PLAYER_REF);
+    // Which attack (`00948310`, at `009498cf`): a melee attack while
+    // sneaking is the power attack (fists, or a melee weapon that isn't
+    // automatic); an unarmed one within the counter-attack timer with the
+    // perk the `Counter`; a power attack goes the way the player moves.
+    let sneaking = state.player_sneaking;
+    let unarmed = weapon
+        .as_ref()
+        .is_none_or(|w| w.skill == world::combat::av::UNARMED);
+    let mut group = weapon
+        .as_ref()
+        .map(|w| w.attack_animation)
+        .filter(|&a| a != 0xff)
+        .unwrap_or(world::melee::group::ATTACK_RIGHT);
+    if power_now {
+        group = world::melee::group::ATTACK_POWER;
+    }
+    if melee_out
+        && sneaking
+        && weapon
+            .as_ref()
+            .is_none_or(|w| w.flags1 & world::vats::flags::AUTOMATIC == 0)
+    {
+        group = world::melee::group::ATTACK_POWER;
+    }
+    if melee_out && world::melee::counter_attack(order, state, unarmed, attack.counter_timer) {
+        group = world::melee::group::COUNTER;
+    }
+    if group == world::melee::group::ATTACK_POWER {
+        let legs = |a: u16| {
+            world::scripting::Facts {
+                order,
+                state,
+                speaker: None,
+            }
+            .current_actor_value(PLAYER_REF, a)
+            .unwrap_or(100.0)
+                <= 0.0
+        };
+        let m = player.moving;
+        group = world::melee::power_attack_group(
+            order,
+            state,
+            world::melee::Moving {
+                forward: m.forward,
+                back: m.backward,
+                left: m.left,
+                right: m.right,
+            },
+            sneaking,
+            legs(29) && legs(30),
+            unarmed,
+        );
+    }
+    attack.attack_group = group;
+    attack.power = melee_out && world::animation::kind_of(group) == 6;
+    if attack.power {
+        state.power_attacking.insert(PLAYER_REF);
+        println!(
+            "Power attack: {}.",
+            world::melee::group_file_stem(group).unwrap_or_default()
+        );
+    } else {
+        state.power_attacking.remove(&PLAYER_REF);
+    }
+    // A gun's firing sound and muzzle flash (`weapon_fx`, `00523150` →
+    // `0083ac30`; melee attacks have none: a swing that meets no one plays
+    // its `TNAM`, below). Thrown weapons keep their `SNAM` as before (not
+    // traced: `00523150` doesn't play it for them).
+    match weapon.as_ref() {
+        Some(w) if world::explosions::is_thrown(w) => sounds.0.extend(w.sound),
+        Some(w) if !w.is_melee() => crate::weapon_fx::fired(crate::weapon_fx::Fired {
+            shooter: PLAYER_REF,
+            weapon: w.form_id,
+            from: None,
+        }),
+        _ => {}
     }
     // What the attack meets first along the view.
     let Ok(camera) = cameras.single() else {
@@ -580,6 +989,17 @@ pub fn player_attack(
     let eye = game_point(camera.translation);
     let f = camera.forward().as_vec3();
     let view = [f.x, -f.z, f.y];
+    // Grenades and thrown weapons leave the hand instead (`explosives`;
+    // `00523150`: animation types 10–13).
+    if let Some(w) = weapon.as_ref().filter(|w| world::explosions::is_thrown(w)) {
+        crate::explosives::throw(crate::explosives::Launch {
+            thrower: PLAYER_REF,
+            weapon: w.clone(),
+            origin: eye,
+            aim: crate::explosives::Aim::Along(view),
+        });
+        return;
+    }
     let melee = weapon.as_ref().is_none_or(|w| w.is_melee());
     // Guns: the projectile's range, a shot's pellets each carrying an even
     // share of the damage, flying within the weapon's cone (`world::combat::
@@ -629,7 +1049,7 @@ pub fn player_attack(
             now,
         );
         // A shot striking the world: its impact (`hiteffects`).
-        let struck = collision.0.raycast(eye, dir, reach);
+        let struck = cast(&collision, (eye, dir), reach, melee);
         let gun = weapon.as_ref().filter(|w| !w.is_melee()).map(|w| w.form_id);
         let Met::Thing {
             distance: d,
@@ -638,17 +1058,72 @@ pub fn player_attack(
         } = met
         else {
             let wall = matches!(met, Met::Nothing(true));
+            // A melee swing that meets no one (`00899200`).
+            if let Some(w) = weapon.as_ref().filter(|w| w.is_melee()) {
+                crate::weapon_fx::swung(PLAYER_REF, w.form_id);
+            }
             if let (Some(s), Some(g)) = (struck, gun) {
                 hits.shot_on_world(&collision.0, (eye, dir), s, PLAYER_REF, g);
             }
+            let layer = struck.map(|(_, t)| collision.0.layer(t));
+            // A surface the shot's layer passes (a chain-link fence).
+            let passed = collision
+                .0
+                .raycast(eye, dir, reach)
+                .filter(|&(d, _)| struck.is_none_or(|(s, _)| d < s - 1.0))
+                .map_or(String::new(), |(d, t)| {
+                    format!(
+                        " (through a layer {} surface at {d:.0} units)",
+                        collision.0.layer(t)
+                    )
+                });
             println!(
-                "The attack hit nothing{}.",
-                if wall { " but a wall" } else { "" }
+                "The attack hit nothing{}{passed}.",
+                match layer.filter(|_| wall) {
+                    Some(physics::ANY_LAYER) => " but a wall".to_string(),
+                    Some(l) => format!(" but a wall (layer {l})"),
+                    None => String::new(),
+                }
             );
             continue;
         };
-        let hit =
-            Runner::new(order, &scripts.0, state).hit_at(PLAYER_REF, target, pellet.as_ref(), part);
+        // A sneak attack, as the hit works it out (`world::scripting`):
+        // sneaking, and the target not detecting the player.
+        let sneak_attack = state.player_sneaking
+            && world::scripting::Facts {
+                order,
+                state,
+                speaker: None,
+            }
+            .detection(target, PLAYER_REF)
+            .is_none_or(|v| v < 1);
+        let alive = !state.dead.contains(&target);
+        // A power attack's damage × `fDamagePowerAttackBonus`, not while
+        // sneaking (`009b5170`, `world::melee::power_attack_mult`).
+        let power = attack.power && !state.player_sneaking;
+        let hit = Runner::new(order, &scripts.0, state).strike_at(
+            PLAYER_REF,
+            target,
+            pellet.as_ref(),
+            part,
+            power,
+        );
+        // The player's critical on someone alive (`0089a760`): "Sneak Attack
+        // Critical on <name>" (hit flag 0x400) or "Critical Strike on
+        // <name>", with the very happy Vault Boy.
+        if hit.as_ref().is_some_and(|h| h.critical) && alive {
+            let (setting, exe) = if sneak_attack {
+                ("sSneakAttackCriticalStrike", "Sneak Attack Critical on")
+            } else {
+                ("sCriticalStrike", "Critical Strike on")
+            };
+            let words = world::scripting::game_setting_text(order, setting)
+                .unwrap_or_else(|| exe.to_string());
+            let name = world::script_functions::full_name(order, state, target).unwrap_or_default();
+            messages
+                .with_icon
+                .push((format!("{words} {name}"), CRITICAL_ICON.to_string()));
+        }
         let Some(hit) = hit else {
             // An object (a scripted bottle): its impact where the shot
             // meets the cell's collision there.
@@ -664,6 +1139,11 @@ pub fn player_attack(
             weapon: id,
             point: [0, 1, 2].map(|k| eye[k] + dir[k] * d),
             havok: None,
+            normal: None,
+            triangle: None,
+            direction: dir,
+            on_body: true,
+            part,
             damage: hit.dealt,
             killed: state.dead.contains(&target),
         });
@@ -674,6 +1154,35 @@ pub fn player_attack(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shots_meet_only_shown_scripted_objects() {
+        let order = esm::LoadOrder::from_plugins(Vec::new()).unwrap();
+        let mut state = world::scripting::GameState::default();
+        let bottle = world::scripting::Interactive {
+            reference: FormId(0x0010A209),
+            base: FormId(0x0010A1F6),
+            script: Some(FormId(0x0010A1EF)),
+            count: 1,
+            position: [0.0; 3],
+            rotation: [0.0; 3],
+            scale: 1.0,
+            trigger: None,
+            bounds: None,
+            name: None,
+            kind: esm::FourCC::new(b"MISC"),
+        };
+        assert!(meetable(&order, &state, &bottle));
+        state.disabled.insert(bottle.reference, true);
+        assert!(!meetable(&order, &state, &bottle));
+        state.disabled.insert(bottle.reference, false);
+        assert!(meetable(&order, &state, &bottle));
+        let unscripted = world::scripting::Interactive {
+            script: None,
+            ..bottle.clone()
+        };
+        assert!(!meetable(&order, &state, &unscripted));
+    }
 
     #[test]
     fn rays_meet_a_body_of_its_own_size() {
@@ -755,6 +1264,8 @@ mod tests {
                 name: name.into(),
                 node: node.into(),
                 target: node.into(),
+                ik_start: None,
+                tracking_max_angle: 0.0,
                 damage_mult: 1.0,
                 flags: 0,
                 part_type: kind,
@@ -821,5 +1332,119 @@ mod tests {
         // The camera node (108) is nearest but gives no part: the head's
         // bone (110).
         assert_eq!(bone, Some(4));
+    }
+}
+
+/// Weapons placed objects fired (`FireWeapon`: shooter, weapon), for
+/// [`object_shots`].
+#[derive(Resource, Default)]
+pub struct ObjectShots(pub Vec<(FormId, FormId)>);
+
+/// Carries out `FireWeapon` (`00523150` for something that isn't an
+/// actor): the shot leaves the object's projectile node (else its
+/// position) along its facing (`world::more_functions::traps::shot_from`),
+/// each pellet within the weapon's cone as the player's do, to the
+/// projectile's range; the first person met (the player or someone about,
+/// by their bounds) before a wall takes the hit. Not yet: projectiles in
+/// flight, hit shapes (bounds only), the weapon's own node name, objects
+/// made by `PlaceAtMe`.
+#[allow(clippy::too_many_arguments)]
+pub fn object_shots(
+    game: Res<GameFiles>,
+    scripts: Res<Scripts>,
+    mut state: ResMut<DialogueState>,
+    mut shots: ResMut<ObjectShots>,
+    collision: Res<CellCollision>,
+    rigs: Query<(&Walker, &ActorRig)>,
+    mut nodes: Local<HashMap<String, Option<nif::math::Transform>>>,
+) {
+    use world::more_functions::traps;
+    if shots.0.is_empty() {
+        return;
+    }
+    let order = &game.0.order;
+    let state = &mut state.0;
+    for (from, weapon) in std::mem::take(&mut shots.0) {
+        let (Some(w), Some(p)) = (
+            Weapon::load(order, weapon),
+            world::placement_of(order, from),
+        ) else {
+            continue;
+        };
+        let node = p.model.as_ref().and_then(|m| {
+            *nodes.entry(m.to_ascii_lowercase()).or_insert_with(|| {
+                let bytes = game.0.assets.read(&format!("meshes\\{m}")).ok().flatten()?;
+                let nif = nif::Nif::parse(bytes).ok()?;
+                nif.placed_node(traps::PROJECTILE_NODE)
+                    .or_else(|| nif.placed_node(traps::PROJECTILE_NODE_ALT))
+            })
+        });
+        let (origin, aim) = traps::shot_from(p.position, p.rotation, p.scale, node);
+        let (count, cone) = w.shot(order, None);
+        let reach = w.range(order).unwrap_or(SHOT_RANGE);
+        let pellet = {
+            let mut w = w.clone();
+            w.damage /= count.max(1) as f32;
+            w
+        };
+        // Its firing sound, from the object (`weapon_fx`; `0083ac30` with
+        // no fire node: the object's place).
+        crate::weapon_fx::fired(crate::weapon_fx::Fired {
+            shooter: from,
+            weapon: w.form_id,
+            from: Some(origin),
+        });
+        let heading = aim[0].atan2(aim[1]);
+        let pitch = aim[2].clamp(-1.0, 1.0).asin();
+        // Who can be met: the player and the people about, by their bounds.
+        let mut bodies: Vec<(FormId, [f32; 3], f32, f32)> = Vec::new();
+        if let Some(feet) = state.player_position {
+            let shape = physics::CharacterShape::PLAYER;
+            bodies.push((PLAYER_REF, feet, shape.radius, shape.height));
+        }
+        for (walker, _) in &rigs {
+            if state.dead.contains(&walker.reference) {
+                continue;
+            }
+            let base =
+                world::scripting::base_of(order, walker.reference).unwrap_or(walker.reference);
+            let (half, height) = body(order, base);
+            bodies.push((
+                walker.reference,
+                walker.position,
+                half * walker.scale,
+                height * walker.scale,
+            ));
+        }
+        for _ in 0..count {
+            let unit = |v: u64| (v % 1_000_000) as f32 / 1_000_000.0;
+            let r = cone * unit(state.roll());
+            let theta = std::f32::consts::TAU * unit(state.roll());
+            let (h, p) = (heading + r * theta.cos(), pitch + r * theta.sin());
+            let dir = [h.sin() * p.cos(), h.cos() * p.cos(), p.sin()];
+            let wall = collision
+                .0
+                .raycast(origin, dir, reach)
+                .map_or(reach, |(d, _)| d);
+            let met = bodies
+                .iter()
+                .filter_map(|(who, feet, radius, height)| {
+                    ray_body(origin, dir, *feet, *radius, *height).map(|d| (d, *who))
+                })
+                .filter(|(d, _)| *d <= wall)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            let Some((d, target)) = met else {
+                continue;
+            };
+            let hit =
+                Runner::new(order, &scripts.0, state).hit_at(from, target, Some(&pellet), None);
+            // An object isn't someone to fight back against.
+            if state.combat.get(&target) == Some(&from) {
+                state.combat.remove(&target);
+            }
+            if let Some(hit) = hit {
+                println!("{from} shot {target} at {d:.0} units for {:.1}.", hit.dealt);
+            }
+        }
     }
 }

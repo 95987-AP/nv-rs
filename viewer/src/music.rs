@@ -17,9 +17,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bevy::audio::{
-    AddAudioSource, AudioPlayer, AudioSource, Decodable, PlaybackSettings, Source, Volume,
-};
+use bevy::audio::{AddAudioSource, AudioPlayer, Decodable, PlaybackSettings, Source};
 use bevy::prelude::*;
 use cellview::music::{MusicLibrary, Next, TrackStream};
 use esm::FormId;
@@ -42,7 +40,14 @@ impl Plugin for MusicPlugin {
         app.init_resource::<Music>()
             .init_resource::<MusicRequests>()
             .add_audio_source::<MusicTrack>()
-            .add_systems(Update, play_music.after(crate::scripts::run_scripts));
+            // The game's music manager runs in its main loop, which a
+            // movie holds until it ends (`movie`).
+            .add_systems(
+                Update,
+                play_music
+                    .after(crate::scripts::run_scripts)
+                    .run_if(not(crate::movie::playing)),
+            );
     }
 }
 
@@ -67,6 +72,52 @@ pub struct Music {
     combat_settings: Option<CombatMusicSettings>,
     climate: Option<(FormId, Option<Climate>)>,
     decks: [Option<Playing>; 2],
+}
+
+/// Changes the decks' volumes (the start menu's Audio page,
+/// `StartMenu::SetMasterVol` … (Xbox PDB)); before the manager has started,
+/// it starts from the INI's and then this applies next time.
+pub fn set_volumes(music: &mut Music, change: impl FnOnce(&mut world::music::Volumes)) {
+    if let Some(d) = music.director.as_mut() {
+        change(&mut d.decks.volumes);
+    }
+}
+
+/// The music's clock, ms (the audio manager's: from 1 s, never 0), which
+/// the radio's times use too.
+pub fn audio_clock(real: &Time<Real>) -> u64 {
+    real.elapsed().as_millis() as u64 + 1000
+}
+
+/// The radio holds the music manager (`008325a0`) or lets it go.
+pub fn radio_hold(music: &mut Music, on: bool) {
+    if let Some(d) = music.director.as_mut() {
+        d.suspended = on;
+    }
+}
+
+/// Both decks cleared at once (`008304a0`).
+pub fn radio_clear(music: &mut Music) {
+    if let Some(d) = music.director.as_mut() {
+        d.clear_decks();
+    }
+}
+
+/// A song's length (relative to `Data`), as the decks read it.
+pub fn song_ms(music: &mut Music, game: &cellview::Game, path: &str) -> Option<u32> {
+    use world::music::MusicFiles;
+    music.library.files(&game.assets).duration_ms(path)
+}
+
+/// The radio's song onto a deck as type 7, in step with `sync`.
+pub fn radio_song(music: &mut Music, game: &cellview::Game, path: &str, sync: u64, now: u64) {
+    let Music {
+        director, library, ..
+    } = music;
+    if let Some(d) = director.as_mut() {
+        let mut files = library.files(&game.assets);
+        d.radio_song(path, sync, now, &mut files);
+    }
 }
 
 /// Where a track's samples come from.
@@ -193,7 +244,6 @@ fn play_sound(
     commands: &mut Commands,
     game: &cellview::Game,
     tracks: &mut Assets<MusicTrack>,
-    oggs: &mut Assets<AudioSource>,
     id: FormId,
     pick: u64,
     loudness: f32,
@@ -209,17 +259,7 @@ fn play_sound(
         return;
     };
     println!("Music: the sound {name} ({path}).");
-    if path.ends_with(".ogg") {
-        let handle = oggs.add(AudioSource {
-            bytes: Arc::from(bytes.into_boxed_slice()),
-        });
-        commands.spawn((
-            AudioPlayer::new(handle),
-            PlaybackSettings::DESPAWN.with_volume(Volume::Linear(loudness)),
-        ));
-        return;
-    }
-    match cellview::sound::read_wav(&bytes) {
+    match crate::sounds::read_sound(&path, &bytes) {
         Ok(pcm) => {
             let samples = pcm
                 .samples
@@ -251,7 +291,6 @@ pub fn play_music(
     mut music: ResMut<Music>,
     mut requests: ResMut<MusicRequests>,
     mut tracks: ResMut<Assets<MusicTrack>>,
-    mut oggs: ResMut<Assets<AudioSource>>,
 ) {
     let shared = Arc::clone(&game.0);
     let game: &cellview::Game = &shared;
@@ -335,7 +374,6 @@ pub fn play_music(
                 &mut commands,
                 game,
                 &mut tracks,
-                &mut oggs,
                 s,
                 state.dice.wrapping_add(i as u64),
                 loudness,

@@ -147,11 +147,13 @@ pub fn game_setting(order: &LoadOrder, name: &str) -> Option<f32> {
     if rr.entry.header.kind != GMST {
         return None;
     }
-    let record = rr.record().ok()?;
-    let data = record.get(esm::sig::DATA).filter(|s| s.data.len() >= 4)?;
+    let data = rr.subrecord(esm::sig::DATA).ok()??;
+    if data.len() < 4 {
+        return None;
+    }
     match name.as_bytes().first() {
-        Some(b'f') => Some(le_f32(&data.data, 0)),
-        Some(b'i') => Some(le_u32(&data.data, 0) as i32 as f32),
+        Some(b'f') => Some(le_f32(&data, 0)),
+        Some(b'i') => Some(le_u32(&data, 0) as i32 as f32),
         _ => None,
     }
 }
@@ -239,6 +241,11 @@ pub struct GameState {
     /// Holders whose contents are kept in `items` (copied from their
     /// record the first time something changes them).
     pub stocked: HashSet<FormId>,
+    /// Scripted items' own scripts (the game's `ExtraScript` on each
+    /// scripted item, `004821a0` adding them one at a time): holder, item,
+    /// variables and the events waiting for the holder's next script run
+    /// (`00565870` → `004d2480`). Not saved.
+    pub item_scripts: Vec<ItemScript>,
     /// Topics the player has learned (`AddTopic`).
     pub topics: HashSet<FormId>,
     /// Seconds since each running quest's script last ran.
@@ -248,6 +255,9 @@ pub struct GameState {
     pub player_world: Option<FormId>,
     /// Where the player's feet are, when known.
     pub player_position: Option<[f32; 3]>,
+    /// Which way the player faces (radians clockwise from north), kept by
+    /// whatever moves them; what [`Self::place`] gives for them.
+    pub player_heading: f32,
     /// The player's level (1 in a new game) and perks, with their ranks
     /// past the first (`world::perks`).
     pub player_level: u16,
@@ -280,9 +290,10 @@ pub struct GameState {
     pub player_crimes: (u32, u32),
     pub steal_warnings: u32,
     pub last_theft_day: Option<u32>,
-    /// Hits the player has dealt friends and allies (forgiven up to an
-    /// allowance), and whether the player is a murderer (`IsPCAMurderer`).
-    pub friendly_hits: HashMap<FormId, u32>,
+    /// When the player hit each friend or ally lately, in [`Self::seconds`]
+    /// (forgiven up to an allowance, `world::crime::assault`), and whether
+    /// the player is a murderer (`IsPCAMurderer`).
+    pub friendly_hits: HashMap<FormId, Vec<f64>>,
     pub player_murderer: bool,
     /// How the player is moving, as the viewer last saw (for detection).
     pub player_moving: bool,
@@ -301,6 +312,12 @@ pub struct GameState {
     /// Packages scripts gave people (`AddScriptPackage`), followed before
     /// their own.
     pub script_packages: HashMap<FormId, FormId>,
+    /// The package whose begin action was last requested for each person
+    /// (`world::ai::actions::begin`), and whether its end action has been
+    /// since (`world::ai::actions::end`): a package `AddScriptPackage`
+    /// already began doesn't begin again when the AI takes it up, and a
+    /// package ends once per start. Not saved.
+    pub package_begun: HashMap<FormId, (FormId, bool)>,
     /// People whose packages are to be looked at again at once: scripts
     /// asked (`EvaluatePackage`, `ResetAI`) or changed them
     /// (`AddScriptPackage`, `RemoveScriptPackage`); packages are otherwise
@@ -336,6 +353,19 @@ pub struct GameState {
     pub unconscious: HashSet<FormId>,
     /// Sizes scripts set (`SetScale`).
     pub scales: HashMap<FormId, f32>,
+    /// Objects Havok moved (shot, blown or pushed clutter: the game's
+    /// "Havok moved" reference change, `CHANGE_REFR_HAVOK_MOVE`, named by
+    /// `0083fef0`): where they came to rest, as their model's turn
+    /// (row-major) and position in the world, which they keep when their
+    /// place loads again.
+    pub havok_moved: HashMap<FormId, ([[f32; 3]; 3], [f32; 3])>,
+    /// Of those, the ones still moving: their linear and angular velocity
+    /// (game units and radians a second). The game saves an active body's
+    /// two velocities after its pose and sets them, waking it, on loading
+    /// (`TESObjectREFR::SaveHavokDataForCollisionObject` (Xbox PDB),
+    /// `00563220`, flag bit 1 and two 12-byte vectors; loaded by
+    /// `00563380`).
+    pub havok_velocity: HashMap<FormId, ([f32; 3], [f32; 3])>,
     /// Which weather it is, what's fading, the climate's pick, scripts'
     /// override, the player's weather region (`world::weather`).
     pub weather: crate::weather::WeatherState,
@@ -360,15 +390,27 @@ pub struct GameState {
     /// The last blow each person took: who struck it and how much damage
     /// (for how the dead fall; not saved).
     pub last_blow: HashMap<FormId, (FormId, f64)>,
+    /// Deaths whose bodies haven't been handed to their ragdolls yet: how
+    /// each began (`world::combat::DeathStart`). Taken by whoever drops the
+    /// body; the dead at load have none and already lie where they fell
+    /// (not saved).
+    pub deaths: HashMap<FormId, crate::combat::DeathStart>,
     /// What other actor values have been damaged by, (person, number) →
     /// amount (`DamageActorValue`, harmful effects; restoring takes it
     /// back off). For rads and the hardcore needs it's the value itself.
     pub value_damage: HashMap<(FormId, u16), f64>,
     /// Effects working on people (`world::magic`), oldest first.
     pub active_effects: Vec<crate::magic::ActiveEffect>,
-    /// Weapons' condition (0 to 1) where scripts changed it, (holder,
-    /// weapon); others are in full condition.
+    /// Weapons' and armour's condition (0 to 1) where something changed
+    /// it (scripts, wear, repairs), (holder, item); others are in full
+    /// condition.
     pub weapon_health: HashMap<(FormId, FormId), f32>,
+    /// The player's hot keys 1 to 8 (`InventoryChanges::SetHotKeyItem`
+    /// (Xbox PDB), `004bf800`): the item on each.
+    pub hotkeys: [Option<FormId>; 8],
+    /// Weapons' fitted mod slots (`ExtraWeaponModFlags`: 1, 2, 4), (holder,
+    /// weapon) (`world::weapon_mods`).
+    pub weapon_mods: HashMap<(FormId, FormId), u8>,
     /// Weapons people have dropped, (holder, weapon): a crippled arm or a
     /// critical hit on the weapon (`world::body_parts::hurt_part`). They
     /// don't fight with them again.
@@ -378,8 +420,25 @@ pub struct GameState {
     /// (`GetKillingBlowLimb`). Not saved.
     pub hit_location: HashMap<FormId, i32>,
     pub killing_blow_limb: HashMap<FormId, i32>,
+    /// The hits dealt since the animation last looked (who, the part, and
+    /// whether it killed): the game asks the idle tree for a hit reaction
+    /// while the hit's data is set (`0089a760`). Not saved.
+    pub hits_taken: Vec<(FormId, i32, bool)>,
     /// The quest the Pip-Boy shows as active (`ForceActiveQuest`).
     pub active_quest: Option<FormId>,
+    /// The player's own map marker, set on the Pip-Boy's map
+    /// (`world::map::CustomMarker`; the player's `+0x6f4`).
+    pub custom_marker: Option<crate::map::CustomMarker>,
+    /// The radio (`world::radio`): stations, what plays, what's been
+    /// found; its discovered list and on/tuned are saved.
+    pub radio: crate::radio::Radio,
+    /// The local map's fog of war (`SeenData` (Xbox PDB)), saved.
+    pub seen: crate::local_map::Seen,
+    /// The body part condition (actor value 25 .. 30) the Pip-Boy's STATS
+    /// healing mode aims at while it's on (`StatsMenu` `+0x2a0` and its
+    /// body part controller, `007e06b0`): effects added then are aimed at
+    /// it ([`crate::magic::ActiveEffect::part`]). Not saved.
+    pub healing_part: Option<u16>,
     /// Locks changed since they were placed (`world::locks`): `None`
     /// unlocked, `Some(level)` locked.
     pub locks: HashMap<FormId, Option<u8>>,
@@ -395,6 +454,9 @@ pub struct GameState {
     /// Locks broken by failed forcing (`world::lockpick`: the lock's count
     /// at `+0xC`, `00790330`).
     pub broken_locks: HashMap<FormId, u32>,
+    /// What placed terminals remember: hacked, lockouts
+    /// (`world::terminal::TerminalState`).
+    pub terminal_states: HashMap<FormId, crate::terminal::TerminalState>,
     /// Map markers the player has found (`world::map`).
     pub discovered: HashSet<FormId>,
     /// What people have equipped (`EquipItem`), by person.
@@ -402,12 +464,38 @@ pub struct GameState {
     /// Who's fighting whom: attacker → target (`StartCombat`, being hit,
     /// an aggressive creature seeing the player).
     pub combat: HashMap<FormId, FormId>,
+    /// Attackers someone already fighting takes on as further targets on
+    /// being hurt by them (`world::combat_ai::attacked_by`: `0097f580` →
+    /// `CombatController::AddTarget`, Xbox PDB), victim → attackers, until
+    /// the viewer moves them into the fighter's target list. Not saved.
+    pub hit_targets: HashMap<FormId, Vec<FormId>>,
     /// Whose weapon (or fists) is out: the game's `IsWeaponOut` flag
     /// (`process+0x135`, read by `00915d40`). Kept by the viewer for the
     /// player (`combat::player_attack`: a new game and every change of
     /// weapon start holstered; the Ready Item key and attacking draw it).
     /// Not saved.
     pub weapon_out: HashSet<FormId>,
+    /// The ammunition someone chose with the Ammo Swap control (the
+    /// process's current ammo, `SetCurrentAmmo` (Xbox PDB), `009462c0`;
+    /// `world::ammo_swap`): holder → ammo.
+    pub ammo_loaded: HashMap<FormId, FormId>,
+    /// Who is blocking now (anim action 7, `00894d60`), with their heading
+    /// (radians clockwise from north) for the hit cone (`world::melee`).
+    /// Kept by the viewer for the player. Not saved.
+    pub blocking: HashMap<FormId, f32>,
+    /// Hits blocked since the viewer last looked (`009b5a30` flags the hit
+    /// blocked, `00407e00(1, 1)`): the blocker, for the block-hit
+    /// animation and the counter-attack timer. Not saved.
+    pub blocked_hits: Vec<FormId>,
+    /// Whose attack under way is a power attack (`00948310`; the hit's
+    /// damage × `fDamagePowerAttackBonus`, `009b5170`). Not saved.
+    pub power_attacking: HashSet<FormId>,
+    /// People's weapon choice, clips and reloads in a fight, and whose
+    /// `OnStartCombat` has run (`world::npc_combat`). Not saved.
+    pub npc_combat: crate::npc_combat::State,
+    /// The noise of each attacker's last attack, while it lasts
+    /// (`world::noise`). Not saved.
+    pub noise: HashMap<FormId, crate::noise::Noise>,
     /// Faction relations scripts changed (`SetEnemy`, `SetAlly`): (faction,
     /// other) → reaction (0 neutral, 1 enemy, 2 ally, 3 friend).
     pub faction_relations: HashMap<(FormId, FormId), u8>,
@@ -431,6 +519,11 @@ pub struct GameState {
     /// What the second round of script functions keeps (ghosts, made
     /// references, challenges, damaged objects…; `world::more_functions`).
     pub more: crate::more_functions::State,
+    /// The player's Caravan cards and record (`world::caravan`).
+    pub caravan: crate::caravan::Collection,
+    /// The player's casinos: the chips won at each and the level reached
+    /// (`world::casino`, `PlayerCharacter` +0x610), head first.
+    pub casinos: Vec<crate::casino::CasinoData>,
     /// For the viewer: what to show or do, oldest first.
     pub events: Vec<Event>,
     /// Functions scripts called that aren't carried out yet, with counts,
@@ -536,14 +629,40 @@ impl GameState {
         for (item, n) in &moved {
             self.items.remove(&(from, *item));
             *self.items.entry((to, *item)).or_insert(0) += n;
+            self.moved(order, from, to, *item, *n);
         }
         moved
     }
 
     /// Someone equips an item: a weapon puts away the one in hand; clothes
     /// and armour take off what's worn on any of the same body slots
-    /// (`BMDT`, as the game's apparel does).
+    /// (`BMDT`, as the game's apparel does). A weapon or armour with no
+    /// health left (worn out, or none at full: the master's "Broken" junk)
+    /// isn't put on (`0088c830`); the player is told
+    /// (`sCantEquipBrokenItem`).
     pub fn equip(&mut self, order: &LoadOrder, who: FormId, item: FormId) {
+        if let Some(full) = crate::repair::stated_health(order, item) {
+            let full = full as f32;
+            let health = self
+                .weapon_health
+                .get(&(who, item))
+                .map_or(full, |c| c * full);
+            if health <= 0.0 {
+                if who == PLAYER_REF {
+                    let text =
+                        game_setting_text(order, "sCantEquipBrokenItem").unwrap_or_else(|| {
+                            "Broken items cannot be equipped until they have been repaired.".into()
+                        });
+                    self.events.push(Event::Message {
+                        title: None,
+                        text,
+                        buttons: Vec::new(),
+                    });
+                }
+                return;
+            }
+        }
+        self.item_event(order, who, item, event::EQUIP);
         let kind = |f: FormId| order.get(f).map(|r| r.entry.header.kind);
         let item_kind = kind(item);
         let slots = crate::actor::Armor::load(order, item).map_or(0, |a| a.slots);
@@ -570,9 +689,137 @@ impl GameState {
         }
     }
 
+    /// [`Self::unequip`], with the item's script told (`OnUnequip`).
+    pub fn unequip_item(&mut self, order: &LoadOrder, who: FormId, item: FormId) {
+        if self.is_equipped(who, item) {
+            self.item_event(order, who, item, event::UNEQUIP);
+        }
+        self.unequip(who, item);
+    }
+
     /// Whether someone has an item equipped.
     pub fn is_equipped(&self, who: FormId, item: FormId) -> bool {
         self.equipped.get(&who).is_some_and(|w| w.contains(&item))
+    }
+
+    /// Items added to a holder at runtime (an `AddItem`, a pick-up…; not
+    /// a holder's own contents): each one with a script gets a script of
+    /// its own (`004821a0`) and its `OnAdd` for the holder (`00574fa0`).
+    pub fn added(&mut self, order: &LoadOrder, holder: FormId, item: FormId, count: i32) {
+        if count > 0 && item_script(order, item).is_some() {
+            for _ in 0..count {
+                self.item_scripts.push(ItemScript {
+                    holder,
+                    item,
+                    locals: None,
+                    events: vec![(event::ADD, holder)],
+                });
+            }
+        }
+    }
+
+    /// Items moved between holders: their scripts go with them, each
+    /// seeing `OnDrop` for the one it left (the giver's `RemoveItem` flags
+    /// it, `005750a0` → `005ac750(…, 4)`) and `OnAdd` for its new holder;
+    /// those without one yet (a holder's own contents) get one.
+    fn moved(&mut self, order: &LoadOrder, from: FormId, to: FormId, item: FormId, count: i32) {
+        if count <= 0 || item_script(order, item).is_none() {
+            return;
+        }
+        let mut left = count;
+        for s in self.item_scripts.iter_mut() {
+            if left == 0 {
+                break;
+            }
+            if s.holder == from && s.item == item {
+                s.holder = to;
+                s.events.push((event::DROP, from));
+                s.events.push((event::ADD, to));
+                left -= 1;
+            }
+        }
+        for _ in 0..left {
+            self.item_scripts.push(ItemScript {
+                holder: to,
+                item,
+                locals: None,
+                events: vec![(event::DROP, from), (event::ADD, to)],
+            });
+        }
+    }
+
+    /// Dropped things' scripts go with them into the world (`004c6dd0`
+    /// keeps the extra data on the new reference): `count` of the item's
+    /// scripts move from `from` to the made reference `to`, each seeing
+    /// `OnDrop` for `from` (`005ac750(…, 4)`); those without one yet get one.
+    pub fn scripts_follow(
+        &mut self,
+        order: &LoadOrder,
+        from: FormId,
+        to: FormId,
+        item: FormId,
+        count: i32,
+    ) {
+        if count <= 0 || item_script(order, item).is_none() {
+            return;
+        }
+        let mut left = count;
+        for s in self.item_scripts.iter_mut() {
+            if left == 0 {
+                break;
+            }
+            if s.holder == from && s.item == item {
+                s.holder = to;
+                s.events.push((event::DROP, from));
+                left -= 1;
+            }
+        }
+        for _ in 0..left {
+            self.item_scripts.push(ItemScript {
+                holder: to,
+                item,
+                locals: None,
+                events: vec![(event::DROP, from)],
+            });
+        }
+    }
+
+    /// Someone drops things into the world with their scripts
+    /// ([`crate::more_functions::placed::drop_into_world`],
+    /// [`Self::scripts_follow`]): the new reference.
+    pub fn drop_item(
+        &mut self,
+        order: &LoadOrder,
+        holder: FormId,
+        item: FormId,
+        count: i32,
+    ) -> Option<FormId> {
+        let made =
+            crate::more_functions::placed::drop_into_world(order, self, holder, item, count)?;
+        let n = crate::more_functions::placed::held_in_world(order, self, made, item);
+        self.scripts_follow(order, holder, made, item, n);
+        Some(made)
+    }
+
+    /// An event for one of a holder's scripted items (`005ac750`): equipped
+    /// (2), unequipped (8), with the reference it's for.
+    fn item_event(&mut self, order: &LoadOrder, holder: FormId, item: FormId, mask: u32) {
+        if item_script(order, item).is_none() {
+            return;
+        }
+        match self
+            .item_scripts
+            .iter_mut()
+            .find(|s| s.holder == holder && s.item == item)
+        {
+            Some(s) => s.events.push((mask, holder)),
+            None => self.item_scripts.push(ItemScript {
+                holder,
+                item,
+                locals: None,
+                events: vec![(mask, holder)],
+            }),
+        }
     }
 
     /// Moves up to `count` of an item from one holder to another (as the
@@ -598,6 +845,7 @@ impl GameState {
             self.items.insert((from, item), have - n);
         }
         *self.items.entry((to, item)).or_insert(0) += n;
+        self.moved(order, from, to, item, n);
         n
     }
 
@@ -628,6 +876,10 @@ impl GameState {
                 let is_weapon = order
                     .get(item)
                     .is_some_and(|rr| rr.entry.header.kind == WEAP);
+                // A weight mod's share off (`004be380`).
+                if is_weapon {
+                    weight -= crate::weapon_mods::weight_off(order, self, holder, item);
+                }
                 if is_weapon && weight >= 10.0 {
                     weight *= crate::perks::apply(
                         order,
@@ -695,10 +947,28 @@ impl GameState {
     }
 
     /// The player picks up an item lying in the world: it goes into their
-    /// inventory and the placed one is gone.
+    /// inventory (with its script, when one dropped it there) and the
+    /// placed one is gone.
     pub fn pick_up(&mut self, order: &LoadOrder, reference: FormId, item: FormId, count: i32) {
         self.stock(order, PLAYER_REF);
         *self.items.entry((PLAYER_REF, item)).or_insert(0) += count;
+        let carried = self
+            .item_scripts
+            .iter()
+            .filter(|s| s.holder == reference && s.item == item)
+            .count() as i32;
+        let mut left = count;
+        for s in self.item_scripts.iter_mut() {
+            if left == 0 {
+                break;
+            }
+            if s.holder == reference && s.item == item {
+                s.holder = PLAYER_REF;
+                s.events.push((event::ADD, PLAYER_REF));
+                left -= 1;
+            }
+        }
+        self.added(order, PLAYER_REF, item, count - carried.min(count));
         self.disabled.insert(reference, true);
         self.events.push(Event::Enable(reference, false));
     }
@@ -878,8 +1148,8 @@ pub enum Event {
     Menu(u16),
     /// An image space modifier (`IMAD`) applied (true) or removed.
     ImageSpace(FormId, bool),
-    /// `PlayBink`: a video file (under `Data\Video`).
-    Video(String),
+    /// `PlayBink`: a movie to play before anything else happens.
+    Video(Video),
     /// `PlayMusic`: a music type (`MUSC`).
     Music(FormId),
     /// The weather forced (`ForceWeather`) or released (`None`).
@@ -888,10 +1158,52 @@ pub enum Event {
     CharacterMenu(crate::chargen::CharacterMenu),
     /// `ShowBarterMenu`: trading with this merchant.
     Barter(FormId),
+    /// `ShowRecipeMenu`: the crafting menu of a recipe category
+    /// (`world::crafting`) for the reference it was called on
+    /// (`005deb10` opens it, `00726ff0`, only for an actor: "Recipe menu
+    /// called with NULL vendor!" otherwise).
+    RecipeMenu {
+        actor: FormId,
+        category: FormId,
+    },
+    /// `ShowRepairMenu`: this merchant's repairs (`world::repair`).
+    RepairServices(FormId),
+    /// `OpenTeammateContainer`: trading things with a companion (the
+    /// container menu's mode 3).
+    TeammateContainer(FormId),
+    /// `ShowCaravanMenu`: a game of Caravan against this person with their
+    /// deck, the AI's difficulty and the share of their funds they bet
+    /// (`world::caravan`).
+    Caravan {
+        npc: FormId,
+        deck: FormId,
+        difficulty: i32,
+        share: f32,
+    },
+    /// `ShowSlotMachineMenuParams`, `ShowBlackJackMenuParams`,
+    /// `ShowRouletteMenuParams`: a casino game (`world::casino`), its bets'
+    /// limits and the least winnings to sit down (0 for none; blackjack's
+    /// handler always passes 0).
+    Casino {
+        game: crate::casino::Game,
+        casino: FormId,
+        min_bet: i32,
+        max_bet: i32,
+        min_winnings: i32,
+    },
     /// Someone died (killed by `by`).
     Died {
         who: FormId,
         by: FormId,
+    },
+    /// Someone essential was brought to 0 health: they go down instead of
+    /// dying (`world::combat::hurt`).
+    KnockedOut {
+        who: FormId,
+    },
+    /// Someone who was down gets up (`world::combat::advance_down`).
+    GotUp {
+        who: FormId,
     },
     /// `PlayGroup`: an animation group (by the game's name: `Forward`,
     /// `Open`, `SpecialIdle`…) to play on a person or an object's model,
@@ -907,9 +1219,10 @@ pub enum Event {
         who: FormId,
         idle: FormId,
     },
-    /// An AI package lifecycle action requested by `AddScriptPackage`.
-    /// The referenced `PACK` record holds the action's idle, topic and
-    /// embedded script; dispatchers must read those fields from the package.
+    /// An AI package lifecycle action requested by `AddScriptPackage` or
+    /// the AI (`world::ai::actions`). The referenced `PACK` record holds
+    /// the action's idle, topic and embedded script
+    /// (`world::ai::actions::perform` carries it out).
     PackageAction {
         who: FormId,
         package: FormId,
@@ -930,18 +1243,49 @@ pub enum Event {
     /// What `world::more_functions` has to show (a reference made, an
     /// actor's alpha, a save asked for…).
     More(crate::more_functions::Shown),
+    /// `ForceTerminalBack` (`005dc4e0`): an open terminal menu goes back a
+    /// screen (out of the first, it closes).
+    TerminalBack,
 }
 
-/// Which package lifecycle action `AddScriptPackage` requested.
+/// Which package lifecycle action is requested (`world::ai::actions`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageActionKind {
     Begin,
     Change,
+    End,
 }
 
 /// The face and body menu (`ShowRaceMenu`): `VCG01SCRIPT` opens it at
 /// stage 36 and carries on from a `MenuMode 1036` block.
 pub const RACE_SEX_MENU: u16 = 1036;
+
+/// What `PlayBink` asks for. The command's four optional integers have no
+/// names in the PC program; their effects were read from its handler
+/// (`005d15d0`) and the movie player it calls (1.4.0.525):
+///
+/// - the first goes to the player's per-frame continue check
+///   (vtable `01082564` + 0x40, `00867440`), which ends the movie when control
+///   5 or 28 is pressed only if it is set;
+/// - the second brackets the movie with the player's audio mute and unmute
+///   (+0x4 `008671a0`, +0x8 `00867220`);
+/// - the third with its music pause and resume (+0xc, +0x10);
+/// - the fourth picks the fit (`00ec2aa0`, `00ec2b20`, `00ec2bb0`): set, the
+///   movie fills the screen's width and is centred vertically; clear, it
+///   fills the height and is centred horizontally.
+///
+/// The handler's defaults are 0, 1, 1 and 1. The Xbox 360 prototype's
+/// symbols (Xbox PDB) name the handler's locals `iinterruptable`,
+/// `imuteGameAudio`, `ipauseGameMusic` and `iletterBoxed`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Video {
+    /// The file, relative to `Data\Video`.
+    pub file: String,
+    pub interruptable: bool,
+    pub mute_audio: bool,
+    pub pause_music: bool,
+    pub letterbox: bool,
+}
 
 /// A function argument once worked out.
 #[derive(Debug, Clone, PartialEq)]
@@ -999,9 +1343,12 @@ pub fn base_of(order: &LoadOrder, reference: FormId) -> Option<FormId> {
         return Some(PLAYER_BASE);
     }
     let rr = order.get(reference)?;
-    let record = rr.record().ok()?;
-    let name = record.get(NAME).filter(|s| s.data.len() >= 4)?;
-    Some(rr.plugin.to_global(FormId(le_u32(&name.data, 0))))
+    // Its `NAME` alone: asked for very often.
+    let name = rr.subrecord(NAME).ok()??;
+    if name.len() < 4 {
+        return None;
+    }
+    Some(rr.plugin.to_global(FormId(le_u32(&name, 0))))
 }
 
 /// Every `CNTO` (form, count) on the base of a container, NPC or creature
@@ -1056,11 +1403,13 @@ pub struct Whereabouts {
 
 pub fn whereabouts(order: &LoadOrder, reference: FormId) -> Option<Whereabouts> {
     let rr = order.get(reference)?;
-    let record = rr.record().ok()?;
-    let data = &record
-        .get(esm::sig::DATA)
-        .filter(|d| d.data.len() >= 24)?
-        .data;
+    // Only its `DATA` is read (this is asked for many references every
+    // frame).
+    let data = rr.subrecord(esm::sig::DATA).ok()??;
+    let data = &data[..];
+    if data.len() < 24 {
+        return None;
+    }
     Some(Whereabouts {
         cell: order.cell_of(&rr)?,
         world: order.world_of(&rr),
@@ -1077,7 +1426,7 @@ impl GameState {
         if r == PLAYER_REF {
             let space = self.player_world.or(self.player_cell)?;
             let cell = self.player_cell.unwrap_or(space);
-            return Some((space, cell, self.player_position?, 0.0));
+            return Some((space, cell, self.player_position?, self.player_heading));
         }
         // Made while playing (`PlaceAtMe`): where it was made.
         let w = match self.more.placed.refs.get(&r) {
@@ -1200,8 +1549,17 @@ impl Interactive {
     /// How far along a ray (from `eye`, unit `dir`) it meets the object's
     /// bounds, if it does.
     pub fn ray_hit(&self, eye: [f32; 3], dir: [f32; 3]) -> Option<f32> {
+        self.ray_hit_within(eye, dir, 0.0)
+    }
+
+    /// [`Self::ray_hit`] with the bounds grown by `margin` world units on
+    /// every side: where a sphere of that radius cast along the ray first
+    /// touches them (the corners rounded off aside), as the activation
+    /// pick's sphere does (`world::activation::PICK_RADIUS`).
+    pub fn ray_hit_within(&self, eye: [f32; 3], dir: [f32; 3], margin: f32) -> Option<f32> {
         let (lo, hi) = self.bounds?;
         let s = if self.scale > 0.0 { self.scale } else { 1.0 };
+        let (lo, hi) = (lo.map(|v| v - margin / s), hi.map(|v| v + margin / s));
         let o = self.local(eye, true).map(|v| v / s);
         let d = self.local(dir, false).map(|v| v / s);
         let (mut near, mut far) = (0.0f32, f32::INFINITY);
@@ -1226,8 +1584,38 @@ impl Interactive {
 /// base has a script (people, activators, triggers, doors…), with trigger
 /// volumes; items lying around; containers.
 pub fn interactive_references(order: &LoadOrder, cell: FormId) -> Vec<Interactive> {
+    interactive_from(order, order.references_in_cell(cell))
+}
+
+/// [`interactive_references`] for one exterior grid square: its cell's
+/// objects, then the worldspace's persistent objects standing in it (the
+/// game assigns those to the grid cell they stand in,
+/// `TESWorldSpace::AssignPersistentRefsToCell` (Xbox PDB)). Their order
+/// within the square is not traced.
+pub fn interactive_in_square(
+    order: &LoadOrder,
+    grid: &crate::WorldGrid,
+    square: (i32, i32),
+) -> Vec<Interactive> {
+    let Some(cell) = grid.cell_at(square) else {
+        return Vec::new();
+    };
+    let persistent = grid
+        .persistent_in(square)
+        .iter()
+        .filter_map(|&id| order.get(id));
+    interactive_from(
+        order,
+        order.references_in_cell(cell).into_iter().chain(persistent),
+    )
+}
+
+fn interactive_from<'a>(
+    order: &LoadOrder,
+    references: impl IntoIterator<Item = esm::RecordRef<'a>>,
+) -> Vec<Interactive> {
     let mut out = Vec::new();
-    for rr in order.references_in_cell(cell) {
+    for rr in references {
         if rr.entry.header.is_deleted() {
             continue;
         }
@@ -1305,9 +1693,62 @@ pub fn script_of(order: &LoadOrder, owner: FormId) -> Option<FormId> {
     } else {
         order.get(base_of(order, owner)?)?
     };
-    let record = holder.record().ok()?;
+    let s = holder.subrecord(SCRI).ok()??;
+    if s.len() < 4 {
+        return None;
+    }
+    Some(holder.plugin.to_global(FormId(le_u32(&s, 0))))
+}
+
+/// Whether an event block's argument is empty or names `who` (`player`,
+/// an editor ID).
+fn names_who(order: &LoadOrder, b: &script::Block, who: FormId) -> bool {
+    match b.args.first() {
+        None => true,
+        Some(Arg::Word(w)) => {
+            let id = if w.eq_ignore_ascii_case("player") || w.eq_ignore_ascii_case("playerref") {
+                Some(PLAYER_REF)
+            } else {
+                order.form_by_editor_id(w)
+            };
+            id == Some(who)
+        }
+        Some(_) => false,
+    }
+}
+
+/// A scripted item's own script: who holds it, its variables (made on its
+/// first run), and its events waiting (bit, and the reference it's for).
+#[derive(Debug, Clone)]
+pub struct ItemScript {
+    pub holder: FormId,
+    pub item: FormId,
+    pub locals: Option<Locals>,
+    pub events: Vec<(u32, FormId)>,
+}
+
+/// Item script events (`005ac750`'s callers): the bit and the blocks it
+/// runs.
+pub mod event {
+    pub const ADD: u32 = 1;
+    pub const EQUIP: u32 = 2;
+    pub const DROP: u32 = 4;
+    pub const UNEQUIP: u32 = 8;
+    /// Each event's block (`0118e2f0`).
+    pub const BLOCKS: [(u32, &str); 4] = [
+        (ADD, "onadd"),
+        (EQUIP, "onequip"),
+        (DROP, "ondrop"),
+        (UNEQUIP, "onunequip"),
+    ];
+}
+
+/// An item record's script (`SCRI` on the item itself).
+pub fn item_script(order: &LoadOrder, item: FormId) -> Option<FormId> {
+    let rr = order.get(item).filter(|r| is_item(r.entry.header.kind))?;
+    let record = rr.record().ok()?;
     let s = record.get(SCRI).filter(|s| s.data.len() >= 4)?;
-    Some(holder.plugin.to_global(FormId(le_u32(&s.data, 0))))
+    Some(rr.plugin.to_global(FormId(le_u32(&s.data, 0)))).filter(|f| f.0 != 0)
 }
 
 /// A script variable's name by its number (`SLSD` index, then `SCVR`).
@@ -1472,12 +1913,24 @@ impl Facts<'_> {
                 v => self.unaffected_actor_value(on?, v)?,
             },
             "HasMagicEffect" => flag(crate::magic::has_effect(s, on?, arg(0).form())),
-            "GetLocked" => flag(crate::locks::lock_now(self.order, s, on?).is_some()),
+            "GetLocked" => {
+                let r = on?;
+                match crate::terminal::placed(self.order, r) {
+                    Some(t) => crate::terminal::get_locked(self.order, s, &t, r),
+                    None => flag(crate::locks::lock_now(self.order, s, r).is_some()),
+                }
+            }
             // `0059d1d0`: `00430ae0` on the reference's lock (only locks
             // forcing broke have a count).
             "GetIsLockBroken" => flag(crate::lockpick::is_broken(self.order, s, on?)),
             "GetLockLevel" => {
-                crate::locks::lock_now(self.order, s, on?).map_or(0.0, |l| f64::from(l.level))
+                let r = on?;
+                match crate::terminal::placed(self.order, r) {
+                    Some(t) => crate::terminal::get_lock_level(self.order, s, &t, r),
+                    None => {
+                        crate::locks::lock_now(self.order, s, r).map_or(0.0, |l| f64::from(l.level))
+                    }
+                }
             }
             "GetLinkedRef" => {
                 f64::from(crate::locks::linked_ref(self.order, on?).map_or(0, |r| r.0))
@@ -1630,7 +2083,7 @@ impl Facts<'_> {
                     flag(s.perks.contains(&perk))
                 } else {
                     let rr = self.order.get(self.base(r)?)?;
-                    let record = rr.record().ok()?;
+                    let record = rr.record_shared().ok()?;
                     let has = record.get_all(PRKR).any(|p| {
                         p.data.len() >= 4 && rr.plugin.to_global(FormId(le_u32(&p.data, 0))) == perk
                     });
@@ -1661,9 +2114,49 @@ impl Facts<'_> {
                 )
             }
             "GetCombatTarget" => f64::from(s.combat.get(&on?).map_or(0, |t| t.0)),
-            // True of a new game, where nobody wins at the casinos or has
-            // a reputation yet (hardcore: `world::living`).
-            "HasBeenEaten" | "GetCasinoWinningsLevel" | "GetKnockedState" => 0.0,
+            // 100 when the calling actor would attack the target (`008b06d0`,
+            // `factions::attacks_on_sight`), else 0; both must be actors.
+            // Not done: the early 0 when both are already fighting
+            // (`00992640`, the combat group test) and the call through
+            // actor vtable +0x344 before it (its purpose isn't traced).
+            // Translated from 0059ed30 (decompiled, FalloutNV.exe 1.4.0.525)
+            "GetShouldAttack" => {
+                let who = on?;
+                let target = arg(0).form();
+                let actor = |r: FormId| {
+                    r == PLAYER_REF
+                        || base_of(self.order, r)
+                            .and_then(|b| self.order.get(b))
+                            .is_some_and(|b| {
+                                matches!(b.entry.header.kind.as_bytes(), b"NPC_" | b"CREA")
+                            })
+                };
+                if actor(who)
+                    && actor(target)
+                    && crate::factions::attacks_on_sight(self.order, s, who, target)
+                {
+                    100.0
+                } else {
+                    0.0
+                }
+            }
+            // True of a new game, where nobody has been eaten yet
+            // (hardcore: `world::living`).
+            "HasBeenEaten" => 0.0,
+            // Knock state 2 (as `PushActorAway` leaves it) for someone
+            // essential brought down.
+            "GetKnockedState" => {
+                if s.more.down.contains_key(&on?) {
+                    2.0
+                } else {
+                    0.0
+                }
+            }
+            // `005dec30`: the player's winnings there by quarters of its
+            // limit (`world::casino`); 0 where they haven't played.
+            "GetCasinoWinningsLevel" => {
+                f64::from(crate::casino::winnings_level(self.order, s, arg(0).form()))
+            }
             // The process's flag (`00915d40`; nobody without one: 0).
             "IsWeaponOut" => flag(s.weapon_out.contains(&on?)),
             // Reputations (`world::reputation`); a type or axis out of
@@ -1822,7 +2315,7 @@ impl Facts<'_> {
             running,
             sneaking: player && s.player_sneaking,
             light: 50.0,
-            shot_noise: 0.0,
+            shot_noise: crate::noise::value(s, other) as f32,
             armour_weight: 0.0,
             armour_penalty: 0.0,
             perception: av(who, 6),
@@ -2002,7 +2495,7 @@ impl Facts<'_> {
             return aidt.data.get(usize::from(index)).map(|&v| f64::from(v));
         }
         let rr = self.order.get(base)?;
-        let record = rr.record().ok()?;
+        let record = rr.record_shared().ok()?;
         // Karma: `ACBS` (flags, fatigue, barter gold, level, calc min and
         // max, speed mult, then karma f32 at 16).
         if index == 23 {
@@ -2038,10 +2531,25 @@ impl Facts<'_> {
         match index {
             5..=11 => data.get(4 + usize::from(index - 5)).map(|&v| f64::from(v)),
             16 => (data.len() >= 4).then(|| f64::from(le_u32(data, 0) as i32)),
-            32..=45 => record
-                .get(DNAM)
-                .and_then(|d| d.data.get(usize::from(index - 32)).copied())
-                .map(f64::from),
+            // `DNAM`: the 14 skills, then 14 offsets (`NPC_DATA`'s `cSkill`
+            // and `cOffset`, Xbox PDB), the offset added unless the stats
+            // are worked out by the game (`ACBS` flag 0x10; `00607850`,
+            // `005f0d00`): Mick's Repair is 15 + 60.
+            32..=45 => {
+                let i = usize::from(index - 32);
+                let d = &record.get(DNAM)?.data;
+                let skill = f64::from(*d.get(i)?);
+                let auto = record
+                    .get(ACBS)
+                    .filter(|s| s.data.len() >= 4)
+                    .is_some_and(|s| le_u32(&s.data, 0) & 0x10 != 0);
+                let offset = if auto {
+                    0
+                } else {
+                    d.get(14 + i).copied().unwrap_or(0)
+                };
+                Some(skill + f64::from(offset))
+            }
             _ => None,
         }
     }
@@ -2144,8 +2652,37 @@ pub struct Runner<'a> {
     pub owner: Option<FormId>,
     /// `GetSecondsPassed`.
     pub seconds_passed: f32,
+    /// A command that may change the loaded references ran (the script
+    /// runner's flag +0xa1, set before a command whose table entry has
+    /// flag 0x100: `Activate`, `MoveTo`, `ForceFlee`, `ForceTakeCover`,
+    /// `ExitGame`, `MoveToFade`; `005e1550`). `Script::Run` returns it and
+    /// the reference-script pass stops on it ([`crate::ref_scripts`]).
+    /// Each nested `Script::Run` has its own runner in the game
+    /// (`005e2590`); here nested runs share this flag (unresolved).
+    pub references_changed: bool,
+    /// The viewer's camera and collision, for `GetLineOfSight`
+    /// ([`crate::sight`]); none headless.
+    pub sight: Option<&'a dyn crate::sight::Sight>,
+    /// A scripted item's own run: its holder and the item (`RemoveMe`),
+    /// and whether `RemoveMe` took it.
+    item: Option<(FormId, FormId)>,
+    removed: bool,
+    /// The reference `DropMe` made for it.
+    dropped: Option<FormId>,
     depth: u8,
 }
+
+/// The script functions whose table entry has flag 0x100 (byte +0x25),
+/// which make the script runner report a possible change to the loaded
+/// references (`005e1550` sets runner+0xa1).
+const CHANGES_REFERENCES: &[&str] = &[
+    "Activate",
+    "MoveToMarker",
+    "ForceFlee",
+    "ForceTakeCover",
+    "ExitGame",
+    "MoveToMarkerWithFade",
+];
 
 impl<'a> Runner<'a> {
     pub fn new(order: &'a LoadOrder, scripts: &'a ScriptCache, state: &'a mut GameState) -> Self {
@@ -2156,7 +2693,130 @@ impl<'a> Runner<'a> {
             this: None,
             owner: None,
             seconds_passed: 0.0,
+            references_changed: false,
+            sight: None,
+            item: None,
+            removed: false,
+            dropped: None,
             depth: 0,
+        }
+    }
+
+    /// With the viewer's camera and collision for `GetLineOfSight`.
+    pub fn with_sight(mut self, sight: &'a dyn crate::sight::Sight) -> Self {
+        self.sight = Some(sight);
+        self
+    }
+
+    /// The scripted items' own runs (`004d2480` for each holder's scripted
+    /// items): items gone from their holder lose their script; each one
+    /// held by the player runs (its `GameMode` blocks, each run); every
+    /// one with events waiting runs their blocks (`OnAdd`, `OnEquip`,
+    /// `OnUnequip`, `OnDrop` naming the reference or none), in the
+    /// script's order, the holder the reference it runs on; then its events
+    /// are cleared (`005a8ea0`). Holders other than the player run only
+    /// for events (the game runs a reference's items with its own script,
+    /// `00565870`, which nv-rs doesn't do for every reference).
+    pub fn run_item_scripts(&mut self) {
+        // Items gone by other means take their scripts with them.
+        let mut kept: std::collections::HashMap<(FormId, FormId), i32> =
+            std::collections::HashMap::new();
+        let order = self.order;
+        let state = &*self.state;
+        let keep: Vec<bool> = state
+            .item_scripts
+            .iter()
+            .map(|s| {
+                let n = kept.entry((s.holder, s.item)).or_insert(0);
+                *n += 1;
+                // A holder's things, or a dropped one lying in the world.
+                let held = state.item_count(order, s.holder, s.item).max(
+                    crate::more_functions::placed::held_in_world(order, state, s.holder, s.item),
+                );
+                *n <= held
+            })
+            .collect();
+        let mut keep = keep.into_iter();
+        self.state
+            .item_scripts
+            .retain(|_| keep.next().unwrap_or(false));
+        let mut i = 0;
+        while i < self.state.item_scripts.len() {
+            let ItemScript {
+                holder,
+                item,
+                ref events,
+                ..
+            } = self.state.item_scripts[i];
+            let events = events.clone();
+            if holder != PLAYER_REF && events.is_empty() {
+                i += 1;
+                continue;
+            }
+            let Some(script) = item_script(order, item).and_then(|s| self.scripts.script(order, s))
+            else {
+                i += 1;
+                continue;
+            };
+            let blocks: Vec<&script::Block> = script
+                .blocks
+                .iter()
+                .filter(|b| {
+                    b.kind == "gamemode"
+                        || event::BLOCKS.iter().any(|(bit, kind)| {
+                            b.kind == *kind
+                                && events
+                                    .iter()
+                                    .any(|(m, r)| m & bit != 0 && names_who(order, b, *r))
+                        })
+                })
+                .collect();
+            let mut locals = self.state.item_scripts[i]
+                .locals
+                .take()
+                .unwrap_or_else(|| Locals::new(&script));
+            self.state.item_scripts[i].events.clear();
+            if !blocks.is_empty() {
+                let saved = (self.this, self.owner, self.item, self.removed, self.dropped);
+                self.this = Some(holder);
+                self.owner = None;
+                self.item = Some((holder, item));
+                self.removed = false;
+                self.dropped = None;
+                let action = self.state.action_ref.replace(holder);
+                for block in blocks {
+                    if interp::run(&block.body, &mut locals, self) != Flow::Done {
+                        break;
+                    }
+                }
+                self.state.action_ref = action;
+                let removed = self.removed;
+                let dropped = self.dropped;
+                (self.this, self.owner, self.item, self.removed, self.dropped) = saved;
+                if let Some(made) = dropped {
+                    // `DropMe`: this one lies in the world now, with its
+                    // `OnDrop` waiting; `RemoveMe` into a container: it's
+                    // there, with `OnDrop` and `OnAdd` waiting.
+                    let into_container = !self.state.more.placed.refs.contains_key(&made);
+                    let s = &mut self.state.item_scripts[i];
+                    s.locals = Some(locals);
+                    s.holder = made;
+                    s.events.push((event::DROP, holder));
+                    if into_container {
+                        s.events.push((event::ADD, made));
+                    }
+                    i += 1;
+                    continue;
+                }
+                if removed {
+                    self.state.item_scripts.remove(i);
+                    continue;
+                }
+            }
+            if let Some(s) = self.state.item_scripts.get_mut(i) {
+                s.locals = Some(locals);
+            }
+            i += 1;
         }
     }
 
@@ -2274,10 +2934,13 @@ impl<'a> Runner<'a> {
 
     /// Time passes: each running quest's script runs (its `GameMode`
     /// blocks) once its delay has gone by (one a script set, else its
-    /// own, else [`QUEST_SCRIPT_DELAY`]). A quest's script first runs as soon as it's
-    /// running (a guess), with `GetSecondsPassed` the time since its last
-    /// run.
+    /// own, else [`QUEST_SCRIPT_DELAY`]). A quest's script first runs as
+    /// soon as it's running (traced for quests with their own delay,
+    /// `005ab400`; a guess for the rest, whose countdowns the game
+    /// staggers), with `GetSecondsPassed` the time since its last run (on
+    /// an own-delay quest's first run, the frame's).
     pub fn update(&mut self, seconds: f32) {
+        self.run_item_scripts();
         self.state.roll();
         self.state.seconds += f64::from(seconds.max(0.0));
         self.state.advance_clock(self.order, seconds);
@@ -2299,18 +2962,31 @@ impl<'a> Runner<'a> {
             if quest.script.is_none() {
                 continue;
             }
-            let delay = match self.state.quest_delays.get(&q) {
-                Some(&d) if d > 0.0 => d,
-                _ if quest.delay > 0.0 => quest.delay,
-                _ => QUEST_SCRIPT_DELAY,
+            let own = match self.state.quest_delays.get(&q) {
+                Some(&d) if d > 0.0 => Some(d),
+                _ if quest.delay > 0.0 => Some(quest.delay),
+                _ => None,
             };
+            let delay = own.unwrap_or(QUEST_SCRIPT_DELAY);
+            let first = !self.state.quest_timers.contains_key(&q);
             let timer = self.state.quest_timers.entry(q).or_insert(delay);
             *timer += seconds;
             if *timer < delay {
                 continue;
             }
             let passed = std::mem::take(timer);
-            self.seconds_passed = passed;
+            // A quest with its own delay starts with its countdown at 0
+            // (`005ab400`), so it runs at once, and `GetSecondsPassed`
+            // gives the time gathered since its last run, or this frame's
+            // when there's none (`0059c430`, `005ac1e0`): on the first run,
+            // the frame's. (`VGenericTimer`, delay 0.1, so counts Doc
+            // Mitchell's farewell timer down over its second and third
+            // runs.)
+            self.seconds_passed = if first && own.is_some() {
+                seconds
+            } else {
+                passed
+            };
             self.run_blocks(q, None, "gamemode", |_| true);
         }
     }
@@ -2350,22 +3026,28 @@ impl<'a> Runner<'a> {
     /// `who`, with `who` as the action reference (`IsActionRef`).
     pub fn run_event(&mut self, reference: FormId, kind: &str, who: FormId) {
         let order = self.order;
-        let names_who = |b: &script::Block| match b.args.first() {
-            None => true,
-            Some(Arg::Word(w)) => {
-                let id = if w.eq_ignore_ascii_case("player") || w.eq_ignore_ascii_case("playerref")
-                {
-                    Some(PLAYER_REF)
-                } else {
-                    order.form_by_editor_id(w)
-                };
-                id == Some(who)
-            }
-            Some(_) => false,
-        };
+        let names_who = |b: &script::Block| names_who(order, b, who);
         let saved = self.state.action_ref.replace(who);
         self.run_blocks(reference, Some(reference), kind, names_who);
         self.state.action_ref = saved;
+    }
+
+    /// `speaker` finished saying a line of `topic` it was told to say with
+    /// `SayTo`: its script's `SayToDone` blocks (block type 7, the block
+    /// table's entry at `0118e408`) run, those naming no topic or this one.
+    /// The game raises it when the line is done: the Xbox prototype names
+    /// the callback `TESObjectREFR::SayToCallBack` (Xbox PDB); its PC
+    /// address and exact timing aren't pinned yet (the scripts that use it
+    /// chain the next line from here, as Dead Money's narrator does; the
+    /// base game has over a hundred `SayToDone` blocks).
+    pub fn say_to_done(&mut self, speaker: FormId, topic: FormId) {
+        let order = self.order;
+        let names = |b: &script::Block| match b.args.first() {
+            None => true,
+            Some(Arg::Word(w)) => order.form_by_editor_id(w) == Some(topic),
+            Some(_) => false,
+        };
+        self.run_blocks(speaker, Some(speaker), "saytodone", names);
     }
 
     /// Several events at once, in one run of the reference's script (as
@@ -2379,19 +3061,7 @@ impl<'a> Runner<'a> {
         else {
             return;
         };
-        let names_who = |b: &script::Block| match b.args.first() {
-            None => true,
-            Some(Arg::Word(w)) => {
-                let id = if w.eq_ignore_ascii_case("player") || w.eq_ignore_ascii_case("playerref")
-                {
-                    Some(PLAYER_REF)
-                } else {
-                    order.form_by_editor_id(w)
-                };
-                id == Some(who)
-            }
-            Some(_) => false,
-        };
+        let names_who = |b: &script::Block| names_who(order, b, who);
         let blocks: Vec<&script::Block> = script
             .blocks
             .iter()
@@ -2409,6 +3079,73 @@ impl<'a> Runner<'a> {
             }
         });
         self.state.action_ref = saved;
+    }
+
+    /// One run of a reference's object script in game mode, as
+    /// `TESObjectREFR::RunScript` (`00565870`) runs it through `Script::Run`
+    /// (`005ac1e0`): its `GameMode` blocks and the blocks of the events
+    /// flagged in its event list since its last run, in the script's
+    /// order; the flags are then cleared (`005a8ea0`, after the run in
+    /// `005e0d20`). `events` are (block kind, who it was flagged for:
+    /// `None` for an event without one, as `OnLoad`); a block naming
+    /// someone runs only if its event was flagged for them, one naming no
+    /// one if it was flagged at all (`005a8e20` flags both). `action` is
+    /// the action reference meanwhile (`IsActionRef`). Returns whether a
+    /// command that may change the loaded references ran
+    /// ([`Self::references_changed`]).
+    pub fn run_reference_script(
+        &mut self,
+        reference: FormId,
+        events: &[(&str, Option<FormId>)],
+        action: Option<FormId>,
+    ) -> bool {
+        let order = self.order;
+        let Some(script) = script_of(order, reference).and_then(|s| self.scripts.script(order, s))
+        else {
+            return false;
+        };
+        let names = |b: &script::Block, who: Option<FormId>| match b.args.first() {
+            None => true,
+            Some(Arg::Word(w)) => {
+                let id = if w.eq_ignore_ascii_case("player") || w.eq_ignore_ascii_case("playerref")
+                {
+                    Some(PLAYER_REF)
+                } else {
+                    order.form_by_editor_id(w)
+                };
+                id.is_some() && id == who
+            }
+            Some(_) => false,
+        };
+        let blocks: Vec<&script::Block> = script
+            .blocks
+            .iter()
+            .filter(|b| {
+                b.kind == "gamemode"
+                    || events
+                        .iter()
+                        .any(|&(kind, who)| kind == b.kind && names(b, who))
+            })
+            .collect();
+        if blocks.is_empty() {
+            return false;
+        }
+        let before = std::mem::take(&mut self.references_changed);
+        let saved = self.state.action_ref;
+        if action.is_some() {
+            self.state.action_ref = action;
+        }
+        self.with(Some(reference), Some(reference), |runner, locals| {
+            for block in blocks {
+                if interp::run(&block.body, locals, runner) != Flow::Done {
+                    break;
+                }
+            }
+        });
+        self.state.action_ref = saved;
+        let changed = self.references_changed;
+        self.references_changed = before || changed;
+        changed
     }
 
     /// `attacker` hits `target` (a person, a creature or an object) with
@@ -2527,14 +3264,29 @@ impl<'a> Runner<'a> {
                 crate::combat::critical_damage(order, self.state, attacker, weapon, target, damage);
         }
         let ammo = weapon.and_then(|w| w.ammo_in_use(order, self.state, attacker));
-        let after_armour = crate::combat::hit_through_armour(
+        let armoured = crate::combat::armour_hit(
             order,
             self.state,
             damage,
             Some((attacker, weapon_id)),
             target,
             ammo,
-        ) * crate::vats::player_damage_mult(order, self.state, target);
+        );
+        // A blocked hit is flagged (`009b5a30`, `00407e00(1, 1)`), for the
+        // blocker's block-hit animation and counter-attack timer.
+        if crate::melee::block_bonus(order, self.state, attacker, weapon_id, target).is_some() {
+            self.state.blocked_hits.push(target);
+        }
+        let vats_mult = crate::vats::player_damage_mult(order, self.state, target);
+        let after_armour = armoured.damage * vats_mult;
+        // The player's armour wears (`0089a760`).
+        crate::combat::wear_armour(
+            order,
+            self.state,
+            target,
+            part,
+            armoured.armour_damage * vats_mult,
+        );
         // The part it landed on: limb damage from the damage after armour,
         // and the hit's multiplier (`009b6620`).
         let at = crate::body_parts::part_hit(order, self.state, target, weapon, part, after_armour);
@@ -2570,13 +3322,20 @@ impl<'a> Runner<'a> {
         if attacker == PLAYER_REF && person && !was_hostile {
             fights_back &= crate::crime::assault(order, self.state, target);
         }
-        if crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker) {
+        let killed = crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker);
+        self.state
+            .hits_taken
+            .push((target, part.map_or(-1, i32::from), killed));
+        if killed {
             // The part the killing blow landed on (`GetKillingBlowLimb`; the
             // game keeps it with the dismembered limbs, when it writes it
             // there isn't traced).
             self.state
                 .killing_blow_limb
                 .insert(target, part.map_or(-1, i32::from));
+            // How they died (`GetCauseofDeath`), by what struck.
+            let cause = crate::more_functions::actors::cause_of(order, weapon);
+            crate::more_functions::actors::record_cause(self.state, target, cause);
             if person
                 && !was_hostile
                 && (attacker == PLAYER_REF || self.state.teammates.contains(&attacker))
@@ -2585,8 +3344,7 @@ impl<'a> Runner<'a> {
             }
             self.run_event(target, "ondeath", attacker);
         } else if fights_back {
-            // Whoever is hurt fights back (unless already fighting).
-            self.state.combat.entry(target).or_insert(attacker);
+            self.attacked(target, attacker);
         }
         Some(crate::combat::Hit {
             dealt,
@@ -2594,6 +3352,117 @@ impl<'a> Runner<'a> {
             critical,
             multiplier,
             hurt,
+        })
+    }
+
+    /// `target`, hurt and alive, answers `attacker`. The player's hits (past
+    /// `world::crime::assault`) and the player hurt keep the viewer's rule:
+    /// the one hurt fights back unless already fighting (for the player that
+    /// entry is only their "in combat" state). Anyone else hurt by someone
+    /// other than the player follows `Actor::AttackedBy` (Xbox PDB,
+    /// [`crate::combat_ai::attacked_by`]): friends and allies tolerate hits,
+    /// and stray shots don't start fights.
+    fn attacked(&mut self, target: FormId, attacker: FormId) {
+        if attacker == PLAYER_REF || target == PLAYER_REF {
+            self.state.combat.entry(target).or_insert(attacker);
+            return;
+        }
+        let answer = crate::combat_ai::attacked_by(self.order, self.state, target, attacker);
+        if answer.enters_combat {
+            self.state.combat.entry(target).or_insert(attacker);
+        }
+        if answer.new_target {
+            let list = self.state.hit_targets.entry(target).or_default();
+            if !list.contains(&attacker) {
+                list.push(attacker);
+            }
+        }
+    }
+
+    /// An explosion made by `source` (with `weapon`, its maker's weapon)
+    /// hurts `target` by `damage` (its damage after falloff,
+    /// `world::explosions`), as `009b5770` builds the hit (flag 0x2000) and
+    /// `0089a760` takes it: the target's `OnHit` / `OnHitWith` blocks, then
+    /// the armour (`009b5a30`), a critical (`009b7060`, adding the weapon's
+    /// critical damage after the armour), no body part (so no multiplier,
+    /// `009b73d0`), the health, `OnDeath`, and the hurt fighting back. The
+    /// limbs the explosion reaches (`009afcc0`, `009b1720`) aren't damaged
+    /// here. What it did, for people and creatures.
+    pub fn explosion_hit(
+        &mut self,
+        source: Option<FormId>,
+        target: FormId,
+        weapon: Option<&crate::combat::Weapon>,
+        damage: f32,
+    ) -> Option<crate::combat::Hit> {
+        let order = self.order;
+        if crate::more_functions::is_ghost(self.state, target) {
+            return None;
+        }
+        let attacker = source.unwrap_or(target);
+        let weapon_id = weapon.map(|w| w.form_id);
+        let names = |b: &script::Block, id: Option<FormId>| match b.args.first() {
+            None => true,
+            Some(Arg::Word(w)) => {
+                let named =
+                    if w.eq_ignore_ascii_case("player") || w.eq_ignore_ascii_case("playerref") {
+                        Some(PLAYER_REF)
+                    } else {
+                        order.form_by_editor_id(w)
+                    };
+                named.is_some() && named == id
+            }
+            Some(_) => false,
+        };
+        let saved = self.state.action_ref.replace(attacker);
+        self.run_blocks(target, Some(target), "onhit", |b| names(b, source));
+        self.run_blocks(target, Some(target), "onhitwith", |b| names(b, weapon_id));
+        self.state.action_ref = saved;
+        let kind = base_of(order, target)
+            .and_then(|b| order.get(b))
+            .map(|r| r.entry.header.kind)?;
+        if kind.as_bytes() != b"NPC_" && kind != CREA {
+            return None;
+        }
+        let mut dealt = crate::combat::hit_through_armour(
+            order,
+            self.state,
+            damage,
+            source.map(|s| (s, weapon_id)),
+            target,
+            None,
+        ) * crate::vats::player_damage_mult(order, self.state, target);
+        let critical = source.is_some_and(|s| {
+            let roll = self.state.roll() % 1000;
+            crate::combat::critical(order, self.state, s, weapon, target, false, roll)
+        });
+        if let (true, Some(s)) = (critical, source) {
+            dealt += crate::combat::critical_damage(order, self.state, s, weapon, target, dealt);
+        }
+        self.state.hit_location.insert(target, -1);
+        let was_hostile = source.is_some_and(|s| self.state.combat.get(&target) == Some(&s));
+        let person = kind.as_bytes() == b"NPC_";
+        let mut fights_back = source.is_some_and(|s| s != target);
+        if source == Some(PLAYER_REF) && person && !was_hostile {
+            fights_back &= crate::crime::assault(order, self.state, target);
+        }
+        if crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker) {
+            self.state.killing_blow_limb.insert(target, -1);
+            if let Some(s) = source.filter(|&s| {
+                person && !was_hostile && (s == PLAYER_REF || self.state.teammates.contains(&s))
+            }) {
+                crate::crime::murder(order, self.state, target, s);
+            }
+            self.run_event(target, "ondeath", attacker);
+        } else if let (true, Some(s)) = (fights_back, source) {
+            self.attacked(target, s);
+        }
+        Some(crate::combat::Hit {
+            dealt,
+            part: None,
+            critical,
+            multiplier: 0.0,
+            hurt: None,
         })
     }
 
@@ -2656,9 +3525,12 @@ impl<'a> Runner<'a> {
             }
             if e.flags & quest::COMPLETES_QUEST != 0 {
                 self.state.completed.insert(quest_id);
+                // `0060fb60`: no longer the active quest.
+                crate::quest_targets::quest_ended(self.state, quest_id);
             }
             if e.flags & quest::FAILS_QUEST != 0 {
                 self.state.failed.insert(quest_id);
+                crate::quest_targets::quest_ended(self.state, quest_id);
             }
             if let Some(source) = e.script {
                 self.depth += 1;
@@ -2762,6 +3634,11 @@ impl<'a> Runner<'a> {
             }
             "CompleteQuest" => {
                 self.state.completed.insert(arg(0).form());
+                // Completing a quest (`0060ca30`) announces it
+                // (`0077a480`), which stops it being the active quest.
+                // (That the command goes through `0060ca30` is assumed;
+                // its handler isn't traced here.)
+                crate::quest_targets::quest_ended(self.state, arg(0).form());
             }
             // The objective's state (`005d7c20`, `005d7d30`, `005ec5d0`: 0
             // neither, 1 shown, 2 done unseen, 3 shown and done): showing
@@ -2820,6 +3697,122 @@ impl<'a> Runner<'a> {
                 preselect: args.get(1).map_or(true, |a| a.number() == 1.0),
             })),
             "ShowBarterMenu" => events.push(Event::Barter(target?)),
+            // `005deb10` → `00704fc0` → `00726ff0`: the crafting menu for
+            // the person the script runs on, or for the speaker of the
+            // talking activator it runs on (its base's +0x90); the category
+            // is optional (0). No one: nothing ("Recipe menu called with
+            // NULL vendor!"). Its number (1077) is open for `MenuMode`.
+            "ShowRecipeMenu" => {
+                let r = target?;
+                let actor = if crate::more_functions::is_actor(self.order, self.state, r) {
+                    Some(r)
+                } else {
+                    crate::more_functions::placed::base_now(self.order, self.state, r)
+                        .filter(|&b| {
+                            self.order
+                                .get(b)
+                                .is_some_and(|b| b.entry.header.kind.as_bytes() == b"TACT")
+                        })
+                        .and_then(|b| self.state.more.speakers.get(&b).copied())
+                };
+                let events = &mut self.state.events;
+                match actor {
+                    Some(actor) => {
+                        events.push(Event::RecipeMenu {
+                            actor,
+                            category: arg(0).form(),
+                        });
+                        events.push(Event::Menu(crate::crafting::RECIPE_MENU));
+                    }
+                    None => println!("Recipe menu called with NULL vendor!  Oh, noes!"),
+                }
+                return Some(1.0);
+            }
+            // `005d5200`: on a person or creature only (vtable +0x100), the
+            // merchants' repair menu for them (`00704690` → `007b7570`).
+            // `005cf250` → `00741060` (`CaravanMenu::Create`): on someone
+            // other than the player; with fewer than 30 cards the player's
+            // told so (`sCardCountText`) instead.
+            // `005cf040` / `005cf0f0` / `005cf1a0`: the game's `Create`
+            // (its checks are the viewer's, with the anti-cheat clock). The
+            // parameterless forms read no casino (an unset local in the
+            // game; no script uses them).
+            // A form that isn't a casino (`CSNO`) is only reported.
+            "ShowSlotMachineMenuParams" | "ShowBlackJackMenuParams" | "ShowRouletteMenuParams" => {
+                let casino = arg(0).form();
+                let is_casino = self
+                    .order
+                    .get(casino)
+                    .is_some_and(|r| r.entry.header.kind.as_bytes() == b"CSNO");
+                if casino.0 != 0 && !is_casino {
+                    println!(
+                        "Invalid EditorFormID used in script {} -- is not a valid EditorFormID",
+                        name.trim_end_matches("Params")
+                    );
+                } else if casino.0 != 0 {
+                    let game = match name {
+                        "ShowSlotMachineMenuParams" => crate::casino::Game::Slots,
+                        "ShowBlackJackMenuParams" => crate::casino::Game::Blackjack,
+                        _ => crate::casino::Game::Roulette,
+                    };
+                    events.push(Event::Menu(game.menu()));
+                    events.push(Event::Casino {
+                        game,
+                        casino,
+                        min_bet: arg(1).number() as i32,
+                        max_bet: arg(2).number() as i32,
+                        min_winnings: if game == crate::casino::Game::Blackjack {
+                            0
+                        } else {
+                            arg(3).number() as i32
+                        },
+                    });
+                }
+            }
+            // `005ded40` (no vanilla script calls it).
+            "SetCasinoWinningsLevel" => {
+                crate::casino::set_winnings_level(
+                    self.order,
+                    self.state,
+                    arg(0).form(),
+                    arg(1).number() as i32,
+                );
+            }
+            // `005d4a40`: the PC's shared `return 1` (the Xbox kept a
+            // cheat level nothing reads).
+            "SetCasinoCheatLevel" => {}
+            "ShowCaravanMenu" => {
+                let npc = target?;
+                let deck = arg(0).form();
+                if npc == PLAYER_REF || deck.0 == 0 {
+                    return Some(0.0);
+                }
+                let c = &self.state.caravan;
+                if c.inactive.len() + c.active.len() < crate::caravan::MIN_DECK {
+                    let text = crate::scripting::game_setting_text(self.order, "sCardCountText")
+                        .unwrap_or_else(|| {
+                            "You must have at least 30 cards to play Caravan.".into()
+                        });
+                    events.push(Event::Message {
+                        title: None,
+                        text,
+                        buttons: Vec::new(),
+                    });
+                } else {
+                    events.push(Event::Caravan {
+                        npc,
+                        deck,
+                        difficulty: arg(1).number() as i32,
+                        share: arg(2).number() as f32,
+                    });
+                }
+            }
+            "ShowRepairMenu" => {
+                let vendor = target?;
+                if crate::script_functions::is_actor(self.order, vendor) {
+                    events.push(Event::RepairServices(vendor));
+                }
+            }
             // `VCG01TestSCRIPT` tags the exam's picks this way (slots 0 to
             // 2); the tag menu then starts with them.
             "SetPlayerTagSkill" => {
@@ -2855,6 +3848,7 @@ impl<'a> Runner<'a> {
                         });
                     for (item, n) in picked {
                         *self.state.items.entry((holder, item)).or_insert(0) += n;
+                        self.state.added(self.order, holder, item, n);
                     }
                     return Some(0.0);
                 }
@@ -2864,6 +3858,9 @@ impl<'a> Runner<'a> {
                 } else {
                     (*n - count).max(0)
                 };
+                if name == "AddItem" {
+                    self.state.added(self.order, holder, form, count);
+                }
             }
             // One weapon in hand; clothes take off what's on the same slots.
             "EquipItem" => {
@@ -2871,17 +3868,41 @@ impl<'a> Runner<'a> {
                 self.state.equip(self.order, who, arg(0).form());
             }
             "UnequipItem" => {
-                self.state.unequip(target?, arg(0).form());
+                self.state.unequip_item(self.order, target?, arg(0).form());
             }
             "KillActor" => {
                 let who = target?;
                 let by = args.first().map_or(who, Value::form);
+                // With a limb (`005be2a0` → `008b51b0`), the cause given (or
+                // −1) is kept as the cause of death.
+                let limb = args.get(1).map_or(-1, |v| v.number() as i32);
+                if limb != -1 {
+                    let cause = args.get(2).map_or(-1, |v| v.number() as i32);
+                    crate::more_functions::actors::record_cause(self.state, who, cause);
+                }
                 let full = crate::combat::max_health(self.order, self.state, who).unwrap_or(1.0);
-                crate::combat::hurt(self.order, self.state, who, full.max(1.0) * 10.0, by);
+                // `KillActor` (`005be2a0`) kills through the actor's death
+                // routine (`0089d900`), the one a fatal hit takes, so its
+                // `OnDeath` runs as for any death here (where in that
+                // routine the event is raised isn't pinned down).
+                if crate::combat::hurt(self.order, self.state, who, full.max(1.0) * 10.0, by) {
+                    // No hit, and an attacker only when one is given
+                    // (`005be2a0` reads it from its first parameter, none
+                    // by default).
+                    self.state.deaths.insert(
+                        who,
+                        crate::combat::DeathStart {
+                            killer: args.first().map(Value::form),
+                            hit: false,
+                        },
+                    );
+                    self.run_event(who, "ondeath", by);
+                }
             }
             "ResurrectActor" => {
                 let who = target?;
                 self.state.dead.remove(&who);
+                self.state.deaths.remove(&who);
                 self.state.damage.remove(&who);
             }
             "StartCombat" => {
@@ -3050,12 +4071,25 @@ impl<'a> Runner<'a> {
                 let Value::Text(file) = arg(0) else {
                     return None;
                 };
-                events.push(Event::Video(file));
+                let flag =
+                    |i: usize, default: bool| args.get(i).map_or(default, |v| v.number() != 0.0);
+                events.push(Event::Video(Video {
+                    file,
+                    interruptable: flag(1, false),
+                    mute_audio: flag(2, true),
+                    pause_music: flag(3, true),
+                    letterbox: flag(4, true),
+                }));
             }
             "PlayMusic" => events.push(Event::Music(arg(0).form())),
+            // `005d0760`: knocked out (life state 3, `008ace10`) after
+            // stopping their own fight (actor vtable +0x434 with no target,
+            // the call `StopCombatAlarmOnActor` makes per attacker); woken
+            // only from that state.
             "SetUnconscious" => {
                 let who = target?;
                 if arg(0).number() != 0.0 {
+                    self.state.combat.remove(&who);
                     self.state.unconscious.insert(who);
                 } else {
                     self.state.unconscious.remove(&who);
@@ -3112,6 +4146,18 @@ impl<'a> Runner<'a> {
                 };
                 let stat = crate::stats::index(&stat)?;
                 crate::stats::bump(self.state, stat, arg(1).number() as i64);
+            }
+            // `005d9430`: on a person or creature that's the player's
+            // teammate, or anyone when the number given isn't 0, the
+            // container menu on their things in mode 3 (`00709470`).
+            "OpenTeammateContainer" => {
+                let who = target?;
+                let anyone = args.first().is_some_and(|a| a.number() != 0.0);
+                if crate::more_functions::is_actor(self.order, self.state, who)
+                    && (anyone || self.state.teammates.contains(&who))
+                {
+                    self.state.events.push(Event::TeammateContainer(who));
+                }
             }
             "SetPlayerTeammate" => {
                 let who = target?;
@@ -3180,6 +4226,90 @@ impl<'a> Runner<'a> {
                 }
             }
             "ShowRaceMenu" => events.push(Event::Menu(RACE_SEX_MENU)),
+            // `005dc4e0`: only while the terminal menu is open (1057,
+            // `00a09030`); its screen stack is popped (`00758a80` →
+            // `0063f7b0`) and the screen before shown, or with none left
+            // the terminal closes (`00757ea0`). The viewer keeps the stack.
+            "ForceTerminalBack" => {
+                if self.state.more.menu_open == Some(crate::terminal::TERMINAL_MENU) {
+                    self.state.events.push(Event::TerminalBack);
+                }
+            }
+            // `005b53d0`: one of the scripted item running goes from its
+            // holder (outside an item's own run it does nothing).
+            // `005b5860`: the holder drops this one into the world
+            // (`RemoveItem` with its drop flag); its script goes with it.
+            "DropMe" => {
+                if let Some((holder, item)) = self.item.filter(|_| !self.removed) {
+                    if let Some(made) = crate::more_functions::placed::drop_into_world(
+                        self.order, self.state, holder, item, 1,
+                    ) {
+                        self.dropped = Some(made);
+                        self.removed = true;
+                    }
+                }
+            }
+            // `005cf3d0`: the card (the item whose script runs, or the
+            // reference's base) joins the player's cards
+            // (`PlayerCharacter::AddCaravanCard`).
+            "AddCardToPlayer" => {
+                let card = match self.item {
+                    Some((_, item)) => Some(item),
+                    None => target.and_then(|r| base_of(self.order, r)),
+                };
+                if let Some(card) = card {
+                    crate::caravan::add_card_to_player(self.order, self.state, card);
+                }
+            }
+            // `005ce5c0`: the one holding the item whose script this is
+            // (the containing object, `0084e3a0`); 0 for a script that
+            // isn't a held item's.
+            "GetContainer" => {
+                return Some(self.item.map_or(0.0, |(holder, _)| f64::from(holder.0)));
+            }
+            // `005d3e30`: the reference's base's value (`0048e960`), for
+            // every one of them. A held item's own script has no reference
+            // to give it (here `this` is its holder): nothing.
+            "SetItemValue" => {
+                let r = target?;
+                let own = self.item.is_some_and(|(holder, _)| holder == r);
+                let base = base_of(self.order, r);
+                if let Some(base) =
+                    base.filter(|b| !own && crate::barter::has_value(self.order, *b))
+                {
+                    self.state
+                        .more
+                        .item_values
+                        .insert(base, arg(0).number() as i32);
+                }
+            }
+            // `005b58d0`: `ref.Drop item count`, into the world.
+            "Drop" => {
+                let holder = target?;
+                let item = arg(0).form();
+                let count = args.get(1).map_or(1, |a| a.number() as i32);
+                self.state.drop_item(self.order, holder, item, count);
+            }
+            // `005b53d0`: the holder's remove-item (vtable +0x17c) for one,
+            // into the container given if any (its fifth argument).
+            "RemoveMe" => {
+                if let Some((holder, item)) = self.item.filter(|_| !self.removed) {
+                    if let Some(n) = self.state.items.get_mut(&(holder, item)) {
+                        *n -= 1;
+                        if *n <= 0 {
+                            self.state.items.remove(&(holder, item));
+                        }
+                    }
+                    self.removed = true;
+                    if let Some(to) = args.first().map(Value::form).filter(|f| f.0 != 0) {
+                        self.state.stock(self.order, to);
+                        *self.state.items.entry((to, item)).or_insert(0) += 1;
+                        // Its script goes with it (`OnDrop`, then `OnAdd`
+                        // for the container: see `run_item_scripts`).
+                        self.dropped = Some(to);
+                    }
+                }
+            }
             "SetActorValue" | "ForceActorValue" | "ModActorValue" | "DamageActorValue"
             | "RestoreActorValue" => {
                 let who = target?;
@@ -3261,6 +4391,11 @@ impl<'a> Runner<'a> {
             // `Unlock`.
             "Lock" => {
                 let r = target?;
+                if crate::terminal::placed(self.order, r).is_some() {
+                    let level = args.first().map_or(0, |a| a.number() as i32);
+                    crate::terminal::script_lock(self.state, r, level);
+                    return Some(0.0);
+                }
                 let level = args
                     .first()
                     .map(|a| a.number() as u8)
@@ -3276,7 +4411,12 @@ impl<'a> Runner<'a> {
             }
             // The table's name (scripts write `Unlock`).
             "UnLock" => {
-                self.state.locks.insert(target?, None);
+                let r = target?;
+                if crate::terminal::placed(self.order, r).is_some() {
+                    crate::terminal::script_unlock(self.state, r);
+                } else {
+                    self.state.locks.insert(r, None);
+                }
             }
             // FalloutNV.exe 1.4.0.525, `AddScriptPackage` at `exe005cc4f0`
             // requests the old package's change action through
@@ -3284,8 +4424,10 @@ impl<'a> Runner<'a> {
             // action through +0x598 (`00903a80`), before installing it.
             // There is no identity comparison: assigning the same package
             // requests both actions too. Keep these as ordered requests;
-            // action scripts/idles/topics are read from the PACK record by
-            // the eventual dispatcher, not run here.
+            // `world::ai::actions::perform` carries them out from the PACK
+            // record. The package is installed at once (actor vfunc +0x2f4,
+            // `PutCreatedPackage` (Xbox PDB)), so the AI taking it up
+            // doesn't begin it again (`package_begun`).
             "AddScriptPackage" => {
                 let who = target?;
                 // `exe005cc4f0` resolves the target as an actor; preserve
@@ -3314,6 +4456,9 @@ impl<'a> Runner<'a> {
                     package,
                     kind: PackageActionKind::Begin,
                 });
+                self.state
+                    .package_begun
+                    .insert(who, (new_package.form_id, false));
                 self.state.script_packages.insert(who, new_package.form_id);
                 self.state.evaluate.insert(who);
             }
@@ -3361,6 +4506,9 @@ impl<'a> Runner<'a> {
 impl Host for Runner<'_> {
     fn call(&mut self, call: &Call, on: Option<u32>, locals: &mut Locals) -> Option<f64> {
         let sig = script::functions::FUNCTIONS.get(usize::from(call.function))?;
+        if CHANGES_REFERENCES.contains(&sig.name) {
+            self.references_changed = true;
+        }
         let target = on.map(FormId).or(self.this);
         // `ShowMessage`'s values after the message aren't in its table
         // entry (the compiler stores them its own way): numbers.
@@ -3481,6 +4629,15 @@ pub const HANDLED: &[&str] = &[
     "SetWeaponHealthPerc",
     "ModWeaponHealthPerc",
     "GetDetected",
+    "GetContainer",
+    "SetItemValue",
+    "AddCardToPlayer",
+    "ShowCaravanMenu",
+    "ShowSlotMachineMenuParams",
+    "ShowBlackJackMenuParams",
+    "ShowRouletteMenuParams",
+    "SetCasinoWinningsLevel",
+    "SetCasinoCheatLevel",
     "ForceActiveQuest",
     "SetEnemy",
     "SetAlly",
@@ -3490,6 +4647,7 @@ pub const HANDLED: &[&str] = &[
     "GetFactionRelation",
     "IsInCombat",
     "GetCombatTarget",
+    "GetShouldAttack",
     "StartCombat",
     "StopCombat",
     "EquipItem",
@@ -3498,6 +4656,10 @@ pub const HANDLED: &[&str] = &[
     "ResurrectActor",
     "GetEquipped",
     "ShowBarterMenu",
+    "ShowRepairMenu",
+    "OpenTeammateContainer",
+    "DropMe",
+    "Drop",
     "SetPlayerTagSkill",
     "GetPlayerControlsDisabled",
     "GetPlayerName",
@@ -3518,6 +4680,7 @@ pub const HANDLED: &[&str] = &[
     "IsPlayerInRegion",
     "PlayBink",
     "PlayMusic",
+    "ShowRecipeMenu",
     "ReleaseWeatherOverride",
     "RemoveImageSpaceModifier",
     "SetQuestDelay",
@@ -3639,11 +4802,24 @@ pub const HANDLED: &[&str] = &[
     "SetStage",
     "ShowMessage",
     "ShowRaceMenu",
+    "ForceTerminalBack",
+    "RemoveMe",
     "StartConversation",
     "StartQuest",
     "StopQuest",
     "GetHitLocation",
     "GetKillingBlowLimb",
+    // V.A.T.S. (`world::vats::function_value`).
+    "GetVATSMode",
+    "GetVATSValue",
+    "GetVATSRightAreaFree",
+    "GetVATSLeftAreaFree",
+    "GetVATSBackAreaFree",
+    "GetVATSFrontAreaFree",
+    "GetVATSRightTargetVisible",
+    "GetVATSLeftTargetVisible",
+    "GetVATSBackTargetVisible",
+    "GetVATSFrontTargetVisible",
 ];
 
 #[cfg(test)]

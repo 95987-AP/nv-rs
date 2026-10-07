@@ -205,6 +205,38 @@ fn restraints_doors_and_owners() {
 }
 
 #[test]
+fn a_fighting_friend_forgives_three_hits_within_ten_seconds() {
+    let (_data, order) = order("fn-friendhits");
+    let scripts = ScriptCache::default();
+    let adult_ref = FormId(ADULT_REF);
+    let mut state = new_game(&order);
+    // In a fight: `iFriendHitCombatAllowed` (the exe's 3).
+    state.combat.insert(adult_ref, FormId(0xABC));
+    for second in [0.0, 1.0, 2.0] {
+        state.seconds = second;
+        assert!(!world::crime::assault(&order, &mut state, adult_ref));
+    }
+    // A hit within `fFriendMinimumLastHitTime` (0.5 s) of the last isn't
+    // counted.
+    state.seconds = 2.2;
+    assert!(!world::crime::assault(&order, &mut state, adult_ref));
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "AdultRef.GetFriendHit"),
+        3.0
+    );
+    // The fourth: an assault.
+    state.seconds = 3.0;
+    assert!(world::crime::assault(&order, &mut state, adult_ref));
+    // Past `fFriendHitTimer` (10 s) the old hits are gone.
+    state.seconds = 20.0;
+    assert_eq!(
+        ask(&order, &scripts, &mut state, "AdultRef.GetFriendHit"),
+        0.0
+    );
+    assert!(!world::crime::assault(&order, &mut state, adult_ref));
+}
+
+#[test]
 fn people_who_ignore_crime_or_friendly_hits() {
     let (_data, order) = order("fn-crime");
     let scripts = ScriptCache::default();
@@ -219,13 +251,14 @@ fn people_who_ignore_crime_or_friendly_hits() {
     assert!(!world::crime::steal(&order, &mut state, chest, adult));
     // The town is the player's friend: the first hit is forgiven (none
     // allowed out of combat: `iFriendHitNonCombatAllowed` 0, so it's
-    // already an assault).
+    // already an assault, and with no allowance the hit isn't counted:
+    // `008987f0` adds friend hits only for an allowance above 0).
     let adult_ref = FormId(ADULT_REF);
     let mut state = new_game(&order);
     assert!(world::crime::assault(&order, &mut state, adult_ref));
     assert_eq!(
         ask(&order, &scripts, &mut state, "AdultRef.GetFriendHit"),
-        1.0
+        0.0
     );
     // Ignoring friendly hits: no notice at all, not counted.
     let mut state = new_game(&order);

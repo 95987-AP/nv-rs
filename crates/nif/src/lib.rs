@@ -24,6 +24,7 @@ pub mod anim;
 mod blocks;
 pub mod camera;
 pub mod collision;
+pub mod ctl;
 pub mod egm;
 mod error;
 mod file;
@@ -40,15 +41,16 @@ pub mod skin;
 pub mod tri;
 
 pub use anim::{
-    hang_weapon, posed, posed_layers, posed_over, sample_curve, Bone, FloatKey, MaterialKeys,
-    MaterialTarget, MaterialTrack, Motion, Pose, Sequence, Track,
+    hang_weapon, posed, posed_layers, posed_over, reparent_weapon, sample_curve, weapon_parent,
+    Bone, FloatKey, MaterialKeys, MaterialTarget, MaterialTrack, Motion, Pose, Sequence, Track,
 };
 pub use blocks::{
     AlphaProperty, AvObject, Block, Falloff, Geometry, GeometryData, MaterialProperty, Node,
     ObjectNet, ShaderProperty, SourceTexture, StencilProperty, TextureSet, TexturingProperty,
     ZBufferProperty,
 };
-pub use collision::{Collision, CollisionPart, CollisionShape};
+pub use collision::{Collision, CollisionPart, CollisionShape, RigidBodyInfo};
+pub use ctl::Ctl;
 pub use egm::Egm;
 pub use error::{Error, Result};
 pub use file::{BlockInfo, Nif};

@@ -39,6 +39,18 @@ pub struct Seats {
     markers: HashMap<FormId, Arc<Vec<nif::FurnitureMarker>>>,
     marker_settings: HashMap<u8, MarkerSettings>,
     pub sandbox: sandbox::Settings,
+    /// Each cell's references a sandbox could use ([`Seats::candidates`]).
+    candidates: HashMap<FormId, Arc<Vec<Usable>>>,
+}
+
+/// A reference placed in a cell that a sandbox could use, as its records
+/// have it (none of which changes): its kind, and whether a child may use
+/// it.
+#[derive(Debug, Clone, Copy)]
+struct Usable {
+    reference: FormId,
+    kind: Kind,
+    child_can_use: bool,
 }
 
 impl Seats {
@@ -50,7 +62,35 @@ impl Seats {
             markers: HashMap::new(),
             marker_settings: HashMap::new(),
             sandbox: sandbox::Settings::read(order),
+            candidates: HashMap::new(),
         }
+    }
+
+    /// A cell's references a sandbox could use (a kind, not marked
+    /// ignored), read from their records once: the scan otherwise reads
+    /// thousands of records each time someone in a sandbox looks around.
+    fn candidates(&mut self, order: &LoadOrder, cell: FormId) -> Arc<Vec<Usable>> {
+        self.candidates
+            .entry(cell)
+            .or_insert_with(|| {
+                Arc::new(
+                    order
+                        .references_in_cell(cell)
+                        .into_iter()
+                        .filter(|rr| !rr.entry.header.is_deleted())
+                        .map(|rr| rr.form_id)
+                        .filter(|&r| !sandbox::ignored(order, r))
+                        .filter_map(|r| {
+                            Some(Usable {
+                                reference: r,
+                                kind: sandbox::kind_of(order, r)?,
+                                child_can_use: sandbox::child_can_use(order, r),
+                            })
+                        })
+                        .collect(),
+                )
+            })
+            .clone()
     }
 
     /// An animation (a `.kf` under `meshes\`), read once.
@@ -233,6 +273,9 @@ pub struct Life {
     /// Getting up to go elsewhere: the package is looked at again once
     /// they're up.
     pub getting_up: bool,
+    /// Talking to the player: the speaking emotion and the idle requests
+    /// the dialogue menu makes for them ([`dialogue_frame`]).
+    pub talk: world::talk_idles::Talking,
 }
 
 /// What every person's frame needs.
@@ -305,6 +348,14 @@ fn question(
         female: walker.female,
         player: false,
         child: world::idles::is_child(order, walker.reference),
+        first_person: false,
+        menu: None,
+        emotion: life.talk.dialogue_emotion(),
+        // Set by the caller for a hit, and from the body's flags.
+        hit_location: None,
+        sneaking: false,
+        running: false,
+        greeting_player: false,
     }
 }
 
@@ -355,13 +406,37 @@ fn pick_idle(
     values: (u8, u8, u8),
     seed: u64,
 ) -> Option<Idle> {
+    let about = question(walker, life, order, flags, values);
+    pick_for(
+        order,
+        state,
+        tree,
+        roots,
+        walker.reference,
+        life,
+        about,
+        seed,
+    )
+}
+
+/// The idle the tree gives someone asked as `about`.
+#[allow(clippy::too_many_arguments)]
+fn pick_for(
+    order: &LoadOrder,
+    state: &GameState,
+    tree: &IdleTree,
+    roots: &[FormId],
+    who: FormId,
+    life: &Life,
+    about: IdleQuestion,
+    seed: u64,
+) -> Option<Idle> {
     let facts = Facts {
         order,
         state,
         speaker: None,
     };
-    let about = question(walker, life, order, flags, values);
-    let asker = IdleAsker::new(walker.reference, about, Some(&facts), seed);
+    let asker = IdleAsker::new(who, about, Some(&facts), seed);
     tree.evaluate(roots, &|i| asker.passes(i), &|id| life.idles.is_delayed(id))
         .cloned()
 }
@@ -399,7 +474,7 @@ pub fn begin_use(ctx: &mut Ctx, walker: &mut Walker, furniture_ref: FormId) -> b
     if sitter.in_reach(walker.position) {
         walker.clear_path();
     } else {
-        match ctx.mesh.path(walker.position, marker.position) {
+        match crate::ai::path_for(ctx.mesh, walker, marker.position) {
             Some(path) => walker.set_path(path, 0.0, true, ctx.moves),
             None => return false,
         }
@@ -483,6 +558,392 @@ fn seat_at_once(
     true
 }
 
+/// The player using furniture (`world::furniture`, the game's own code
+/// for the player): what E activated, and the temporary third-person view
+/// the game gives while sitting down and getting up.
+#[derive(Resource, Default)]
+pub struct PlayerSeat {
+    /// Furniture the player activated this frame (`scripts::use_object`).
+    /// (The temporary third-person view is the camera's,
+    /// `player_camera::PlayerView`.)
+    pub activated: Option<FormId>,
+    /// The heading last given to the camera, so looking around while
+    /// seated isn't undone.
+    applied_heading: Option<f32>,
+    /// The first-person seated loop given to the view (its `.kf`).
+    first_person_loop: Option<String>,
+    /// The tree was asked for that loop since the view came back.
+    loop_asked: bool,
+    /// The procedure turned the player by the marker's delta or half a
+    /// turn this frame (`Sitter::skip_next_blend`): the third-person
+    /// body's animations switch without a blend (`player_body`).
+    pub skip_next_blend: bool,
+}
+
+/// What the idle tree's furniture branch asks about the player: the sit
+/// values, and whether the view is first person (`IsPC1stPerson`).
+fn player_question((sitting, sleeping, marker): (u8, u8, u8), first_person: bool) -> IdleQuestion {
+    IdleQuestion {
+        sitting,
+        sleeping,
+        marker,
+        procedure: procedures::NONE,
+        player: true,
+        first_person,
+        ..IdleQuestion::default()
+    }
+}
+
+/// The idle the tree gives the player now, as (idle, `.kf`).
+fn pick_player_idle(
+    order: &LoadOrder,
+    state: &GameState,
+    tree: &IdleTree,
+    roots: &[FormId],
+    values: (u8, u8, u8),
+    first_person: bool,
+    seed: u64,
+) -> Option<(FormId, String)> {
+    let facts = Facts {
+        order,
+        state,
+        speaker: None,
+    };
+    let asker = IdleAsker::new(
+        world::dialogue::PLAYER_REF,
+        player_question(values, first_person),
+        Some(&facts),
+        seed,
+    );
+    tree.evaluate(roots, &|i| asker.passes(i), &|_| false)
+        .map(|i| (i.form_id, i.model.clone()))
+}
+
+/// The player's skeleton (for the idle tree's roots).
+fn player_skeleton(order: &LoadOrder) -> String {
+    world::actor_look(order, world::dialogue::PLAYER_BASE)
+        .map(|l| l.skeleton)
+        .unwrap_or_default()
+}
+
+/// E on furniture (`TESFurniture::Activate`, `world::furniture::activate`):
+/// up if in furniture, else the nearest free usable marker is theirs, the
+/// temporary third-person view begins and the sit procedure starts.
+fn player_activates(
+    game: &cellview::Game,
+    state: &mut GameState,
+    seats: &mut Seats,
+    (seat, view): (&mut PlayerSeat, &mut crate::player_camera::PlayerView),
+    furniture_ref: FormId,
+    (feet, heading): ([f32; 3], f32),
+) {
+    use world::dialogue::PLAYER_REF;
+    let order = &game.order;
+    let current = state
+        .sitters
+        .get(&PLAYER_REF)
+        .map_or(SitState::Normal, |s| s.state);
+    let in_furniture = state.furniture.contains_key(&PLAYER_REF);
+    let marker = world::scripting::base_of(order, furniture_ref).and_then(|base| {
+        seats.markers(game, base);
+        let (placed, flags) = placed_markers(order, state, &seats.markers, furniture_ref)?;
+        let taken = furniture::taken_markers(state, furniture_ref, PLAYER_REF);
+        furniture::nearest_free(&placed, flags, |i| taken.contains(&i), feet)
+    });
+    let current = if in_furniture && current == SitState::Normal {
+        // Seated at once (no procedure yet): in furniture all the same.
+        SitState::Sitting
+    } else {
+        current
+    };
+    match furniture::activate(current, marker) {
+        furniture::Activation::StandUp => {
+            view.force_temp_third();
+            seat.loop_asked = false;
+            if let Some(s) = state.sitters.get_mut(&PLAYER_REF) {
+                s.stand_up();
+            }
+            println!("The player gets up from {furniture_ref}.");
+        }
+        furniture::Activation::NoMarker => {
+            println!("{furniture_ref} has no free marker to use.");
+        }
+        // Beds take the sleep path before this (`scripts::use_object`).
+        furniture::Activation::Sleep(_) => {}
+        furniture::Activation::Sit(marker) => {
+            view.force_temp_third();
+            seat.loop_asked = false;
+            let settings = seats.marker_settings(order, marker.number);
+            let sitter = Sitter::new(furniture_ref, marker, settings, feet, heading);
+            println!(
+                "The player uses {furniture_ref} (marker {}, number {}).",
+                marker.index, marker.number
+            );
+            state.furniture.insert(PLAYER_REF, furniture_ref);
+            state.sitters.insert(PLAYER_REF, sitter);
+            seat.applied_heading = None;
+        }
+    }
+}
+
+/// The player's furniture each frame, after walking and before the camera
+/// tracks: E on furniture or, seated, E on nothing (the player update's
+/// fallback, `0094076c`..`009407c8`: when nothing under the crosshair was
+/// activated, the current furniture is, which gets them up); put on the
+/// marker (`player_approach`) and the sit or stand procedure run as for
+/// anyone (`Sitter::update`: the entry and exit from the idle tree, moving
+/// the player by their root); the view's heading and pitch limit
+/// (`clamp_pitch`) follow; once the temporary view ends seated, the
+/// first-person seated loop the tree gives (`1stP_ChairDynamicIdle.kf`,
+/// its `Camera1st` track placing the seated eye) plays in the view.
+/// Someone the state has in furniture with no procedure (a loaded game) is
+/// seated at once (`0088d2f0`). Not modelled: movement keys while seated
+/// (their handling isn't traced; the player is held on the seat), the
+/// player's seated idles (third person only), the HUD mode change
+/// (`00771700`) and holstering.
+#[allow(clippy::too_many_arguments)]
+pub fn player_furniture(
+    time: bevy::prelude::Res<bevy::prelude::Time>,
+    keys: bevy::prelude::Res<bevy::prelude::ButtonInput<bevy::prelude::KeyCode>>,
+    game: bevy::prelude::Res<crate::GameFiles>,
+    mut state: bevy::prelude::ResMut<crate::dialogue::DialogueState>,
+    (mut seats, mut seat, mut idle): (
+        bevy::prelude::ResMut<Seats>,
+        bevy::prelude::ResMut<PlayerSeat>,
+        bevy::prelude::ResMut<crate::player_idle::PlayerIdle>,
+    ),
+    mut player: bevy::prelude::ResMut<crate::walk::Player>,
+    (activatable, talk_target, conversation, menus): (
+        bevy::prelude::Res<crate::scripts::Activatable>,
+        bevy::prelude::Res<crate::dialogue::TalkTarget>,
+        bevy::prelude::Res<crate::dialogue::Conversation>,
+        bevy::prelude::Res<crate::menus::Menus>,
+    ),
+    (doors, crosshair, mut view): (
+        bevy::prelude::Res<crate::walk::Doors>,
+        bevy::prelude::Res<crate::crosshair::Crosshair>,
+        bevy::prelude::ResMut<crate::player_camera::PlayerView>,
+    ),
+    mut cameras: bevy::prelude::Query<(&mut bevy::prelude::Transform, &mut crate::FlyCamera)>,
+) {
+    use bevy::prelude::*;
+    use world::dialogue::PLAYER_REF;
+    if !player.walking || !player.ready {
+        return;
+    }
+    let Ok((mut transform, mut camera)) = cameras.single_mut() else {
+        return;
+    };
+    let game = &game.0;
+    let order = &game.order;
+    let state = &mut state.0;
+    let feet = player.character.feet;
+    let heading = (-camera.yaw).rem_euclid(std::f32::consts::TAU);
+    // E on furniture this frame.
+    let view = &mut *view;
+    if let Some(f) = seat.activated.take() {
+        player_activates(
+            game,
+            state,
+            &mut seats,
+            (&mut seat, view),
+            f,
+            (feet, heading),
+        );
+    }
+    // Seated, E on nothing usable (no door, person or object): the
+    // current furniture is activated, so they get up. Only with the
+    // crosshair's use allowed, as everything E does here.
+    let seated = state
+        .sitters
+        .get(&PLAYER_REF)
+        .is_some_and(|s| s.state == SitState::Sitting && s.playing.is_none());
+    if seated
+        && keys.just_pressed(KeyCode::KeyE)
+        && activatable.0.is_none()
+        && talk_target.0.is_none()
+        && conversation.0.is_none()
+        && !menus.is_open()
+        && !state.controls_off[world::scripting::controls::ROLLOVER]
+    {
+        let door = crate::walk::door_in_view(&doors.0, &crosshair);
+        if door.is_none() {
+            if let Some(&f) = state.furniture.get(&PLAYER_REF) {
+                player_activates(
+                    game,
+                    state,
+                    &mut seats,
+                    (&mut seat, view),
+                    f,
+                    (feet, heading),
+                );
+            }
+        }
+    }
+    // In furniture with no procedure (a loaded game, a script): seated at
+    // once, in first person.
+    if let Some(&f) = state.furniture.get(&PLAYER_REF) {
+        if !state.sitters.contains_key(&PLAYER_REF) {
+            let marker = world::scripting::base_of(order, f).and_then(|base| {
+                seats.markers(game, base);
+                let (placed, flags) = placed_markers(order, state, &seats.markers, f)?;
+                let taken = furniture::taken_markers(state, f, PLAYER_REF);
+                furniture::nearest_free(&placed, flags, |i| taken.contains(&i), feet)
+                    .or_else(|| placed.first().copied())
+            });
+            match marker {
+                Some(marker) => {
+                    let settings = seats.marker_settings(order, marker.number);
+                    let roots = seats.roots(&player_skeleton(order));
+                    let seed = state.roll();
+                    let sitter = {
+                        let (snapshot, tree) = (&*state, &seats.tree);
+                        let mut pick = |sitting: u8, sleeping: u8, number: u8| {
+                            pick_player_idle(
+                                order,
+                                snapshot,
+                                tree,
+                                &roots,
+                                (sitting, sleeping, number),
+                                true,
+                                seed,
+                            )
+                        };
+                        Sitter::seated(f, marker, settings, 1.0, &mut pick)
+                    };
+                    state.sitters.insert(PLAYER_REF, sitter);
+                    seat.applied_heading = None;
+                    view.camera.temp_third = furniture::TempThirdPerson::default();
+                    seat.loop_asked = false;
+                }
+                None => state.stand(PLAYER_REF),
+            }
+        }
+    }
+    let dt = if menus.is_open() {
+        0.0
+    } else {
+        time.delta_secs()
+    };
+    let Some(mut sitter) = state.sitters.remove(&PLAYER_REF) else {
+        // Up: the view comes back to first person once nothing plays.
+        view.update_temp_third(false);
+        if seat.first_person_loop.take().is_some() {
+            idle.set_seated_loop(game, None);
+        }
+        seat.applied_heading = None;
+        return;
+    };
+    // On the way: put on the marker (the player doesn't walk there).
+    if sitter.state == SitState::Normal {
+        sitter.position = feet;
+        sitter.heading = heading;
+        furniture::player_approach(&mut sitter);
+    }
+    let before = sitter.state;
+    // `IsPC1stPerson` as the first-person view being the one wanted (which
+    // of the camera's flags the condition reads isn't traced).
+    let first_person = view.first_person_wanted();
+    let roots = seats.roots(&player_skeleton(order));
+    let asks =
+        sitter.state == SitState::Normal || (sitter.state.is_settled() && sitter.stand_requested);
+    let seed = if asks { state.roll() } else { 0 };
+    let step = {
+        let snapshot = &*state;
+        let Seats {
+            tree, sequences, ..
+        } = &mut *seats;
+        let tree = &*tree;
+        let mut pick = |sitting: u8, sleeping: u8, number: u8| {
+            pick_player_idle(
+                order,
+                snapshot,
+                tree,
+                &roots,
+                (sitting, sleeping, number),
+                first_person,
+                seed,
+            )
+        };
+        let mut anims = Anims { game, sequences };
+        sitter.update(dt, false, &mut pick, &mut anims)
+    };
+    if sitter.state != before {
+        println!(
+            "Player: {} -> {}{}",
+            before.name(),
+            sitter.state.name(),
+            sitter
+                .playing
+                .as_ref()
+                .map(|p| format!(", playing {}", p.model))
+                .unwrap_or_default()
+        );
+    }
+    // Getting up: the first-person loop stops as the third-person view
+    // takes over.
+    if view.camera.temp_third.active && seat.first_person_loop.take().is_some() {
+        idle.set_seated_loop(game, None);
+    }
+    // The body where the procedure has it; the camera turned with it when
+    // the procedure turns them.
+    player.character = physics::Character::new(sitter.position);
+    if seat.applied_heading != Some(sitter.heading) {
+        camera.yaw = -sitter.heading;
+        seat.applied_heading = Some(sitter.heading);
+    }
+    let max_down = world::scripting::game_setting(order, "fSittingMaxLookingDown").unwrap_or(40.0);
+    camera.pitch = -furniture::clamp_pitch(-camera.pitch, sitter.state, max_down);
+    transform.rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
+    let [x, y, z] = sitter.position;
+    transform.translation = Vec3::from(cellview::space::point([x, y, z + cellview::EYE_HEIGHT]));
+    let switch_back = view.update_temp_third(sitter.playing.is_some());
+    if std::mem::take(&mut sitter.skip_next_blend) {
+        seat.skip_next_blend = true;
+    }
+    match step {
+        Step::Released | Step::Failed => {
+            if step == Step::Failed {
+                println!("The player has no way to sit in {}.", sitter.furniture);
+            }
+            state.stand(PLAYER_REF);
+            seat.applied_heading = None;
+            if seat.first_person_loop.take().is_some() {
+                idle.set_seated_loop(game, None);
+            }
+        }
+        Step::Busy | Step::Settled => {
+            // Back in first person seated: the tree's first-person seated
+            // loop (asked at `GetSitting` 1 with `IsPC1stPerson`; which of
+            // the player's two animation sets the game reloads it into on
+            // the switch, `00950110` → `00951a10`, isn't traced).
+            if switch_back {
+                seat.loop_asked = false;
+            }
+            if !seat.loop_asked && view.first_person_wanted() && sitter.state.is_settled() {
+                seat.loop_asked = true;
+                let seed = state.roll();
+                let found = pick_player_idle(
+                    order,
+                    state,
+                    &seats.tree,
+                    &roots,
+                    (1, 0, sitter.marker.number),
+                    true,
+                    seed,
+                );
+                let model = found.map(|(_, m)| m);
+                if model != seat.first_person_loop {
+                    let seq = model.as_deref().and_then(|m| seats.sequence(game, m));
+                    idle.set_seated_loop(game, seq);
+                    seat.first_person_loop = model;
+                }
+            }
+            state.sitters.insert(PLAYER_REF, sitter);
+        }
+    }
+}
+
 /// Lets go of a sandbox choice that couldn't be carried out: its target
 /// weighs nothing till the next scan, and something else is chosen.
 fn give_up(life: &mut Life) {
@@ -534,7 +995,7 @@ pub fn furniture_frame(
         if !sitter.in_reach(walker.position) {
             // No path (cleared when a script moved them): a new one.
             if walker.path.is_empty() {
-                if let Some(path) = ctx.mesh.path(walker.position, sitter.marker.position) {
+                if let Some(path) = crate::ai::path_for(ctx.mesh, walker, sitter.marker.position) {
                     walker.set_path(path, 0.0, true, ctx.moves);
                     ctx.state.sitters.insert(me, sitter);
                     return false;
@@ -618,6 +1079,13 @@ pub fn furniture_frame(
     }
     walker.position = sitter.position;
     walker.heading = sitter.heading;
+    // The heading jumped by the marker's delta or half a turn: the
+    // animations switch in this frame without a blend (`cSkipNextBlend`,
+    // `world::animation::Player::skip_next_blend`), as the body's turn in
+    // the entry, exit and seated loop is meant to line up with it.
+    if std::mem::take(&mut sitter.skip_next_blend) {
+        rig.player.skip_next_blend();
+    }
     match step {
         Step::Released | Step::Failed => {
             if step == Step::Failed {
@@ -642,6 +1110,9 @@ pub fn furniture_frame(
                 .playing
                 .as_ref()
                 .and_then(|p| Some((ctx.seats.sequence(ctx.game, &p.model)?, p.elapsed)));
+            if rig.overlay.is_some() {
+                rig.overlay_section = world::animation::section::SPECIAL_IDLE;
+            }
             ctx.state.sitters.insert(me, sitter);
             true
         }
@@ -656,6 +1127,8 @@ pub fn furniture_frame(
 /// short isn't traced). At an idle marker, its idles play instead of the
 /// tree's ([`sandbox_frame`]).
 pub fn idles_frame(ctx: &mut Ctx, walker: &Walker, life: &mut Life, rig: &mut ActorRig) {
+    // Leaving the dialogue menu frees the talking idle.
+    free_talk_idle(life, rig);
     // The process does not ask for a free idle while a requested one
     // owns its animation (008dafd0). Its KF, not IdleClock, advances it.
     if rig.scripted_idle.is_some() {
@@ -681,13 +1154,19 @@ pub fn idles_frame(ctx: &mut Ctx, walker: &Walker, life: &mut Life, rig: &mut Ac
         d.sqrt() <= world::idles::IDLE_ANIMATION_DISTANCE * radius / 64.0
     });
     let at_marker = matches!(life.activity, Some(Activity::IdleMarker { .. }));
+    // A request the tree answers is played by the process at a later
+    // update (`008dab40` queues it, `008dae00` plays it), after the
+    // animation update that clears `cSkipNextBlend`: not in the frame the
+    // furniture procedure swapped the animations without a blend (else
+    // the idle would cut in unblended too).
     let free = near
         && !walking
         && !ctx.fighting
         && !entering
         && !life.getting_up
         && !at_marker
-        && rig.scripted_idle.is_none();
+        && rig.scripted_idle.is_none()
+        && !rig.player.skips_next_blend();
     if life.idles.due(ctx.dt, free) {
         let roots = ctx.seats.roots(&skeleton);
         let seed = ctx.state.roll();
@@ -719,6 +1198,14 @@ pub fn idles_frame(ctx: &mut Ctx, walker: &Walker, life: &mut Life, rig: &mut Ac
             .playing
             .as_ref()
             .and_then(|p| Some((ctx.seats.sequence(ctx.game, &p.model)?, p.elapsed)));
+        // In its record's section (`00498290`): the upper body's idles over
+        // the legs' idle or walk, the movement section's holding the walk.
+        rig.overlay_section = life
+            .idles
+            .playing
+            .as_ref()
+            .and_then(|p| ctx.seats.tree.get(p.idle))
+            .map_or(world::animation::section::SPECIAL_IDLE, |i| i.group());
     }
     // What scripts ask about them (`world::more_functions`): walking
     // forward along their path (whether they run isn't told), the last idle
@@ -743,6 +1230,360 @@ pub fn idles_frame(ctx: &mut Ctx, walker: &Walker, life: &mut Life, rig: &mut Ac
 
 fn sitter_is_none(state: &GameState, me: FormId) -> bool {
     !state.sitters.contains_key(&me)
+}
+
+/// Someone's sit state number (`Actor` vfunc +0x214): their sit
+/// procedure's, else seated (4) when the state has them in furniture.
+pub(crate) fn sit_state(state: &GameState, me: FormId) -> u8 {
+    match state.sitters.get(&me) {
+        Some(s) => s.state.number(),
+        None if state.furniture.contains_key(&me) => SitState::Sitting.number(),
+        None => 0,
+    }
+}
+
+/// The speaker in the dialogue menu, each frame (`world::talk_idles`,
+/// `Actor::UpdateInDialogue`, Xbox PDB, `008a5580`): a newly said
+/// response takes its emotion and asks for its speaker idle or the idle
+/// tree's (the say, `008a20d0`); between responses the tree is asked
+/// again whenever their special idle is done. The tree is asked as in the
+/// menu: `MenuMode 1009`, `GetCurrentAIProcedure` 4 (their dialogue
+/// package), `IsTalking` while the response is said, `GetDialogueEmotion`.
+/// What it gives plays in the special-idle section on its own clock (the
+/// script-idle path, `rig.scripted_idle`). An answer for the base loop
+/// (section 0) isn't played here (how the request path places one isn't
+/// traced). The process plays a taken request at its next update
+/// (`008dae00`); here in the same frame, or later while one is starting.
+#[allow(clippy::too_many_arguments)]
+pub fn dialogue_frame(
+    game: &cellview::Game,
+    state: &mut GameState,
+    seats: &mut Seats,
+    walker: &Walker,
+    life: &mut Life,
+    rig: &mut ActorRig,
+    said: Option<(world::talk_idles::SaidKey, &world::dialogue::Response)>,
+    now: f32,
+) {
+    let me = walker.reference;
+    // A taken idle waiting to play.
+    if let Some(id) = life.talk.queued {
+        if play_requested(game, state, seats, life, rig, (me, id), now) {
+            life.talk.queued = None;
+        }
+    }
+    let special_done = idle_done(rig) && life.talk.queued.is_none();
+    let ask = said
+        .and_then(|(key, r)| life.talk.say(key, r))
+        .or_else(|| life.talk.between_says(special_done));
+    let Some(ask) = ask else { return };
+    // `IsTalking` (`005a1150` → `008a67f0`): actor +0x7d, which the menu's
+    // update sets before the say (`008a5580`), so a response being said
+    // counts from its first frame.
+    let talking = said.is_some() || state.speaking.contains(&me);
+    let menu = Asked {
+        menu: true,
+        talking,
+        hit_location: None,
+        greeting: false,
+    };
+    request_idle(game, state, seats, (walker, life, rig), ask, menu, now);
+}
+
+/// How the tree is asked for a request: in the dialogue menu (`MenuMode
+/// 1009`, `GetCurrentAIProcedure` 4), saying a line (`IsTalking`), for a
+/// hit (`GetHitLocation`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Asked {
+    pub menu: bool,
+    pub talking: bool,
+    pub hit_location: Option<i32>,
+    /// Saying a GREET line to the player (`IsGreetingPlayer`: the
+    /// process's greeting flag is taken as set while the GREET
+    /// procedure's line to the player is said; when `008dbe30` sets and
+    /// clears it isn't traced).
+    pub greeting: bool,
+}
+
+/// Every frame: the idle requests of lines said outside the dialogue menu
+/// and of hits taken.
+///
+/// Each response begun (`chatter`) is a say (`008a20d0`, through the GREET
+/// procedure `008dbe30` or a conversation `009ee0a0`): the speaker asks for
+/// the response's speaker idle, or the tree when the caller forces it (the
+/// GREET procedure unless the speaker's package has idles; a conversation
+/// as it was made); a listener who is a person (not the player) asks for
+/// the listener idle, or the tree unless their package has idles
+/// (`world::talk_idles::say_requests`).
+///
+/// A hit that doesn't kill asks the tree at once with the hit's body part
+/// (`GetHitLocation`), when `bPlayHitLocationIdles` is on, the part known,
+/// and `IgnoreCrippledLimbs` not set (`0089a760`); the tree's
+/// `HitReactionIdles` answer plays in its section (the movement section's
+/// `MT_HitTorso.kf` …). (`0089a760`'s other two conditions, its locals
+/// 0x2bd/0x289 and 0x34d, aren't traced.)
+#[allow(clippy::too_many_arguments)]
+pub fn idle_requests(
+    time: bevy::prelude::Res<bevy::prelude::Time>,
+    game: bevy::prelude::Res<crate::GameFiles>,
+    mut state: bevy::prelude::ResMut<crate::dialogue::DialogueState>,
+    mut seats: bevy::prelude::ResMut<Seats>,
+    lines: bevy::prelude::Res<crate::chatter::Lines>,
+    mut actors: bevy::prelude::Query<(&Walker, &mut Life, &mut ActorRig)>,
+) {
+    use world::talk_idles::{self, Ask, Request};
+    let now = time.elapsed_secs();
+    let game = &game.0;
+    let order = &game.order;
+    let state = &mut state.0;
+    let hits = std::mem::take(&mut state.hits_taken);
+    let has_idles = |w: &Walker| {
+        w.package
+            .is_some_and(|p| talk_idles::package_has_idles(order, p))
+    };
+    for s in &lines.started {
+        let listener = (s.listener != s.speaker && s.listener != world::dialogue::PLAYER_REF)
+            .then(|| {
+                actors
+                    .iter()
+                    .find(|(w, _, _)| w.reference == s.listener)
+                    .map(|(w, _, _)| has_idles(w))
+            })
+            .flatten();
+        let Some(force) = actors
+            .iter()
+            .find(|(w, _, _)| w.reference == s.speaker)
+            .map(|(w, _, _)| {
+                s.conversation
+                    .unwrap_or_else(|| talk_idles::greet_forces_tree(has_idles(w), None))
+            })
+        else {
+            continue;
+        };
+        let in_combat = state.combat.contains_key(&s.speaker);
+        let asks = talk_idles::say_requests(&s.response, force, in_combat, listener);
+        for (who, ask, talking) in [
+            (s.speaker, asks.speaker, true),
+            (s.listener, asks.listener, false),
+        ] {
+            let Some(ask) = ask else { continue };
+            if let Some((w, mut life, mut rig)) =
+                actors.iter_mut().find(|(w, _, _)| w.reference == who)
+            {
+                let asked = Asked {
+                    menu: false,
+                    talking,
+                    hit_location: None,
+                    greeting: talking
+                        && s.conversation.is_none()
+                        && s.listener == world::dialogue::PLAYER_REF,
+                };
+                request_idle(
+                    game,
+                    state,
+                    &mut seats,
+                    (w, &mut life, &mut rig),
+                    ask,
+                    asked,
+                    now,
+                );
+            }
+        }
+    }
+    let on = game
+        .settings
+        .get("Combat", "bPlayHitLocationIdles")
+        .is_none_or(|v| v.trim() != "0");
+    for (who, part, killed) in hits {
+        if killed || part < 0 || !on {
+            continue;
+        }
+        let ignores = Facts {
+            order,
+            state,
+            speaker: None,
+        }
+        .current_actor_value(who, 72)
+        .is_some_and(|v| v > 0.0);
+        if ignores {
+            continue;
+        }
+        if let Some((w, mut life, mut rig)) = actors.iter_mut().find(|(w, _, _)| w.reference == who)
+        {
+            let ask = Ask {
+                request: Request::Tree,
+                forced: true,
+            };
+            let asked = Asked {
+                menu: false,
+                talking: false,
+                hit_location: Some(part),
+                greeting: false,
+            };
+            request_idle(
+                game,
+                state,
+                &mut seats,
+                (w, &mut life, &mut rig),
+                ask,
+                asked,
+                now,
+            );
+        }
+    }
+}
+
+/// Whether the requested idle is done: nothing of it plays in its section
+/// (`004985f0`).
+fn idle_done(rig: &ActorRig) -> bool {
+    let slot = world::animation::slot(rig.idle_section);
+    rig.player.playing(slot) != Some(world::animation::group::SPECIAL_IDLE)
+}
+
+/// An idle request (`008dab40`, process vtable +0x44): refused out of sit
+/// states 0, 4 and 9, while the requested idle still plays unless an idle
+/// is named or the request forced, while one is starting for the tree, and
+/// for a running package with the "no idle anims" flag (`008dade0`); the
+/// tree asked as `asked` says; taken, it plays at once (or as soon as no
+/// idle is starting: `008dae00`).
+pub fn request_idle(
+    game: &cellview::Game,
+    state: &mut GameState,
+    seats: &mut Seats,
+    (walker, life, rig): (&Walker, &mut Life, &mut ActorRig),
+    ask: world::talk_idles::Ask,
+    asked: Asked,
+    now: f32,
+) {
+    use world::animation::State;
+    use world::talk_idles::{takes_request, Request};
+    let me = walker.reference;
+    let order = &game.order;
+    let sit = sit_state(state, me);
+    let slot = world::animation::slot(rig.idle_section);
+    let starting = matches!(
+        rig.player.state(slot),
+        Some(State::EaseIn | State::TransDest)
+    ) && !idle_done(rig);
+    let special_done = idle_done(rig) && life.talk.queued.is_none();
+    let flags = walker
+        .package
+        .and_then(|p| world::ai::Package::load(order, p))
+        .map(|p| p.flags);
+    if world::talk_idles::package_refuses_idles(flags) {
+        return;
+    }
+    if !takes_request(sit, special_done, starting, ask) {
+        return;
+    }
+    let idle = match ask.request {
+        Request::Idle(id) => seats.tree.get(id).cloned(),
+        Request::Tree => {
+            let (skeleton, _) = skeleton(life, order, me);
+            let roots = seats.roots(&skeleton);
+            let values = state.sitters.get(&me).map_or((0, 0, 0), |s| s.question());
+            let mut about = question(walker, life, order, (false, false), values);
+            if asked.menu {
+                about.procedure = procedures::DIALOGUE;
+                about.menu = Some(world::idles::DIALOG_MENU);
+            }
+            about.talking = asked.talking;
+            about.hit_location = asked.hit_location;
+            about.sneaking = rig.sneaking;
+            about.running = rig.running;
+            about.greeting_player = asked.greeting;
+            let seed = state.roll();
+            pick_for(order, state, &seats.tree, &roots, me, life, about, seed)
+        }
+    };
+    let Some(idle) = idle.filter(|i| i.is_animation() && i.group() != 0) else {
+        return;
+    };
+    life.talk.queued = Some(idle.form_id);
+    if play_requested(game, state, seats, life, rig, (me, idle.form_id), now) {
+        life.talk.queued = None;
+    }
+}
+
+/// Plays a taken idle request in its record's section (`008dae00` →
+/// `00497f20` → `00498290`: the old one freed at once, the new one blended
+/// in from the pose, its loops rolled, `005ff770`; one in the base or
+/// movement section holds it from the walk, anim action 0xd). False while
+/// an idle is starting (`00498f80`), to try again. A request for the idle
+/// already playing is dropped (`00498d30`).
+#[allow(clippy::too_many_arguments)]
+fn play_requested(
+    game: &cellview::Game,
+    state: &mut GameState,
+    seats: &mut Seats,
+    life: &mut Life,
+    rig: &mut ActorRig,
+    (me, id): (FormId, FormId),
+    now: f32,
+) -> bool {
+    let Some(idle) = seats.tree.get(id).cloned() else {
+        return true;
+    };
+    let Some(seq) = seats.sequence(game, &idle.model) else {
+        return true;
+    };
+    let slot = world::animation::slot(rig.idle_section);
+    if !idle_done(rig)
+        && rig
+            .player
+            .sequence(slot)
+            .is_some_and(|s| Arc::ptr_eq(s, &seq))
+    {
+        return true;
+    }
+    let r = state.roll();
+    let count = idle.extra_loops(|lo, hi| lo + (r % (u64::from(hi - lo) + 1)) as u8);
+    let loops = if count == 255 { -1 } else { i32::from(count) };
+    let bones = rig.skeleton.clone();
+    let section = idle.group();
+    // A free idle from the tree playing as the overlay gives way.
+    if let Some(old) = rig.overlay.take().map(|_| rig.overlay_section) {
+        let old = world::animation::slot(old);
+        if old != world::animation::slot(section)
+            && rig.player.playing(old) == Some(world::animation::group::SPECIAL_IDLE)
+        {
+            rig.player.cut_section(old);
+        }
+    }
+    if !rig
+        .player
+        .request_idle_in(rig.idle_section, section, &seq, loops, &bones.bones)
+    {
+        return false;
+    }
+    rig.idle_section = world::animation::slot(section);
+    rig.picker.idle_played(section);
+    rig.scripted_idle = Some(id);
+    life.idles.played(&idle);
+    println!(
+        "{now:.1} s: {me}: requested idle {} ({}, section {section})",
+        idle.editor_id,
+        idle.model.rsplit(['\\', '/']).next().unwrap_or_default()
+    );
+    true
+}
+
+/// The dialogue menu closed on someone (`Actor::EndDialogue`, Xbox PDB,
+/// `008b1070`): in sit state 0, 4 or 9 their special idle is to be freed
+/// (process flag 0x800, [`free_talk_idle`]).
+pub fn dialogue_over(state: &GameState, life: &mut Life, me: FormId) {
+    let sit = sit_state(state, me);
+    life.talk.menu_closed(sit);
+}
+
+/// Carries out a pending free of the special idle (`008ba600` flag 0x800:
+/// kept while a special idle is starting, `00498f80`; then `008daf20`,
+/// `00498910(1,0)`: its normal blend out).
+fn free_talk_idle(life: &mut Life, rig: &mut ActorRig) {
+    if life.talk.free_pending && rig.player.free_idle_in(rig.idle_section) {
+        life.talk.free_pending = false;
+        life.idles.stop();
+    }
 }
 
 /// Plays an idle: a base-loop one (section 0) becomes the standing loop
@@ -811,27 +1652,32 @@ fn nearby_list(ctx: &mut Ctx, walker: &Walker, life: &Life) -> (Vec<Nearby>, boo
     let Some((space, cell, _, _)) = ctx.state.place(order, me) else {
         return (Vec::new(), false);
     };
-    let mut refs: Vec<FormId> = order
-        .references_in_cell(cell)
-        .into_iter()
-        .filter(|rr| !rr.entry.header.is_deleted())
-        .map(|rr| rr.form_id)
-        .collect();
-    refs.extend(world::ai::moved_into(order, ctx.state, space));
     let child = world::idles::is_child(order, me);
+    // The cell's own (what their records say read once), then those
+    // brought there.
+    let mut refs: Vec<(FormId, Kind)> = ctx
+        .seats
+        .candidates(order, cell)
+        .iter()
+        .filter(|c| !child || c.child_can_use)
+        .map(|c| (c.reference, c.kind))
+        .collect();
+    for r in world::ai::moved_into(order, ctx.state, space) {
+        if sandbox::ignored(order, r) || (child && !sandbox::child_can_use(order, r)) {
+            continue;
+        }
+        if let Some(kind) = sandbox::kind_of(order, r) {
+            refs.push((r, kind));
+        }
+    }
     let mut out = Vec::new();
-    for r in refs {
+    for (r, kind) in refs {
         if r == me
             || ctx.state.dead.contains(&r)
             || !world::enabled_now(order, r, &ctx.state.disabled)
-            || sandbox::ignored(order, r)
-            || (child && !sandbox::child_can_use(order, r))
         {
             continue;
         }
-        let Some(kind) = sandbox::kind_of(order, r) else {
-            continue;
-        };
         let Some((there, _, position, _)) = ctx.state.place(order, r) else {
             continue;
         };
@@ -948,10 +1794,12 @@ fn wander_to(ctx: &mut Ctx, walker: &mut Walker, center: [f32; 3], radius: f32) 
         return None;
     }
     let flat = |p: [f32; 3]| (p[0] - center[0]).hypot(p[1] - center[1]);
-    let corners = |t: &world::ai::NavTriangle| t.vertices.map(|v| mesh.vertices[v]);
+    let corners = |t: usize| mesh.triangles[t].vertices.map(|v| mesh.vertices[v]);
+    // Those near the middle (the grid's, in the mesh's order), then the
+    // ones reaching the ring.
     let reaching: Vec<[[f32; 3]; 3]> = mesh
-        .triangles
-        .iter()
+        .triangles_near(center, far)
+        .into_iter()
         .map(corners)
         .filter(|c| c.iter().any(|p| flat(*p) <= far) || holds(c, center))
         .collect();
@@ -971,7 +1819,7 @@ fn wander_to(ctx: &mut Ctx, walker: &mut Walker, center: [f32; 3], radius: f32) 
         if d < near || d > far {
             continue;
         }
-        if let Some(path) = mesh.path(walker.position, goal) {
+        if let Some(path) = crate::ai::path_for(mesh, walker, goal) {
             let d = crate::ai::distance(walker.position, goal);
             walker.set_path(path, 50.0, true, ctx.moves);
             return Some(d);
@@ -1040,7 +1888,7 @@ pub fn wander_package_frame(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life)
         world::ai::WanderStep::Back => {
             life.activity = None;
             let (to, r) = place.unwrap_or((middle, radius));
-            if let Some(path) = ctx.mesh.path(walker.position, to) {
+            if let Some(path) = crate::ai::path_for(ctx.mesh, walker, to) {
                 println!("{me} wanders back to their package's place");
                 walker.set_path(path, r, true, ctx.moves);
             }
@@ -1134,7 +1982,7 @@ fn start_activity(
                     if (0..2).all(|k| (at[k] - walker.position[k]).abs() < 10.0) {
                         true
                     } else {
-                        match ctx.mesh.path(walker.position, at) {
+                        match crate::ai::path_for(ctx.mesh, walker, at) {
                             Some(path) => {
                                 walker.set_path(path, 10.0, true, ctx.moves);
                                 true
@@ -1197,7 +2045,7 @@ pub fn sandbox_frame(
     let seated = sit.is_some_and(|s| s != SitState::Normal);
     let walking = walker.on_path();
     if !seated && !walking && sb.strayed(walker.position) {
-        if let Some(path) = ctx.mesh.path(walker.position, sb.center) {
+        if let Some(path) = crate::ai::path_for(ctx.mesh, walker, sb.center) {
             println!("{me} goes back to their sandbox area");
             walker.set_path(path, 0.0, true, ctx.moves);
         }
@@ -1390,7 +2238,7 @@ fn eat_frame(ctx: &mut Ctx, walker: &mut Walker, life: &mut Life, sb: &mut Sandb
                     }
                     println!("{:.1} s: {me} takes {food} to eat.", ctx.now);
                 } else {
-                    match ctx.mesh.path(walker.position, at) {
+                    match crate::ai::path_for(ctx.mesh, walker, at) {
                         Some(path) => {
                             walker.set_path(path, reach, true, ctx.moves);
                             life.activity = Some(Activity::Eat(e));

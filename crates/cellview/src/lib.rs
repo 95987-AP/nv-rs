@@ -15,12 +15,14 @@
 //! # Ok::<(), cellview::Error>(())
 //! ```
 
+pub mod caravan;
 pub mod game;
 pub mod grass;
 pub mod impacts;
 pub mod lockpick;
 pub mod music;
 pub mod particles;
+pub mod slots;
 pub mod sound;
 pub mod space;
 pub mod texture;
@@ -268,6 +270,12 @@ pub struct MeshData {
     pub motion: Option<std::sync::Arc<PieceMotion>>,
     /// Pieces that turn to face the camera ([`billboard_matrix`]).
     pub billboard: Option<Billboard>,
+    /// Drawn into the local map's pictures (`preview::cell::ModelMesh::
+    /// local_map`).
+    pub local_map: bool,
+    /// Stored as triangle strips: what takes the game's world decals
+    /// (`preview::cell::ModelMesh::strips`).
+    pub strips: bool,
 }
 
 /// How a billboard piece is turned for a camera at `eye` (game units)
@@ -585,6 +593,9 @@ pub struct ViewerScene {
     pub collision: physics::Collider,
     /// Load doors: where they are and where they lead.
     pub doors: Vec<DoorData>,
+    /// Placed objects Havok moves (clutter): their bodies, for the viewer's
+    /// simulation (`physics::rigid`); their collision isn't in [`Self::collision`].
+    pub bodies: Vec<preview::cell::DynamicBody>,
     /// Doors that open where they stand (`world::doors`): their models'
     /// sequences and the collision their leaves swing with.
     pub swing_doors: Vec<SwingDoor>,
@@ -913,6 +924,7 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
     let collision = scene.collider(convention);
     let doors = cell_doors(scene, convention);
     let swing_doors = scene.swing_doors(convention);
+    let bodies = scene.dynamic_bodies(convention);
 
     let cell = &scene.cell;
     let lights: Vec<LightData> = cell
@@ -1038,6 +1050,22 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
     for (path, e) in report.unreadable_collision.iter() {
         notes.push(format!("unreadable collision: {path}: {e}"));
     }
+    notes.push(format!(
+        "{} placed objects Havok moves (clutter bodies)",
+        bodies.len()
+    ));
+    let held: Vec<String> = scene
+        .unsimulated_bodies()
+        .into_iter()
+        .map(|(r, name)| format!("{r} ({name})"))
+        .collect();
+    if !held.is_empty() {
+        notes.push(format!(
+            "{} placed objects with joined or several moving bodies, kept solid (constraints aren't simulated): {}",
+            held.len(),
+            held.join(", ")
+        ));
+    }
 
     ViewerScene {
         cell: cell.info.label(),
@@ -1056,6 +1084,7 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
         collision,
         doors,
         swing_doors,
+        bodies,
         terrain: Vec::new(),
         actors,
         sky: cell
@@ -1255,7 +1284,7 @@ impl TextureCache<'_> {
 
 /// Reads a texture, correcting a wrong file extension as the game's own
 /// files sometimes need (`chromedull_e.nif` for `.dds`).
-fn read_texture(assets: &Assets, path: &str) -> Option<(String, Vec<u8>)> {
+pub(crate) fn read_texture(assets: &Assets, path: &str) -> Option<(String, Vec<u8>)> {
     let mut candidates = vec![path.to_string()];
     if !path.ends_with(".dds") {
         if let Some((stem, _)) = path.rsplit_once('.') {
@@ -1292,7 +1321,7 @@ fn start_point(scene: &CellScene) -> Start {
     }
 }
 
-fn column_major(t: &nif::math::Transform) -> [f32; 16] {
+pub fn column_major(t: &nif::math::Transform) -> [f32; 16] {
     let r = &t.rotation;
     let s = t.scale;
     [
@@ -1426,6 +1455,8 @@ fn mesh_data(
         rig: None,
         motion: None,
         billboard: mesh.billboard,
+        local_map: mesh.local_map,
+        strips: mesh.strips,
     }
 }
 
@@ -1510,7 +1541,7 @@ fn tangent_frame(normal: [f32; 3], along_u: [f32; 3], along_v: [f32; 3]) -> [f32
 
 /// A gamma-encoded (sRGB) channel value as linear light. Values past 1
 /// (hair tints, which brighten) follow the same curve.
-fn linear(c: f32) -> f32 {
+pub fn linear(c: f32) -> f32 {
     let c = c.max(0.0);
     if c <= 0.04045 {
         c / 12.92

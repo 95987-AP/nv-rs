@@ -117,7 +117,7 @@ pub const PIN_REFERENCE: u32 = 2;
 /// Gamebryo's sphere merge (`NiBound::Merge`): a sphere of no size is
 /// empty; one that holds the other is kept; else the smallest sphere
 /// round both.
-fn merge(a: Option<(Vec3, f32)>, b: Option<(Vec3, f32)>) -> Option<(Vec3, f32)> {
+pub(crate) fn merge(a: Option<(Vec3, f32)>, b: Option<(Vec3, f32)>) -> Option<(Vec3, f32)> {
     let (Some((ca, ra)), Some((cb, rb))) = (a, b) else {
         return a.or(b);
     };
@@ -139,7 +139,7 @@ fn merge(a: Option<(Vec3, f32)>, b: Option<(Vec3, f32)>) -> Option<(Vec3, f32)> 
 /// A block's bounding sphere in its parent's space with `parent` above:
 /// nodes merge their children in order; shapes give their stored sphere;
 /// anything else (lights) gives none.
-pub(super) fn bound(
+pub(crate) fn bound(
     nif: &nif::Nif,
     index: i32,
     parent: &Transform,

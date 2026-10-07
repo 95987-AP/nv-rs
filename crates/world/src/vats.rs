@@ -1191,8 +1191,18 @@ pub fn part_chance(order: &LoadOrder, state: &mut GameState, s: &Settings, q: &C
         Some(p) => f32::from(p.to_hit_chance),
         None => held
             .as_ref()
-            .and_then(|w| WeaponVats::load(order, w.form_id))
-            .map_or(1.0, |v| f32::from(v.to_hit)),
+            .and_then(|w| {
+                // With a V.A.T.S. mod, its value more (`00647730`).
+                let extra = crate::weapon_mods::bonus(
+                    order,
+                    crate::weapon_mods::flags(state, q.target, w.form_id),
+                    w.form_id,
+                    crate::weapon_mods::effect::VATS_BONUS,
+                )
+                .map_or(0, |v| crate::weapon_mods::round(v) & 0xff);
+                WeaponVats::load(order, w.form_id).map(|v| (i32::from(v.to_hit) + extra) as f32)
+            })
+            .unwrap_or(1.0),
     };
     let aim = match weapon {
         None => Aim::Melee,

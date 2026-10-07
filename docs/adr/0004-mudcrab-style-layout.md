@@ -1,6 +1,6 @@
 # ADR-0004: Mudcrab-style repository layout
 
-- **Status:** Accepted; to be carried out in the maintainer's local session
+- **Status:** Rejected 2026-10-06 by the maintainer: the current crates and docs layout stays. The text below is kept for the record.
 - **Date:** 2026-10-05
 
 ## Context

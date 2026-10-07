@@ -1,35 +1,17 @@
 //! Walking through the cell as the player, and going through load doors.
 //!
-//! Movement uses the game's own numbers where they're known (see
-//! `MovementSettings`); the collision is the models' Havok shapes
+//! The rules (speeds, when running and jumping are allowed, the jump) are
+//! `world::locomotion`'s; the collision is the models' Havok shapes
 //! (`cellview::ViewerScene::collision`) and the capsule is the `physics`
 //! crate's character.
 
 use bevy::prelude::*;
-use cellview::{space, DoorData, ACTIVATE_REACH, EYE_HEIGHT};
+use cellview::{space, DoorData, EYE_HEIGHT};
 use physics::{Character, CharacterShape, Collider};
+use world::locomotion::{self, SpeedSettings};
 
 use crate::exterior::{door_start, PendingExterior};
 use crate::{FlyCamera, GameFiles, PendingScene};
-
-/// The game's movement settings, from its code and `FalloutNV.esm`
-/// (`GMST`). The game works out a speed as `SpeedMult (100) × 0.01 ×
-/// fMoveBaseSpeed`, times `fMoveRunMult` when running and
-/// `fMoveSneakMult` when sneaking (`00647d10` / `00647f00` in
-/// FalloutNV.exe), and × 0.85 / 0.75 with one or both legs crippled
-/// (`world::body_parts::leg_speed_mult`; armour penalties left out).
-struct MovementSettings;
-
-impl MovementSettings {
-    /// `fMoveBaseSpeed`: 77 in FalloutNV.esm (85 built in).
-    const BASE_SPEED: f32 = 77.0;
-    /// `fMoveRunMult`: 4 in FalloutNV.esm.
-    const RUN_MULT: f32 = 4.0;
-    /// `fMoveSneakMult`: 0.57 in FalloutNV.esm.
-    const SNEAK_MULT: f32 = 0.57;
-    /// `fJumpHeightMin`: 64 (built in, not changed by the game's files).
-    const JUMP_HEIGHT: f32 = 64.0;
-}
 
 /// The current cell's solid surfaces.
 #[derive(Resource)]
@@ -51,8 +33,25 @@ pub struct Player {
     start: [f32; 3],
     /// False while the ground under the player is still loading (outdoors).
     pub ready: bool,
-    /// Dropped from the free camera (F): the landing does no damage.
+    /// Dropped from the free camera (`): the landing does no damage.
     from_camera: bool,
+    /// The mover's flags from the keys this frame (`0093e860`: forward,
+    /// back, left, right, running) and the speed they move the player at,
+    /// for the third-person body's animations (`player_body`).
+    pub moving: world::animation::MoveFlags,
+    pub speed: f32,
+    /// Sneaking: the mover's flag 0x400, which the Sneak control (Left
+    /// Ctrl) toggles (`0093e860`, see [`may_toggle_sneak`]).
+    pub sneaking: bool,
+    /// How far the eye has gone from the standing height toward the
+    /// sneaking one (0 to 1; [`eye_offset`]).
+    sneak_blend: f32,
+    /// Always Run (the player's +0x651; `None` until set from
+    /// `bAlwaysRunByDefault`), which the Always Run control toggles; and
+    /// Auto Move (+0x652), which the Auto Move control toggles and any
+    /// movement key ends (`0093e860`).
+    always_run: Option<bool>,
+    auto_move: bool,
 }
 
 impl Player {
@@ -63,6 +62,12 @@ impl Player {
             start: [0.0; 3],
             ready: true,
             from_camera: false,
+            moving: world::animation::MoveFlags::default(),
+            speed: 0.0,
+            sneaking: false,
+            sneak_blend: 0.0,
+            always_run: None,
+            auto_move: false,
         }
     }
 
@@ -88,13 +93,15 @@ impl Player {
     }
 }
 
-/// F switches between walking and flying.
+/// The console key (`) switches between walking and flying (the free
+/// camera is the viewer's; the game's is the console's `tfc`). F is the
+/// game's view key (`player_camera`).
 pub fn toggle_walking(
     keys: Res<ButtonInput<KeyCode>>,
     mut player: ResMut<Player>,
     cameras: Query<&Transform, With<FlyCamera>>,
 ) {
-    if !keys.just_pressed(KeyCode::KeyF) {
+    if !keys.just_pressed(KeyCode::Backquote) {
         return;
     }
     player.walking = !player.walking;
@@ -113,11 +120,6 @@ pub fn toggle_walking(
 pub fn game_point(p: Vec3) -> [f32; 3] {
     let s = 1.0 / space::METERS_PER_UNIT;
     [p.x * s, -p.z * s, p.y * s]
-}
-
-/// A direction from Bevy's space back to the game's.
-fn game_direction(d: Vec3) -> [f32; 3] {
-    [d.x, -d.z, d.y]
 }
 
 /// The people the player runs into: everyone alive here, upright
@@ -148,11 +150,70 @@ fn people(
         .collect()
 }
 
+/// What can stop the Sneak control from toggling sneaking (`0093e860`,
+/// at `00940d5b`): the player dead, in furniture (`GetSitSleepState`,
+/// actor vfunc +0x214), or in one of the animation actions its table
+/// skips (`00944234`/`0094423c`, by `GetAnimAction` + 1: equipping 0,
+/// unequipping 1, reloading 8 and actions 10–16; the names are the GECK's
+/// for `GetAnimAction`). Swimming and the other actor tests on the way
+/// (vfuncs +0x230, +0x234, `00437bf0`, `00437bd0`, movement flag 0x40)
+/// aren't modelled here.
+// Translated from 0093e860 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn may_toggle_sneak(dead: bool, in_furniture: bool, anim_action: Option<u8>) -> bool {
+    // By anim action + 1 (-1 none … 17): 1 skips the toggle.
+    const SKIP: [u8; 19] = [0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0];
+    let index = anim_action.map_or(0, |a| usize::from(a) + 1);
+    !dead && !in_furniture && SKIP.get(index).is_some_and(|&s| s == 0)
+}
+
+/// The first-person camera node's height (`Camera1st`, the game's eye in
+/// first person: `00952ff0`, the node `0094e1d0` keeps at `011e07d0`)
+/// on the first-person skeleton in its movement idles: standing
+/// (`mtidle.kf`) and sneaking (`sneakmtidle.kf`, which lowers `Bip01
+/// Looking`). `None` when the files can't be read.
+pub fn camera_node_heights(game: &cellview::Game) -> Option<(f32, f32)> {
+    let bytes = game
+        .assets
+        .read(&assets::mesh_path(world::actor::FIRST_PERSON_SKELETON))
+        .ok()??;
+    let skeleton = nif::Nif::parse(bytes).ok()?.skeleton().ok()?;
+    let camera = skeleton
+        .iter()
+        .position(|b| b.name.eq_ignore_ascii_case("Camera1st"))?;
+    let height = |file: &str| {
+        let s = crate::viewmodel::sequence(game, &format!("Characters\\_1stPerson\\{file}"))?;
+        Some(nif::posed_layers(&skeleton, &[(&s, s.start)])[camera].translation[2])
+    };
+    Some((height("mtidle.kf")?, height("sneakmtidle.kf")?))
+}
+
+/// How far below the standing eye the eye is: the camera node's drop
+/// between the two idles × how far the switch has gone. The switch is
+/// taken as a straight cross-fade over `fAnimationDefaultBlend` (0.2 s),
+/// the game's default blend for a new group (`004949a0`); that the eye
+/// follows it linearly is this viewer's reading of the blend.
+pub fn eye_offset(heights: Option<(f32, f32)>, blend: f32) -> f32 {
+    heights.map_or(0.0, |(stand, sneak)| {
+        (sneak - stand) * blend.clamp(0.0, 1.0)
+    })
+}
+
+/// What walking needs for sneaking: the weapon's state (its animation
+/// action, the sights), sounds, the blend time, the camera node's heights;
+/// and the attached squares' land, which keeps the player on it.
+type SneakParts<'w, 's> = (
+    ResMut<'w, crate::combat::PlayerAttack>,
+    ResMut<'w, crate::sounds::SoundRequests>,
+    Option<Res<'w, crate::actors::AnimSettings>>,
+    Local<'s, Option<Option<(f32, f32)>>>,
+    Option<Res<'w, crate::ai::CellNav>>,
+);
+
 /// Walking: the keys set the wanted speed, the character moves through the
 /// cell's collision and around the people in it, and the camera sits at eye
-/// height. Not while scripts have turned movement off
-/// (`DisablePlayerControls`). Landing from a fall hurts as the game's falls
-/// do (`world::combat::land`).
+/// height (lower while sneaking, [`eye_offset`]). Not while scripts have
+/// turned movement off (`DisablePlayerControls`). Landing from a fall
+/// hurts as the game's falls do (`world::combat::land`).
 #[allow(clippy::too_many_arguments)]
 pub fn walk(
     time: Res<Time>,
@@ -163,6 +224,12 @@ pub fn walk(
     mut player: ResMut<Player>,
     mut cameras: Query<(&mut Transform, &FlyCamera)>,
     walkers: Query<&crate::ai::Walker>,
+    mut settings: Local<Option<SpeedSettings>>,
+    (mut attack, mut sounds, anim, mut heights, nav): SneakParts,
+    (mouse, controls): (
+        Res<ButtonInput<MouseButton>>,
+        Option<Res<crate::controls::Controls>>,
+    ),
 ) {
     if !player.walking || !player.ready {
         return;
@@ -178,9 +245,51 @@ pub fn walk(
         let start = player.start;
         player.character = Character::new(start);
     }
+    let order = &game.0.order;
+    let player_ref = world::dialogue::PLAYER_REF;
+    let now = time.elapsed_secs();
+    let controls = controls.map(|c| *c).unwrap_or_default();
+    // Sneak (control 8, Left Ctrl by default): each press toggles the
+    // mover's sneak flag, with the crouch sound (`NPCHumanCrouchDown` /
+    // `NPCHumanCrouchUp`) and out of the sights (`008bb650(0, 0, 0)`).
+    let in_furniture = state.0.furniture.contains_key(&player_ref);
+    if controls.sneak.just_pressed(&keys, &mouse)
+        && !state.0.controls_off[world::scripting::controls::MOVEMENT]
+        && may_toggle_sneak(
+            state.0.dead.contains(&player_ref),
+            in_furniture,
+            attack.anim_action(now),
+        )
+    {
+        player.sneaking = !player.sneaking;
+        let sound = if player.sneaking {
+            "NPCHumanCrouchDown"
+        } else {
+            "NPCHumanCrouchUp"
+        };
+        if let Some(s) = order.form_by_editor_id(sound) {
+            sounds.0.push(s);
+        }
+        attack.iron_sights = false;
+    }
     // Forward and right on the ground, in game space: yaw 0 looks north.
     let forward = [-camera.yaw.sin(), camera.yaw.cos()];
     let right = [camera.yaw.cos(), camera.yaw.sin()];
+    // Always Run (control 10) and Auto Move (control 11) toggle on their
+    // press; a movement key held ends Auto Move (`0093e860`, `00940c84` …
+    // `00940d48`).
+    let always_run = *player.always_run.get_or_insert(controls.always_run_default);
+    if controls.always_run.just_pressed(&keys, &mouse) {
+        player.always_run = Some(!always_run);
+    }
+    if controls.auto_move.just_pressed(&keys, &mouse) {
+        player.auto_move = !player.auto_move;
+    }
+    let move_keys = [KeyCode::KeyW, KeyCode::KeyS, KeyCode::KeyD, KeyCode::KeyA];
+    if move_keys.iter().any(|&k| keys.pressed(k)) || locked {
+        player.auto_move = false;
+    }
+    let auto = player.auto_move;
     let mut wish = [0.0f32; 2];
     for (key, dir, sign) in [
         (KeyCode::KeyW, forward, 1.0),
@@ -188,33 +297,35 @@ pub fn walk(
         (KeyCode::KeyD, right, 1.0),
         (KeyCode::KeyA, right, -1.0),
     ] {
-        if keys.pressed(key) && !locked {
+        let held = keys.pressed(key) || (auto && key == KeyCode::KeyW);
+        if held && !locked {
             wish[0] += dir[0] * sign;
             wish[1] += dir[1] * sign;
         }
     }
     let len = (wish[0] * wish[0] + wish[1] * wish[1]).sqrt();
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-    let sneak = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::KeyC);
-    // Running is the game's default; Shift walks. Crippled legs and the
-    // perks' "Modify Run Speed" (Travel Light) scale the whole speed.
-    let mut speed = MovementSettings::BASE_SPEED
-        * world::body_parts::leg_speed_mult(&game.0.order, &state.0, world::dialogue::PLAYER_REF)
-        * world::combat::movement_speed_mult(&game.0.order, &state.0, world::dialogue::PLAYER_REF);
-    if !shift {
-        speed *= MovementSettings::RUN_MULT;
-    }
-    if sneak {
-        speed *= MovementSettings::SNEAK_MULT;
-    }
+    let sneak = player.sneaking;
+    let settings = settings.get_or_insert_with(|| SpeedSettings::read(order));
+    let over_encumbered = state.0.over_encumbered(order, player_ref);
+    // With Always Run on, Shift (Run) walks; off, it runs. Not
+    // over-encumbered nor looking down the sights
+    // (`world::locomotion::may_run`; grabbing isn't here).
+    let wanted = player.always_run.unwrap_or(true) != shift;
+    let running = locomotion::may_run(settings, wanted, over_encumbered, attack.iron_sights, 0.0);
+    // The game's walking or running speed for the player
+    // (`world::locomotion::speed`: SpeedMult, legs, weapon away or drawn,
+    // armour, sneaking, and running's perks).
+    let speed = locomotion::speed(order, &state.0, settings, player_ref, running, sneak);
     let velocity = if len > 0.0 {
         [wish[0] / len * speed, wish[1] / len * speed]
     } else {
         [0.0, 0.0]
     };
-    // How the player moves, for who notices them (`world::detection`).
+    // How the player moves, for who notices them (`world::detection`):
+    // running sets its own flag (0x200) sneaking or not.
     state.0.player_moving = len > 0.0;
-    state.0.player_running = len > 0.0 && !shift && !sneak;
+    state.0.player_running = len > 0.0 && running;
     state.0.player_sneaking = sneak;
     // The same as the game's movement flags, for `IsMoving`, `IsRunning`
     // and `IsSneaking` (`world::more_functions::movement`).
@@ -227,7 +338,8 @@ pub fn walk(
             (KeyCode::KeyA, m::LEFT),
             (KeyCode::KeyD, m::RIGHT),
         ] {
-            if keys.pressed(key) && !locked {
+            let held = keys.pressed(key) || (auto && key == KeyCode::KeyW);
+            if held && !locked {
                 flags |= flag;
             }
         }
@@ -237,6 +349,15 @@ pub fn walk(
         if sneak {
             flags |= m::SNEAKING;
         }
+        player.moving = world::animation::MoveFlags {
+            forward: flags & m::FORWARD != 0,
+            backward: flags & m::BACK != 0,
+            left: flags & m::LEFT != 0,
+            right: flags & m::RIGHT != 0,
+            running: state.0.player_running,
+            ..Default::default()
+        };
+        player.speed = if len > 0.0 { speed } else { 0.0 };
         world::more_functions::report(
             &mut state.0,
             world::dialogue::PLAYER_REF,
@@ -247,12 +368,33 @@ pub fn walk(
         );
     }
     let shape = CharacterShape::PLAYER;
-    let jump = (keys.just_pressed(KeyCode::Space) && !locked)
-        .then(|| (2.0 * shape.gravity * MovementSettings::JUMP_HEIGHT).sqrt());
+    // Jump: not over-encumbered; `fJumpHeightMin` × the player's scale (1).
+    let jump = (keys.just_pressed(KeyCode::Space)
+        && !locked
+        && locomotion::may_jump(over_encumbered))
+    .then(|| locomotion::jump_speed(shape.gravity, locomotion::jump_height(settings, 1.0, false)));
     let dt = time.delta_secs();
-    player
-        .character
-        .update_with_jump(&collision.0, &shape, velocity, jump, dt);
+    // One controller update a frame: on the ground at the wanted velocity,
+    // in the air steered 0.3 of the way to it.
+    player.character.update_controlled(
+        &collision.0,
+        &shape,
+        velocity,
+        jump,
+        locomotion::air_gain(locomotion::AIR_CONTROL),
+        dt,
+    );
+    // Outdoors, feet more than 30 under the land are put on it, the player's
+    // too (`MobileObject::Move`, `0092f260` at `0093012a`; `world::ground`).
+    let feet = player.character.feet;
+    let land = nav
+        .as_deref()
+        .and_then(|n| n.land_height(state.0.player_world, feet));
+    let lifted = world::ground::kept_above_land(feet[2], land);
+    if lifted != feet[2] {
+        player.character.feet[2] = lifted;
+        player.character.ground = lifted;
+    }
     if let Some(fell) = player.character.fell.take() {
         if !std::mem::take(&mut player.from_camera) {
             let hurt = world::combat::land(
@@ -266,74 +408,44 @@ pub fn walk(
             }
         }
     }
+    // The eye: lower while sneaking, moving there over the blend.
+    let blend_time = anim.map_or(0.2, |a| a.0.default_blend).max(1e-3);
+    let target = if sneak { 1.0 } else { 0.0 };
+    let step = dt / blend_time;
+    player.sneak_blend = if player.sneak_blend < target {
+        (player.sneak_blend + step).min(target)
+    } else {
+        (player.sneak_blend - step).max(target)
+    };
+    let heights = *heights.get_or_insert_with(|| camera_node_heights(&game.0));
     let [x, y, z] = player.character.feet;
-    transform.translation = Vec3::from(space::point([x, y, z + EYE_HEIGHT]));
+    let eye = z + EYE_HEIGHT + eye_offset(heights, player.sneak_blend);
+    transform.translation = Vec3::from(space::point([x, y, eye]));
 }
-
-/// The load door the view is on, within reach and not behind a wall.
+/// The load door the crosshair is on, within reach (`crosshair`, the
+/// game's view caster).
 pub(crate) fn door_in_view<'a>(
     doors: &'a [DoorData],
-    collision: &Collider,
-    eye: [f32; 3],
-    dir: [f32; 3],
+    crosshair: &crate::crosshair::Crosshair,
 ) -> Option<&'a DoorData> {
-    let mut best: Option<(f32, &DoorData)> = None;
-    for door in doors {
-        // Slightly bigger than the model, so its frame counts.
-        let lo = door.lo.map(|c| c - 4.0);
-        let hi = door.hi.map(|c| c + 4.0);
-        if let Some(t) = ray_box(eye, dir, lo, hi) {
-            if t <= ACTIVATE_REACH && best.is_none_or(|(bt, _)| t < bt) {
-                best = Some((t, door));
-            }
-        }
-    }
-    let (t, door) = best?;
-    // A wall nearer than the door hides it (the door's own collision is
-    // about as near as its box).
-    if let Some((wall, _)) = collision.raycast(eye, dir, t) {
-        if wall < t - 24.0 {
-            return None;
-        }
-    }
-    Some(door)
+    let r = crosshair.target()?;
+    doors.iter().find(|d| d.reference == r.0)
 }
 
-/// A door that opens where it stands (not a load door) under the crosshair
-/// within reach. Its leaf's collision belongs to it
-/// (`preview::cell::CellScene::collider`) and swings with it
-/// (`doors::update_doors`), so the ray meets the leaf wherever it is; a
-/// wall nearer than the door hides it.
-pub(crate) fn opening_door_in_view(
-    collision: &Collider,
-    eye: [f32; 3],
-    dir: [f32; 3],
-) -> Option<esm::FormId> {
-    let (_, t) = collision.raycast_including_hidden(eye, dir, ACTIVATE_REACH)?;
-    let owner = collision.owner(t);
-    (owner != 0).then_some(esm::FormId(owner))
+/// The reference the crosshair is on within reach, for a door that opens
+/// where it stands (not a load door; [`is_door`] tells): its leaf's
+/// collision belongs to it (`preview::cell::CellScene::collider`) and
+/// swings with it (`doors::update_doors`), so the pick meets the leaf
+/// wherever it is.
+pub(crate) fn opening_door_in_view(crosshair: &crate::crosshair::Crosshair) -> Option<esm::FormId> {
+    crosshair.target()
 }
-
-/// Where a ray enters an axis-aligned box, if it does.
-fn ray_box(origin: [f32; 3], dir: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Option<f32> {
-    let mut near = 0.0f32;
-    let mut far = f32::INFINITY;
-    for k in 0..3 {
-        if dir[k].abs() < 1e-9 {
-            if origin[k] < lo[k] || origin[k] > hi[k] {
-                return None;
-            }
-            continue;
-        }
-        let a = (lo[k] - origin[k]) / dir[k];
-        let b = (hi[k] - origin[k]) / dir[k];
-        near = near.max(a.min(b));
-        far = far.min(a.max(b));
-        if near > far {
-            return None;
-        }
-    }
-    Some(near)
+/// Whether a reference is a door (its base a `DOOR`): other owners of the
+/// collider's triangles (clutter bodies, `clutter`) aren't doors to open.
+pub(crate) fn is_door(order: &esm::LoadOrder, reference: esm::FormId) -> bool {
+    world::scripting::base_of(order, reference)
+        .and_then(|b| order.get(b))
+        .is_some_and(|b| b.entry.header.kind.as_bytes() == b"DOOR")
 }
 
 /// Load doors: the crosshair line names where the door in view leads, and
@@ -343,10 +455,9 @@ pub fn doors(
     keys: Res<ButtonInput<KeyCode>>,
     game: Res<GameFiles>,
     doors: Res<Doors>,
-    collision: Res<CellCollision>,
+    crosshair: Res<crate::crosshair::Crosshair>,
     mut pending: ResMut<PendingScene>,
     mut pending_exterior: ResMut<PendingExterior>,
-    cameras: Query<&Transform, With<FlyCamera>>,
     mut prompt: Query<&mut Text, With<Prompt>>,
     talk_target: Res<crate::dialogue::TalkTarget>,
     conversation: Res<crate::dialogue::Conversation>,
@@ -367,17 +478,13 @@ pub fn doors(
     if talk_target.0.is_some() || conversation.0.is_some() {
         return;
     }
-    let Ok(transform) = cameras.single() else {
-        return;
-    };
-    let eye = game_point(transform.translation);
-    let dir = game_direction(transform.forward().as_vec3());
-    let door = door_in_view(&doors.0, &collision.0, eye, dir);
+    let door = door_in_view(&doors.0, &crosshair);
     // A door that swings open where it stands, when no load door is in view.
     let swing = door
         .is_none()
-        .then(|| opening_door_in_view(&collision.0, eye, dir))
-        .flatten();
+        .then(|| opening_door_in_view(&crosshair))
+        .flatten()
+        .filter(|&r| is_door(&game.0.order, r));
     let line = match (door, swing, &activatable.0) {
         // Nothing while the lockpicking menu or one of the game's menus is up
         // (the roll-over is the HUD's, which their masks hide: ui::hud::parts_for_menu).
@@ -496,61 +603,33 @@ pub fn doors(
 mod tests {
     use super::*;
 
+    /// `0093e860`'s skip table by `GetAnimAction` + 1: drawing, putting
+    /// away and reloading keep the sneak toggle off; attacking doesn't.
     #[test]
-    fn rays_enter_boxes_in_front_only() {
-        let lo = [10.0, -1.0, -1.0];
-        let hi = [12.0, 1.0, 1.0];
-        assert_eq!(ray_box([0.0; 3], [1.0, 0.0, 0.0], lo, hi), Some(10.0));
-        assert_eq!(ray_box([0.0; 3], [-1.0, 0.0, 0.0], lo, hi), None);
-        assert_eq!(ray_box([0.0, 5.0, 0.0], [1.0, 0.0, 0.0], lo, hi), None);
+    fn the_sneak_toggle_waits_for_drawing_and_reloading() {
+        assert!(may_toggle_sneak(false, false, None));
+        assert!(!may_toggle_sneak(false, false, Some(0)));
+        assert!(!may_toggle_sneak(false, false, Some(1)));
+        assert!(may_toggle_sneak(false, false, Some(2)));
+        assert!(!may_toggle_sneak(false, false, Some(8)));
+        assert!(may_toggle_sneak(false, false, Some(9)));
+        assert!(!may_toggle_sneak(false, false, Some(10)));
+        assert!(may_toggle_sneak(false, false, Some(17)));
+        // Dead, or in a chair: no.
+        assert!(!may_toggle_sneak(true, false, None));
+        assert!(!may_toggle_sneak(false, true, None));
     }
 
+    /// The first-person camera node drops from 118 (`mtidle.kf`) to 78
+    /// (`sneakmtidle.kf`) in the game's files: the eye goes 40 lower, part
+    /// way while the blend runs.
     #[test]
-    fn finds_the_door_in_view_open_or_shut() {
-        // A door's leaf (owned by the door, 0x904) 100 units north, and a
-        // wall (nobody's) 50 units east.
-        let quad = |c: &mut Collider, v: [[f32; 3]; 4], owner: u32| {
-            c.add_solid(&v, &[[0, 1, 2], [0, 2, 3]], 0.0, owner)
-        };
-        let mut c = Collider::new();
-        quad(
-            &mut c,
-            [
-                [-40.0, 100.0, 0.0],
-                [40.0, 100.0, 0.0],
-                [40.0, 100.0, 200.0],
-                [-40.0, 100.0, 200.0],
-            ],
-            0x904,
-        );
-        quad(
-            &mut c,
-            [
-                [50.0, -40.0, 0.0],
-                [50.0, 40.0, 0.0],
-                [50.0, 40.0, 200.0],
-                [50.0, -40.0, 200.0],
-            ],
-            0,
-        );
-        let eye = [0.0, 0.0, 120.0];
-        let north = [0.0, 1.0, 0.0];
-        assert_eq!(
-            opening_door_in_view(&c, eye, north),
-            Some(esm::FormId(0x904))
-        );
-        // Swung aside (a quarter turn about its left edge), it's found
-        // where it now is.
-        let turn = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
-        c.move_owner(0x904, &turn, [-40.0 + 100.0, 100.0 + 40.0, 0.0]);
-        assert_eq!(opening_door_in_view(&c, eye, north), None);
-        assert_eq!(
-            opening_door_in_view(&c, [-60.0, 100.0, 120.0], [1.0, 0.0, 0.0]),
-            Some(esm::FormId(0x904))
-        );
-        // A wall isn't a door; and out of reach, nothing.
-        assert_eq!(opening_door_in_view(&c, eye, [1.0, 0.0, 0.0]), None);
-        assert_eq!(opening_door_in_view(&c, [0.0, -100.0, 120.0], north), None);
+    fn sneaking_lowers_the_eye_by_the_camera_nodes_drop() {
+        let heights = Some((118.0, 78.0));
+        assert_eq!(eye_offset(heights, 0.0), 0.0);
+        assert_eq!(eye_offset(heights, 1.0), -40.0);
+        assert_eq!(eye_offset(heights, 0.5), -20.0);
+        assert_eq!(eye_offset(None, 1.0), 0.0);
     }
 
     #[test]
@@ -558,7 +637,5 @@ mod tests {
         let p = [100.0, -200.0, 300.0];
         let back = game_point(Vec3::from(space::point(p)));
         assert!(back.iter().zip(p).all(|(a, b)| (a - b).abs() < 1e-3));
-        let d = [0.0, 1.0, 0.0];
-        assert_eq!(game_direction(Vec3::from(space::direction(d))), d);
     }
 }

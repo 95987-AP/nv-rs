@@ -894,6 +894,73 @@ impl Avoidance {
     }
 }
 
+/// The share of the last frame's move someone must have made, squared, not
+/// to count as blocked (`010924a8`, 0.125, in `009e4cf0`).
+pub const STUCK_MOVE_SHARE: f32 = 0.125;
+/// Seconds blocked before they're stuck (`01016ff0`, 1.5).
+pub const STUCK_SECONDS: f32 = 1.5;
+/// Blocked time runs at this rate while their controller is up against
+/// someone (`01018a90`, 0.2).
+pub const STUCK_AGAINST_SOMEONE: f32 = 0.2;
+
+/// The detailed path handler's stuck test (`009e4cf0`, run each frame
+/// before the move, `009e0a00`), for someone walking on the ground: they're
+/// blocked when they moved less than √0.125 of the last frame's move (the
+/// move vector's length, handler +0x9c; positions compared flat, +0x40);
+/// blocked time (+0x88) adds up the frames' seconds (× 0.2 while their
+/// controller touches an actor), and goes back to 0 on any frame they're
+/// not blocked; past 1.5 s they're stuck (+0xde) for the rest of the path
+/// (each path gets a new handler, `009dbdc0`). The game also requires the
+/// movement animation to be playing (`00495be0` on actor vfunc +0x1e4,
+/// read only in outline) and ends the walk as failed once stuck, while its
+/// avoidance state (+0xd0) is 0, 1 or 5, after marking the triangle they
+/// stand on (`00691510`: an obstacle record and triangle flag
+/// 0x80000000). The flying and swimming branch (3D distances) isn't
+/// followed here.
+// Translated from 009e4cf0 (decompiled, FalloutNV.exe 1.4.0.525).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Stuck {
+    /// Where they stood at the last test.
+    pub last: Option<[f32; 3]>,
+    /// Seconds blocked.
+    pub time: f32,
+    /// Stuck.
+    pub stuck: bool,
+}
+
+impl Stuck {
+    /// One frame's test: where they stand now, how long the last frame's
+    /// move was, whether their controller touches someone; whether they're
+    /// stuck now.
+    pub fn update(
+        &mut self,
+        position: [f32; 3],
+        last_move: f32,
+        against_someone: bool,
+        dt: f32,
+    ) -> bool {
+        let blocked = self.last.is_some_and(|last| {
+            let moved2 = (position[0] - last[0]).powi(2) + (position[1] - last[1]).powi(2);
+            moved2 < last_move * last_move * STUCK_MOVE_SHARE
+        });
+        self.last = Some(position);
+        if blocked {
+            self.time += if against_someone {
+                dt * STUCK_AGAINST_SOMEONE
+            } else {
+                dt
+            };
+        } else if !self.stuck {
+            self.time = 0.0;
+            return false;
+        }
+        if self.time > STUCK_SECONDS {
+            self.stuck = true;
+        }
+        self.stuck
+    }
+}
+
 /// How often the game moves someone, by where they are (`009334b0`
 /// decides; the lists `0096bcd0`, `0096b810`, `0096b470`, `0096b050` run
 /// them): high (their cell attached: every frame), middle-high (their cell
@@ -1372,5 +1439,45 @@ mod tests {
         let w = walk_polyline(&path[1..], path[0], 0.0, 500.0, 0.0);
         assert!(w.done && (w.at[1] - 100.0).abs() < 1e-4);
         assert!((w.left - 300.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn walkers_held_back_for_a_second_and_a_half_are_stuck() {
+        let mut s = Stuck::default();
+        let dt = 0.1;
+        // Moving their whole move: never stuck.
+        let mut p = [0.0f32, 0.0, 0.0];
+        for _ in 0..30 {
+            assert!(!s.update(p, 5.0, false, dt));
+            p[0] += 5.0;
+        }
+        assert_eq!(s.time, 0.0);
+        // Held to a third of it (under √0.125 ≈ 0.354): blocked; past 1.5 s
+        // stuck, and stuck stays.
+        let mut stuck_after = None;
+        for i in 0..30 {
+            p[0] += 5.0 / 3.0;
+            if s.update(p, 5.0, false, dt) && stuck_after.is_none() {
+                stuck_after = Some(i);
+            }
+        }
+        assert_eq!(stuck_after, Some(15), "{s:?}");
+        assert!(s.update(p, 0.0, false, dt));
+        // Up against someone the time runs at a fifth: 75 frames (and the
+        // first, with nothing to compare).
+        let mut s = Stuck::default();
+        let mut n = 0;
+        while !s.update(p, 5.0, true, dt) {
+            n += 1;
+        }
+        assert!((75..=77).contains(&n), "{n}");
+        // A frame not blocked starts the count again.
+        let mut s = Stuck::default();
+        for _ in 0..10 {
+            s.update(p, 5.0, false, dt);
+        }
+        p[0] += 5.0;
+        s.update(p, 5.0, false, dt);
+        assert_eq!(s.time, 0.0);
     }
 }

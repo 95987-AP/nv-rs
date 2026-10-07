@@ -43,6 +43,9 @@ const DECAL_FLAGS: u32 = 0x0400_0000 | 0x0800_0000;
 /// Shader flag: the glow takes its color from outside the model (the placed
 /// object's Emittance setting).
 const EXTERNAL_EMITTANCE: u32 = 0x2000_0000;
+/// Shader flag 0x40: what later games call "use falloff" (a guess for
+/// these files: see the falloff in `Loader::mesh`).
+const USE_FALLOFF: u32 = 0x0000_0040;
 /// Shader flag: vertex alpha is used.
 const VERTEX_ALPHA: u32 = 0x0000_0008;
 /// Shader flag: the surface gets the specular pass.
@@ -164,6 +167,13 @@ pub struct ModelMesh {
     /// the model's space: what the game sorts blended meshes by (see
     /// `cellview::MaterialData::sort_center`).
     pub bound_center: Vec3,
+    /// Big enough for the local map's pictures (`RegisterObject_LocalMap`,
+    /// `00b64440`: the mesh's bound reaches 50 units). The pass also wants
+    /// the property's runtime flag 0x40000 (`Show in Local Map`), which no
+    /// mesh of Doc Mitchell's house has in its file: the game sets it on the
+    /// place's objects at run time [guess: where isn't traced; every placed
+    /// object not hidden from the local map is taken].
+    pub local_map: bool,
     pub lit: bool,
     /// Self-lit color, with its multiplier applied. It is added to the light
     /// reaching the surface (masked by the glow map, if there is one), so it
@@ -204,6 +214,10 @@ pub struct ModelMesh {
     /// `HairTint` (already laid into the vertex colours, see
     /// `preview::actor`).
     pub hair_tint: Option<[f32; 3]>,
+    /// The file stores it as triangle strips (`NiTriStrips`): the only
+    /// geometry the game puts world decals on (`004a1a70`, `0068b4c0` take
+    /// the `NiTriStrips` type at `011f4a20`; `0068d230` walks the strip).
+    pub strips: bool,
 }
 
 /// A piece that turns toward the camera with the `NiBillboardNode` above
@@ -267,8 +281,22 @@ impl Billboard {
     /// directions are given (game axes), with the object placed by
     /// `placement` (model to world).
     pub fn facing(&self, placement: &Transform, eye: Vec3, axes: [Vec3; 3]) -> Transform {
-        let parent = placement.then_child(&self.above);
-        let node_world = parent.then_child(&self.node);
+        self.facing_posed((&self.above, &self.node, &self.below), placement, eye, axes)
+    }
+
+    /// [`Self::facing`] with the nodes posed by an animation (`above`, the
+    /// billboard node's own and `below` as it has them now): the move from
+    /// the loaded vertices to the turned, posed piece. The billboard keeps
+    /// its posed node's position and size, its rotation replaced.
+    pub fn facing_posed(
+        &self,
+        (above, node, below): (&Transform, &Transform, &Transform),
+        placement: &Transform,
+        eye: Vec3,
+        axes: [Vec3; 3],
+    ) -> Transform {
+        let parent = placement.then_child(above);
+        let node_world = parent.then_child(node);
         let [right, up, back] = match self.kind {
             BillboardKind::FaceCamera => axes,
             BillboardKind::FaceCentre => {
@@ -288,13 +316,13 @@ impl Billboard {
         let parent_inverse = parent.inverse();
         let local = Transform {
             rotation: nif::math::mat_mul(&parent_inverse.rotation, &world_rotation),
-            translation: self.node.translation,
-            scale: self.node.scale,
+            translation: node.translation,
+            scale: node.scale,
         };
         let rest = self.above.then_child(&self.node).then_child(&self.below);
-        self.above
+        above
             .then_child(&local)
-            .then_child(&self.below)
+            .then_child(below)
             .then_child(&rest.inverse())
     }
 }
@@ -534,6 +562,15 @@ fn touches(nodes: &[(String, Transform)], s: &nif::Sequence) -> bool {
         })
 }
 
+/// Whether a sequence `since` seconds after it started still counts as
+/// playing (`IsAnimPlaying`): a looping one always, any other until its end
+/// (checked against the original game: a one-shot group reads 1 while it
+/// plays and 0 once it has finished, for good; `Backward` on Dead Money's
+/// Elijah projector).
+pub fn sequence_playing(s: &nif::Sequence, since: f32) -> bool {
+    s.looping || since < s.stop - s.start
+}
+
 /// A sequence's own clock `seconds` after it started.
 fn sequence_time(s: &nif::Sequence, seconds: f32) -> f32 {
     let length = s.stop - s.start;
@@ -592,6 +629,12 @@ pub struct ActorSkeleton {
     /// The skeleton's box (`BSBound`), which sizes a creature's collision
     /// (`world::combat_ai::creature_radius`).
     pub bound: Option<nif::Bound>,
+    /// Where the skeleton, its idle and its walk were read from (relative
+    /// to `meshes\`): the folders the actor's animations are loaded from
+    /// (`00447330`, `008b73f0`).
+    pub skeleton_path: String,
+    pub idle_path: String,
+    pub walk_path: String,
 }
 
 pub struct Model {
@@ -611,6 +654,8 @@ pub struct Model {
     pub sequences: std::sync::Arc<Vec<nif::Sequence>>,
     /// Its particle systems, if it has any.
     pub particles: Option<std::sync::Arc<ParticleModel>>,
+    /// Its `BSXFlags` value (0 without the block).
+    pub bsx_flags: u32,
 }
 
 /// A model's particle systems (`nif::particles`, as placed: the top node's
@@ -708,8 +753,14 @@ impl Loader<'_> {
         let mut sequences = Vec::new();
         let mut particle_systems = Vec::new();
         let mut particle_sequences = Vec::new();
+        let mut bsx_flags = 0;
+        let mut strip_blocks = std::collections::HashSet::new();
         let scene = match nif::Nif::parse(bytes).and_then(|nif| {
+            strip_blocks = (0..nif.blocks().len())
+                .filter(|&i| nif.block_type(i) == "NiTriStrips")
+                .collect();
             sequences = nif.sequences().unwrap_or_default();
+            bsx_flags = nif.bsx_flags().unwrap_or(0);
             // Particle systems that can't be read leave the model without
             // them (every one in the game's files reads).
             particle_systems = nif.particle_systems(keep_root).unwrap_or_default();
@@ -749,6 +800,7 @@ impl Loader<'_> {
         let mut meshes = Vec::with_capacity(scene.meshes.len());
         for source in &scene.meshes {
             if let Some(mut mesh) = self.mesh(source) {
+                mesh.strips = strip_blocks.contains(&source.block);
                 if sequences.iter().any(|s| touches(&source.nodes, s)) {
                     mesh.nodes = source.nodes.clone();
                     mesh.sequences = sequences.clone();
@@ -774,6 +826,7 @@ impl Loader<'_> {
             skeleton: None,
             sequences,
             particles,
+            bsx_flags,
         });
         Some(self.models.len() - 1)
     }
@@ -864,22 +917,35 @@ impl Loader<'_> {
             .and_then(|t| self.texture(t));
         let alpha = alpha_of(mesh);
         let additive = matches!(alpha.blend, Some((_, BlendFactor::One)));
-        let falloff = mesh.shader.as_ref().and_then(|s| s.falloff).map(|f| {
-            // Stored as cosines; tolerate files that store degrees.
-            let cos = |v: f32| {
-                if v.abs() > 1.0 {
-                    v.to_radians().cos()
-                } else {
-                    v
+        // [G] With `NV_GUESSES=1`, only shaders with flag 0x40 fade by
+        // angle (the bit later games name "use falloff"; the game's impact
+        // models, flags 0x82080008, store a falloff of all zeros, which
+        // would hide them). Which no-lighting technique the exe picks isn't
+        // traced.
+        let falloff_flag = |s: &nif::ShaderProperty| {
+            !world::guesses::enabled() || s.shader_flags & USE_FALLOFF != 0
+        };
+        let falloff = mesh
+            .shader
+            .as_ref()
+            .filter(|s| falloff_flag(s))
+            .and_then(|s| s.falloff)
+            .map(|f| {
+                // Stored as cosines; tolerate files that store degrees.
+                let cos = |v: f32| {
+                    if v.abs() > 1.0 {
+                        v.to_radians().cos()
+                    } else {
+                        v
+                    }
+                };
+                Falloff {
+                    start_cos: cos(f.start_angle),
+                    stop_cos: cos(f.stop_angle),
+                    start_opacity: f.start_opacity,
+                    stop_opacity: f.stop_opacity,
                 }
-            };
-            Falloff {
-                start_cos: cos(f.start_angle),
-                stop_cos: cos(f.stop_angle),
-                start_opacity: f.start_opacity,
-                stop_opacity: f.stop_opacity,
-            }
-        });
+            });
         let directions = |v: &[Vec3]| -> Vec<Vec3> {
             v.iter()
                 .map(|&d| mesh.transform.apply_direction(d))
@@ -951,6 +1017,7 @@ impl Loader<'_> {
             depth_test,
             depth_write,
             bound_center: mesh.model_bound().0,
+            local_map: mesh.model_bound().1 >= 50.0,
             lit: !unlit,
             emissive,
             emissive_mult,
@@ -970,6 +1037,7 @@ impl Loader<'_> {
             billboard: Billboard::of(mesh),
             shading,
             hair_tint: None,
+            strips: false,
         })
     }
 
@@ -1399,6 +1467,7 @@ pub fn lod_block_scene(assets: &Assets, path: &str) -> Option<CellScene> {
                 skeleton: None,
                 sequences: Default::default(),
                 particles: None,
+                bsx_flags: 0,
             });
             cell.objects.push(world::Placement {
                 form_id: esm::FormId(segment),
@@ -1440,6 +1509,48 @@ pub fn lod_block_scene(assets: &Assets, path: &str) -> Option<CellScene> {
     })
 }
 
+/// A collision part's box in model space, placed: its centre, the placed
+/// model axes and half sizes (`world::ai::doors::DoorBox`).
+fn door_box(part: &nif::CollisionPart, place: &Transform) -> Option<world::ai::doors::DoorBox> {
+    let points: Vec<[f32; 3]> = match &part.shape {
+        nif::CollisionShape::Triangles { vertices, .. }
+        | nif::CollisionShape::Convex { vertices, .. } => vertices.clone(),
+        nif::CollisionShape::Sphere { center, radius } => vec![
+            [center[0] - radius, center[1] - radius, center[2] - radius],
+            [center[0] + radius, center[1] + radius, center[2] + radius],
+        ],
+        nif::CollisionShape::Capsule { a, b, radius } => {
+            let lo = [0, 1, 2].map(|k| a[k].min(b[k]) - radius);
+            let hi = [0, 1, 2].map(|k| a[k].max(b[k]) + radius);
+            vec![lo, hi]
+        }
+    };
+    let mut lo = [f32::INFINITY; 3];
+    let mut hi = [f32::NEG_INFINITY; 3];
+    for p in &points {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k] - part.shell);
+            hi[k] = hi[k].max(p[k] + part.shell);
+        }
+    }
+    if lo[0] > hi[0] {
+        return None;
+    }
+    let middle = [0, 1, 2].map(|k| 0.5 * (lo[k] + hi[k]));
+    let origin = place.apply_point([0.0; 3]);
+    let axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]].map(|e| {
+        let p = place.apply_point(e);
+        let d = [p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+        d.map(|v| v / l)
+    });
+    Some(world::ai::doors::DoorBox {
+        center: place.apply_point(middle),
+        axes,
+        half: [0, 1, 2].map(|k| 0.5 * (hi[k] - lo[k]) * place.scale),
+    })
+}
+
 /// A door that opens where it stands: a `DOOR` that isn't a load door.
 pub fn is_opening_door(object: &world::Placement) -> bool {
     object.base_type == esm::FourCC::new(b"DOOR") && object.teleport.is_none()
@@ -1461,6 +1572,9 @@ pub struct SwingDoor {
     pub sequences: std::sync::Arc<Vec<nif::Sequence>>,
     /// Each keyframed collision part's nodes, top down (`nif::CollisionPart::nodes`).
     pub leaves: Vec<Vec<(String, Transform)>>,
+    /// Its collision parts' boxes as placed (closed), in its placed axes:
+    /// the navmesh obstacles a closed door marks (`world::ai::doors`).
+    pub boxes: Vec<world::ai::doors::DoorBox>,
 }
 
 impl SwingDoor {
@@ -1527,6 +1641,13 @@ impl CellScene {
                 .filter(|p| p.keyframed && nif::collision::layers::blocks_walking(p.layer))
                 .map(|p| p.nodes.clone())
                 .collect();
+            let place = self.transform(instance, convention);
+            let boxes = model
+                .collision
+                .iter()
+                .filter(|p| nif::collision::layers::blocks_walking(p.layer))
+                .filter_map(|p| door_box(p, &place))
+                .collect();
             out.push(SwingDoor {
                 reference: object.form_id,
                 base: object.base,
@@ -1535,44 +1656,241 @@ impl CellScene {
                     .clone()
                     .unwrap_or_else(|| object.base.to_string()),
                 open_by_default: object.open_by_default,
-                place: self.transform(instance, convention),
+                place,
                 sequences,
                 leaves,
+                boxes,
             });
         }
         out
     }
 }
 
-/// One piece of a model's collision, placed, into the collider.
+/// One piece of a model's collision, placed, into the collider, with its
+/// body's friction and restitution (for rigid bodies resting on it) and
+/// its Havok layer (which casts meet it, `physics::layers`).
 fn add_part(
     collider: &mut physics::Collider,
     part: &nif::CollisionPart,
     place: &Transform,
-    owner: u32,
+    (owner, reference): (u32, u32),
 ) {
     let at = |v: &[f32; 3]| place.apply_point(*v);
+    let surface = (part.body != nif::RigidBodyInfo::default()).then_some(physics::Surface {
+        friction: part.body.friction,
+        restitution: part.body.restitution,
+    });
+    let mut add = |v: &[[f32; 3]], t: &[[u32; 3]]| {
+        collider.add_placed(
+            v,
+            t,
+            (part.shell, owner, part.material),
+            surface,
+            part.layer,
+            reference,
+        );
+    };
     match &part.shape {
         nif::CollisionShape::Triangles {
             vertices,
             triangles,
         } => {
             let v: Vec<[f32; 3]> = vertices.iter().map(at).collect();
-            collider.add_solid_material(&v, triangles, part.shell, owner, part.material);
+            add(&v, triangles);
         }
         nif::CollisionShape::Convex { vertices, planes } => {
             let tris = physics::shapes::hull(vertices, planes);
             let v: Vec<[f32; 3]> = vertices.iter().map(at).collect();
-            collider.add_solid_material(&v, &tris, part.shell, owner, part.material);
+            add(&v, &tris);
         }
         nif::CollisionShape::Sphere { center, radius } => {
             let (v, t) = physics::shapes::sphere(at(center), radius * place.scale);
-            collider.add_solid_material(&v, &t, part.shell, owner, part.material);
+            add(&v, &t);
         }
         nif::CollisionShape::Capsule { a, b, radius } => {
             let (v, t) = physics::shapes::capsule(at(a), at(b), radius * place.scale);
-            collider.add_solid_material(&v, &t, part.shell, owner, part.material);
+            add(&v, &t);
         }
+    }
+}
+
+/// A placed reference whose model carries a body Havok moves (clutter,
+/// weapons, props: `nif::RigidBodyInfo`, motion systems other than
+/// keyframed and fixed), for [`physics::rigid::RigidWorld`]: its body in the
+/// model's space (the reference's scale applied to the shapes, the centre
+/// and the inertia; the mass as stored: how the game's scaled clone,
+/// `00c8f2a0`, treats mass and inertia isn't traced) and where it's placed.
+#[derive(Debug, Clone)]
+pub struct DynamicBody {
+    pub reference: esm::FormId,
+    /// The base's editor ID, for messages.
+    pub name: String,
+    pub setup: physics::rigid::RigidSetup,
+    /// Each shape's Havok material (what a shot striking it sounds like).
+    pub materials: Vec<u32>,
+    pub pose: physics::rigid::Pose,
+}
+
+/// The one body a model's moving parts belong to (the `bhkRigidBody`
+/// block), when they all belong to one: a model with several moving
+/// bodies (joined by constraints) isn't simulated here and stays solid
+/// where it's placed. So does a body held by a constraint (a hinge to a
+/// fixed bracket, a chain's links): simulated free it would fall off what
+/// holds it, and constraints aren't simulated here.
+fn moving_body(collision: &[nif::CollisionPart]) -> Option<usize> {
+    let mut block = None;
+    for p in collision.iter().filter(|p| moving_part(p)) {
+        if p.body.constraints > 0 {
+            return None;
+        }
+        match block {
+            None => block = Some(p.body.block),
+            Some(b) if b != p.body.block => return None,
+            _ => {}
+        }
+    }
+    block
+}
+
+/// Whether the game fixes a placed reference's bodies as its model gets
+/// Havok: a static's or a static collection's (base form types 0x20,
+/// 0x21) are set to the fixed motion (`TESObjectREFR::InitHavok`, Xbox
+/// PDB, `005768b0` → `00c6a350(3D, 5, …)`), which changes a model's bodies
+/// only when its `BSXFlags` has Havok (bit 1). The burnt fence pickets
+/// south of Goodsprings' square (`NVFencePickBurntBroken01`, a `STAT`
+/// with a moving clutter body and that flag) stay put so.
+// Translated from 005768b0 (decompiled, FalloutNV.exe 1.4.0.525)
+fn fixed_by_game(object: &world::Placement, model: &Model) -> bool {
+    let kind = object.base_type;
+    (kind == esm::FourCC::new(b"STAT") || kind == esm::FourCC::new(b"SCOL"))
+        && model.bsx_flags & nif::collision::BSX_HAVOK != 0
+}
+
+/// The body Havok moves for a placed reference: its model's one moving
+/// body ([`moving_body`]) unless the game fixes it ([`fixed_by_game`]).
+fn simulated_body(object: &world::Placement, model: &Model) -> Option<usize> {
+    if fixed_by_game(object, model) {
+        return None;
+    }
+    moving_body(&model.collision)
+}
+
+/// Placed references whose models have moving bodies that aren't
+/// simulated here ([`moving_body`]: several bodies, or constraints): their
+/// editor IDs, for the log.
+impl CellScene {
+    pub fn unsimulated_bodies(&self) -> Vec<(esm::FormId, String)> {
+        let mut out = Vec::new();
+        for instance in &self.instances {
+            let object = &self.cell.objects[instance.object];
+            if instance.part.is_some() || is_opening_door(object) {
+                continue;
+            }
+            let model = &self.models[instance.model];
+            let moving = model.collision.iter().any(moving_part);
+            if moving && !fixed_by_game(object, model) && moving_body(&model.collision).is_none() {
+                out.push((
+                    object.form_id,
+                    object
+                        .base_editor_id
+                        .clone()
+                        .unwrap_or_else(|| object.base.to_string()),
+                ));
+            }
+        }
+        out
+    }
+}
+
+fn moving_part(p: &nif::CollisionPart) -> bool {
+    p.dynamic && physics::impulses::moves(p.body.motion) && p.body.mass > 0.0
+}
+
+/// A collision part as a rigid body's shape, scaled by `s`.
+fn body_shape(part: &nif::CollisionPart, s: f32) -> physics::rigid::Shape {
+    let sc = |v: &[f32; 3]| v.map(|x| x * s);
+    match &part.shape {
+        nif::CollisionShape::Convex { vertices, planes } => {
+            let planes: Vec<[f32; 4]> = planes
+                .iter()
+                .map(|p| [p[0], p[1], p[2], p[3] * s])
+                .collect();
+            physics::rigid::Shape::hull(vertices.iter().map(sc).collect(), &planes, part.shell)
+        }
+        nif::CollisionShape::Sphere { center, radius } => physics::rigid::Shape::Sphere {
+            center: sc(center),
+            radius: radius * s,
+        },
+        nif::CollisionShape::Capsule { a, b, radius } => physics::rigid::Shape::Capsule {
+            a: sc(a),
+            b: sc(b),
+            radius: radius * s,
+        },
+        nif::CollisionShape::Triangles {
+            vertices,
+            triangles,
+        } => physics::rigid::Shape::Mesh {
+            vertices: vertices.iter().map(sc).collect(),
+            triangles: triangles.clone(),
+            shell: part.shell,
+        },
+    }
+}
+
+impl CellScene {
+    /// The placed references Havok would move: each with its one moving
+    /// body ([`DynamicBody`]). Doors that open where they stand and
+    /// static collections' pieces aren't among them.
+    pub fn dynamic_bodies(&self, convention: RotationConvention) -> Vec<DynamicBody> {
+        let mut out = Vec::new();
+        for instance in &self.instances {
+            let object = &self.cell.objects[instance.object];
+            if instance.part.is_some() || is_opening_door(object) {
+                continue;
+            }
+            let model = &self.models[instance.model];
+            let Some(block) = simulated_body(object, model) else {
+                continue;
+            };
+            let parts: Vec<&nif::CollisionPart> = model
+                .collision
+                .iter()
+                .filter(|p| moving_part(p) && p.body.block == block)
+                .collect();
+            let Some(first) = parts.first() else {
+                continue;
+            };
+            let place = self.transform(instance, convention);
+            let s = place.scale;
+            let info = first.body;
+            let setup = physics::rigid::RigidSetup {
+                reference: object.form_id.0,
+                layer: first.layer,
+                mass: info.mass,
+                center: info.center.map(|x| x * s),
+                inertia: info.inertia.map(|row| row.map(|x| x * s * s)),
+                linear_damping: info.linear_damping,
+                angular_damping: info.angular_damping,
+                friction: info.friction,
+                restitution: info.restitution,
+                max_linear_speed: info.max_linear_speed,
+                max_angular_speed: info.max_angular_speed,
+                motion: info.motion,
+                wind: info.body_flags & nif::collision::BODY_WIND != 0,
+                shapes: parts.iter().map(|p| body_shape(p, s)).collect(),
+            };
+            out.push(DynamicBody {
+                reference: object.form_id,
+                name: object
+                    .base_editor_id
+                    .clone()
+                    .unwrap_or_else(|| object.base.to_string()),
+                setup,
+                materials: parts.iter().map(|p| p.material).collect(),
+                pose: (place.rotation, place.translation),
+            });
+        }
+        out
     }
 }
 
@@ -1630,8 +1948,9 @@ fn add_collision_marker(
         shape: nif::collision::box_shape(half, &Transform::IDENTITY),
         // The marker body's Havok material isn't traced: none given.
         material: physics::NO_MATERIAL,
+        body: Default::default(),
     };
-    add_part(collider, &part, &place, 0);
+    add_part(collider, &part, &place, (0, marker.form_id.0));
 }
 
 fn note_missing(loader: &mut Loader, model: Option<&str>) {
@@ -1688,10 +2007,13 @@ impl CellScene {
     /// moved where the animation puts it ([`physics::Collider::move_owner`]
     /// with [`SwingDoor::leaf_move`]); it's added where the model files it
     /// (closed), whatever the door's state. The frame stays put. Moving
-    /// clutter is solid where it was placed: the game's character runs
-    /// into clutter, weapons and props whatever they weigh (the contact
-    /// callback `00c711d0` only stops lighter ones than `fMoveLimitMass`
-    /// from being pushed by the contact's own speed).
+    /// clutter with one body is left out: it's simulated
+    /// ([`Self::dynamic_bodies`], `physics::rigid`), and the simulation
+    /// adds its triangles under the reference's form ID and moves them
+    /// with it. The game's character runs into clutter, weapons and props
+    /// whatever they weigh (the contact callback `00c711d0` only stops
+    /// lighter ones than `fMoveLimitMass` from being pushed by the
+    /// contact's own speed).
     pub fn collider(&self, convention: RotationConvention) -> physics::Collider {
         let mut collider = physics::Collider::new();
         for instance in &self.instances {
@@ -1702,8 +2024,16 @@ impl CellScene {
             let object = &self.cell.objects[instance.object];
             let place = self.transform(instance, convention);
             let door = is_opening_door(object);
+            // A body Havok moves isn't here: whoever simulates it
+            // ([`Self::dynamic_bodies`]) adds and moves its triangles.
+            let moving = (!door && instance.part.is_none())
+                .then(|| simulated_body(object, model))
+                .flatten();
             for part in &model.collision {
                 if !nif::collision::layers::blocks_walking(part.layer) {
+                    continue;
+                }
+                if moving.is_some_and(|b| moving_part(part) && part.body.block == b) {
                     continue;
                 }
                 let owner = if door && part.keyframed {
@@ -1711,7 +2041,7 @@ impl CellScene {
                 } else {
                     0
                 };
-                add_part(&mut collider, part, &place, owner);
+                add_part(&mut collider, part, &place, (owner, object.form_id.0));
             }
         }
         for marker in &self.cell.markers {
@@ -2176,6 +2506,31 @@ pub fn view_camera(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sequence(looping: bool) -> nif::Sequence {
+        nif::Sequence {
+            name: "Backward".into(),
+            start: 0.0,
+            stop: 2.0,
+            looping,
+            tracks: Vec::new(),
+            accum_root: None,
+            materials: Vec::new(),
+            text_keys: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_one_shot_sequence_stops_playing_at_its_end_and_a_loop_never_does() {
+        let once = sequence(false);
+        assert!(sequence_playing(&once, 0.0));
+        assert!(sequence_playing(&once, 1.9));
+        assert!(!sequence_playing(&once, 2.0));
+        assert!(!sequence_playing(&once, 300.0));
+        let looped = sequence(true);
+        assert!(sequence_playing(&looped, 0.0));
+        assert!(sequence_playing(&looped, 300.0));
+    }
 
     /// A mesh with a lit shader property with these flag sets and, when
     /// given, an alpha property.

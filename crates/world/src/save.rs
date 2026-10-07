@@ -223,6 +223,21 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     for (r, s) in scales {
         line(format!("scale {} {s}", id(*r)));
     }
+    let moved: BTreeMap<_, _> = state.havok_moved.iter().collect();
+    for (r, (turn, at)) in moved {
+        let numbers: Vec<String> = turn
+            .iter()
+            .flatten()
+            .chain(at.iter())
+            .map(|v| v.to_string())
+            .collect();
+        line(format!("havokmove {} {}", id(*r), numbers.join(" ")));
+    }
+    let moving: BTreeMap<_, _> = state.havok_velocity.iter().collect();
+    for (r, (v, w)) in moving {
+        let numbers: Vec<String> = v.iter().chain(w.iter()).map(|x| x.to_string()).collect();
+        line(format!("havokvel {} {}", id(*r), numbers.join(" ")));
+    }
     for (word, set) in [
         ("unconscious", &state.unconscious),
         ("marker", &state.map_markers),
@@ -326,6 +341,10 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
             line(format!("equipped {} {}", id(*who), id(*item)));
         }
     }
+    let ammo_loaded: BTreeMap<_, _> = state.ammo_loaded.iter().collect();
+    for (who, ammo) in ammo_loaded {
+        line(format!("ammoloaded {} {}", id(*who), id(*ammo)));
+    }
     let value_damage: BTreeMap<_, _> = state.value_damage.iter().collect();
     for ((who, av), d) in value_damage {
         line(format!("valuedamage {} {av} {d}", id(*who)));
@@ -334,12 +353,40 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     for ((who, weapon), h) in weapon_health {
         line(format!("weaponhealth {} {} {h}", id(*who), id(*weapon)));
     }
+    for (i, item) in state.hotkeys.iter().enumerate() {
+        if let Some(item) = item {
+            line(format!("hotkey {i} {}", id(*item)));
+        }
+    }
     let dropped: BTreeSet<_> = state.dropped.iter().collect();
     for (who, weapon) in dropped {
         line(format!("dropped {} {}", id(*who), id(*weapon)));
     }
     if let Some(q) = state.active_quest {
         line(format!("activequest {}", id(q)));
+    }
+    // The local map's seen points (`SeenData::SaveGame`, `0087a330`).
+    let mut seen: Vec<_> = state.seen.bits.iter().collect();
+    seen.sort_by_key(|(k, _)| **k);
+    for (k, bits) in seen {
+        let (kind, space, x, y) = match *k {
+            crate::local_map::SeenKey::Exterior(s, x, y) => ('e', s, x, y),
+            crate::local_map::SeenKey::Interior(s, x, y) => ('i', s, x, y),
+        };
+        let words: Vec<String> = bits.iter().map(|w| format!("{w:08X}")).collect();
+        let full = u8::from(state.seen.fully.contains(k));
+        line(format!(
+            "seen {kind} {} {x} {y} {full} {}",
+            id(space),
+            words.join(" ")
+        ));
+    }
+    for l in crate::radio::save_lines(&state.radio, &|f| id(f)) {
+        line(l);
+    }
+    if let Some(m) = state.custom_marker {
+        let [x, y, z] = m.position;
+        line(format!("custommarker {} {x} {y} {z}", id(m.space)));
     }
     let locks: BTreeMap<_, _> = state.locks.iter().collect();
     for (r, level) in locks {
@@ -350,23 +397,38 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     for (r, n) in broken {
         line(format!("brokenlock {} {n}", id(*r)));
     }
+    let terminals: BTreeMap<_, _> = state.terminal_states.iter().collect();
+    for (r, t) in terminals {
+        line(format!(
+            "terminal {} {} {}",
+            id(*r),
+            u8::from(t.hacked),
+            t.lockouts
+        ));
+    }
     // An effect, then its script's variables.
     for e in &state.active_effects {
-        line(format!(
-            "effect {} {} {} {} {} {} {} {} {} {} {} {}",
-            id(e.target),
-            id(e.source),
-            id(e.effect),
-            e.actor_value,
-            e.magnitude,
-            e.remaining,
-            u8::from(e.detrimental),
-            u8::from(e.recover),
-            e.archetype,
-            e.resist,
-            e.script.map_or("-".to_string(), id),
-            u8::from(e.started),
-        ));
+        line(
+            format!(
+                "effect {} {} {} {} {} {} {} {} {} {} {} {}",
+                id(e.target),
+                id(e.source),
+                id(e.effect),
+                e.actor_value,
+                e.magnitude,
+                e.remaining,
+                u8::from(e.detrimental),
+                u8::from(e.recover),
+                e.archetype,
+                e.resist,
+                e.script.map_or("-".to_string(), id),
+                u8::from(e.started),
+            ) + &if e.part >= 0 {
+                format!(" {}", e.part)
+            } else {
+                String::new()
+            },
+        );
         for (name, kind, value) in e.locals.iter() {
             line(format!("effectvar {name} {} {value}", var_kind(kind)));
         }
@@ -382,6 +444,9 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     crate::script_functions::save_lines(state, &mut line);
     crate::living::save_lines(state, &mut line);
     crate::more_functions::save_lines(state, &mut line);
+    crate::caravan::save_lines(state, &mut line);
+    crate::casino::save_lines(state, &mut line);
+    crate::weapon_mods::save_lines(state, &mut line);
     out
 }
 
@@ -526,6 +591,25 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
             "scale" => {
                 state.scales.insert(form(1)?, num(2)? as f32);
             }
+            "havokmove" => {
+                let mut v = [0.0f32; 12];
+                for (k, x) in v.iter_mut().enumerate() {
+                    *x = num(2 + k)? as f32;
+                }
+                let turn = [[v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]];
+                state
+                    .havok_moved
+                    .insert(form(1)?, (turn, [v[9], v[10], v[11]]));
+            }
+            "havokvel" => {
+                let mut v = [0.0f32; 6];
+                for (k, x) in v.iter_mut().enumerate() {
+                    *x = num(2 + k)? as f32;
+                }
+                state
+                    .havok_velocity
+                    .insert(form(1)?, ([v[0], v[1], v[2]], [v[3], v[4], v[5]]));
+            }
             "unconscious" => {
                 state.unconscious.insert(form(1)?);
             }
@@ -622,6 +706,9 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                     .insert((form(1)?, form(2)?), num(3)? as i8);
             }
             "equipped" => state.equipped.entry(form(1)?).or_default().push(form(2)?),
+            "ammoloaded" => {
+                state.ammo_loaded.insert(form(1)?, form(2)?);
+            }
             "valuedamage" => {
                 state
                     .value_damage
@@ -632,10 +719,53 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                     .weapon_health
                     .insert((form(1)?, form(2)?), num(3)? as f32);
             }
+            "hotkey" => {
+                let slot = num(1)? as usize;
+                if slot < 8 {
+                    state.hotkeys[slot] = Some(form(2)?);
+                }
+            }
             "dropped" => {
                 state.dropped.insert((form(1)?, form(2)?));
             }
             "activequest" => state.active_quest = Some(form(1)?),
+            // The radio (`FalloutRadio::SaveGame`, `008366e0`): on, the tuned
+            // station, the stations found.
+            "radio" => {
+                state.radio.on = num(1)? != 0.0;
+                state.radio.active = form(2).ok();
+                // The tuned station's state, so it plays again.
+                if let Some(r) = state.radio.active.filter(|_| state.radio.on) {
+                    state.radio.restore_station(r);
+                }
+            }
+            "radiofound" => state.radio.discovered.push(form(1)?),
+            "seen" => {
+                let space = form(2)?;
+                let (x, y) = (num(3)? as i32, num(4)? as i32);
+                let key = if parts.get(1) == Some(&"i") {
+                    crate::local_map::SeenKey::Interior(space, x, y)
+                } else {
+                    crate::local_map::SeenKey::Exterior(space, x, y)
+                };
+                let mut bits = [0u32; 8];
+                for (i, b) in bits.iter_mut().enumerate() {
+                    *b = parts
+                        .get(6 + i)
+                        .and_then(|s| u32::from_str_radix(s, 16).ok())
+                        .unwrap_or(0);
+                }
+                state.seen.bits.insert(key, bits);
+                if num(5)? != 0.0 {
+                    state.seen.fully.insert(key);
+                }
+            }
+            "custommarker" => {
+                state.custom_marker = Some(crate::map::CustomMarker {
+                    space: form(1)?,
+                    position: [num(2)? as f32, num(3)? as f32, num(4)? as f32],
+                });
+            }
             "lock" => {
                 let level = if parts.get(2) == Some(&"-") {
                     None
@@ -646,6 +776,15 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
             }
             "brokenlock" => {
                 state.broken_locks.insert(form(1)?, num(2)? as u32);
+            }
+            "terminal" => {
+                state.terminal_states.insert(
+                    form(1)?,
+                    crate::terminal::TerminalState {
+                        hacked: num(2)? != 0.0,
+                        lockouts: num(3)? as u8,
+                    },
+                );
             }
             "effect" => {
                 let flag = |i: usize| num(i).map(|v| v != 0.0);
@@ -668,6 +807,11 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                     },
                     started: flag(12)?,
                     locals: Locals::default(),
+                    // Older saves have no part.
+                    part: match parts.get(13) {
+                        Some(_) => num(13)? as i32,
+                        None => -1,
+                    },
                 });
             }
             "effectvar" => {
@@ -689,6 +833,9 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
             _ => match crate::living::load_line(&mut state, raw)
                 .or_else(|| crate::script_functions::load_line(&mut state, raw))
                 .or_else(|| crate::more_functions::load_line(&mut state, raw))
+                .or_else(|| crate::caravan::load_line(&mut state, raw))
+                .or_else(|| crate::casino::load_line(&mut state, raw))
+                .or_else(|| crate::weapon_mods::load_line(&mut state, raw))
             {
                 Some(Ok(())) => {}
                 Some(Err(_)) | None => return Err(bad()),
@@ -702,6 +849,25 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
 mod file_tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn havok_moved_objects_keep_their_pose_through_a_save() {
+        let mut state = GameState::default();
+        let turn = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        state
+            .havok_moved
+            .insert(FormId(0x0010_ABCD), (turn, [-68250.5, 5800.25, 8390.0]));
+        // One still flying when saved keeps its velocities.
+        state.havok_velocity.insert(
+            FormId(0x0010_ABCD),
+            ([120.5, -3.0, 250.0], [0.0, 2.5, -1.0]),
+        );
+        let text = save(&state, None);
+        let (back, _) = load(&text).unwrap();
+        assert_eq!(back.havok_moved, state.havok_moved);
+        assert_eq!(back.havok_velocity, state.havok_velocity);
+        assert_eq!(save(&back, None), text);
+    }
 
     #[test]
     fn failed_save_write_preserves_the_previous_save_and_cleans_up() {

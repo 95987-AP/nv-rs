@@ -1,5 +1,6 @@
-//! References scripts make while playing: `PlaceAtMe` (`005c4a70` →
-//! `005c4b30`) and `PlaceLeveledActorAtMe` (`005d9810`).
+//! References made while playing: `PlaceAtMe` (`005c4a70` → `005c4b30`),
+//! `PlaceLeveledActorAtMe` (`005d9810`), and things dropped into the world
+//! ([`drop_into_world`]).
 //!
 //! A made reference gets a form ID of its own (the game's run-time ones
 //! start with 0xFF; nv-rs counts them up from 0xFF000001, the game's own
@@ -41,6 +42,9 @@ pub struct Made {
     /// Radians, as a placed reference's `DATA` (the caller's turn,
     /// `005c4b30` hands the caller's rotation, ref+0x24, to the new one).
     pub rotation: [f32; 3],
+    /// How many of an item it stands for (the extra count, `00419ad0`,
+    /// for more than one dropped); 1 otherwise.
+    pub count: i32,
 }
 
 /// The references made so far.
@@ -126,6 +130,7 @@ fn make(
             cell: at.1,
             position: p,
             rotation: r,
+            count: 1,
         },
     );
     runner
@@ -133,6 +138,74 @@ fn make(
         .events
         .push(Event::More(super::Shown::Placed { reference: id }));
     id
+}
+
+/// Someone drops `count` of an item into the world (`RemoveItem` with its
+/// drop flag, `004c37d0` → `004c6dd0`): it leaves their things and a new
+/// reference of it appears where they stand plus (0, 50, 30) turned by
+/// their rotation (`00a59540`, `00416870`, `004b4500`: 50 units in front,
+/// 30 up), turned as they are, in their cell, standing for `count` of it
+/// (`00419ad0` for more than one). (The game lets it fall from there; no
+/// falling here.) Something worn comes off once none is left. Their
+/// scripts aren't moved: see [`GameState::scripts_follow`]. Returns the
+/// new reference.
+pub fn drop_into_world(
+    order: &LoadOrder,
+    state: &mut GameState,
+    holder: FormId,
+    item: FormId,
+    count: i32,
+) -> Option<FormId> {
+    let n = count.min(state.item_count(order, holder, item));
+    if n <= 0 {
+        return None;
+    }
+    let (space, cell, position, _) = state.place(order, holder)?;
+    let rotation = rotation_of(order, state, holder);
+    let m = crate::RotationConvention::DEFAULT.matrix(rotation);
+    let local = [0.0, 50.0, 30.0];
+    let mut at = position;
+    for (i, v) in at.iter_mut().enumerate() {
+        *v += (0..3).map(|j| m[i][j] * local[j]).sum::<f32>();
+    }
+    state.stock(order, holder);
+    let key = (holder, item);
+    if let Some(left) = state.items.get_mut(&key) {
+        *left -= n;
+        if *left <= 0 {
+            state.items.remove(&key);
+            if state.is_equipped(holder, item) {
+                state.unequip_item(order, holder, item);
+            }
+        }
+    }
+    let id = state.more.placed.new_id();
+    state.more.placed.refs.insert(
+        id,
+        Made {
+            base: item,
+            space,
+            cell,
+            position: at,
+            rotation,
+            count: n,
+        },
+    );
+    state
+        .events
+        .push(Event::More(super::Shown::Placed { reference: id }));
+    Some(id)
+}
+
+/// How many of an item a made reference stands for (0 when it isn't one of
+/// it, or it's gone: picked up or disabled).
+pub fn held_in_world(order: &LoadOrder, state: &GameState, reference: FormId, item: FormId) -> i32 {
+    match state.more.placed.refs.get(&reference) {
+        Some(m) if m.base == item && crate::enabled_now(order, reference, &state.disabled) => {
+            m.count
+        }
+        _ => 0,
+    }
 }
 
 /// `PlaceAtMe base [count] [distance] [direction]` on `caller`: `count`
@@ -250,6 +323,152 @@ pub fn place_leveled_actor(runner: &mut Runner, caller: FormId, actor: FormId) -
     Some(make(runner, actor, (space, cell), position, rotation))
 }
 
+/// `fPlayerDropDistance` (`011d0628`): how far in front of the player a
+/// dropped item goes, beyond its own size.
+pub const DROP_DISTANCE: f32 = 100.0;
+
+/// An item's size for dropping: half its bounds' (`OBND`) diagonal, a
+/// stand-in for the bound radius `009614b0` takes (`0050ebf0`, not
+/// traced); 0 without bounds.
+fn drop_radius(order: &LoadOrder, item: FormId) -> f32 {
+    let Some(record) = order.get(item).and_then(|r| r.record().ok()) else {
+        return 0.0;
+    };
+    let Some(s) = record
+        .get(FourCC::new(b"OBND"))
+        .filter(|s| s.data.len() >= 12)
+    else {
+        return 0.0;
+    };
+    let v = |i: usize| f32::from(i16::from_le_bytes([s.data[i * 2], s.data[i * 2 + 1]]));
+    let d = [v(3) - v(0), v(4) - v(1), v(5) - v(2)];
+    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() / 2.0
+}
+
+/// The player drops `count` of an item they carry (`00780c50` →
+/// `PlayerCharacter` slot 0x3cc): they're taken out of the inventory
+/// (taken off when none is left on) and lie in the world as one
+/// reference keeping the count, turned as the player. Where: the
+/// player's place plus their facing × (the item's size +
+/// `fPlayerDropDistance`), the branch of `009614b0` that finds room at
+/// once; the game also casts the item's shape there and tries ten
+/// headings round the player, turning each drop on from the last, and
+/// lets physics drop it: none of that here (the world has no collision).
+/// `heading` is the player's facing (radians clockwise from north; the
+/// game state doesn't keep the player's, the view does). Returns the new
+/// reference, or none when nothing was carried.
+pub fn drop_item(
+    order: &LoadOrder,
+    state: &mut GameState,
+    item: FormId,
+    count: i32,
+    heading: f32,
+) -> Option<FormId> {
+    let (space, cell, position, _) = state.place(order, PLAYER_REF)?;
+    let moved = {
+        state.stock(order, PLAYER_REF);
+        let have = state.item_count(order, PLAYER_REF, item);
+        let n = count.min(have).max(0);
+        if n == 0 {
+            return None;
+        }
+        if have == n {
+            state.items.remove(&(PLAYER_REF, item));
+            if state.is_equipped(PLAYER_REF, item) {
+                state.unequip_item(order, PLAYER_REF, item);
+            }
+        } else {
+            state.items.insert((PLAYER_REF, item), have - n);
+        }
+        n
+    };
+    let distance = drop_radius(order, item) + DROP_DISTANCE;
+    let spot = [
+        position[0] + distance * heading.sin(),
+        position[1] + distance * heading.cos(),
+        position[2],
+    ];
+    let id = state.more.placed.new_id();
+    state.more.placed.refs.insert(
+        id,
+        Made {
+            base: item,
+            space,
+            cell,
+            position: spot,
+            rotation: [0.0, 0.0, heading],
+            count: moved,
+        },
+    );
+    // Their scripts go with them (`OnDrop`, [`GameState::scripts_follow`]).
+    state.scripts_follow(order, PLAYER_REF, id, item, moved);
+    state
+        .events
+        .push(Event::More(super::Shown::Placed { reference: id }));
+    Some(id)
+}
+
+/// The made item references (dropped items) lying in a place (an interior
+/// cell or a worldspace) and not taken, as things E can take: what the
+/// placed items of a cell give ([`crate::scripting::Interactive`]), with the
+/// base's script, bounds and name.
+pub fn dropped_items(
+    order: &LoadOrder,
+    state: &GameState,
+    space: FormId,
+) -> Vec<crate::scripting::Interactive> {
+    let mut out = Vec::new();
+    for (&reference, m) in &state.more.placed.refs {
+        if m.space != space || state.disabled.get(&reference) == Some(&true) {
+            continue;
+        }
+        let Some(brr) = order.get(m.base) else {
+            continue;
+        };
+        let kind = brr.entry.header.kind;
+        if !crate::scripting::is_item(kind) {
+            continue;
+        }
+        let Ok(record) = brr.record() else { continue };
+        let script = record
+            .get(FourCC::new(b"SCRI"))
+            .filter(|s| s.data.len() >= 4)
+            .map(|s| {
+                brr.plugin.to_global(FormId(u32::from_le_bytes([
+                    s.data[0], s.data[1], s.data[2], s.data[3],
+                ])))
+            });
+        let bounds = record
+            .get(FourCC::new(b"OBND"))
+            .filter(|s| s.data.len() >= 12)
+            .map(|s| {
+                let v =
+                    |i: usize| f32::from(i16::from_le_bytes([s.data[i * 2], s.data[i * 2 + 1]]));
+                ([v(0), v(1), v(2)], [v(3), v(4), v(5)])
+            });
+        out.push(crate::scripting::Interactive {
+            reference,
+            base: m.base,
+            script,
+            count: m.count.max(1),
+            position: m.position,
+            rotation: m.rotation,
+            scale: 1.0,
+            trigger: None,
+            bounds,
+            name: record.full_name(),
+            kind,
+        });
+    }
+    out
+}
+
+/// A made reference taken (picked up): it's gone for good (the game deletes
+/// a dropped item's reference when it's picked up).
+pub fn taken(state: &mut GameState, reference: FormId) {
+    state.more.placed.refs.remove(&reference);
+}
+
 /// Saved lines.
 pub(crate) fn save_lines(state: &GameState, line: &mut dyn FnMut(String)) {
     let p = &state.more.placed;
@@ -257,8 +476,14 @@ pub(crate) fn save_lines(state: &GameState, line: &mut dyn FnMut(String)) {
         line(format!("madenext {}", p.next));
     }
     for (id, m) in &p.refs {
+        // The count only when it isn't 1 (older saves have none).
+        let count = if m.count == 1 {
+            String::new()
+        } else {
+            format!(" {}", m.count)
+        };
         line(format!(
-            "made {:08X} {:08X} {:08X} {:08X} {} {} {} {} {} {}",
+            "made {:08X} {:08X} {:08X} {:08X} {} {} {} {} {} {}{count}",
             id.0,
             m.base.0,
             m.space.0,
@@ -299,6 +524,10 @@ pub(crate) fn load_line(state: &mut GameState, parts: &[&str]) -> Option<Result<
                     cell: form(4)?,
                     position: [num(5)?, num(6)?, num(7)?],
                     rotation: [num(8)?, num(9)?, num(10)?],
+                    count: match parts.get(11) {
+                        Some(s) => s.parse().ok()?,
+                        None => 1,
+                    },
                 };
                 state.more.placed.refs.insert(form(1)?, m);
                 Some(())

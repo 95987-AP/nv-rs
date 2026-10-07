@@ -30,6 +30,16 @@ pub const CARDS: [(&str, u32); 13] = [
     ("DamageThresholdInfo", 0x1000),
 ];
 
+/// What a pad button did ([`ItemsMenu::pad_button`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadPress {
+    /// The button with this `id` clicked.
+    Click(i32),
+    /// Its button can't be clicked now.
+    Refused,
+    Nothing,
+}
+
 /// The ITEMS menu.
 pub struct ItemsMenu {
     pub menu: TileId,
@@ -39,16 +49,59 @@ pub struct ItemsMenu {
     pub tabs: Vec<TileId>,
     card: Option<TileId>,
     icon: Option<TileId>,
-    /// The forms of the rows now, in order.
+    /// The forms of the rows now, in order (0 for the keyring's row).
     pub shown: Vec<u32>,
-    filled: Option<(usize, Vec<ItemLine>)>,
+    filled: Option<(usize, bool, Vec<ItemLine>, bool)>,
+    /// The last row the pointer was over (`011d9f34`, its
+    /// `listindex`): the knob clicks when it changes.
+    pub(crate) hovered: Option<usize>,
+    /// The keyring is open (the menu's `_KeyringOpen`, `011d9eb8`): the
+    /// list shows the keys (`00782810`).
+    pub keyring: bool,
+    /// The hot key wheel (`IM_HotKeyWheel`, id 5; `HotKeysWheel` (Xbox
+    /// PDB)), shown while a number key is held, and the hot key it
+    /// highlights (`+0x24` / `+0x28`).
+    wheel: Option<TileId>,
+    pub hotkey: Option<usize>,
 }
 
-/// An item's row text (`00782850`): "name (count)" for more than one
-/// ("name+ (count)" for a modded weapon, not here yet).
+/// How many hot keys there are (`006e4ba0`: 8), the controls they are
+/// (0x11 + n: Hotkey1 .. Hotkey8), and the one that isn't a hot key on the
+/// wheel (n 1: the "2" key, Ammo Swap's control; the Pip-Boy's wheel never
+/// shows or fills it, `00781ba0`, `00701bd0`, `007017b0`, so nothing is
+/// ever put on it; `0077da60` still uses slot 1 when the key comes up, which
+/// does nothing).
+pub const HOTKEYS: usize = 8;
+pub const NOT_A_HOTKEY: usize = 1;
+
+/// The keyring's row's `id` (`00782a90`: a row without an item, `sKeyring`,
+/// last on the Misc tab when keys are carried).
+pub const KEYRING_ID: i32 = 0x1e;
+/// The Cancel button's `id` (`IM_CancelButton`, E: shown while the
+/// keyring is open; closes it, `00780140` case 10).
+pub const CANCEL_ID: i32 = 10;
+/// The keyring's picture (`00780ff0` on its row).
+pub const KEYRING_PICTURE: &str = "Interface\\Icons\\PipboyImages\\Items\\item_keyring.dds";
+
+/// The rows' `id` (0x1d), which the click and mouse-over handlers look for
+/// (`00780140`, `00780ff0`).
+pub const ROW_ID: i32 = 0x1d;
+/// The Drop button's `id` (`IM_DropButton`, shown with a pad only; the
+/// right mouse button clicks it, `00781ba0`).
+pub const DROP_ID: i32 = 7;
+/// The Repair button's `id` (`IM_RepairButton`, `00780140` case 8).
+pub const REPAIR_ID: i32 = 8;
+/// The Mod button's `id` (`00780140` case 0x13).
+pub const MOD_ID: i32 = 0x13;
+/// The first tab button's `id` (0x18 Weapons .. 0x1c Ammo, `0077fc10`).
+pub const FIRST_TAB_ID: i32 = 0x18;
+
+/// An item's row text (`00782850`): "name (count)" for more than one,
+/// "name+ (count)" when they're a modded weapon.
 pub fn row_text(item: &ItemLine) -> String {
     if item.count > 1 {
-        format!("{} ({})", item.name, item.count)
+        let plus = if item.modded { "+" } else { "" };
+        format!("{}{plus} ({})", item.name, item.count)
     } else {
         item.name.clone()
     }
@@ -176,6 +229,10 @@ impl ItemsMenu {
             icon: by_id(ui, menu, 11),
             shown: Vec::new(),
             filled: None,
+            hovered: None,
+            keyring: false,
+            wheel: by_id(ui, menu, 5),
+            hotkey: None,
         };
         if let Some(tl) = m.tabline {
             tabline::set_current(ui, tl, 0);
@@ -207,26 +264,40 @@ impl ItemsMenu {
             format!("{}/{}", input.weight.0 as i32, input.weight.1 as i32),
         );
         let items: Vec<ItemLine> = self.tab_items(input);
-        if self.filled.as_ref() != Some(&(self.tab, items.clone())) {
-            self.fill_rows(ui, &items);
-            self.filled = Some((self.tab, items));
+        let keyring_row = self.keyring_row(input);
+        let now = (self.tab, self.keyring, items.clone(), keyring_row);
+        if self.filled.as_ref() != Some(&now) {
+            self.fill_rows(ui, &items, keyring_row);
+            self.filled = Some(now);
         }
     }
 
-    /// The items under the tab shown, by name (`007824e0`, the list's
-    /// order: names compared; the same name by condition, not kept here).
+    /// The items in the list (`007824e0`, the list's order: names
+    /// compared; the same name by condition, not kept here): the tab's,
+    /// or with the keyring open the keys (`00782810`).
     fn tab_items(&self, input: &PipboyInput) -> Vec<ItemLine> {
-        let mut items: Vec<ItemLine> = input
-            .items
-            .iter()
-            .filter(|i| i.tab as usize == self.tab)
-            .cloned()
-            .collect();
+        let mut items: Vec<ItemLine> = if self.keyring {
+            input.keys.clone()
+        } else {
+            input
+                .items
+                .iter()
+                .filter(|i| i.tab as usize == self.tab)
+                .cloned()
+                .collect()
+        };
         items.sort_by(|a, b| a.name.cmp(&b.name));
         items
     }
 
-    fn fill_rows(&mut self, ui: &mut Ui, items: &[ItemLine]) {
+    /// Whether the keyring's row shows: on the Misc tab (`00782620` lets
+    /// the row without an item through there only) with keys carried
+    /// (`004c6ba0(0x2e)`), the keyring closed; sorted last (`007824e0`).
+    fn keyring_row(&self, input: &PipboyInput) -> bool {
+        !self.keyring && self.tab == ItemTab::Misc as usize && !input.keys.is_empty()
+    }
+
+    fn fill_rows(&mut self, ui: &mut Ui, items: &[ItemLine], keyring_row: bool) {
         let keep = self.list.selected;
         self.list.clear(ui);
         self.shown.clear();
@@ -235,25 +306,62 @@ impl ItemsMenu {
                 continue;
             };
             // Rows' `id` 0x1d (29), what the click handler looks for.
-            ui.set_number(row, t::ID, 29.0);
+            ui.set_number(row, t::ID, ROW_ID as f32);
             if let Some(marker) = ui.find_below(row, "IM_Template_ItemMarker") {
                 ui.set_number(marker, t::VISIBLE, if item.equipped { 1.0 } else { 0.0 });
             }
             self.shown.push(item.form);
         }
-        let chosen = if items.is_empty() {
-            None
-        } else {
-            Some(keep.unwrap_or(0).min(items.len() - 1))
-        };
+        if keyring_row {
+            let name = text(ui, "sKeyring");
+            if let Some(row) = self.list.add(ui, Some(&name)) {
+                ui.set_number(row, t::ID, KEYRING_ID as f32);
+                if let Some(marker) = ui.find_below(row, "IM_Template_ItemMarker") {
+                    ui.set_number(marker, t::VISIBLE, 0.0);
+                }
+                self.shown.push(0);
+            }
+        }
+        let rows = self.shown.len();
+        let chosen = (rows > 0).then(|| keep.unwrap_or(0).min(rows - 1));
         self.list.select(ui, chosen);
-        self.show_card(ui, chosen.and_then(|i| items.get(i)));
+        self.show_row(ui, chosen, items);
+    }
+
+    /// The card for a row: an item's, or the keyring's picture alone.
+    fn show_row(&mut self, ui: &mut Ui, row: Option<usize>, items: &[ItemLine]) {
+        match row.and_then(|i| self.shown.get(i).copied()) {
+            Some(0) => self.show_keyring(ui),
+            _ => self.show_card(ui, row.and_then(|i| items.get(i))),
+        }
+    }
+
+    /// The keyring's row chosen (`00780ff0` case 0x1e): no item chosen
+    /// (`00781b10`), its picture shown.
+    fn show_keyring(&mut self, ui: &mut Ui) {
+        self.show_card(ui, None);
+        if let Some(icon) = self.icon {
+            ui.set_string(icon, t::FILENAME, KEYRING_PICTURE);
+            ui.set_number(icon, t::VISIBLE, 1.0);
+        }
+    }
+
+    /// Opens or closes the keyring (`00780140` cases 0x1e and 10): the
+    /// menu's `_KeyringOpen`, the list's filter, the list made again.
+    pub fn set_keyring(&mut self, ui: &mut Ui, open: bool, input: &PipboyInput) {
+        self.keyring = open;
+        let id = trait_id(ui, "_KeyringOpen");
+        ui.set_number(self.menu, id, if open { 1.0 } else { 0.0 });
+        self.list.selected = None;
+        self.filled = None;
+        self.fill(ui, input);
     }
 
     /// The chosen item's card and picture (`00780ff0` on a row,
     /// `00707e30` the card): `_EquippableItem`, the picture
     /// (`Interface\Icons\` + the item's own), the cards its mask shows.
     fn show_card(&mut self, ui: &mut Ui, item: Option<&ItemLine>) {
+        self.update_buttons(ui, item);
         let equippable = trait_id(ui, "_EquippableItem");
         ui.set_number(
             self.menu,
@@ -365,8 +473,181 @@ impl ItemsMenu {
         }
     }
 
+    /// The buttons' `target`s (their lines brighten with it). Translated
+    /// from 00781680 (decompiled, FalloutNV.exe 1.4.0.525),
+    /// `InventoryMenu::UpdateButtons` (Xbox PDB): with no item chosen,
+    /// Equip (6), Drop (7), Repair (8), Hot key (9) and Mod (19) can't be
+    /// pressed; with one, Equip as the item can be equipped or used, Drop
+    /// and Mod always, Hot key unless it's ammunition (form type 0x29),
+    /// Repair when it can be repaired (`00781860`). (The Equip button's
+    /// text, set there too, shows with a pad only: not here.)
+    fn update_buttons(&mut self, ui: &mut Ui, item: Option<&ItemLine>) {
+        let targets: [(i32, bool); 5] = match item {
+            None => [(6, false), (7, false), (8, false), (9, false), (19, false)],
+            Some(i) => [
+                (6, i.usable),
+                (7, true),
+                (9, i.tab != ItemTab::Ammo),
+                (19, true),
+                (8, i.repairable),
+            ],
+        };
+        for (id, on) in targets {
+            if let Some(tile) = by_id(ui, self.menu, id) {
+                ui.set_number(tile, t::TARGET, if on { 1.0 } else { 0.0 });
+            }
+        }
+    }
+
+    /// The chosen row's item.
+    pub fn chosen(&self, input: &PipboyInput) -> Option<ItemLine> {
+        let items = self.tab_items(input);
+        self.list.selected.and_then(|i| items.get(i)).cloned()
+    }
+
+    /// Whether the hot key wheel shows (`00701740`).
+    pub fn wheel_shown(&self, ui: &mut Ui) -> bool {
+        self.wheel.is_some_and(|w| ui.number(w, t::VISIBLE) != 0.0)
+    }
+
+    /// The wheel's eight places (`007017b0`, `HotKeysWheel::UpdateHotkeyList`
+    /// (Xbox PDB)): each hot key's item's picture, `_HotKeyAssigned`, and its
+    /// name ("%s (%d)" for more than one); the "2" place is the ammunition
+    /// swap's picture and isn't filled.
+    fn fill_wheel(&mut self, ui: &mut Ui, input: &PipboyInput) {
+        let Some(wheel) = self.wheel else {
+            return;
+        };
+        let assigned = trait_id(ui, "_HotKeyAssigned");
+        let icon = trait_id(ui, "_HotKeyIcon");
+        for n in (0..HOTKEYS).filter(|&n| n != NOT_A_HOTKEY) {
+            let Some(place) = ui.find_below(wheel, &format!("HK_Item_{n}")) else {
+                continue;
+            };
+            let item = input.hotkeys[n].and_then(|f| input.items.iter().find(|i| i.form == f));
+            match item {
+                None => {
+                    ui.set_number(place, assigned, 0.0);
+                    ui.set_string(place, t::STRING, "");
+                }
+                Some(item) => {
+                    ui.set_string(place, icon, item.icon.as_deref().unwrap_or(""));
+                    ui.set_number(place, assigned, 1.0);
+                    let text = if item.count < 2 {
+                        item.name.clone()
+                    } else {
+                        format!("{} ({})", item.name, item.count)
+                    };
+                    ui.set_string(place, t::STRING, &text);
+                }
+            }
+        }
+    }
+
+    /// Highlights a hot key on the wheel (`00701e00`): its `_SelectedHotkey`
+    /// and `_SelectedText` (that place's name; none for -1 and the "2").
+    fn highlight_hotkey(&mut self, ui: &mut Ui, n: usize) {
+        let Some(wheel) = self.wheel else {
+            return;
+        };
+        let selected = trait_id(ui, "_SelectedHotkey");
+        let text_id = trait_id(ui, "_SelectedText");
+        ui.set_number(wheel, selected, n as f32);
+        let text = if n == NOT_A_HOTKEY {
+            String::new()
+        } else {
+            ui.find_below(wheel, &format!("HK_Item_{n}"))
+                .and_then(|p| ui.string(p, t::STRING))
+                .unwrap_or_default()
+        };
+        ui.set_string(wheel, text_id, &text);
+        self.hotkey = Some(n);
+    }
+
+    /// The number keys held, every frame (`00781ba0` with a keyboard): the
+    /// first hot key whose key is down (or held) that isn't the "2" shows
+    /// the wheel (filled, `007017b0`) and highlights it; with none down the
+    /// wheel hides. Not while the keyring is open. `down[n]` is hot key n's
+    /// key held now.
+    // Translated from 00781ba0 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn hotkey_keys(&mut self, ui: &mut Ui, down: [bool; HOTKEYS], input: &PipboyInput) {
+        let Some(wheel) = self.wheel else {
+            return;
+        };
+        let mut found = false;
+        if !self.keyring {
+            for (n, &d) in down.iter().enumerate() {
+                if d && n != NOT_A_HOTKEY {
+                    if !self.wheel_shown(ui) {
+                        self.fill_wheel(ui, input);
+                        ui.set_number(wheel, t::VISIBLE, 1.0);
+                        // The item's picture gives way to the wheel (a
+                        // tile of the menu's hidden here, back below; read
+                        // as `IM_ItemIcon`).
+                        if let Some(icon) = self.icon {
+                            ui.set_number(icon, t::VISIBLE, 0.0);
+                        }
+                    }
+                    self.highlight_hotkey(ui, n);
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if !found && self.wheel_shown(ui) {
+            ui.set_number(wheel, t::VISIBLE, 0.0);
+            self.hotkey = None;
+            // An item chosen: its picture back.
+            if let (Some(icon), Some(_)) = (self.icon, self.list.selected) {
+                ui.set_number(icon, t::VISIBLE, 1.0);
+            }
+        }
+    }
+
+    /// A row clicked with the wheel up (`00780140` case 0x1d with a
+    /// keyboard): a broken item can't go on a hot key
+    /// (`sCantHotkeyBrokenItem`), nor one that can't be equipped or used,
+    /// or ammunition (`sCantHotkeyItem`); else it goes on the highlighted
+    /// one (`007019e0`), and the wheel shows it.
+    fn assign_hotkey(&mut self, ui: &mut Ui, item: &ItemLine, input: &PipboyInput) -> Vec<Action> {
+        let refuse = |name: &str| {
+            vec![
+                Action::Notice(text(ui, name)),
+                Action::Sound("UIVATSInsufficientAP".into()),
+            ]
+        };
+        if item.condition == Some(0.0) {
+            return refuse("sCantHotkeyBrokenItem");
+        }
+        if !item.usable || item.tab == ItemTab::Ammo {
+            return refuse("sCantHotkeyItem");
+        }
+        let Some(slot) = self.hotkey.filter(|&n| n != NOT_A_HOTKEY) else {
+            return Vec::new();
+        };
+        let mut after = input.clone();
+        for h in after.hotkeys.iter_mut() {
+            if *h == Some(item.form) {
+                *h = None;
+            }
+        }
+        after.hotkeys[slot] = Some(item.form);
+        self.fill_wheel(ui, &after);
+        self.highlight_hotkey(ui, slot);
+        vec![Action::SetHotkey {
+            slot,
+            item: item.form,
+        }]
+    }
+
     /// Shows a tab (0 Weapons .. 4 Ammo).
     pub fn show_tab(&mut self, ui: &mut Ui, tab: usize, input: &PipboyInput) {
+        // Another tab closes the keyring (`00780140` cases 0x18 .. 0x1c).
+        if self.keyring {
+            self.keyring = false;
+            let id = trait_id(ui, "_KeyringOpen");
+            ui.set_number(self.menu, id, 0.0);
+        }
         self.tab = tab.min(4);
         if let Some(tl) = self.tabline {
             tabline::set_current(ui, tl, self.tab);
@@ -381,6 +662,35 @@ impl ItemsMenu {
     /// (`UIPipBoyScroll`), the A button equips, takes off or uses the
     /// chosen item. (Page Up presses Mod and Page Down the hot keys: not
     /// here yet.)
+    /// The pad's X or Y (Shift + Enter, Alt + Enter: `0070c4a0` turns
+    /// them into 0xb and 0xc for `0070f6e0`): the `xbuttonx` / `xbuttony`
+    /// reference found from the chosen row up to the menu (`IM_DropButton`,
+    /// `IM_RepairButton`). A shown tile that can be clicked is; a shown one
+    /// that can't gets `UIMenuCancel` (`00717280(2)`); a hidden one
+    /// (without a pad, `_Has360Controller` off) nothing.
+    pub fn pad_button(&self, ui: &mut Ui, key: Key) -> PadPress {
+        let trait_id = match key {
+            Key::ButtonX => 4063,
+            Key::ButtonY => 4064,
+            _ => return PadPress::Nothing,
+        };
+        let from = self
+            .list
+            .selected
+            .and_then(|i| self.list.rows.get(i).copied())
+            .unwrap_or(self.menu);
+        match crate::menu::reference(ui, from, trait_id) {
+            Some((tile, target)) if target == t::CLICKED && ui.shown(tile) => {
+                if ui.number(tile, t::TARGET) != 0.0 {
+                    PadPress::Click(ui.number(tile, t::ID) as i32)
+                } else {
+                    PadPress::Refused
+                }
+            }
+            _ => PadPress::Nothing,
+        }
+    }
+
     pub fn key(&mut self, ui: &mut Ui, key: Key, input: &PipboyInput) -> Vec<Action> {
         let mut out = Vec::new();
         match key {
@@ -398,30 +708,180 @@ impl ItemsMenu {
                 self.list.step(ui, if key == Key::Down { 1 } else { -1 });
                 if self.list.selected != before {
                     let items = self.tab_items(input);
-                    let chosen = self.list.selected.and_then(|i| items.get(i)).cloned();
-                    self.show_card(ui, chosen.as_ref());
+                    self.show_row(ui, self.list.selected, &items);
                     out.push(Action::Sound("UIPipBoyScroll".into()));
+                }
+            }
+            // The A button presses the chosen row: the keyring's opens it.
+            Key::Activate
+                if self
+                    .list
+                    .selected
+                    .is_some_and(|i| self.shown.get(i) == Some(&0)) =>
+            {
+                self.set_keyring(ui, true, input);
+            }
+            Key::Activate if self.wheel_shown(ui) => {
+                let items = self.tab_items(input);
+                if let Some(item) = self.list.selected.and_then(|i| items.get(i)).cloned() {
+                    out.extend(self.assign_hotkey(ui, &item, input));
                 }
             }
             Key::Activate => {
                 let items = self.tab_items(input);
-                if let Some(item) = self.list.selected.and_then(|i| items.get(i)) {
-                    if item.usable {
-                        out.push(match item.tab {
-                            ItemTab::Weapons | ItemTab::Apparel => Action::Equip(item.form),
-                            _ => Action::Use(item.form),
-                        });
-                    }
+                if let Some(action) = self
+                    .list
+                    .selected
+                    .and_then(|i| items.get(i))
+                    .and_then(|i| self.activate(i))
+                {
+                    out.push(action);
                 }
             }
             _ => {}
         }
         out
     }
+
+    /// What equipping or using a row's item asks of the game (`00780140`
+    /// case 0x1d: weapons and apparel are equipped or taken off, the rest
+    /// used), when it can be.
+    fn activate(&self, item: &ItemLine) -> Option<Action> {
+        item.usable.then_some(match item.tab {
+            ItemTab::Weapons | ItemTab::Apparel => Action::Equip(item.form),
+            _ => Action::Use(item.form),
+        })
+    }
+
+    /// A tile clicked (`00780140`, slot 0x0c): a tab button (0x18 .. 0x1c)
+    /// turns to its tab when it isn't the one shown; a row (0x1d) equips,
+    /// takes off or uses its item; Drop (7, the right button on PC) drops
+    /// the chosen item (the game's checks and "how many?" are the
+    /// caller's); Repair (8) on a chosen item that can be mended and Mod
+    /// (0x13) on a chosen weapon open their screens (`UIMenuMode`; the
+    /// caller answers with [`super::Pipboy::open_repair`] /
+    /// [`super::Pipboy::open_item_mod`]); the keyring (0x1e) and its
+    /// Cancel (10) open and close it.
+    pub fn click(
+        &mut self,
+        ui: &mut Ui,
+        id: i32,
+        tile: Option<TileId>,
+        input: &PipboyInput,
+    ) -> Vec<Action> {
+        let mut out = Vec::new();
+        match id {
+            FIRST_TAB_ID..=0x1c => {
+                let tab = (id - FIRST_TAB_ID) as usize;
+                if tab != self.tab {
+                    self.show_tab(ui, tab, input);
+                    out.push(Action::Sound("UIPipBoyTab".into()));
+                }
+            }
+            // Not from the keyring: the refusal sound.
+            DROP_ID => {
+                let items = self.tab_items(input);
+                if let Some(item) = self.list.selected.and_then(|i| items.get(i)) {
+                    out.push(if self.keyring {
+                        Action::Sound("UIVATSInsufficientAP".into())
+                    } else {
+                        Action::Drop(item.form)
+                    });
+                }
+            }
+            REPAIR_ID => {
+                if let Some(item) = self.chosen(input).filter(|i| i.repairable) {
+                    out.push(Action::Sound(super::repair::MENU_SOUND.into()));
+                    out.push(Action::OpenRepair(item.form));
+                }
+            }
+            MOD_ID => {
+                if let Some(item) = self.chosen(input).filter(|i| i.tab == ItemTab::Weapons) {
+                    out.push(Action::Sound(super::item_mod::MENU_SOUND.into()));
+                    out.push(Action::OpenItemMod(item.form));
+                }
+            }
+            KEYRING_ID if !self.keyring => self.set_keyring(ui, true, input),
+            CANCEL_ID if self.keyring => self.set_keyring(ui, false, input),
+            ROW_ID if self.wheel_shown(ui) => {
+                let items = self.tab_items(input);
+                let index = tile
+                    .and_then(|t| self.list.index_of(t))
+                    .or(self.list.selected);
+                if let Some(item) = index.and_then(|i| items.get(i)).cloned() {
+                    out.extend(self.assign_hotkey(ui, &item, input));
+                }
+            }
+            ROW_ID => {
+                let items = self.tab_items(input);
+                let index = tile.and_then(|t| self.list.index_of(t));
+                if let Some(action) = index
+                    .and_then(|i| items.get(i))
+                    .and_then(|i| self.activate(i))
+                {
+                    out.push(action);
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+
+    /// The pointer onto a tile (`00780ff0`, slot 0x10): a row becomes the
+    /// chosen item, its card and picture shown; the knob clicks
+    /// (`007f8610`, `UIPipBoyScroll`) when the row's `listindex` differs from
+    /// the last one the pointer was over.
+    pub fn mouseover(
+        &mut self,
+        ui: &mut Ui,
+        id: i32,
+        tile: TileId,
+        input: &PipboyInput,
+    ) -> Vec<Action> {
+        let mut out = Vec::new();
+        if id == KEYRING_ID {
+            // The keyring's row (`00780ff0` case 0x1e): chosen, its
+            // picture; no knob.
+            if let Some(index) = self.list.index_of(tile) {
+                self.list.choose(ui, Some(index));
+                self.show_keyring(ui);
+            }
+            return out;
+        }
+        if id != ROW_ID {
+            return out;
+        }
+        let Some(index) = self.list.index_of(tile) else {
+            return out;
+        };
+        if self.hovered != Some(index) {
+            self.hovered = Some(index);
+            out.push(Action::Sound("UIPipBoyScroll".into()));
+        }
+        self.list.choose(ui, Some(index));
+        let items = self.tab_items(input);
+        self.show_card(ui, items.get(index));
+        out
+    }
+
+    /// The pointer off a tile (`00781620`, slot 0x14; the interface first
+    /// lets the list drop its choice, `00717ef0`): leaving a row clears the
+    /// card and `_EquippableItem`.
+    pub fn unmouseover(&mut self, ui: &mut Ui, id: i32, tile: TileId) {
+        if id != ROW_ID && id != KEYRING_ID {
+            return;
+        }
+        if let Some(index) = self.list.index_of(tile) {
+            if self.list.selected == Some(index) {
+                self.list.choose(ui, None);
+            }
+        }
+        self.show_card(ui, None);
+    }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn item(name: &str, tab: ItemTab) -> ItemLine {
@@ -445,7 +905,20 @@ mod tests {
             ammo: None,
             weight_class: None,
             effects: None,
+            repairable: false,
+            modded: false,
         }
+    }
+
+    /// `00782850`: the count after more than one; "+" for modded ones.
+    #[test]
+    fn row_texts() {
+        let mut gun = item("9mm Pistol", ItemTab::Weapons);
+        assert_eq!(row_text(&gun), "9mm Pistol");
+        gun.count = 2;
+        assert_eq!(row_text(&gun), "9mm Pistol (2)");
+        gun.modded = true;
+        assert_eq!(row_text(&gun), "9mm Pistol+ (2)");
     }
 
     #[test]
@@ -491,6 +964,9 @@ mod tests {
     /// `inventory_menu.xml` and `item_stats_display.xml` cut down to the
     /// tiles the code finds by `id` and name.
     const MENU: &str = r#"<menu name="InventoryMenu"><locus>&true;</locus>
+      <xbuttonx><ref src="IM_DropButton" trait="clicked"/></xbuttonx>
+      <image name="IM_DropButton"><id>7</id><target>&false;</target>
+        <visible><copy src="globals()" trait="_Has360Controller"/></visible></image>
       <rect name="caps"><id>0</id></rect><rect name="hp"><id>1</id></rect>
       <rect name="dr"><id>2</id><visible>&true;</visible></rect><rect name="wg"><id>3</id></rect>
       <rect name="dt"><id>21</id></rect>
@@ -602,5 +1078,39 @@ mod tests {
         assert_eq!(ui.string(dr_card, value).unwrap(), "--");
         assert_eq!(ui.number(tile(&ui, "ConditionInfo"), t::USER0 + 6), 0.0);
         assert_eq!(ui.number(tile(&ui, "DPSInfo"), t::VISIBLE), 0.0);
+    }
+
+    #[test]
+    fn the_pads_x_drops_only_with_a_pad_and_an_item() {
+        let globals =
+            r#"<rect name="Strings"><_Has360Controller>&false;</_Has360Controller></rect>"#;
+        let mut read = |p: &str| match p {
+            crate::pipboy::ITEMS_FILE => Some(MENU.as_bytes().to_vec()),
+            crate::game::GLOBALS_FILE => Some(globals.as_bytes().to_vec()),
+            _ => None,
+        };
+        let mut ui = crate::game::new_ui(
+            &mut read,
+            &|_: &str, _: &str| None,
+            std::collections::HashMap::new(),
+            1920,
+            1080,
+        );
+        let mut m = ItemsMenu::load(&mut ui, &mut read).unwrap();
+        ui.set_number(m.menu, t::VISIBLE, 1.0);
+        m.fill(&mut ui, &input());
+        ui.refresh();
+        let drop = by_id(&ui, m.menu, 7).unwrap();
+        assert_eq!(ui.number(drop, t::TARGET), 1.0);
+        // No pad: the button is hidden and X does nothing.
+        assert_eq!(m.pad_button(&mut ui, Key::ButtonX), PadPress::Nothing);
+        crate::game::set_pad(&mut ui, true);
+        ui.refresh();
+        assert_eq!(m.pad_button(&mut ui, Key::ButtonX), PadPress::Click(7));
+        assert_eq!(m.pad_button(&mut ui, Key::ButtonY), PadPress::Nothing);
+        // Nothing chosen: shown but not clickable.
+        m.show_card(&mut ui, None);
+        ui.refresh();
+        assert_eq!(m.pad_button(&mut ui, Key::ButtonX), PadPress::Refused);
     }
 }

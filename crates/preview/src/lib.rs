@@ -6,5 +6,6 @@
 pub mod actor;
 pub mod cell;
 pub mod furniture;
+pub mod local_map;
 pub mod ragdoll;
 pub mod raster;

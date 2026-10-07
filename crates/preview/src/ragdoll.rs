@@ -83,6 +83,8 @@ impl RagdollRig {
                 angular_damping: b.angular_damping,
                 max_linear_speed: b.max_linear_speed * s,
                 max_angular_speed: b.max_angular_speed,
+                layer: b.layer,
+                part: b.part,
             })
             .collect();
         let joints = self

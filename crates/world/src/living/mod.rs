@@ -286,9 +286,10 @@ pub(crate) fn load_line(state: &mut GameState, raw: &str) -> Option<Result<(), S
 /// from: items, containers, furniture (a bed by its own test `00509420`,
 /// the rest the same way), owned people. `None` for doors: their rule
 /// (locked and owned, or leading into someone's private interior) asks
-/// whether the player can open the door (`00518f00`), which isn't traced;
-/// and for creatures while sneaking (their record's allowance, base +0x30
-/// vtable +0x18, isn't traced).
+/// whether the player can open the door (`00518f00`), which isn't traced.
+/// Creatures while sneaking: red when their record allows talking to the
+/// player (base +0x30 vtable +0x18, `GetAllowPCDialogue` (Xbox PDB),
+/// `0047c790`: `ACBS` flags 0x200000).
 pub fn crosshair_red(order: &esm::LoadOrder, state: &GameState, reference: FormId) -> Option<bool> {
     use crate::crime::{may_take, owner_of};
     if state.dead.contains(&PLAYER_REF) {
@@ -302,11 +303,11 @@ pub fn crosshair_red(order: &esm::LoadOrder, state: &GameState, reference: FormI
         Some(b) if &b == b"DOOR" => return None,
         Some(b) if &b == b"NPC_" && state.player_sneaking && alive => return Some(true),
         Some(b) if &b == b"CREA" => {
-            return if state.player_sneaking && alive {
-                None
-            } else {
-                Some(false)
-            }
+            let talks = crate::scripting::base_of(order, reference).is_some_and(|base| {
+                crate::activation::actor_flags(order, base) & crate::activation::ALLOW_PC_DIALOGUE
+                    != 0
+            });
+            return Some(state.player_sneaking && alive && talks);
         }
         _ => {}
     }

@@ -250,6 +250,20 @@ impl ListBox {
         self.update_highlight(ui);
     }
 
+    /// Chooses a row without scrolling (the list's own choosing,
+    /// `00764a00`, which the interface calls with the tile under the
+    /// pointer: only the highlight follows), or none.
+    pub fn choose(&mut self, ui: &mut Ui, index: Option<usize>) {
+        self.selected = index.filter(|&i| i < self.rows.len());
+        self.update_highlight(ui);
+    }
+
+    /// The row a tile is (its index in `rows`), for the pointer: the
+    /// interface hands the menu the tile under it (`00717e70`).
+    pub fn index_of(&self, tile: TileId) -> Option<usize> {
+        self.rows.iter().position(|&r| r == tile)
+    }
+
     /// Moves the choice by `by` rows, stopping at the ends (nothing chosen
     /// yet: the first row).
     pub fn step(&mut self, ui: &mut Ui, by: i32) {

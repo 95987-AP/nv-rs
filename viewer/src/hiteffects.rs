@@ -12,25 +12,32 @@
 //!   their death cry: a creature's "death" sound, else their "Death"
 //!   line. The player hit gets the `GetHit` image space modifier at
 //!   strength `fGetHitPainMult` (1.5).
+//!   Where the blow met their body: blood ([`blood`], `0088e8d0`), the
+//!   blood impact's model and a spatter decal on the wall behind.
 //! - **On the world** (shots, `009c20e0`): the weapon's impact for the
 //!   struck surface's Havok material (kept with each collision triangle;
-//!   land without one counts as dirt, the game's default): its two sounds.
+//!   land without one counts as dirt, the game's default): its decal, its
+//!   effect model and its two sounds.
 //!
-//! Not drawn (they need the game's systems run as it runs them): the
-//! impacts' effect models (their controllers, billboards and particles),
-//! decals on the world and on skin, blood on the player's screen. Sounds
-//! aren't placed in the world (no falloff or direction, as in `sounds`).
+//! Impact sounds play at the point with their own distances
+//! (`weapon_fx::play_at`, faded as the listener moves); effect models and
+//! decals are drawn by `impact_fx`. Not done: decals on skin, blood on the
+//! player's screen, sounds placed left or right.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use bevy::audio::{AudioPlayer, AudioSource};
+use bevy::audio::AudioPlayer;
 use bevy::prelude::*;
 use esm::FormId;
 use world::dialogue::{Speaker, PLAYER_REF};
 use world::impacts::{self, CombatVoice, DeathCry, Impact, Material};
 
+use bevy::render::primitives::Frustum;
+use cellview::space;
+use world::decals::DecalRolls;
+
 use crate::dialogue::DialogueState;
+use crate::impact_fx::{decal_targets, DecalRequest, DecalTargets, EffectRequest, ImpactRequests};
 use crate::sounds::SoundRequests;
 use crate::walk::game_point;
 use crate::{FlyCamera, GameFiles};
@@ -47,6 +54,17 @@ pub struct HitReport {
     pub point: [f32; 3],
     /// On the world: the struck surface's Havok material, if it has one.
     pub havok: Option<u32>,
+    /// On the world: the struck surface's normal, facing the shot, and the
+    /// collision triangle it struck.
+    pub normal: Option<[f32; 3]>,
+    pub triangle: Option<u32>,
+    /// Which way the shot or blow went (unit; zero when not known).
+    pub direction: [f32; 3],
+    /// On someone: `point` is where it met their body (not just where
+    /// they stand), so blood can show there.
+    pub on_body: bool,
+    /// On someone: the body part it struck, if known.
+    pub part: Option<u8>,
     /// On someone: the health damage, and whether it killed them.
     pub damage: f32,
     pub killed: bool,
@@ -67,12 +85,19 @@ impl HitReports {
         attacker: FormId,
         weapon: FormId,
     ) {
+        // A body Havok moves takes the shot's push (`clutter`).
+        crate::clutter::shot(weapon, attacker, (eye, dir), d, collider.owner(tri));
         self.0.push(HitReport {
             attacker,
             target: None,
             weapon: Some(weapon),
             point: [0, 1, 2].map(|k| eye[k] + dir[k] * d),
             havok: collider.material(tri),
+            normal: crate::impact_fx::facing_normal(collider.triangle(tri), dir),
+            triangle: Some(tri),
+            direction: dir,
+            on_body: false,
+            part: None,
             damage: 0.0,
             killed: false,
         });
@@ -121,8 +146,26 @@ pub struct HitParams<'w, 's> {
     effects: ResMut<'w, HitEffects>,
     sounds: ResMut<'w, SoundRequests>,
     screen: ResMut<'w, crate::effects::Effects>,
-    audio: ResMut<'w, Assets<AudioSource>>,
+    audio: ResMut<'w, Assets<crate::sounds::PcmSound>>,
     cameras: Query<'w, 's, &'static Transform, With<FlyCamera>>,
+    frusta: Query<'w, 's, &'static Frustum, With<FlyCamera>>,
+    collision: Res<'w, crate::walk::CellCollision>,
+    requests: ResMut<'w, ImpactRequests>,
+}
+
+/// Whether a sphere of `radius` around a point (game units) is in the
+/// camera's view (`004b61d0`, `004b5ff0`: not wholly outside any of the
+/// six planes).
+fn in_view(frusta: &Query<&Frustum, With<FlyCamera>>, point: [f32; 3], radius: f32) -> bool {
+    frusta.single().is_ok_and(|f| {
+        f.intersects_sphere(
+            &bevy::render::primitives::Sphere {
+                center: Vec3::from(space::point(point)).into(),
+                radius: radius * space::METERS_PER_UNIT,
+            },
+            true,
+        )
+    })
 }
 
 /// Plays this frame's hits.
@@ -142,7 +185,7 @@ pub fn play_hits(mut p: HitParams) {
     for r in reports {
         match r.target {
             Some(target) => on_someone(&mut p, &game, &r, target, (eye, now, now_ms)),
-            None => on_world(&mut p, &game, &r),
+            None => on_world(&mut p, &game, &r, eye),
         }
     }
 }
@@ -156,9 +199,37 @@ fn impact(effects: &mut HitEffects, order: &esm::LoadOrder, id: FormId) -> Optio
         .clone()
 }
 
-/// A shot striking the world (`009c20e0`): its impact's two sounds, at
-/// any distance.
-fn on_world(p: &mut HitParams, game: &cellview::Game, r: &HitReport) {
+/// The name of a record, for the log.
+fn name_of(order: &esm::LoadOrder, id: FormId) -> String {
+    order
+        .get(id)
+        .and_then(|rr| rr.editor_id().ok().flatten())
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// Plays a hit's sound at a point (`weapon_fx::play_at`) and says so.
+fn sound_at(p: &mut HitParams, game: &cellview::Game, s: FormId, at: [f32; 3], eye: [f32; 3]) {
+    let pick = p.state.0.roll();
+    if let Some(db) =
+        crate::weapon_fx::play_at(&mut p.commands, game, &mut p.audio, s, (at, eye), pick)
+    {
+        println!(
+            "  impact sound {} at {:.0} units: {db:.1} dB",
+            name_of(&game.order, s),
+            distance(at, eye)
+        );
+    }
+}
+
+/// A shot striking the world (`009c20e0`): the weapon's impact for the
+/// struck shape's material. Its decal on what's there of that material
+/// (`world::decals`); its effect model at the point when within
+/// `fGunParticleCameraDistance` of the camera and in view (a sphere of
+/// 32), along its orientation (`world::impacts::effect_axis`), for its
+/// duration; its two sounds at the point (flags 0x4102), at any distance.
+/// (The game also skips the model while `[011dea2a]` is set, a state not
+/// kept here.)
+fn on_world(p: &mut HitParams, game: &cellview::Game, r: &HitReport, eye: [f32; 3]) {
     let order = &game.order;
     let Some(weapon) = r.weapon else {
         return;
@@ -178,7 +249,123 @@ fn on_world(p: &mut HitParams, game: &cellview::Game, r: &HitReport) {
         material.name(),
         i.editor_id.as_deref().unwrap_or("")
     );
-    p.sounds.0.extend(i.sounds());
+    let normal = r.normal.unwrap_or(r.direction.map(|c| -c));
+    // The decal: its size rolled once for the shot, then its turn and
+    // picture (`009c20e0`).
+    if let (Some(decal), Some(_)) = (i.decal, i.texture_set) {
+        let state = &mut p.state.0;
+        let rolls = DecalRolls {
+            size: unit(state),
+            turn: unit(state),
+            picture: unit(state),
+        };
+        let size = decal.size(rolls.size, false);
+        let reach = (size * size * 0.5 + decal.depth * decal.depth).sqrt();
+        let targets = decal_targets(order, &p.collision.0, r.point, reach, material);
+        if targets != DecalTargets::default() {
+            p.requests.decals.push(DecalRequest {
+                impact: i.form_id,
+                point: r.point,
+                normal,
+                rolls,
+                depth: None,
+                targets,
+            });
+        }
+    }
+    if let Some(model) = &i.model {
+        if distance(eye, r.point) <= impacts::effect_distance(order)
+            && in_view(&p.frusta, r.point, 32.0)
+        {
+            let roll = unit(&mut p.state.0);
+            p.requests.effects.push(EffectRequest {
+                model: model.clone(),
+                point: r.point,
+                axis: impacts::effect_axis(i.orientation, normal, r.direction),
+                roll,
+                given: i.duration,
+            });
+        }
+    }
+    for s in i.sounds().collect::<Vec<_>>() {
+        sound_at(p, game, s, r.point, eye);
+    }
+}
+
+/// Blood where a hit met someone's body (`0088e8d0`, when hits on them show
+/// blood and did damage): shown within `fGunParticleCameraDistance` of the
+/// camera, or beyond it out of view. The blood impact's model at the
+/// point, its Z axis against the spray (`world::impacts::spray_direction`:
+/// twice the hit's direction plus U(−0.8, 0.8) on each axis), for its
+/// animation or a second; then, with chance `fCombatEnvironmentBloodChance`
+/// (exe 0.75), the body part's own impact's decal on the first thing 512
+/// units along the spray tipped down (`world::impacts::spatter_direction`)
+/// that takes decals, 48 deep. (Decals on the body itself, and Bloody
+/// Mess's ×1.5, which waits on actor value 55 that nothing raises here,
+/// aren't done.)
+fn blood(
+    p: &mut HitParams,
+    game: &cellview::Game,
+    r: &HitReport,
+    effects: &impacts::ActorHitEffects,
+    eye: [f32; 3],
+) {
+    let order = &game.order;
+    let near = distance(eye, r.point) <= impacts::effect_distance(order);
+    if !near && in_view(&p.frusta, r.point, 32.0) {
+        return;
+    }
+    let state = &mut p.state.0;
+    let jitter = [0; 3].map(|_| -0.8 + 1.6 * unit(state));
+    let spray = impacts::spray_direction(r.direction, jitter);
+    if let Some(i) = effects
+        .blood
+        .and_then(|id| impact(&mut p.effects, order, id))
+    {
+        if let Some(model) = &i.model {
+            let roll = unit(&mut p.state.0);
+            p.requests.effects.push(EffectRequest {
+                model: model.clone(),
+                point: r.point,
+                axis: spray.map(|c| -c),
+                roll,
+                given: 1.0,
+            });
+        }
+    }
+    let Some(spatter) = effects.spatter else {
+        return;
+    };
+    let chance =
+        world::scripting::game_setting(order, "fCombatEnvironmentBloodChance").unwrap_or(0.75);
+    if unit(&mut p.state.0) >= chance {
+        return;
+    }
+    let dir = impacts::spatter_direction(spray);
+    let collider = &p.collision.0;
+    let Some((d, t)) = collider.raycast(r.point, dir, impacts::SPATTER_REACH) else {
+        return;
+    };
+    let Some(targets) = crate::impact_fx::struck_target(order, collider, t) else {
+        return;
+    };
+    let Some(normal) = crate::impact_fx::facing_normal(collider.triangle(t), dir) else {
+        return;
+    };
+    let state = &mut p.state.0;
+    let rolls = DecalRolls {
+        size: unit(state),
+        turn: unit(state),
+        picture: unit(state),
+    };
+    p.requests.decals.push(DecalRequest {
+        impact: spatter,
+        point: [0, 1, 2].map(|k| r.point[k] + dir[k] * d),
+        normal,
+        rolls,
+        depth: Some(world::decals::SPATTER_DEPTH),
+        targets,
+    });
 }
 
 /// A hit on a person or creature (`0089a760` and the functions it calls).
@@ -205,24 +392,22 @@ fn on_someone(
             dice
         };
         let e = impacts::actor_hit(
-            order, state, r.attacker, target, r.weapon, held, None, gore_off, &mut roll,
+            order, state, r.attacker, target, r.weapon, held, r.part, gore_off, &mut roll,
         );
         state.dice = dice.max(1);
         e
     };
     // Sounds, each heard within its own distance (the player hit hears
     // them all: the game measures from the player then).
+    // Played at the point (flags 0x4102); the player hit hears them where
+    // the player is.
+    let at = if target == PLAYER_REF { eye } else { r.point };
     let mut heard = Vec::new();
     for s in &effects.sounds {
         let reach = world::sound::Sound::load(order, *s).map_or(0.0, |s| s.max_distance);
         if target == PLAYER_REF || distance(eye, r.point) < reach {
-            p.sounds.0.push(*s);
-            heard.push(
-                order
-                    .get(*s)
-                    .and_then(|rr| rr.editor_id().ok().flatten())
-                    .unwrap_or_else(|| s.to_string()),
-            );
+            heard.push(name_of(order, *s));
+            sound_at(p, game, *s, at, eye);
         }
     }
     if !heard.is_empty() {
@@ -231,6 +416,10 @@ fn on_someone(
             effects.material.name(),
             heard.join(", ")
         );
+    }
+    // Blood (the player's own is the screen's: not done here).
+    if r.on_body && r.damage > 0.0 && target != PLAYER_REF {
+        blood(p, game, r, &effects, eye);
     }
     // The player hit by someone: the hit modifier at its strength.
     if target == PLAYER_REF && r.attacker != PLAYER_REF {
@@ -296,12 +485,11 @@ fn say(p: &mut HitParams, game: &cellview::Game, who: FormId, topic: FormId) {
     let Some(bytes) = game.assets.read(&path).ok().flatten() else {
         return;
     };
-    let source = p.audio.add(AudioSource {
-        bytes: Arc::from(bytes.into_boxed_slice()),
-    });
+    let Some(source) = crate::sounds::voice_handle(&path, &bytes, &mut p.audio) else {
+        return;
+    };
     let (settings, voice) = crate::faces::voice_playback(game, &path, who);
-    p.commands
-        .spawn((AudioPlayer::new(source), settings, voice));
+    p.commands.spawn((AudioPlayer(source), settings, voice));
 }
 
 #[cfg(test)]

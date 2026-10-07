@@ -11,9 +11,8 @@
 //! volume wherever the speaker is; the game's 3D sound isn't traced here).
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use bevy::audio::{AudioPlayer, AudioSource};
+use bevy::audio::AudioPlayer;
 use bevy::prelude::*;
 use esm::FormId;
 use world::dialogue::{self, Info, Speaker};
@@ -29,11 +28,36 @@ pub struct LineRequest {
     pub speaker: FormId,
     pub listener: FormId,
     pub info: Info,
+    /// Said in a conversation, with whether its says force a tree request
+    /// for the speaker (`world::talk_idles::conversation_forces_tree`);
+    /// none for the GREET procedure's lines (greetings, chatter, Say To),
+    /// which force one unless the speaker's package has idles
+    /// (`world::talk_idles::greet_forces_tree`).
+    pub conversation: Option<bool>,
+    /// A GREET line said to its listener (a greeting, a "Say To"): while
+    /// it's said the speaker's greeting timer is held at `fAIGreetingTimer`
+    /// and, said to the player, the player counts as spoken to (`008dbe30`
+    /// with a listener: process +0x330, player +0x6cc). Idle chatter has
+    /// no listener in the game (`008eeec0` passes none).
+    pub to_listener: bool,
+}
+
+/// A response begun this frame (each one of a line is its own say,
+/// `008a20d0`): who says it to whom, and how its caller asks for idles.
+#[derive(Debug, Clone)]
+pub struct ResponseStarted {
+    pub speaker: FormId,
+    pub listener: FormId,
+    pub response: world::dialogue::Response,
+    pub conversation: Option<bool>,
 }
 
 /// A line being said: the response and since when (seconds), its voice.
 struct Saying {
     info: Info,
+    listener: FormId,
+    conversation: Option<bool>,
+    to_listener: bool,
     response: usize,
     since: f32,
     voice: Option<Entity>,
@@ -46,6 +70,9 @@ pub struct Lines {
     pub queue: Vec<LineRequest>,
     saying: HashMap<FormId, Saying>,
     pub done: Vec<(FormId, FormId)>,
+    /// The responses begun this frame (for the speakers' and listeners'
+    /// gestures, `sitting::idle_requests`).
+    pub started: Vec<ResponseStarted>,
 }
 
 impl Lines {
@@ -54,12 +81,64 @@ impl Lines {
         self.saying.contains_key(&who) || self.queue.iter().any(|r| r.speaker == who)
     }
 
-    /// Asks someone to say a line.
+    /// Asks someone to say a line with no listener of its own (idle
+    /// chatter; `listener` is only whom it's printed as said to).
     pub fn say(&mut self, speaker: FormId, listener: FormId, info: Info) {
         self.queue.push(LineRequest {
             speaker,
             listener,
             info,
+            conversation: None,
+            to_listener: false,
+        });
+    }
+
+    /// Asks someone to say a GREET line to `listener` (a greeting, a
+    /// "Say To" package's line).
+    pub fn say_to(&mut self, speaker: FormId, listener: FormId, info: Info) {
+        self.queue.push(LineRequest {
+            speaker,
+            listener,
+            info,
+            conversation: None,
+            to_listener: true,
+        });
+    }
+
+    /// Whether someone is saying (or about to say) a GREET line to a
+    /// listener.
+    pub fn greeting(&self, who: FormId) -> bool {
+        self.saying.get(&who).is_some_and(|s| s.to_listener)
+            || self.queue.iter().any(|r| r.speaker == who && r.to_listener)
+    }
+
+    /// Whether anyone is saying (or about to say) a GREET line to `whom`
+    /// (for the player: +0x6cc, `world::social::GreetingCheck`).
+    pub fn spoken_to(&self, whom: FormId) -> bool {
+        self.saying
+            .values()
+            .any(|s| s.to_listener && s.listener == whom)
+            || self
+                .queue
+                .iter()
+                .any(|r| r.to_listener && r.listener == whom)
+    }
+
+    /// Asks someone to say a conversation's line (`009ee0a0`), its says
+    /// forcing a tree request or not (`force_tree`).
+    pub fn say_in_conversation(
+        &mut self,
+        speaker: FormId,
+        listener: FormId,
+        info: Info,
+        force_tree: bool,
+    ) {
+        self.queue.push(LineRequest {
+            speaker,
+            listener,
+            info,
+            conversation: Some(force_tree),
+            to_listener: false,
         });
     }
 
@@ -69,6 +148,7 @@ impl Lines {
         self.queue.clear();
         self.saying.clear();
         self.done.clear();
+        self.started.clear();
     }
 }
 
@@ -81,7 +161,7 @@ fn reading_time(text: &str) -> f32 {
 /// A response's voice, if its file is found, with its lip sync.
 fn play_voice(
     commands: &mut Commands,
-    audio: &mut Assets<AudioSource>,
+    audio: &mut Assets<crate::sounds::PcmSound>,
     game: &cellview::Game,
     speaker: FormId,
     info: &Info,
@@ -92,15 +172,9 @@ fn play_voice(
     let voice = Speaker::load(&game.order, speaker, base)?.voice?;
     let path = dialogue::voice_path(&game.order, info, r, voice)?;
     let bytes = game.assets.read(&path).ok()??;
-    let source = audio.add(AudioSource {
-        bytes: Arc::from(bytes.into_boxed_slice()),
-    });
+    let source = crate::sounds::voice_handle(&path, &bytes, audio)?;
     let (settings, voice) = crate::faces::voice_playback(game, &path, speaker);
-    Some(
-        commands
-            .spawn((AudioPlayer::new(source), settings, voice))
-            .id(),
-    )
+    Some(commands.spawn((AudioPlayer(source), settings, voice)).id())
 }
 
 /// Runs one of a line's result scripts on its speaker.
@@ -140,12 +214,13 @@ pub fn say_lines(
     scripts: Res<Scripts>,
     mut state: ResMut<DialogueState>,
     mut lines: ResMut<Lines>,
-    mut audio: ResMut<Assets<AudioSource>>,
-    voices: Query<(), With<AudioPlayer>>,
+    mut audio: ResMut<Assets<crate::sounds::PcmSound>>,
+    voices: Query<(), With<AudioPlayer<crate::sounds::PcmSound>>>,
 ) {
     let now = time.elapsed_secs();
     let lines = &mut *lines;
     lines.done.clear();
+    lines.started.clear();
     for request in std::mem::take(&mut lines.queue) {
         if lines.saying.contains_key(&request.speaker) {
             continue;
@@ -176,10 +251,21 @@ pub fn say_lines(
             &info,
             0,
         );
+        if let Some(r) = info.responses.first() {
+            lines.started.push(ResponseStarted {
+                speaker: request.speaker,
+                listener: request.listener,
+                response: r.clone(),
+                conversation: request.conversation,
+            });
+        }
         lines.saying.insert(
             request.speaker,
             Saying {
                 info,
+                listener: request.listener,
+                conversation: request.conversation,
+                to_listener: request.to_listener,
                 response: 0,
                 since: now,
                 voice,
@@ -187,6 +273,7 @@ pub fn say_lines(
         );
     }
     let mut over = Vec::new();
+    let started = &mut lines.started;
     for (&speaker, saying) in lines.saying.iter_mut() {
         let done = match saying.voice {
             Some(v) => voices.get(v).is_err(),
@@ -205,6 +292,12 @@ pub fn say_lines(
         saying.response += 1;
         saying.since = now;
         if saying.response < saying.info.responses.len() {
+            started.push(ResponseStarted {
+                speaker,
+                listener: saying.listener,
+                response: saying.info.responses[saying.response].clone(),
+                conversation: saying.conversation,
+            });
             saying.voice = play_voice(
                 &mut commands,
                 &mut audio,

@@ -825,13 +825,13 @@ fn read(facts: &Facts, name: &str, on: Option<FormId>, args: &[Value]) -> Option
                 f64::from(scale)
             }
             // `005a30c0`: how often the player has hit this friend or ally
-            // (extra data 0x45, `world::crime::assault`).
+            // lately (extra data 0x45, `world::crime::friend_hit_count`).
             "GetFriendHit" => {
                 let who = on?;
                 if !is_actor(order, who) {
                     0.0
                 } else {
-                    f64::from(s.friendly_hits.get(&who).copied().unwrap_or(0))
+                    f64::from(crate::crime::friend_hit_count(order, s, who))
                 }
             }
             // `005a49f0` / `008b87a0`: one of the person's factions holds
@@ -853,9 +853,10 @@ fn read(facts: &Facts, name: &str, on: Option<FormId>, args: &[Value]) -> Option
             // (`GetChallengeCompleted`: `world::more_functions::
             // challenges`.)
             // `005a6170`: the player's winnings at the casino by quarters
-            // of its limit; nothing is won at casinos here, so no entry
-            // and 0.
-            "GetCasinoWinningStage" => 0.0,
+            // of its limit (`world::casino`; 0 where not played).
+            "GetCasinoWinningStage" => {
+                f64::from(crate::casino::winnings_level(order, s, arg(0).form()))
+            }
             // `005a6280`: the region is in the player's list of regions
             // (player+0x764), the same list `IsPlayerInRegion` reads
             // (`005cf490`).
@@ -928,6 +929,8 @@ pub fn set_objective(runner: &mut Runner, quest: FormId, index: i32, new: u8) {
             runner.state.objectives.insert(key, false);
             runner.state.set_by_scripts.hidden_completed.remove(&key);
             runner.state.running.insert(quest);
+            // `005ec5d0`: the quest becomes active when none is.
+            crate::quest_targets::objective_shown(runner.state, quest);
             let text = objective_text(runner, quest, index);
             runner.state.events.push(Event::Objective {
                 quest,
@@ -1021,9 +1024,10 @@ pub fn remove_all(
             continue;
         }
         state.items.remove(&(from, item));
-        state.unequip(from, item);
+        state.unequip_item(order, from, item);
         if let Some(to) = to {
             *state.items.entry((to, item)).or_insert(0) += n;
+            state.added(order, to, item, n);
         }
     }
 }
@@ -1148,8 +1152,8 @@ fn carry_out(
             }
             // `005d8e80`: like `AddItem` (a leveled list gives what it
             // picks, a form list each of its items), the items at a health
-            // (0–1). Item condition is kept for weapons only here
-            // (`GameState::weapon_health`); armour stays whole. The flag 1
+            // (0–1). Item condition is kept for weapons and armour
+            // (`GameState::weapon_health`). The flag 1
             // silences the "added" notice (none here).
             "AddItemHealthPercent" => {
                 let holder = target?;
@@ -1178,7 +1182,8 @@ fn carry_out(
                 }
                 for (i, n) in added {
                     *runner.state.items.entry((holder, i)).or_insert(0) += n;
-                    if kind_of(order, i) == Some(WEAP) {
+                    runner.state.added(order, holder, i, n);
+                    if crate::repair::has_condition(order, i) {
                         runner
                             .state
                             .weapon_health
