@@ -425,6 +425,15 @@ pub fn talk(
         let answer = screen
             .as_deref_mut()
             .and_then(crate::game_menus::dialog::take_answer);
+        // Under a service menu (barter, recipes) the menu is hidden and
+        // nothing is chosen in it; the line being said when it opened was
+        // cut short (`00763ff0`).
+        let hidden = screen
+            .as_deref_mut()
+            .is_some_and(crate::game_menus::dialog::hidden);
+        let cut = screen
+            .as_deref_mut()
+            .is_some_and(crate::game_menus::dialog::take_cut_line);
         let ended = screen.is_none()
             && !line_only
             && (keys.just_pressed(KeyCode::Tab) || keys.just_pressed(KeyCode::Escape));
@@ -452,8 +461,9 @@ pub fn talk(
                 return;
             }
         }
-        let skip =
-            keys.just_pressed(KeyCode::Space) || answer == Some(ui::menus::dialog::Answer::Skip);
+        let skip = !hidden
+            && (keys.just_pressed(KeyCode::Space)
+                || answer == Some(ui::menus::dialog::Answer::Skip));
         if talk.choices.is_none() {
             // Saying the line: next response when the voice ends (or, with
             // no voice file, after `fDialogSpeechDelaySeconds`); a click or
@@ -462,15 +472,21 @@ pub fn talk(
             if skip && talk.voice.is_some() && talk.skipped_at.is_none() {
                 talk.skipped_at = Some(now);
             }
-            let done = response_done(
-                talk.voice.is_some(),
-                voice_done,
-                talk.skipped_at,
-                skip,
-                now - talk.since,
-                now,
-                silent_line_seconds(order),
-            );
+            // Cut short: the rest of its responses dropped (`0083e4c0(0)`),
+            // the speaker stopping now.
+            if cut && !talk.line_only {
+                talk.response = talk.info.responses.len().saturating_sub(1);
+            }
+            let done = (cut && !talk.line_only)
+                || response_done(
+                    talk.voice.is_some(),
+                    voice_done,
+                    talk.skipped_at,
+                    skip,
+                    now - talk.since,
+                    now,
+                    silent_line_seconds(order),
+                );
             if done {
                 if let Some(v) = talk.voice.take() {
                     if let Ok(mut e) = commands.get_entity(v) {
@@ -552,7 +568,7 @@ pub fn talk(
                     }
                 }
             }
-        } else if let Some(list) = &talk.choices {
+        } else if let (false, Some(list)) = (hidden, &talk.choices) {
             // Choosing: the game's menu, else number keys.
             let digits = [
                 KeyCode::Digit1,

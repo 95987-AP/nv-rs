@@ -136,6 +136,59 @@ speaker's turn rule); `crates/world/tests/dialogue_flow.rs`
 None of this has been checked side by side yet; the zoom and turn rates
 and the head bound especially need a recording of a conversation.
 
+## Service menus over the conversation (B13)
+
+Branch `claude/b13-barter-menu`, 2026-10-07. Bug: opening barter from
+dialogue left the dialogue menu drawn with the barter menu (its box and
+text showing through and over it). The game doesn't stack the two: it
+hides the conversation while a service menu is up.
+
+| Address | What | Used for |
+| --- | --- | --- |
+| `0072d250` | `BarterMenu` create: after the file loads, `00763ff0`, then shown (`00a1dc20`: visible 0, fade in, depth `00a1dfb0`) | `game_menus::open_menus` |
+| `00726ff0` | Recipe menu create: also calls `00763ff0` | same |
+| `0075bc80` mode 3, `007b7570`, `00705870` | A companion's trade, the repair menu, the face menu from dialogue: also `00763ff0` (none of the three is shown in nv-rs yet); containers in mode 1/2 don't | not carried out |
+| `00763ff0` | If `DialogMenu` is open and not ending (`+0x2c` 0): `+0x138`, `+0x13a` = 1; the response being said dropped (`0083e4c0(0)`, speaker stops, `+0x7c` done); `00a1d910` on the dialogue menu | `DialogMenu::service_opened`, `cut_line` |
+| `00a1d910` / `00a1db20` | Menu fade out (state `+0x24` 2) / in (8) over `menufade`, else `explorefade` (menus default 0.25); out only when visible; trait 6002 decides whether the menu goes when faded | `ui::menu::Fade` |
+| `00716320`, `00711ea0`, `00712450` | The fade list's time ÷ length each frame; fading: visible, tree alpha 1 − t (out) or t (in); out done: state 4, visible 0 (or destroyed with 6002); in done: state 1; `disablefade` tiles only at full alpha | `Fade::frame`, `ui::draw::faded` |
+| `00762950` | `DialogMenu` idle: state 2 with both flags → 5 (`eServiceFadeOut` (Xbox PDB)); state 5 once faded out → topics reloaded (`00762ff0`), `+0x13a` 0, state 2 | the conversation keeps its list (see gaps) |
+| `0072d6d0`, `00727430`, `0075b750` mode 3, `007b78e0`, `007ada40` | Service menu close: `007640a0(topic)`, then its own 6002 and fade out | `game_menus::run_open_menus` |
+| `007640a0` | `+0x138` 0; with a topic, the speaker says it; `00a1db20` fades the dialogue menu back in | `DialogMenu::service_closed` |
+
+Input goes to the top menu shown and not closing (`00720e60`), so the
+hidden dialogue menu takes no clicks, keys or `--say`/`--choose` picks
+while the service menu is up.
+
+### Implemented and tested
+
+- `ui::menu::Fade` (`Showing`: shown, fading out, hidden, fading in) and
+  `ui::draw::faded`; `DialogMenu::service_opened`/`service_closed`/
+  `hidden`; the viewer fades the dialogue menu out when a barter or
+  recipe menu is made and back in when it closes; the talk system cuts
+  a line in progress and chooses nothing while hidden.
+- Tests: `menu::tests::menus_fade_out_and_in`,
+  `draw::tests::a_fading_menu_is_drawn_at_its_alpha`,
+  `menus::dialog::tests::a_service_menu_hides_the_conversation_until_it_closes`,
+  `menus::dialog::tests::a_service_cuts_the_line_but_not_an_ending`.
+- Verified live (release viewer, `GSGeneralStore`, `--talk --say "for
+  sale"`): Chet's barter menu alone on screen; after Exit (clicked with
+  `--menu-pointer 1510,833 --key-at 37 mouse-left`) the dialogue menu is
+  back at full alpha with the same topics ("Show me what you have for
+  sale." dimmed as said). Not compared with the original game.
+
+### Gaps
+
+- `007640a0`'s topic: after a trade (`BarterMenu +0x11c`) the speaker
+  says the `BarterExit` service topic (`0061a2d0(5, 4)`; `RepairExit`
+  `(5, 5)` after repairs); how it's said (no menu text, the
+  `DialogueItem` made and freed at once) isn't traced, so it's left out.
+- State 5's reload of the topic list once hidden isn't repeated: the
+  list the conversation computed when the line ended is kept.
+- Menus other than the dialogue menu still open and close at once (the
+  barter menu's own fade in, `00a1dc20`, and every menu's close fade).
+- Companion trade, repair and face menus aren't shown, so their
+  `00763ff0` calls aren't either.
+
 ## Remaining gaps
 
 - The head's bound: the game merges the face node's skinned pieces'

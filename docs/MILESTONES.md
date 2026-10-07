@@ -320,6 +320,12 @@ opening-follow-ups guess) are traced, implemented and unit-tested; not
 compared with the original. **Next action:** record a Doc Mitchell and a
 Sunny Smiles conversation in the original and compare zoom, turn and list.
 
+B13 barter over dialogue, 2026-10-07 (`claude/b13-barter-menu`): service
+menus (barter, recipes) now fade the dialogue menu out and back in as the
+game does (`00763ff0`/`007640a0`, menu fades `00a1d910`/`00a1db20`);
+unit-tested and verified live with Chet; details and gaps in
+[DIALOGUE.md](DIALOGUE.md).
+
 ## M2 blocker batch: gunfight packages
 
 `claude/m2-packages` (2026-10-06): flee, guard, procedure lists, package

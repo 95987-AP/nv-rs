@@ -610,6 +610,32 @@ pub fn draw_list(
     items
 }
 
+/// A menu's pictures at its fade's alpha (`00712450`, from `00711ea0`):
+/// each one's alpha times `alpha`; a tile with `disablefade` isn't faded
+/// but shown only at full alpha, and with it everything below it (the
+/// walk stops there).
+pub fn faded(ui: &mut Ui, items: Vec<DrawItem>, alpha: f32) -> Vec<DrawItem> {
+    if alpha >= 1.0 {
+        return items;
+    }
+    if alpha <= 0.0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(items.len());
+    'items: for mut item in items {
+        let mut tile = Some(item.tile);
+        while let Some(id) = tile {
+            if ui.has(id, t::DISABLEFADE) && ui.number(id, t::DISABLEFADE) != 0.0 {
+                continue 'items;
+            }
+            tile = ui.tiles[id].parent;
+        }
+        item.color[3] *= alpha;
+        out.push(item);
+    }
+    out
+}
+
 /// A font's picture paths (`textures\fonts\<name>.tex`).
 pub fn font_textures(font: &Font) -> Vec<String> {
     font.textures
@@ -697,6 +723,31 @@ mod tests {
         // The bracket (depth -1) first.
         assert_eq!(list.len(), 3);
         assert_eq!(list[0].tile, bracket);
+    }
+
+    /// `00712450`: a fading menu's pictures at its alpha; a `disablefade`
+    /// tile and what's below it only at full alpha.
+    #[test]
+    fn a_fading_menu_is_drawn_at_its_alpha() {
+        let mut ui = ui();
+        let m = ui
+            .load_menu(
+                b"<menu name=\"m\"><image name=\"a\"><filename>Interface\\HUD\\hud_tick_mark.dds</filename><width>8</width><height>8</height><alpha>128</alpha></image>
+                  <rect name=\"still\"><disablefade>&true;</disablefade>
+                    <image name=\"b\"><filename>Interface\\HUD\\hud_tick_mark.dds</filename><width>8</width><height>8</height></image></rect></menu>",
+                &mut |_| None,
+            )
+            .unwrap();
+        ui.set_number(m, t::VISIBLE, 1.0);
+        let list = draw_list(&mut ui, m, &mut Fake, &|_| None);
+        assert_eq!(list.len(), 2);
+        let a = ui.find(m, "a").unwrap();
+        let half = faded(&mut ui, list.clone(), 0.5);
+        assert_eq!(half.len(), 1);
+        assert_eq!(half[0].tile, a);
+        assert!((half[0].color[3] - 0.5 * 128.0 / 255.0).abs() < 1e-6);
+        assert_eq!(faded(&mut ui, list.clone(), 1.0), list);
+        assert!(faded(&mut ui, list, 0.0).is_empty());
     }
 
     #[test]
