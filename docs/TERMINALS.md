@@ -211,7 +211,10 @@ HUD's picture under the menus' pictures and the cursor with the fade as
 its alpha. With the setting 0, or without the model, the menus are drawn
 flat as before. Differences: the model isn't graded or bloomed (drawn
 after the image space pass), the fade is over the finished model, not
-each piece's alpha, and the menu's own `menufade` isn't done.
+each piece's alpha. The menus on the screen fade in and out with every
+menu's fade ([MENU_FADES.md](MENU_FADES.md)): 0.75 s when the player
+leaves (`menufade` set by `00757ea0`, `00766aa0`), 0.25 s on the hacking
+menu's hand-over.
 
 ## Not done
 
