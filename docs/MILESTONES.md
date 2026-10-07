@@ -33,6 +33,9 @@ reading do not establish them.
 
 ## Active work: M1
 
+Next session: start with [HANDOFF.md](HANDOFF.md). Open tasks:
+[TASKS.md](TASKS.md); contributor rules: [CONTRIBUTING.md](CONTRIBUTING.md).
+
 Overnight batches, 2026-10-06 (local session; integration branch
 `claude/overnight-integration`, not merged into `main`; each batch also has
 its own pushed `claude/m*-*` branch for review as a PR). Play copy builds 1-6

@@ -21,6 +21,26 @@ it to your agents.
   (a pull request editing this table is enough), so two people's agents
   don't build the same system twice.
 
+## Claiming a task
+
+Major systems open to contributors are listed in [TASKS.md](TASKS.md)
+and as GitHub issues titled `[task] …`. (The maintainer's list in
+TASKS.md isn't open for claiming.)
+
+1. Pick an issue nobody has claimed (no assignee, no claim comment).
+2. Comment `Claiming this` with the branch name you'll use. The maintainer
+   assigns you. First claim wins; don't start on a claimed task.
+3. One task per person at a time (two if they're small). Big tasks say
+   how to split them; claim one part at a time.
+4. Post a short progress comment at least once a day. A claim with no
+   comment or pull request for 48 hours can be released by the
+   maintainer.
+5. Link the pull request to the issue (`Closes #N`). If you give up, say
+   so on the issue so someone else can take it.
+
+Found a new bug? Open an issue for it; don't fix it inside an unrelated
+pull request.
+
 ## What every pull request must show
 
 1. **Checks.** From the root: `cargo test --workspace`, `cargo clippy
