@@ -198,6 +198,15 @@ impl Ragdoll {
         self.asleep = false;
     }
 
+    /// Every body's speed changes by `velocity`, whatever its mass (the
+    /// game adds a velocity to each moving body of a tree: `0062b930`).
+    pub fn add_velocity(&mut self, velocity: Vec3) {
+        for s in &mut self.state {
+            s.v = add(s.v, velocity);
+        }
+        self.asleep = false;
+    }
+
     /// The game's death push (`0062b660`): every body's speed changes by
     /// `speed` × its multiplier, away from `origin` (each body along the
     /// line from `origin` to its centre), whatever its mass.
@@ -901,6 +910,24 @@ mod tests {
             for j in 0..3 {
                 assert!((back[i][j] - m[i][j]).abs() < 1e-5);
             }
+        }
+    }
+
+    #[test]
+    fn an_added_velocity_moves_every_body_alike_and_wakes_them() {
+        // A light and a heavy rod, both asleep: each gains the same
+        // velocity (`0062b930` adds it whatever the mass).
+        let mut r = Ragdoll::new(
+            vec![rod(1.0), rod(50.0)],
+            Vec::new(),
+            &[(I3, [0.0, 0.0, 100.0]), (I3, [0.0, 50.0, 100.0])],
+        );
+        r.asleep = true;
+        r.add_velocity([20.0, 0.0, 0.0]);
+        assert!(!r.asleep);
+        r.add_velocity([0.0, -5.0, 0.0]);
+        for s in &r.state {
+            assert_eq!(s.v, [20.0, -5.0, 0.0]);
         }
     }
 
