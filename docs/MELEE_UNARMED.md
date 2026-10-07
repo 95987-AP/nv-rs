@@ -32,7 +32,7 @@ against the exe item by item; these were wrong or missing:
 | Item | Before | The game (address) | Now |
 | --- | --- | --- | --- |
 | Reach of hand-to-hand weapons | 64 (as bare hands) | the weapon's reach × `fCombatDistance` for every melee weapon, animation types 0–2 (`009a69c0`, `008990f0`): brass knuckles 128, mantis gauntlet 153.6 | fixed (`Weapon::melee_reach`, `melee::swing_reach`) |
-| What the player's swing hits | the first body along the view's ray within reach | `Actor::FindMeleeTarget` (`009a60e0`): an attacker with a combat target only that one; else everyone within reach (the gap between the bodies, `009a64d0`/`009a6770`) and in the hit cone (`009a6ae0`), the one nearest the cone's middle; then a line of sight (`0088b880`) | implemented (`melee::find_target`, viewer `melee_met`) |
+| What the player's swing hits | the first body along the view's ray within reach | `Actor::FindMeleeTarget` (`009a60e0`): an attacker with a combat target only that one; else everyone within reach (the gap between the bodies, `009a64d0`/`009a6770`, flat in its two cases below) and in the hit cone (`009a6ae0`), the one nearest the cone's middle; then a line of sight (`0088b880`) | implemented (`melee::find_target`, viewer `melee_met`) |
 | The hit cone | 35° (× 3 within 128) | the player's by the attack (`009a6a40`): `AttackPower`/`AttackForwardPower` 40 (`fCombatOverheadHitConeAngle`), back/left/right power 100 (`…Sweep…`), `AttackCustom1Power` 50 (`…Uppercut…`), else 35; a dead target × `fCombatDeadActorHitConeMult` 2 | implemented (`melee::Cones`, `cone_check`) |
 | Fists' power attack | × `fDamagePowerAttackBonus` inside the damage, before the armour | fists' damage is asked with 1 (`00646310`); the bonus goes to the hit's `fBonusMult` (`HitData` `+0x5c`, `009b7840`: the larger of it and the body part's) and multiplies after the armour (`009b73d0`); weapons (hand-to-hand ones too) keep it inside (`00644ce0`) | fixed (`combat::fists_power_bonus`, `Runner::blow_at`) |
 | Unarmed specials outside V.A.T.S. | none | `Actor::StartAttack` (`00893a40`): an unarmed attack (fists or a hand-to-hand weapon not looping/spinning), by a person or the player, not sneaking, outside V.A.T.S.: Unarmed (whole points) above `fUpperCutThreshold` 50 gives Unarmed × `fUpperCutSkillChance` 0.15 % for `Attack6` (the uppercut); above `fCrossThreshold` 75 a further Unarmed × `fCrossSkillChance` 0.15 % for `Attack7` (the cross); roll U(0, 100) | implemented for the player (`melee::unarmed_special_group`); NPCs: not hooked (their AI and animation are the maintainer's) |
@@ -107,9 +107,14 @@ attack animation.
   the auto-aim turn added to the player's cone (`00965620` on the
   `ProjectileNode`): not traced; scripted objects are met along the view
   as before.
-- **The gap's vertical case** (`009a64d0` measures horizontally when the
-  bodies' heights overlap and `005a2030` holds for both): the 3D distance
-  is used.
+- **The gap's vertical case** is translated (`melee::Swing::gap`,
+  `009a64d0`): flat when the swinger's bounds' top or bottom lies within
+  the other's bounds (`OBND` z, vtable `+0x1d8`/`+0x1dc`) and either both
+  swim (`005a2030`, actor `+0x14d`) or it's the combat target and their
+  heights differ by at least `fAICombatSlopeDifference` (48, `00f63ab0`);
+  3D otherwise. The viewer doesn't model swimming yet, so only the
+  combat-target case can occur; a base without `OBND` is given zero
+  bounds (not traced).
 - **Unarmed specials' animations** (`Attack6`, `Attack7`, the perks'
   custom power attacks, `stomp` with `MeleeStomps`): the first-person
   view plays the group's file when the weapon kind has it.

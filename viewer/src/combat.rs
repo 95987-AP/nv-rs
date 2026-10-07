@@ -341,6 +341,19 @@ fn swing_radius(order: &esm::LoadOrder, who: FormId, rig: Option<(&Walker, &Acto
     }
 }
 
+/// Someone's bounds' bottom and top for a swing's gap (`009a64d0`, vtable
+/// `+0x1d8`/`+0x1dc`): their base's `OBND` z (`world::npc_aim::bound_z`).
+/// A base without `OBND` is given zero bounds: unresolved guess, the empty
+/// bound object's value isn't traced.
+fn melee_bound_z(order: &esm::LoadOrder, base: FormId) -> [f32; 2] {
+    world::npc_aim::bound_z(order, base).unwrap_or([0.0; 2])
+}
+
+/// Whether someone swims (actor `+0x14d`, as `IsSwimming` reads it).
+fn melee_swimming(state: &world::scripting::GameState, who: FormId) -> bool {
+    state.more.seen.get(&who).is_some_and(|s| s.swimming)
+}
+
 /// Whom the player's swing meets (`Actor::MeleeAttack`, `00899200`):
 /// the person or creature [`world::melee::find_target`] picks
 /// (`009a60e0`: within reach of the gap between the bodies and the hit
@@ -374,6 +387,8 @@ pub(crate) fn melee_met(
                 reference: t.reference,
                 position: rig.map_or(t.position, |(w, _)| w.position),
                 radius: swing_radius(order, t.reference, rig),
+                bound_z: melee_bound_z(order, t.base),
+                swimming: melee_swimming(state, t.reference),
                 dead: state.dead.contains(&t.reference),
             }
         })
@@ -1204,6 +1219,10 @@ pub fn player_attack(
         at: player.character.feet,
         heading,
         radius: physics::CharacterShape::PLAYER.radius,
+        bound_z: melee_bound_z(order, world::dialogue::PLAYER_BASE),
+        swimming: melee_swimming(state, PLAYER_REF),
+        slope_difference: world::scripting::game_setting(order, "fAICombatSlopeDifference")
+            .unwrap_or(48.0),
         reach: world::melee::swing_reach(order, weapon.as_ref(), 1.0, false),
         cone: cones.for_attack(attack.attack_group),
         dead_mult: cones.dead_mult,

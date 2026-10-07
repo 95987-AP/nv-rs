@@ -410,6 +410,12 @@ pub struct Body {
     pub position: [f32; 3],
     /// Their collision radius (`008be420`).
     pub radius: f32,
+    /// The bottom and top of their bounds above where they stand
+    /// (vtable `+0x1d8` min and `+0x1dc` max, z; not scaled), read by the
+    /// gap ([`Swing::gap`]).
+    pub bound_z: [f32; 2],
+    /// Swimming (actor `+0x14d`, `005a2030`).
+    pub swimming: bool,
     pub dead: bool,
 }
 
@@ -421,6 +427,13 @@ pub struct Swing {
     pub heading: f32,
     /// The attacker's collision radius.
     pub radius: f32,
+    /// The attacker's bounds' bottom and top z ([`Body::bound_z`]).
+    pub bound_z: [f32; 2],
+    /// The attacker is swimming ([`Body::swimming`]).
+    pub swimming: bool,
+    /// `fAICombatSlopeDifference` (48, `00f63ab0`): the height difference
+    /// from which a combat target's gap is measured flat.
+    pub slope_difference: f32,
     /// [`swing_reach`].
     pub reach: f32,
     /// The hit cone ([`Cones::for_attack`] for the player).
@@ -433,14 +446,31 @@ pub struct Swing {
 
 impl Swing {
     /// The gap to `b` (`009a64d0`): the distance less both radii
-    /// (`009a6770`).
-    pub fn gap(&self, b: &Body) -> f32 {
+    /// (`009a6770`). The distance is the 3D one (`005723b0`), except that
+    /// it's measured flat (z dropped, `00439ef0`/`00457990`) when the
+    /// swinger's bounds' top or bottom lies within `b`'s bounds' height
+    /// span, which is asked when both swim (`005a2030`, actor `+0x14d`) or,
+    /// for the attacker's combat target (`009a60e0` passes 1 only there),
+    /// when their heights differ by at least `fAICombatSlopeDifference`.
+    // Translated from 009a64d0 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn gap(&self, b: &Body, combat_target: bool) -> f32 {
         let d = [
             b.position[0] - self.at[0],
             b.position[1] - self.at[1],
             b.position[2] - self.at[2],
         ];
-        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - (self.radius + b.radius)
+        let mut distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let flat_asked = (self.swimming && b.swimming)
+            || (combat_target && (self.at[2] - b.position[2]).abs() >= self.slope_difference);
+        if flat_asked {
+            let (a_top, a_bottom) = (self.bound_z[1] + self.at[2], self.bound_z[0] + self.at[2]);
+            let (b_top, b_bottom) = (b.bound_z[1] + b.position[2], b.bound_z[0] + b.position[2]);
+            let within = |z: f32| b_bottom <= z && z <= b_top;
+            if within(a_top) || within(a_bottom) {
+                distance = (d[0] * d[0] + d[1] * d[1]).sqrt();
+            }
+        }
+        distance - (self.radius + b.radius)
     }
 
     fn cone(&self, b: &Body) -> (bool, f32) {
@@ -492,7 +522,7 @@ pub fn swing_reach(
 // Translated from 009a60e0 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn find_target(swing: &Swing, combat_target: Option<&Body>, near: &[Body]) -> Option<FormId> {
     if let Some(t) = combat_target {
-        return (swing.cone(t).0 && swing.gap(t) <= swing.reach).then_some(t.reference);
+        return (swing.cone(t).0 && swing.gap(t, true) <= swing.reach).then_some(t.reference);
     }
     let mut best: Option<(FormId, f32)> = None;
     for b in near {
@@ -502,7 +532,7 @@ pub fn find_target(swing: &Swing, combat_target: Option<&Body>, near: &[Body]) -
         if b.dead && !swing.player {
             continue;
         }
-        if swing.gap(b) > swing.reach {
+        if swing.gap(b, false) > swing.reach {
             continue;
         }
         let (inside, angle) = swing.cone(b);
@@ -901,22 +931,61 @@ pub(crate) mod tests {
             reference: FormId(r),
             position: at,
             radius: 20.25,
+            bound_z: [0.0, 128.0],
+            swimming: false,
             dead,
         }
     }
 
-    #[test]
-    fn a_swing_hits_the_one_nearest_the_middle_within_reach() {
-        let swing = Swing {
+    fn test_swing() -> Swing {
+        Swing {
             at: [0.0; 3],
             heading: 0.0,
             radius: 20.25,
+            bound_z: [0.0, 128.0],
+            swimming: false,
+            slope_difference: 48.0,
             reach: 64.0,
             cone: 35.0,
             dead_mult: 2.0,
             player: true,
             vats_playback: false,
+        }
+    }
+
+    #[test]
+    fn the_gap_is_flat_for_a_combat_target_on_a_slope_or_both_swimming() {
+        // 009a64d0: 60 north and 60 up. Standing heights 0..128 overlap.
+        let swing = test_swing();
+        let up = body(1, [0.0, 60.0, 60.0], false);
+        let three_d = (60f32 * 60.0 * 2.0).sqrt() - 40.5;
+        assert!((swing.gap(&up, false) - three_d).abs() < 1e-3);
+        // A combat target 60 higher (>= fAICombatSlopeDifference 48): flat.
+        assert!((swing.gap(&up, true) - (60.0 - 40.5)).abs() < 1e-3);
+        // 40 higher: under the slope difference, still 3D.
+        let low = body(2, [0.0, 60.0, 40.0], false);
+        let three_d = (60f32 * 60.0 + 40.0 * 40.0).sqrt() - 40.5;
+        assert!((swing.gap(&low, true) - three_d).abs() < 1e-3);
+        // Both swimming: flat whoever it is.
+        let swimmer = Swing {
+            swimming: true,
+            ..swing
         };
+        let low_swimmer = Body {
+            swimming: true,
+            ..low
+        };
+        assert!((swimmer.gap(&low_swimmer, false) - (60.0 - 40.5)).abs() < 1e-3);
+        // Heights apart (200 up: neither end of the swinger's 0..128 is
+        // within 200..328): 3D even for the combat target.
+        let above = body(3, [0.0, 60.0, 200.0], false);
+        let three_d = (60f32 * 60.0 + 200.0 * 200.0).sqrt() - 40.5;
+        assert!((swing.gap(&above, true) - three_d).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_swing_hits_the_one_nearest_the_middle_within_reach() {
+        let swing = test_swing();
         // 100 north (gap 59.5) and 100 at 20 degrees: the straight one.
         let off = 20f32.to_radians();
         let ahead = body(1, [0.0, 100.0, 0.0], false);
