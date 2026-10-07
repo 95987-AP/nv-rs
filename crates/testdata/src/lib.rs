@@ -18,6 +18,7 @@ pub mod launchers;
 pub mod living;
 pub mod lod;
 pub mod long_paths;
+pub mod melee;
 pub mod more;
 pub mod music;
 pub mod packages;

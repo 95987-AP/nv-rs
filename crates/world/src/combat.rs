@@ -263,12 +263,17 @@ impl Weapon {
     }
 
     /// How far a melee attack reaches between the bodies' edges
-    /// (`findings\hits.md` §6): the weapon's reach × 128, 64 unarmed (× the
+    /// (`CombatUtilities::GetWeaponReach`, Xbox PDB, `009a69c0`): a melee
+    /// weapon's (animation types 0–2, hand-to-hand ones too: the brass
+    /// knuckles' 1 gives 128) reach × `fCombatDistance` (128), a gun 128,
+    /// no weapon a person's `fHandReachMult` (0.5) × 128 = 64 (× the
     /// attacker's scale, left to the caller).
+    // Translated from 009a69c0 (decompiled, FalloutNV.exe 1.4.0.525)
     pub fn melee_reach(weapon: Option<&Weapon>) -> f32 {
         match weapon {
-            Some(w) if w.animation != 0 => w.reach * 128.0,
-            _ => 64.0,
+            Some(w) if w.is_melee() => w.reach * 128.0,
+            Some(_) => 128.0,
+            None => 64.0,
         }
     }
 
@@ -347,6 +352,9 @@ pub struct Hit {
     pub multiplier: f32,
     /// What it did to the part.
     pub hurt: Option<crate::body_parts::PartHurt>,
+    /// The attacker's "Knockdown Chance" perk knocked them down
+    /// (`world::melee::knocks_down`).
+    pub knocked_down: bool,
 }
 
 /// The damage one of the attacker's hits with a weapon (or fists, `None`)
@@ -360,7 +368,10 @@ pub struct Hit {
 /// (`fAVDUnarmedDamageBase` 0.5 + `…Mult` 0.05 × Unarmed) for
 /// hand-to-hand and fists; C = 1 above 75% condition, else 1 − 0.67 ×
 /// (0.75 − condition) (the `fDamage…WeapCond…` settings aren't used for
-/// this). `power` is `fDamagePowerAttackBonus` (2) for a power attack.
+/// this). `power` is `fDamagePowerAttackBonus` (2) for a power attack
+/// with a weapon (hand-to-hand ones too); fists' damage is worked out
+/// with 1 there (`00646310`) and a power attack's bonus comes after the
+/// armour instead ([`fists_power_bonus`]).
 pub fn weapon_damage(
     order: &LoadOrder,
     state: &GameState,
@@ -431,7 +442,7 @@ pub fn weapon_damage_at(
             )
         })
         .unwrap_or(0.0);
-    let power = if power {
+    let power = if power && weapon.is_some() {
         setting("fDamagePowerAttackBonus", 2.0)
     } else {
         1.0
@@ -444,6 +455,22 @@ pub fn weapon_damage_at(
     };
     let scale = state.scales.get(&attacker).copied().unwrap_or(1.0);
     (base * skill_factor * power + added) * condition * scale
+}
+
+/// A fists' power attack's bonus (`009b5170`): with no weapon, a person's
+/// (not a creature's) power attack doesn't change the damage
+/// (`00646310` asks `00644ce0` with 1) but sets the hit's bonus
+/// multiplier (`fBonusMult`, `+0x5c`, `009b7840`: the larger of it and
+/// what's there) to `fDamagePowerAttackBonus` (exe 3, data 2); the body
+/// part's multiplier may raise it (`009b6620`), and it multiplies the
+/// damage after the armour (`009b73d0`). 0: none.
+// Translated from 009b5170 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn fists_power_bonus(order: &LoadOrder, power: bool) -> f32 {
+    if power {
+        game_setting(order, "fDamagePowerAttackBonus").unwrap_or(3.0)
+    } else {
+        0.0
+    }
 }
 
 /// [`weapon_damage`] for a weapon, without a power attack.

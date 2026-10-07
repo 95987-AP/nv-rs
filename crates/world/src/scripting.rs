@@ -3199,6 +3199,30 @@ impl<'a> Runner<'a> {
         part: Option<u8>,
         power: bool,
     ) -> Option<crate::combat::Hit> {
+        self.blow_at(
+            attacker,
+            target,
+            weapon,
+            part,
+            crate::melee::Blow {
+                power,
+                special: crate::melee::Special::None,
+            },
+        )
+    }
+
+    /// [`Self::strike_at`] with a melee blow's particulars
+    /// (`world::melee::Blow`): a power attack, an unarmed uppercut or
+    /// cross (`00899200` → `0089a760`).
+    pub fn blow_at(
+        &mut self,
+        attacker: FormId,
+        target: FormId,
+        weapon: Option<&crate::combat::Weapon>,
+        part: Option<u8>,
+        blow: crate::melee::Blow,
+    ) -> Option<crate::combat::Hit> {
+        let power = blow.power;
         let order = self.order;
         let names = |b: &script::Block, id: Option<FormId>| match b.args.first() {
             None => true,
@@ -3233,10 +3257,15 @@ impl<'a> Runner<'a> {
         // the weapon's damage (a creature's bite, or fists), a critical
         // adding the weapon's critical damage, the armour, then a sneak
         // attack's multiplier.
+        // Fists' power attack: a bonus multiplier after the armour
+        // (`world::combat::fists_power_bonus`); a creature's own attack
+        // has none.
+        let mut fists_bonus = 0.0;
         let mut damage = match weapon {
             Some(w) => crate::combat::weapon_damage(order, self.state, attacker, Some(w), power),
             None => crate::combat::creature_damage(order, attacker).unwrap_or_else(|| {
-                crate::combat::weapon_damage(order, self.state, attacker, None, power)
+                fists_bonus = crate::combat::fists_power_bonus(order, power);
+                crate::combat::weapon_damage(order, self.state, attacker, None, false)
             }),
         };
         // V.A.T.S.'s melee moves and automatic melee weapons (`world::vats`).
@@ -3282,9 +3311,10 @@ impl<'a> Runner<'a> {
         // and the hit's multiplier (`009b6620`).
         let at = crate::body_parts::part_hit(order, self.state, target, weapon, part, after_armour);
         let mut dealt = at.health_damage;
-        // The multiplier last (`009b73d0`): with a part found, a sneak
-        // attack's bonus when it's at least 1, then the damage × it.
-        let mut multiplier = at.multiplier;
+        // The multiplier last (`009b73d0`): the part's (or a fists' power
+        // attack's bonus, the larger: `009b7840`), a sneak attack's bonus
+        // when it's at least 1, then the damage × it.
+        let mut multiplier = at.multiplier.max(fists_bonus);
         if multiplier > 0.0 {
             if multiplier >= 1.0 && sneak {
                 multiplier *=
@@ -3303,6 +3333,7 @@ impl<'a> Runner<'a> {
             &at,
             critical,
             (attacker, weapon_id),
+            blow.special,
         );
         // The player hitting a person who isn't fighting them: an assault,
         // unless a friend or ally forgives it (`world::crime::assault`);
@@ -3321,6 +3352,18 @@ impl<'a> Runner<'a> {
             let dead_now = self.state.dead.contains(&target);
             crate::combat::critical_effect(order, self.state, target, weapon, was_alive, dead_now);
         }
+        // A V.A.T.S. special's spell (the Mauler's knockdown), cast by the
+        // one struck on themselves (`world::vats::special_effect`).
+        if let Some(spell) = crate::vats::special_effect(order, self.state, attacker, weapon) {
+            crate::magic::add_spell(order, self.state, target, spell, target, false);
+        }
+        // The attacker's "Knockdown Chance" perks (Super Slam,
+        // `world::melee::knockdown_chance`).
+        let chance = crate::melee::knockdown_chance(order, self.state, attacker, weapon_id);
+        let knocked_down = chance > 0.0 && {
+            let roll = (self.state.roll() % 1_000_000) as f32 / 1_000_000.0;
+            crate::melee::knocks_down(chance, roll)
+        };
         self.state
             .hits_taken
             .push((target, part.map_or(-1, i32::from), killed));
@@ -3350,6 +3393,7 @@ impl<'a> Runner<'a> {
             critical,
             multiplier,
             hurt,
+            knocked_down,
         })
     }
 
@@ -3469,6 +3513,7 @@ impl<'a> Runner<'a> {
             critical,
             multiplier: 0.0,
             hurt: None,
+            knocked_down: false,
         })
     }
 
