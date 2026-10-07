@@ -72,7 +72,7 @@ off, no auth token. Agents reach it through the project's Python bridge (stdio M
 is character for character identical to a Ghidra script using the GUI default decompiler options, and identical
 through the MCP bridge. It is NOT identical to our `Decompile.java` run through `ghidra.ps1`: the server applies the
 program's decompiler options ("respect read-only flags"), so constants read from read-only data are folded in
-(`0.001`, `0.017453292`, `0.5`, `3.0`) where `ghidra.ps1` leaves `DAT_01017d00`, `_DAT_01023128` and so on. The code
+(`0.001`, `0.017453292`, `0.5`, `3.0`) where `ghidra.ps1` leaves the data references (01017d00, 01023128 and so on) unresolved. The code
 is otherwise the same, same variables, same control flow. Both are valid; the server form is easier to read, the
 script form shows the data addresses. Cite which one a finding used. (Making `Decompile.java` use
 `DecompileOptions.grabFromProgram` would make the two agree.)
