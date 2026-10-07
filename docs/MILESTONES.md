@@ -19,8 +19,8 @@ history is retained separately; do not publish its build outputs.
 | Milestone | Completion gate | Status |
 | --- | --- | --- |
 | M1: Opening and persistent world | Retail opening movie and scripted wakeup, animations/movement, Doc Mitchell's creation sequence, exit into Goodsprings, talk/interact, save, restart and reload. Player, NPC, quest, inventory and reference state survives. Compare with the original game. | Active; initial live run and package-action reader complete; choreography and full route pending. |
-| M2: Core gameplay loop | Sunny's tutorial and a representative Goodsprings quest branch through their own scripts: movement, weapons/reloads, damage/death, AI, dialogue, loot, trade and progression. Save/reload at intermediate stages. Verify melee and V.A.T.S.; track other weapon classes explicitly. | Partial implementation reported; acceptance pending. |
-| M3: Base-game systems and campaign | Coverage matrix for quests, actor/creature types, weapon classes, effects, factions/crime, companions, travel and menus. Representative routes and ultimately campaign completion, with evidence and regression tests for blockers. | Inventory and acceptance routes needed. |
+| M2: Core gameplay loop | Sunny's tutorial and a representative Goodsprings quest branch through their own scripts: movement, weapons/reloads, damage/death, AI, dialogue, loot, trade and progression. Save/reload at intermediate stages. Verify melee and V.A.T.S.; track other weapon classes explicitly. | Partial implementation reported; acceptance pending. Crafting (`ShowRecipeMenu`, [CRAFTING.md](CRAFTING.md)): rules and the game's menu done; tutorial help and item card remain. |
+| M3: Base-game systems and campaign | Coverage matrix for quests, actor/creature types, weapon classes, effects, factions/crime, companions, travel and menus. Representative routes and ultimately campaign completion, with evidence and regression tests for blockers. | Inventory and acceptance routes needed. Terminals ([HACKING.md](HACKING.md), [TERMINALS.md](TERMINALS.md)): who gets in, hacking and the terminal's own menu done; rendered terminals (the menus on the terminal's screen) remain. Item scripts ([ITEM_SCRIPTS.md](ITEM_SCRIPTS.md)): per-item scripts with `OnAdd`, `OnEquip`, `OnUnequip`, `GameMode`, `RemoveMe`, `DropMe`, `OnDrop` and `Drop` into the world, and the Pip-Boy's Drop (the pad's X: its refusals and "How many?"). Repairing ([REPAIR.md](REPAIR.md)): merchants' repair services (`ShowRepairMenu`) and the Pip-Boy's repair screen done, NPC skills now with their offsets; the player's armour wears from hits and its DT/DR follows its condition. Companions ([COMPANIONS.md](COMPANIONS.md)): trading things with them (`OpenTeammateContainer`) and their wheel of orders (`CompanionWheelMenu`, with the UI's `radial` tiles) done; their re-equipping and the wheel's Back Up remain. Caravan ([CARAVAN.md](CARAVAN.md)): the cards, the player's collection (`AddCardToPlayer`) and the rules (placing, values, jacks and jokers, drawing, the end) the opponent's AI (`ProcessAI`, with the exe's own sort), the bet and results, the menu's state machine (`world::caravan::menu`), its tiles (`ui::menus::caravan`) and the 3D table (`cellview::caravan`, the viewer's `caravan_table`) done: playable in the viewer from `ShowCaravanMenu`; the tutorials remain. Casinos ([CASINO.md](CASINO.md)): the record, the player's winnings, levels and comps quest, refusals and the anti-cheat lock, settling chips, and the slot machines' rules and states (`world::casino`) done; the games on screen and blackjack's and roulette's rules remain. Weapon mods ([WEAPON_MODS.md](WEAPON_MODS.md)): slots, fitting and their effects on damage, clip, spread, weight, attack speed, projectiles, V.A.T.S. to-hit, condition and worth, the Pip-Boy's mod screen, the modded models (the player's first-person objects, `WNAM`/`WNM{n}`) split beams (projectiles, cone, the shown damage) and silencers (`world::noise`: attacks' noise, `VNAM`/`NAM5` sound levels for `fActorAlertSoundTimer`, heard by detection) done; the remaining effects remain. |
 | M4: Stability and performance | Recorded routes and extended play without crashes or lost state. Measure frame times, memory, loading and streaming stalls on target hardware. Publish traces/settings and agreed budgets; remove measured stalls without changing behavior. | Not measured here; instrument earlier when it helps M1/M2. |
 | M5: DLC and mods | Official DLC progression and reproducible plugin/archive/loose-file, script and content-extension cases; document interfaces and exclusions. | Load-order infrastructure exists; broad compatibility unverified. DLC track started by the maintainer alongside M1 (2026-10-05): Dead Money research pass in [DEAD_MONEY.md](DEAD_MONEY.md); next action: run its data pass. |
 | M6: VR | Shared simulation with action inputs, independent aim and multiple views. Headset-tested tracking, controllers, menus, combat, comfort and frame budget. | Architecture documented; headset validation pending. |
@@ -66,6 +66,21 @@ original game**.
   `claude/m2-pipboy-complete`).
 **Next action:** review and merge the `claude/m*-*` PRs into `main`, then
 play the Goodsprings route in the play copy and file F12 reports.
+
+Chazm's pull request (slaterain/nv-rs#11), 2026-10-06 (merged on
+`claude/contrib-chazm`, not yet in the integration branch): the Bink intro
+movie (bit-exact decoder, played on `--new-game`), crafting, terminal
+hacking and the terminal menu, item scripts, Repair, weapon mods, attack
+noise, companions (trading, the wheel), Caravan, casino rules and slot
+machines. Where the Dead Money merge already had a version (crafting,
+caravan cards, companion and terminal functions, casino menus) one
+implementation is kept, Chazm's traced one with the other's traced details
+folded in; the Pip-Boy's Drop is one path (mouse and pad X); his mouse
+capture is replaced by ours. Unit tests pass; not compared with the
+original game. Triage and what was rejected:
+[CONTRIB_CHAZM.md](CONTRIB_CHAZM.md). **Next action:** the lead merges
+`claude/contrib-chazm` into the integration branch after reviewing the
+acceptance results.
 
 Look-IK batch, 2026-10-06 (local session, branch `claude/m1-look-ik`).
 Corrections: ADR-0004 (restructure) was rejected on 2026-10-06 and the
@@ -152,6 +167,24 @@ Evidence and gaps (sneak/jump groups, body fade, pivot node term):
 [CAMERA.md](CAMERA.md). **Next:** compare F/wheel/wall behaviour and the
 couch entry framing in the original.
 
+Movie batch, 2026-10-06 (Claude, branch `claude/m1-bink-intro`): new
+`crates/bink` decodes Bink 1 video with tables read from the install's
+`binkw32.dll`; `nvinspect <movie.bik> info|frames` and the 32-bit
+`research/nv-oracle` tool `nv-bink` (the game's own library as oracle)
+compare them frame by frame. All 8,692 intro frames match in Y, U and V;
+982 core tests pass. The shipped `VCG00` plays `FNVIntro.bik` and jumps to
+stage 90, so the burial stages (and `TriggerScreenSplatter`) never run.
+Audio (`bink::AudioDecoder`, `nvinspect <movie.bik> audio`) matches the
+DLL's `BinkGetTrackData` output in length and within one step on all
+27.8 million samples. Colour conversion matches the DLL's 32-bit output on
+all frames. `PlayBink`'s four flags (interruptible, mute, pause music,
+letterbox) and the game's tiles, filtering and placement were read from the
+exe; the viewer now plays the intro on `--new-game` (`viewer/src/movie.rs`)
+with the game's clock stopped and input withheld, and the game continues
+into Doc's wake-up afterwards (full 290 s run). The command tables were
+confirmed at 40-byte entries. Evidence: [MOVIES.md](MOVIES.md). **Next
+action:** crafting (`ShowRecipeMenu`, M2's campfire tutorial).
+
 Outstanding M1 gates:
 - Exact opening camera transition replay and Doc/player assistance timing.
 - Doc head/eye tracking: ported, unit-tested and seen in the viewer,
@@ -160,8 +193,11 @@ Outstanding M1 gates:
   original-game comparison remains
   ([OPENING_LOOK_IK.md](OPENING_LOOK_IK.md),
   [HEAD_TRACK_TARGET.md](HEAD_TRACK_TARGET.md)).
-- Original face editor instead of auto-accept, and opening movie playback
+- Original face editor instead of auto-accept
   ([FACE_CREATION.md](FACE_CREATION.md)).
+- Opening movie playback ([MOVIES.md](MOVIES.md)): done in the viewer
+  with the game's presentation; remaining differences (filtering in linear
+  light, the handler's sound fade) are listed there.
 - In-progress animation save restoration, full character-creation route,
   exit to Goodsprings and save/restart/reload acceptance.
 - SPECIAL's remaining visual/input fidelity and progression comparison

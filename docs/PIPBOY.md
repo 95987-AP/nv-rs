@@ -62,9 +62,14 @@ Pictures are kept privately in `%USERPROFILE%\nv-re\work\pipboylive-2026-10-06`,
 
 ## Repair and Mod
 
-The Repair menu (ITEMS R), the weapon mod menu (ITEMS X) and merchant
-repair are **owned by another contributor's branch** (to be merged); the R
-and X buttons here stay as they were (lit by `00781680`, no menu).
+The Repair menu (ITEMS R, id 8), the weapon mod menu (ITEMS X, id 0x13)
+and merchant repair are Chazm's (merged 2026-10-06, see
+[CONTRIB_CHAZM.md](CONTRIB_CHAZM.md)): [REPAIR.md](REPAIR.md) and
+[WEAPON_MODS.md](WEAPON_MODS.md). Clicking R or X with an item that can be
+mended (`world::repair::can_repair`, `00781860`) or a weapon chosen opens
+the screen over ITEMS (`ui::pipboy::repair`, `ui::pipboy::item_mod`); the
+screens take keys only (their mouse code isn't translated, so the pointer
+and wheel do nothing while they're up).
 
 ## Traced behaviour (implemented)
 
@@ -75,7 +80,7 @@ and X buttons here stay as they were (lit by `00781680`, no menu).
 | No tile under the cursor with a Pip-Boy menu on top and the cursor off the screen | `007126c0`, `00717990`, `00717920` |
 | Mouse over/off, click, drag, wheel via the interface | `0070c4a0`, `00717e70`, `00717ef0`, `00718080` |
 | ITEMS: row 0x1d mouse-over chooses + card + `UIPipBoyScroll` when listindex changes; off clears card; click equips/uses; tabs 0x18..0x1c with the knob | `00780ff0`, `00781620`, `00780140`, `00782470` → `007fa0f0`, `007f8610` |
-| ITEMS Drop: right button going down with an item chosen and Tab up clicks 7 (`00781ba0`); quest item → `sDropQuestItemWarning`; count above `iInventoryAskQuantityAt` (5) → "How many?" from all of them (`007aba00`, callback `00780c50`), else one; dropped `fPlayerDropDistance` (100) + the item's size in front, one reference keeping the count | `00780140` case 7, `00780c50`, `009614b0` |
+| ITEMS Drop: right button going down with an item chosen and Tab up clicks 7 (`00781ba0`); the pad's X (`xbuttonx` → `IM_DropButton`, shown with a pad only; not clickable: `UIMenuCancel`) clicks it too (`0070c4a0`, `0070f6e0`); refusals in turn (`world::items::drop_refusal`): quest item → `sDropQuestItemWarning`, in the air → `sNoJumpWarning` (equipped during an action → `sDropEquippedItemWarning`, the action not tracked); count above `iInventoryAskQuantityAt` (5) → "How many?" from all of them (`007aba00`, callback `00780c50`), else one; dropped `fPlayerDropDistance` (100) + the item's size in front, one reference keeping the count | `00780140` case 7, `00780c50`, `009614b0` |
 | STATS: rows chosen on mouse-over with per-page knob click; status buttons 0x1c/0x1d/0x1e (+0x35/0x37/0x39 hardcore) | `007dc1b0`, `007dfd20`, `007db380`, `007e0160`, `007e0060` |
 | STATS healing mode: the pointer onto a damaged limb (the file makes only those targets) with Stimpaks (Doctor's Bags in hardcore) aims the body part controller at it, `UIPipBoyHighlight`, turns healing mode on; leaving the limb turns it off; a click on it presses the Stimpak's (hardcore: Doctor's Bag's) button. An effect of archetype 34 or 35 added while it's on is aimed at that limb's condition (`00823210` → `00589f50`, part → actor value `007df9c0`); a "value and parts" effect then gives that part all of it and health × `fMagicVACPartTargetedMult` (`0082b970`) | `007dc1b0` case 0, `007dc490`, `007db380`, `007e0230` |
 | ITEMS keyring: keys (`KEYM`) never in the tabs (`00782620`); with keys carried the Misc tab ends with a row `sKeyring`, id 0x1e (`00782a90`, sorted last by `007824e0`); its row shows `item_keyring.dds`; clicked, `_KeyringOpen` and the keys listed (`00782810`); Cancel (10) or another tab closes it; Drop there plays `UIVATSInsufficientAP` | `00780140` cases 0x1e, 10, 7; `00780ff0` |
@@ -171,9 +176,9 @@ live checks above are of the viewer only. Not implemented:
   (`007df620`), the Stimpak / Doctor's Bag buttons' `target` by
   `007e05f0` / `007e06f0`; "limb condition" effects (archetype 35, the
   Doctor's Bag) do nothing in the world yet, aimed or not.
-- ITEMS: Repair and Mod (another contributor's branch, above); the hot
-  keys' pad assignment; the other Drop refusals (during an action, in the
-  air, worn items that can't come off, no room), the drop's shape cast,
+- ITEMS: the repair and mod screens' mouse code; the hot keys' pad
+  assignment; the other Drop refusals (the player's current action,
+  worn items that can't come off, no room), the drop's shape cast,
   ten headings and physics; the sort's ties by condition and equipped.
 - DATA: the local map and the radio are implemented and seen live in the
   viewer only (pictures, fog, colours, marker placement not compared with

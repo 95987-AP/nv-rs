@@ -440,6 +440,7 @@ mod tests {
             aim_arc: 0.0,
             semi_auto_delay: (0.0, 0.0),
             speed: 1.0,
+            cone_mult: 1.0,
         };
         throw(Launch {
             thrower: PLAYER_REF,

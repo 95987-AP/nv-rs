@@ -30,6 +30,16 @@ pub const CARDS: [(&str, u32); 13] = [
     ("DamageThresholdInfo", 0x1000),
 ];
 
+/// What a pad button did ([`ItemsMenu::pad_button`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadPress {
+    /// The button with this `id` clicked.
+    Click(i32),
+    /// Its button can't be clicked now.
+    Refused,
+    Nothing,
+}
+
 /// The ITEMS menu.
 pub struct ItemsMenu {
     pub menu: TileId,
@@ -79,14 +89,19 @@ pub const ROW_ID: i32 = 0x1d;
 /// The Drop button's `id` (`IM_DropButton`, shown with a pad only; the
 /// right mouse button clicks it, `00781ba0`).
 pub const DROP_ID: i32 = 7;
+/// The Repair button's `id` (`IM_RepairButton`, `00780140` case 8).
+pub const REPAIR_ID: i32 = 8;
+/// The Mod button's `id` (`00780140` case 0x13).
+pub const MOD_ID: i32 = 0x13;
 /// The first tab button's `id` (0x18 Weapons .. 0x1c Ammo, `0077fc10`).
 pub const FIRST_TAB_ID: i32 = 0x18;
 
-/// An item's row text (`00782850`): "name (count)" for more than one
-/// ("name+ (count)" for a modded weapon, not here).
+/// An item's row text (`00782850`): "name (count)" for more than one,
+/// "name+ (count)" when they're a modded weapon.
 pub fn row_text(item: &ItemLine) -> String {
     if item.count > 1 {
-        format!("{} ({})", item.name, item.count)
+        let plus = if item.modded { "+" } else { "" };
+        format!("{}{plus} ({})", item.name, item.count)
     } else {
         item.name.clone()
     }
@@ -484,6 +499,12 @@ impl ItemsMenu {
         }
     }
 
+    /// The chosen row's item.
+    pub fn chosen(&self, input: &PipboyInput) -> Option<ItemLine> {
+        let items = self.tab_items(input);
+        self.list.selected.and_then(|i| items.get(i)).cloned()
+    }
+
     /// Whether the hot key wheel shows (`00701740`).
     pub fn wheel_shown(&self, ui: &mut Ui) -> bool {
         self.wheel.is_some_and(|w| ui.number(w, t::VISIBLE) != 0.0)
@@ -641,6 +662,35 @@ impl ItemsMenu {
     /// (`UIPipBoyScroll`), the A button equips, takes off or uses the
     /// chosen item. (Page Up presses Mod and Page Down the hot keys: not
     /// here yet.)
+    /// The pad's X or Y (Shift + Enter, Alt + Enter: `0070c4a0` turns
+    /// them into 0xb and 0xc for `0070f6e0`): the `xbuttonx` / `xbuttony`
+    /// reference found from the chosen row up to the menu (`IM_DropButton`,
+    /// `IM_RepairButton`). A shown tile that can be clicked is; a shown one
+    /// that can't gets `UIMenuCancel` (`00717280(2)`); a hidden one
+    /// (without a pad, `_Has360Controller` off) nothing.
+    pub fn pad_button(&self, ui: &mut Ui, key: Key) -> PadPress {
+        let trait_id = match key {
+            Key::ButtonX => 4063,
+            Key::ButtonY => 4064,
+            _ => return PadPress::Nothing,
+        };
+        let from = self
+            .list
+            .selected
+            .and_then(|i| self.list.rows.get(i).copied())
+            .unwrap_or(self.menu);
+        match crate::menu::reference(ui, from, trait_id) {
+            Some((tile, target)) if target == t::CLICKED && ui.shown(tile) => {
+                if ui.number(tile, t::TARGET) != 0.0 {
+                    PadPress::Click(ui.number(tile, t::ID) as i32)
+                } else {
+                    PadPress::Refused
+                }
+            }
+            _ => PadPress::Nothing,
+        }
+    }
+
     pub fn key(&mut self, ui: &mut Ui, key: Key, input: &PipboyInput) -> Vec<Action> {
         let mut out = Vec::new();
         match key {
@@ -707,8 +757,11 @@ impl ItemsMenu {
     /// turns to its tab when it isn't the one shown; a row (0x1d) equips,
     /// takes off or uses its item; Drop (7, the right button on PC) drops
     /// the chosen item (the game's checks and "how many?" are the
-    /// caller's). (Repair 8, Cancel 10, Mod 0x13 and the keyring 0x1e are
-    /// not here yet.)
+    /// caller's); Repair (8) on a chosen item that can be mended and Mod
+    /// (0x13) on a chosen weapon open their screens (`UIMenuMode`; the
+    /// caller answers with [`super::Pipboy::open_repair`] /
+    /// [`super::Pipboy::open_item_mod`]); the keyring (0x1e) and its
+    /// Cancel (10) open and close it.
     pub fn click(
         &mut self,
         ui: &mut Ui,
@@ -734,6 +787,18 @@ impl ItemsMenu {
                     } else {
                         Action::Drop(item.form)
                     });
+                }
+            }
+            REPAIR_ID => {
+                if let Some(item) = self.chosen(input).filter(|i| i.repairable) {
+                    out.push(Action::Sound(super::repair::MENU_SOUND.into()));
+                    out.push(Action::OpenRepair(item.form));
+                }
+            }
+            MOD_ID => {
+                if let Some(item) = self.chosen(input).filter(|i| i.tab == ItemTab::Weapons) {
+                    out.push(Action::Sound(super::item_mod::MENU_SOUND.into()));
+                    out.push(Action::OpenItemMod(item.form));
                 }
             }
             KEYRING_ID if !self.keyring => self.set_keyring(ui, true, input),
@@ -841,7 +906,19 @@ pub(crate) mod tests {
             weight_class: None,
             effects: None,
             repairable: false,
+            modded: false,
         }
+    }
+
+    /// `00782850`: the count after more than one; "+" for modded ones.
+    #[test]
+    fn row_texts() {
+        let mut gun = item("9mm Pistol", ItemTab::Weapons);
+        assert_eq!(row_text(&gun), "9mm Pistol");
+        gun.count = 2;
+        assert_eq!(row_text(&gun), "9mm Pistol (2)");
+        gun.modded = true;
+        assert_eq!(row_text(&gun), "9mm Pistol+ (2)");
     }
 
     #[test]
@@ -887,6 +964,9 @@ pub(crate) mod tests {
     /// `inventory_menu.xml` and `item_stats_display.xml` cut down to the
     /// tiles the code finds by `id` and name.
     const MENU: &str = r#"<menu name="InventoryMenu"><locus>&true;</locus>
+      <xbuttonx><ref src="IM_DropButton" trait="clicked"/></xbuttonx>
+      <image name="IM_DropButton"><id>7</id><target>&false;</target>
+        <visible><copy src="globals()" trait="_Has360Controller"/></visible></image>
       <rect name="caps"><id>0</id></rect><rect name="hp"><id>1</id></rect>
       <rect name="dr"><id>2</id><visible>&true;</visible></rect><rect name="wg"><id>3</id></rect>
       <rect name="dt"><id>21</id></rect>
@@ -998,5 +1078,39 @@ pub(crate) mod tests {
         assert_eq!(ui.string(dr_card, value).unwrap(), "--");
         assert_eq!(ui.number(tile(&ui, "ConditionInfo"), t::USER0 + 6), 0.0);
         assert_eq!(ui.number(tile(&ui, "DPSInfo"), t::VISIBLE), 0.0);
+    }
+
+    #[test]
+    fn the_pads_x_drops_only_with_a_pad_and_an_item() {
+        let globals =
+            r#"<rect name="Strings"><_Has360Controller>&false;</_Has360Controller></rect>"#;
+        let mut read = |p: &str| match p {
+            crate::pipboy::ITEMS_FILE => Some(MENU.as_bytes().to_vec()),
+            crate::game::GLOBALS_FILE => Some(globals.as_bytes().to_vec()),
+            _ => None,
+        };
+        let mut ui = crate::game::new_ui(
+            &mut read,
+            &|_: &str, _: &str| None,
+            std::collections::HashMap::new(),
+            1920,
+            1080,
+        );
+        let mut m = ItemsMenu::load(&mut ui, &mut read).unwrap();
+        ui.set_number(m.menu, t::VISIBLE, 1.0);
+        m.fill(&mut ui, &input());
+        ui.refresh();
+        let drop = by_id(&ui, m.menu, 7).unwrap();
+        assert_eq!(ui.number(drop, t::TARGET), 1.0);
+        // No pad: the button is hidden and X does nothing.
+        assert_eq!(m.pad_button(&mut ui, Key::ButtonX), PadPress::Nothing);
+        crate::game::set_pad(&mut ui, true);
+        ui.refresh();
+        assert_eq!(m.pad_button(&mut ui, Key::ButtonX), PadPress::Click(7));
+        assert_eq!(m.pad_button(&mut ui, Key::ButtonY), PadPress::Nothing);
+        // Nothing chosen: shown but not clickable.
+        m.show_card(&mut ui, None);
+        ui.refresh();
+        assert_eq!(m.pad_button(&mut ui, Key::ButtonX), PadPress::Refused);
     }
 }

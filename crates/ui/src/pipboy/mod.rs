@@ -18,7 +18,9 @@
 
 pub mod data;
 pub mod gather;
+pub mod item_mod;
 pub mod items;
+pub mod repair;
 pub mod screen;
 pub mod stats;
 
@@ -27,7 +29,9 @@ use crate::names::t;
 use crate::tile::{TileId, Ui};
 
 pub use data::DataMenu;
+pub use item_mod::ItemModMenu;
 pub use items::ItemsMenu;
+pub use repair::RepairMenu;
 pub use stats::StatsMenu;
 
 /// The three menus' files.
@@ -106,8 +110,11 @@ pub struct ItemLine {
     /// 0x08), 2 heavy (0x80).
     pub weight_class: Option<u8>,
     pub effects: Option<String>,
-    /// Repair can be pressed for it (`00781860`).
+    /// ITEMS' Repair button can be pressed on it (`00781860`,
+    /// `world::repair::can_repair`).
     pub repairable: bool,
+    /// A weapon with mods fitted (`ExtraWeaponModFlags`, the row's "+").
+    pub modded: bool,
 }
 
 /// A quest in the DATA menu.
@@ -374,6 +381,24 @@ pub enum Action {
     ScrollKnob {
         down: bool,
     },
+    /// Open the repair screen on an item (ITEMS' Repair, `00780140` case
+    /// 8): the game answers with [`Pipboy::open_repair`].
+    OpenRepair(u32),
+    /// Mend `chosen` with one `part` (`007b5d80`): the game answers with
+    /// [`Pipboy::repaired`].
+    Repair {
+        chosen: u32,
+        part: u32,
+    },
+    /// Open the weapon mod screen on a weapon (ITEMS' Mod, `00780140` case
+    /// 0x13): the game answers with [`Pipboy::open_item_mod`].
+    OpenItemMod(u32),
+    /// Fit a mod from the player's things to the weapon (`00783af0`): the
+    /// game answers with [`Pipboy::item_modded`].
+    FitMod {
+        weapon: u32,
+        item: u32,
+    },
 }
 
 /// A tile found by its `id` in a menu (the menu objects keep their tiles
@@ -416,7 +441,8 @@ pub(crate) fn load_menu(
         .map_err(|e| format!("{file}: {e}"))
 }
 
-/// The Pip-Boy: its three menus and which shows.
+/// The Pip-Boy: its three menus and which shows, and the repair screen
+/// opened from ITEMS.
 pub struct Pipboy {
     pub stats: StatsMenu,
     pub items: ItemsMenu,
@@ -425,6 +451,14 @@ pub struct Pipboy {
     pub anims: crate::anim::Animations,
     blinking: Option<usize>,
     pub section: Section,
+    /// The repair screen (none when its file can't be read).
+    pub repair: Option<RepairMenu>,
+    /// It's up, over ITEMS.
+    pub repairing: bool,
+    /// The weapon mod screen (none when its file can't be read).
+    pub item_mod: Option<ItemModMenu>,
+    /// It's up, over ITEMS.
+    pub modding: bool,
     /// The interface's pointer state over the shown menu (the tile under
     /// the pointer, the one the button went down on, a drag).
     pub interface: Interface,
@@ -513,6 +547,8 @@ impl Pipboy {
         let stats = StatsMenu::load(ui, read)?;
         let items = ItemsMenu::load(ui, read)?;
         let data = DataMenu::load(ui, read)?;
+        let repair = RepairMenu::load(ui, read).ok();
+        let item_mod = ItemModMenu::load(ui, read).ok();
         let mut p = Pipboy {
             stats,
             items,
@@ -521,6 +557,10 @@ impl Pipboy {
             blinking: None,
             section: Section::Stats,
             interface: Interface::default(),
+            repair,
+            repairing: false,
+            item_mod,
+            modding: false,
         };
         p.show(ui, Section::Stats);
         Ok(p)
@@ -528,6 +568,12 @@ impl Pipboy {
 
     /// The shown menu's tile.
     pub fn menu(&self) -> TileId {
+        if let Some(r) = self.repair.as_ref().filter(|_| self.repairing) {
+            return r.menu;
+        }
+        if let Some(m) = self.item_mod.as_ref().filter(|_| self.modding) {
+            return m.menu;
+        }
         match self.section {
             Section::Stats => self.stats.menu,
             Section::Items => self.items.menu,
@@ -548,6 +594,9 @@ impl Pipboy {
     /// were the old menu's: the interface lets them go (the menu that
     /// closes takes its tiles with it) and picks afresh.
     pub fn show(&mut self, ui: &mut Ui, section: Section) {
+        // The repair and mod screens close.
+        self.close_repair(ui);
+        self.close_item_mod(ui);
         if section != self.section {
             for tile in [self.interface.over, self.interface.focus]
                 .into_iter()
@@ -688,6 +737,41 @@ impl Pipboy {
 
     fn key_inner(&mut self, ui: &mut Ui, key: Key, input: &PipboyInput) -> Vec<Action> {
         let mut out = Vec::new();
+        // The repair screen has the keys while it's up: its list, Enter,
+        // and its `_PCButton_E` (Cancel); the rest do nothing.
+        // The mod screen likewise: its list, Enter, and E (Cancel).
+        if self.modding {
+            match key {
+                Key::Letter(c) => {
+                    if self.pc_button(ui, c) == Some(item_mod::CANCEL) {
+                        out.extend(self.cancel_item_mod(ui));
+                    }
+                }
+                _ => {
+                    if let Some(m) = self.item_mod.as_mut() {
+                        out.extend(m.key(ui, key));
+                    }
+                }
+            }
+            ui.refresh();
+            return out;
+        }
+        if self.repairing {
+            match key {
+                Key::Letter(c) => {
+                    if self.pc_button(ui, c) == Some(repair::CANCEL) {
+                        out.extend(self.cancel_repair(ui));
+                    }
+                }
+                _ => {
+                    if let Some(r) = self.repair.as_mut() {
+                        out.extend(r.key(ui, key));
+                    }
+                }
+            }
+            ui.refresh();
+            return out;
+        }
         match key {
             // Round the three (`007db680`, `00782190`, `00799790`: STATS
             // goes back to DATA and on to ITEMS, DATA on to STATS).
@@ -706,6 +790,13 @@ impl Pipboy {
             Key::Letter(c) => {
                 if let Some(id) = self.pc_button(ui, c) {
                     out.extend(self.click(ui, id, input));
+                }
+            }
+            Key::ButtonX | Key::ButtonY if self.section == Section::Items => {
+                match self.items.pad_button(ui, key) {
+                    items::PadPress::Click(id) => out.extend(self.click(ui, id, input)),
+                    items::PadPress::Refused => out.push(Action::Sound("UIMenuCancel".into())),
+                    items::PadPress::Nothing => {}
                 }
             }
             _ => match self.section {
@@ -731,9 +822,8 @@ impl Pipboy {
     }
 
     /// A button of the shown menu pressed (the menus' click handlers, slot
-    /// 0x0C: `007db380` STATS, `00780140` ITEMS, `00796fd0` DATA). ITEMS'
-    /// Repair and Mod (R, X; another contributor's branch) and DATA's
-    /// lettered button (R: `MM_ButtonY`) do what isn't here.
+    /// 0x0C: `007db380` STATS, `00780140` ITEMS, `00796fd0` DATA). DATA's
+    /// lettered button (R: `MM_ButtonY`) does what isn't here.
     pub fn click(&mut self, ui: &mut Ui, id: i32, input: &PipboyInput) -> Vec<Action> {
         let before = self.list_index();
         let ((), out) = self.with_code(ui, input, |_, code, _, ui| {
@@ -804,6 +894,11 @@ impl Pipboy {
         now: f64,
         input: &PipboyInput,
     ) -> Vec<Action> {
+        // The repair and mod screens take keys only here (their mouse code,
+        // `RepairMenu` / `ItemModMenu`'s click slots, isn't translated).
+        if self.repairing || self.modding {
+            return Vec::new();
+        }
         if button.pressed && self.section == Section::Data {
             self.data.pressed(ui);
         }
@@ -844,6 +939,9 @@ impl Pipboy {
     /// one under the pointer gets `wheelmoved`, the list boxes' scroll bars
     /// read it).
     pub fn wheel(&mut self, ui: &mut Ui, notches: i32, input: &PipboyInput) -> Vec<Action> {
+        if self.repairing || self.modding {
+            return Vec::new();
+        }
         let before = self.list_index();
         let ((), mut out) = self.with_code(ui, input, |interface, code, menu, ui| {
             interface.wheel(ui, menu, code, notches);
@@ -884,6 +982,99 @@ impl Pipboy {
     /// Whether the game's cursor is hidden now (DATA's map under it).
     pub fn cursor_hidden(&self) -> bool {
         self.section == Section::Data && self.data.cursor_hidden
+    }
+
+    /// Opens the repair screen over ITEMS with what the game worked out.
+    pub fn open_repair(&mut self, ui: &mut Ui, input: repair::RepairInput) {
+        let Some(r) = self.repair.as_mut() else {
+            return;
+        };
+        ui.set_number(self.items.menu, t::VISIBLE, 0.0);
+        r.open(ui, input);
+        self.repairing = true;
+        ui.refresh();
+    }
+
+    /// After a repair (`007b5b40`): closed when the item reached 99% or
+    /// only it is left, else filled again.
+    pub fn repaired(&mut self, ui: &mut Ui, input: repair::RepairInput) {
+        if !self.repairing {
+            return;
+        }
+        if RepairMenu::done_after(&input) {
+            self.close_repair(ui);
+        } else if let Some(r) = self.repair.as_mut() {
+            r.fill(ui, input);
+        }
+    }
+
+    /// Cancel (`007b5b40` case 0xc): `UIMenuMode`, back to ITEMS.
+    pub fn cancel_repair(&mut self, ui: &mut Ui) -> Vec<Action> {
+        self.close_repair(ui);
+        vec![Action::Sound(repair::MENU_SOUND.into())]
+    }
+
+    fn close_repair(&mut self, ui: &mut Ui) {
+        if !self.repairing {
+            return;
+        }
+        self.repairing = false;
+        if let Some(r) = self.repair.as_mut() {
+            r.hide(ui);
+        }
+        if self.section == Section::Items {
+            ui.set_number(self.items.menu, t::VISIBLE, 1.0);
+        }
+        ui.refresh();
+    }
+
+    /// Opens the mod screen over ITEMS with what the game worked out.
+    pub fn open_item_mod(&mut self, ui: &mut Ui, input: item_mod::ItemModInput) {
+        let Some(m) = self.item_mod.as_mut() else {
+            return;
+        };
+        ui.set_number(self.items.menu, t::VISIBLE, 0.0);
+        m.open(ui, input);
+        self.modding = true;
+        ui.refresh();
+    }
+
+    /// After a mod is fitted (`007838a0`): the list filled again.
+    pub fn item_modded(&mut self, ui: &mut Ui, input: item_mod::ItemModInput) {
+        if !self.modding {
+            return;
+        }
+        if let Some(m) = self.item_mod.as_mut() {
+            m.fill(ui, input);
+        }
+    }
+
+    /// Cancel (`007838a0` case 0xc): `UIMenuMode`, back to ITEMS.
+    pub fn cancel_item_mod(&mut self, ui: &mut Ui) -> Vec<Action> {
+        self.close_item_mod(ui);
+        vec![Action::Sound(item_mod::MENU_SOUND.into())]
+    }
+
+    fn close_item_mod(&mut self, ui: &mut Ui) {
+        if !self.modding {
+            return;
+        }
+        self.modding = false;
+        if let Some(m) = self.item_mod.as_mut() {
+            m.hide(ui);
+        }
+        if self.section == Section::Items {
+            ui.set_number(self.items.menu, t::VISIBLE, 1.0);
+        }
+        ui.refresh();
+    }
+
+    /// One frame of the menus' own movement (the repair screen's pulsing
+    /// text), `now` in seconds.
+    pub fn update(&mut self, ui: &mut Ui, now: f64) {
+        if let Some(r) = self.repair.as_mut().filter(|_| self.repairing) {
+            r.update(ui, now);
+        }
     }
 }
 
@@ -1001,6 +1192,7 @@ pub(crate) mod tests {
             weight_class: None,
             effects: None,
             repairable: false,
+            modded: false,
         };
         let marker = |form: u32, name: &str, at: [f32; 2]| MarkerLine {
             form,

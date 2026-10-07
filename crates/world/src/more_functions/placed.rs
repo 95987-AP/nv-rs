@@ -1,5 +1,6 @@
-//! References scripts make while playing: `PlaceAtMe` (`005c4a70` →
-//! `005c4b30`) and `PlaceLeveledActorAtMe` (`005d9810`).
+//! References made while playing: `PlaceAtMe` (`005c4a70` → `005c4b30`),
+//! `PlaceLeveledActorAtMe` (`005d9810`), and things dropped into the world
+//! ([`drop_into_world`]).
 //!
 //! A made reference gets a form ID of its own (the game's run-time ones
 //! start with 0xFF; nv-rs counts them up from 0xFF000001, the game's own
@@ -41,8 +42,8 @@ pub struct Made {
     /// Radians, as a placed reference's `DATA` (the caller's turn,
     /// `005c4b30` hands the caller's rotation, ref+0x24, to the new one).
     pub rotation: [f32; 3],
-    /// How many of the base it stands for: an item the player dropped
-    /// keeps its count (the game's `ExtraCount`); 1 otherwise.
+    /// How many of an item it stands for (the extra count, `00419ad0`,
+    /// for more than one dropped); 1 otherwise.
     pub count: i32,
 }
 
@@ -137,6 +138,74 @@ fn make(
         .events
         .push(Event::More(super::Shown::Placed { reference: id }));
     id
+}
+
+/// Someone drops `count` of an item into the world (`RemoveItem` with its
+/// drop flag, `004c37d0` → `004c6dd0`): it leaves their things and a new
+/// reference of it appears where they stand plus (0, 50, 30) turned by
+/// their rotation (`00a59540`, `00416870`, `004b4500`: 50 units in front,
+/// 30 up), turned as they are, in their cell, standing for `count` of it
+/// (`00419ad0` for more than one). (The game lets it fall from there; no
+/// falling here.) Something worn comes off once none is left. Their
+/// scripts aren't moved: see [`GameState::scripts_follow`]. Returns the
+/// new reference.
+pub fn drop_into_world(
+    order: &LoadOrder,
+    state: &mut GameState,
+    holder: FormId,
+    item: FormId,
+    count: i32,
+) -> Option<FormId> {
+    let n = count.min(state.item_count(order, holder, item));
+    if n <= 0 {
+        return None;
+    }
+    let (space, cell, position, _) = state.place(order, holder)?;
+    let rotation = rotation_of(order, state, holder);
+    let m = crate::RotationConvention::DEFAULT.matrix(rotation);
+    let local = [0.0, 50.0, 30.0];
+    let mut at = position;
+    for (i, v) in at.iter_mut().enumerate() {
+        *v += (0..3).map(|j| m[i][j] * local[j]).sum::<f32>();
+    }
+    state.stock(order, holder);
+    let key = (holder, item);
+    if let Some(left) = state.items.get_mut(&key) {
+        *left -= n;
+        if *left <= 0 {
+            state.items.remove(&key);
+            if state.is_equipped(holder, item) {
+                state.unequip_item(order, holder, item);
+            }
+        }
+    }
+    let id = state.more.placed.new_id();
+    state.more.placed.refs.insert(
+        id,
+        Made {
+            base: item,
+            space,
+            cell,
+            position: at,
+            rotation,
+            count: n,
+        },
+    );
+    state
+        .events
+        .push(Event::More(super::Shown::Placed { reference: id }));
+    Some(id)
+}
+
+/// How many of an item a made reference stands for (0 when it isn't one of
+/// it, or it's gone: picked up or disabled).
+pub fn held_in_world(order: &LoadOrder, state: &GameState, reference: FormId, item: FormId) -> i32 {
+    match state.more.placed.refs.get(&reference) {
+        Some(m) if m.base == item && crate::enabled_now(order, reference, &state.disabled) => {
+            m.count
+        }
+        _ => 0,
+    }
 }
 
 /// `PlaceAtMe base [count] [distance] [direction]` on `caller`: `count`
@@ -306,7 +375,7 @@ pub fn drop_item(
         if have == n {
             state.items.remove(&(PLAYER_REF, item));
             if state.is_equipped(PLAYER_REF, item) {
-                state.unequip(PLAYER_REF, item);
+                state.unequip_item(order, PLAYER_REF, item);
             }
         } else {
             state.items.insert((PLAYER_REF, item), have - n);
@@ -331,6 +400,8 @@ pub fn drop_item(
             count: moved,
         },
     );
+    // Their scripts go with them (`OnDrop`, [`GameState::scripts_follow`]).
+    state.scripts_follow(order, PLAYER_REF, id, item, moved);
     state
         .events
         .push(Event::More(super::Shown::Placed { reference: id }));

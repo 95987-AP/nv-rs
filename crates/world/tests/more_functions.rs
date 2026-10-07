@@ -1171,7 +1171,7 @@ fn terminals_go_back_only_while_open() {
     let (_data, order) = order("more-terminal-back");
     let scripts = ScriptCache::default();
     let mut state = new_game(&order);
-    let back = Event::More(Shown::TerminalBack);
+    let back = Event::TerminalBack;
     // No terminal open: nothing.
     run(&order, &scripts, &mut state, "ForceTerminalBack");
     assert!(!state.events.contains(&back));
@@ -1207,36 +1207,43 @@ fn caravan_cards_picked_up() {
         ask(&order, &scripts, &mut state, "CardRef.GetContainer"),
         0.0
     );
-    // The player picks up a card: its `OnAdd` sees the player as the
+    // The player picks up a card: its `OnAdd` (run with the scripted
+    // items, `Runner::run_item_scripts`) sees the player as the
     // container, the card joins their cards and leaves the inventory.
     state.pick_up(&order, FormId(CARD_REF), FormId(CARD), 1);
-    Runner::new(&order, &scripts, &mut state).on_add(FormId(CARD_REF), PLAYER_REF);
+    Runner::new(&order, &scripts, &mut state).run_item_scripts();
     assert_eq!(state.globals[&FormId(VALUE)], PLAYER_REF.0 as f32);
-    assert!(state.more.cards.0.contains(&FormId(CARD)));
+    assert!(state.caravan.owns(FormId(CARD)));
     assert_eq!(held(&state, PLAYER_REF, CARD), 0);
     // Not a card: it isn't added to the cards, but `RemoveMe` still takes
     // it out.
     state.pick_up(&order, FormId(CARD_CUP_REF), FormId(CARD_CUP), 1);
-    Runner::new(&order, &scripts, &mut state).on_add(FormId(CARD_CUP_REF), PLAYER_REF);
-    assert!(!state.more.cards.0.contains(&FormId(CARD_CUP)));
+    Runner::new(&order, &scripts, &mut state).run_item_scripts();
+    assert!(!state.caravan.owns(FormId(CARD_CUP)));
     assert_eq!(held(&state, PLAYER_REF, CARD_CUP), 0);
     // Into another container: the script returns before anything.
+    state.stock(&order, FormId(CRATE_REF));
     state.items.insert((FormId(CRATE_REF), FormId(CARD_CUP)), 1);
-    Runner::new(&order, &scripts, &mut state).on_add(FormId(CARD_CUP_REF), FormId(CRATE_REF));
+    state.added(&order, FormId(CRATE_REF), FormId(CARD_CUP), 1);
+    Runner::new(&order, &scripts, &mut state).run_item_scripts();
     assert_eq!(state.globals[&FormId(VALUE)], CRATE_REF as f32);
     assert_eq!(held(&state, FormId(CRATE_REF), CARD_CUP), 1);
-    // `RemoveMe` with a container moves the item there.
-    state.items.insert((PLAYER_REF, FormId(CARD_CUP)), 2);
-    let mut runner = Runner::new(&order, &scripts, &mut state);
-    runner.container = Some(PLAYER_REF);
-    runner.run_source("RemoveMe CrateRef", Some(FormId(CARD_CUP_REF)), None);
-    assert_eq!(held(&state, PLAYER_REF, CARD_CUP), 1);
-    assert_eq!(held(&state, FormId(CRATE_REF), CARD_CUP), 2);
+    // `RemoveMe` with a container (`005b53d0`): one moves there, its
+    // script with it.
+    state.items.insert((PLAYER_REF, FormId(MOVER)), 2);
+    state.added(&order, PLAYER_REF, FormId(MOVER), 1);
+    Runner::new(&order, &scripts, &mut state).run_item_scripts();
+    assert_eq!(held(&state, PLAYER_REF, MOVER), 1);
+    assert_eq!(held(&state, FormId(CRATE_REF), MOVER), 1);
+    assert!(state
+        .item_scripts
+        .iter()
+        .any(|s| s.holder == FormId(CRATE_REF) && s.item == FormId(MOVER)));
 
     // The cards are kept in a save.
     let saved = world::save::save(&state, None);
     let (back, _) = world::save::load(&saved).unwrap();
-    assert_eq!(back.more.cards, state.more.cards);
+    assert_eq!(back.caravan.inactive, state.caravan.inactive);
 }
 
 #[test]
@@ -1248,7 +1255,7 @@ fn companions_pushes_dispositions_and_causes_of_death() {
     let opened = |state: &GameState, who: u32| {
         state
             .events
-            .contains(&Event::More(Shown::TeammateContainer { who: FormId(who) }))
+            .contains(&Event::TeammateContainer(FormId(who)))
     };
 
     // A companion's things open; someone else's only when forced, and
@@ -1535,7 +1542,8 @@ fn facing_up_as_the_viewer_reports_it() {
 
 #[test]
 fn recipe_and_casino_menus_open_with_their_data() {
-    use more::menus::{self, CasinoGame};
+    use world::casino::Game;
+    let recipe = world::crafting::RECIPE_MENU;
     let (_data, order) = order("more-menus");
     let scripts = ScriptCache::default();
     let mut state = new_game(&order);
@@ -1546,12 +1554,12 @@ fn recipe_and_casino_menus_open_with_their_data() {
     run(&order, &scripts, &mut state, "player.ShowRecipeMenu");
     assert!(has(
         &state,
-        Event::More(Shown::RecipeMenu {
-            vendor: PLAYER_REF,
-            category: None,
-        })
+        Event::RecipeMenu {
+            actor: PLAYER_REF,
+            category: FormId(0),
+        }
     ));
-    assert!(has(&state, Event::Menu(menus::RECIPE_MENU)));
+    assert!(has(&state, Event::Menu(recipe)));
     state.events.clear();
     run(
         &order,
@@ -1561,17 +1569,17 @@ fn recipe_and_casino_menus_open_with_their_data() {
     );
     assert!(has(
         &state,
-        Event::More(Shown::RecipeMenu {
-            vendor: FormId(PERSON_REF),
-            category: None,
-        })
+        Event::RecipeMenu {
+            actor: FormId(PERSON_REF),
+            category: FormId(0),
+        }
     ));
     state.events.clear();
     assert_eq!(
         ask(&order, &scripts, &mut state, "BarrelRef.ShowRecipeMenu"),
         1.0
     );
-    assert!(!has(&state, Event::Menu(menus::RECIPE_MENU)));
+    assert!(!has(&state, Event::Menu(recipe)));
 
     // A casino game with its casino and numbers; without a casino, nothing.
     run(
@@ -1582,11 +1590,13 @@ fn recipe_and_casino_menus_open_with_their_data() {
     );
     assert!(has(
         &state,
-        Event::More(Shown::CasinoMenu {
-            game: CasinoGame::SlotMachine,
+        Event::Casino {
+            game: Game::Slots,
             casino: FormId(CASINO),
-            numbers: [1, 25, 0],
-        })
+            min_bet: 1,
+            max_bet: 25,
+            min_winnings: 0,
+        }
     ));
     assert!(has(&state, Event::Menu(1080)));
     run(
@@ -1658,4 +1668,50 @@ fn a_teammate_told_to_wait_stays_and_one_with_nothing_to_do_follows() {
     for kind in [kinds::GUARD, kinds::TRAVEL, kinds::FOLLOW, kinds::DIALOGUE] {
         assert!(!teammate_follows(Some(&package(kind))), "kind {kind}");
     }
+}
+
+/// `GetShouldAttack` (`0059ed30`: 100 or 0, both people), `GetIsAlignment`
+/// (`005a4dd0`, `0047e040`'s bands), `SetItemValue` (`005d3e30`: the
+/// base's value, for every one; saved), `GetContainer` (`005ce5c0`: an
+/// item script's holder).
+#[test]
+fn attacks_alignment_values_and_holders() {
+    let (_data, order) = order("more-attack-align-value");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let q = |state: &mut GameState, e: &str| ask(&order, &scripts, state, e);
+    // Frenzied (aggression 3) attacks anyone; unaggressive, no one.
+    state.actor_values.insert((FormId(PERSON_REF), 0), 3.0);
+    assert_eq!(q(&mut state, "PersonRef.GetShouldAttack HeroRef"), 100.0);
+    state.actor_values.insert((FormId(PERSON_REF), 0), 0.0);
+    assert_eq!(q(&mut state, "PersonRef.GetShouldAttack HeroRef"), 0.0);
+    // Not a person: 0.
+    state.actor_values.insert((FormId(PERSON_REF), 0), 3.0);
+    assert_eq!(q(&mut state, "PersonRef.GetShouldAttack ChildRef"), 0.0);
+
+    // Karma 0 is neutral (1); -300 evil (2); 800 very good (3).
+    let karma = |state: &mut GameState, k: f64| {
+        state.actor_values.insert((PLAYER_REF, 23), k);
+    };
+    karma(&mut state, 0.0);
+    assert_eq!(q(&mut state, "player.GetIsAlignment 1"), 1.0);
+    assert_eq!(q(&mut state, "player.GetIsAlignment 0"), 0.0);
+    karma(&mut state, -300.0);
+    assert_eq!(q(&mut state, "player.GetIsAlignment 2"), 1.0);
+    karma(&mut state, 800.0);
+    assert_eq!(q(&mut state, "player.GetIsAlignment 3"), 1.0);
+
+    // The cup is worth 1; set on the placed one, every cup is worth 7.
+    let cup = FormId(CUP);
+    assert_eq!(world::barter::value_now(&order, &state, cup), 1.0);
+    run(&order, &scripts, &mut state, "ChildRef.SetItemValue 7");
+    assert!(state.unhandled.is_empty(), "{:?}", state.unhandled_first);
+    assert_eq!(world::barter::value_now(&order, &state, cup), 7.0);
+    assert_eq!(world::items::value(&order, &state, cup), 7);
+    let text = world::save::save(&state, None);
+    let (back, _) = world::save::load(&text).unwrap();
+    assert_eq!(back.more.item_values.get(&cup), Some(&7));
+
+    // Outside an item's own script there's no holder.
+    assert_eq!(q(&mut state, "GetContainer"), 0.0);
 }

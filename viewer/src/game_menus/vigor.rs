@@ -482,6 +482,9 @@ pub fn draw(
                         MeshMaterial3d(material),
                         Transform::IDENTITY,
                         RenderLayers::layer(SCENE_LAYER),
+                        // Lit by the menu's own lights, not the hour's
+                        // outdoors (as the lockpicking and Caravan pieces).
+                        crate::shared_light::MenuLit,
                         VigorPiece {
                             mesh: draw.mesh,
                             reference: draw.reference,

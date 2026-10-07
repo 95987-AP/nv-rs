@@ -40,7 +40,7 @@ off. Dead Money test runs that need Dog to follow (Act 2) set it.
 | `dm-act2` | essential knock-down, teammates follow, player sits, shared texture/material caches | player sitting (FURNITURE.md) | knock-down now traced; follow [G] | merged; essential rule translated from `0089d900` / `00888b50` / `008a0960` (10 s, full restore; replaces 12 s and a quarter); follow (200) and teammates coming along gated; player sitting dropped (ours); caches dropped (path-keyed textures collide with FaceGen/hair tints, shared materials would carry relighting and effects across squares) |
 | `teammate-wait` | a guard package is the wait order | no | [G] | merged, gated with the follow rule |
 | `dm-verify` | finished one-shot groups stop counting; LOS actor test | no | checked in the original | merged; actor `IsAnimPlaying` (1 standing, 0 down) gated |
-| `dm-crafting` | recipes, recipe menu, `nvinspect craft`, `--open-menu recipes:` | no | data-only rules; menu order, skill rule, click [G] | merged; a script's `ShowRecipeMenu` opens the menu only with guesses on |
+| `dm-crafting` | recipes, recipe menu, `nvinspect craft`, `--open-menu recipes:` | no | data-only rules; menu order, skill rule, click [G] | merged; replaced on 2026-10-06 by Chazm's traced crafting ([CONTRIB_CHAZM.md](CONTRIB_CHAZM.md)): `--open-menu recipes:` kept, `nvinspect craft` replaced by `recipes`, no longer gated |
 | `dm-casino-character` | Act 2 and casino test characters, Dog escort notes | no | n/a | merged |
 | `viewer-use-flag` | `--use REF` | no | n/a (test tool) | merged; their trigger body heights dropped (our scheduler) |
 | `dialogue-info-links` | a topic says lines its `INFC` list names | no | `00618aa0`; choice [G] | merged; greetings unchanged for Sunny, Doc, Trudy, Ringo, Easy Pete, Joe Cobb, Victor, Chet, Cheyenne; Ringo's first-talk choices gain the two sibling topics of line `0015EBEA` |
@@ -75,10 +75,14 @@ Gated behind `world::guesses` (`NV_GUESSES=1`), off on base-game routes:
   package being the wait order (`world::ai::current_package`);
 - teammates come along when the player changes place
   (`viewer::scripts::bring_teammates`);
-- `IsAnimPlaying` on a person (1 standing, 0 down);
-- a script's `ShowRecipeMenu` opening the recipe menu (order, skill rule
-  and click to make untraced; `RecipeMenu` PC vtable `0107048c`, `DoClick`
-  `007274b0`).
+- `IsAnimPlaying` on a person (1 standing, 0 down).
+
+(A script's `ShowRecipeMenu` was gated here until Chazm's traced crafting
+replaced the Dead Money version on 2026-10-06; it now always opens the
+menu. The other overlapping script functions, `OpenTeammateContainer`,
+`ForceTerminalBack`, `AddCardToPlayer`, `GetContainer`, `RemoveMe` and the
+casino `Show...MenuParams`, are now carried out once, by Chazm's code, with
+this branch's traced details folded in: see [CONTRIB_CHAZM.md](CONTRIB_CHAZM.md).)
 
 Remaining, labelled, not gated:
 

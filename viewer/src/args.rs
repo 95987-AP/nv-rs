@@ -41,13 +41,16 @@ OPTIONS:
     --stage QUEST STAGE     set a quest's stage once loaded, as a script
                             would (VCG01 0 starts Doc Mitchell's intro)
     --new-game              start the game: the opening quest (VCG00) from
-                            its first stage (movie playback is not yet
-                            implemented); scripts take you to Doc's house
-                            (the CELL can then be left out)
+                            its first stage, which plays the intro movie;
+                            scripts take you to Doc's house (the CELL can
+                            then be left out)
     --character FILE        start as a ready-made test character: a file
                             of the game's script lines (editor IDs) run
                             on the new game before its first frame, plus
                             `level N` (see characters/README.md)
+    --movies, --no-movies   play the movies scripts ask for (PlayBink), or
+                            skip them; by default they play, except when
+                            taking a screenshot
     --weapon ID             start with this weapon (editor ID or form ID)
                             equipped and 50 rounds for it; screenshots
                             then show it in your hands
@@ -79,6 +82,14 @@ OPTIONS:
                             (stats, items or data) and page or tab (from
                             0: stats:1 is S.P.E.C.I.A.L., data:2 the
                             quests); screenshots then show it
+    --pipboy-keys K[,K...]  for testing: once the Pip-Boy is up, press these
+                            keys in it, one a frame: up, down, left, right,
+                            enter, a letter (r: ITEMS' Repair, x: Mod), padx
+                            or pady (Shift + Enter, Alt + Enter: the pad's
+                            X and Y, ITEMS' Drop with --pad), or close (put
+                            it away)
+    --pad                   for testing: the menus as with a 360 pad
+                            connected (its buttons shown)
     --vats [N]              for testing: open V.A.T.S. three seconds after
                             loading (as V does); with N, queue N attacks on
                             the part it opens on and play them
@@ -93,6 +104,9 @@ OPTIONS:
                             container or a body), barter:REF (a merchant),
                             recipes:CATEGORY (the recipe menu, e.g.
                             recipes:CampfireRecipes),
+                            repair:REF (a merchant's repairs),
+                            teammate:REF (trading with a companion),
+                            wheel:REF (a companion's wheel of orders),
                             quantity:N (how many, up to N), levelup (the
                             player goes up a level; levelup:perks also
                             gives the points and goes on to the perks),
@@ -113,6 +127,13 @@ OPTIONS:
                             weapon away, F:9 with mouse-x=20:1 turn the
                             third-person camera around you; can be given
                             more than once
+    --menu-click S[,S...]   for testing: click the menus' left button at
+                            these seconds after starting (with
+                            --menu-pointer)
+    --menu-keys S:K[,S:K...]
+                            for testing: type key K (a character, or
+                            left, right, up, down, enter) into the top menu at
+                            S seconds after starting
 
 CONTROLS:
     mouse                          look around (walking; flying: hold
@@ -212,6 +233,10 @@ pub struct Args {
     pub freeze_ai: bool,
     /// Raise the Pip-Boy once loaded: its menu and page (stats:1).
     pub pipboy: Option<String>,
+    /// `--pipboy-keys`: keys to press in the Pip-Boy once it's up.
+    pub pipboy_keys: Vec<String>,
+    /// `--pad`: the menus as with a pad connected.
+    pub pad: bool,
     /// `--lockpick REF`: try this lock once loaded.
     pub lockpick: Option<String>,
     /// `--open-menu`: a game menu to open once loaded (`name[:id]`).
@@ -222,6 +247,13 @@ pub struct Args {
     pub menu_pointer: Option<(f32, f32)>,
     /// `--key-at`: keys to press: when, and the key (`KEY[:HOLD]`).
     pub key_at: Vec<(f32, String)>,
+    /// Play the movies scripts ask for (`PlayBink`).
+    pub movies: bool,
+    /// `--menu-click`: when to click (seconds after starting).
+    pub menu_clicks: Vec<f64>,
+    /// `--menu-keys`: keys typed into the menus (seconds after starting,
+    /// the key).
+    pub menu_keys: Vec<(f64, String)>,
 }
 
 /// Where to stand, in the game's terms: feet position in game units, and
@@ -283,11 +315,16 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut cloud_time = None;
     let mut freeze_ai = false;
     let mut pipboy = None;
+    let mut pipboy_keys = Vec::new();
+    let mut pad = false;
     let mut lockpick = None;
     let mut open_menu = None;
     let mut use_on = None;
     let mut menu_pointer = None;
     let mut key_at = Vec::new();
+    let mut movies = None;
+    let mut menu_clicks = Vec::new();
+    let mut menu_keys = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let mut value = |flag: &str| {
@@ -365,6 +402,8 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             "--say" => say.push(value("--say")?),
             "--weather-region" => weather_region = Some(value("--weather-region")?),
             "--no-hud" => hud = false,
+            "--movies" => movies = Some(true),
+            "--no-movies" => movies = Some(false),
             "--freeze-ai" => freeze_ai = true,
             "--lockpick" => lockpick = Some(value("--lockpick")?),
             "--pipboy" => {
@@ -375,6 +414,21 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
                 }
                 pipboy = Some(v);
             }
+            "--pipboy-keys" => {
+                let v = value("--pipboy-keys")?;
+                for k in v.split(',').map(|k| k.trim().to_ascii_lowercase()) {
+                    let known = [
+                        "up", "down", "left", "right", "enter", "padx", "pady", "close",
+                    ]
+                    .contains(&k.as_str())
+                        || (k.len() == 1 && k.as_bytes()[0].is_ascii_lowercase());
+                    if !known {
+                        return Err(format!("--pipboy-keys: don't know the key '{k}'"));
+                    }
+                    pipboy_keys.push(k);
+                }
+            }
+            "--pad" => pad = true,
             "--open-menu" => open_menu = Some(value("--open-menu")?),
             "--use" => use_on = Some(value("--use")?),
             "--menu-pointer" => {
@@ -383,6 +437,28 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
                 match p[..] {
                     [x, y] => menu_pointer = Some((x, y)),
                     _ => return Err(format!("--menu-pointer expects X,Y, got '{v}'")),
+                }
+            }
+            "--menu-keys" => {
+                let v = value("--menu-keys")?;
+                for item in v.split(',') {
+                    let parsed = item
+                        .split_once(':')
+                        .and_then(|(s, k)| Some((s.trim().parse::<f64>().ok()?, k.to_string())));
+                    let Some((at, key)) = parsed.filter(|(_, k)| !k.is_empty()) else {
+                        return Err(format!(
+                            "--menu-keys expects S:K separated by commas, got '{v}'"
+                        ));
+                    };
+                    menu_keys.push((at, key));
+                }
+            }
+            "--menu-click" => {
+                let v = value("--menu-click")?;
+                for n in v.split(',') {
+                    menu_clicks.push(n.trim().parse::<f64>().map_err(|_| {
+                        format!("--menu-click expects seconds separated by commas, got '{v}'")
+                    })?);
                 }
             }
             "--cloud-time" => {
@@ -418,6 +494,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             positional.push(NEW_GAME_CELL.to_string());
         }
     }
+    let movies = movies.unwrap_or(screenshot.is_none());
     match positional.as_slice() {
         [data, cell] => Ok(Some(Args {
             data: data.into(),
@@ -443,11 +520,16 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             cloud_time,
             freeze_ai,
             pipboy,
+            pipboy_keys,
+            pad,
             lockpick,
             open_menu,
             use_on,
             menu_pointer,
             key_at,
+            movies,
+            menu_clicks,
+            menu_keys,
         })),
         [] | [_] => Err("expected the Data folder and a cell".into()),
         [_, _, extra, ..] => Err(format!("unexpected argument '{extra}'")),
@@ -457,6 +539,15 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn movies_play_unless_skipped_or_taking_a_screenshot() {
+        let p = |a: &[&str]| parse(&strings(a)).unwrap().unwrap().movies;
+        assert!(p(&["Data", "Cell"]));
+        assert!(!p(&["Data", "Cell", "--no-movies"]));
+        assert!(!p(&["Data", "Cell", "--screenshot", "a.png"]));
+        assert!(p(&["Data", "Cell", "--screenshot", "a.png", "--movies"]));
+    }
 
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| s.to_string()).collect()

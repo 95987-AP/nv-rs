@@ -16,7 +16,7 @@ use std::collections::VecDeque;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
 use esm::FormId;
-use world::chargen::{self, CharacterMenu};
+use world::chargen::CharacterMenu;
 use world::dialogue::PLAYER_REF;
 use world::scripting::{Facts, Runner};
 
@@ -37,11 +37,33 @@ pub enum Menu {
     Container(FormId, String),
     /// Trading with a merchant (their reference).
     Barter(FormId),
-    /// The recipe menu (`ShowRecipeMenu`): the category it lists, if any.
-    Recipes(Option<FormId>),
+    /// Crafting (`ShowRecipeMenu`): who crafts and the recipe category.
+    Recipe {
+        actor: FormId,
+        category: FormId,
+    },
+    /// A merchant's repairs (their reference, `ShowRepairMenu`).
+    RepairServices(FormId),
+    /// Trading things with a companion (their reference,
+    /// `OpenTeammateContainer`).
+    Teammate(FormId),
+    /// A companion's wheel of orders (their reference: the player using a
+    /// teammate).
+    CompanionWheel(FormId),
+    /// A game of Caravan (`ShowCaravanMenu`): the opponent, their deck, the
+    /// AI's difficulty, the share of their funds they bet.
+    Caravan {
+        npc: FormId,
+        deck: FormId,
+        difficulty: i32,
+        share: f32,
+    },
     /// A computer terminal used (`world::terminal`): its record and the
     /// placed terminal.
     Terminal(FormId, FormId),
+    /// The hacking menu for a terminal (`game_menus::hacking`): its record
+    /// and the placed terminal.
+    Hacking(FormId, FormId),
     /// The game's sleep/wait menu (`world::living::sleep`): T, a bed, or
     /// a script's `ShowSleepWaitMenu`; in sleep or wait mode.
     SleepWait {
@@ -61,14 +83,14 @@ enum Open {
     },
     /// A terminal: the screens gone into (its own first, then sub-menus),
     /// the item chosen, a note being read, and what the last item printed;
-    /// `locked` with the Science it needs when the player can't get in.
+    /// `locked` when the player can't get in.
     Terminal {
         reference: FormId,
         stack: Vec<FormId>,
         row: usize,
         reading: Option<String>,
         printed: String,
-        locked: Option<u16>,
+        locked: Option<Locked>,
     },
 }
 
@@ -81,7 +103,7 @@ fn terminal_backs(
     row: &mut usize,
     printed: &mut String,
 ) -> bool {
-    let back = world::scripting::Event::More(world::more_functions::Shown::TerminalBack);
+    let back = world::scripting::Event::TerminalBack;
     let count = state.events.iter().filter(|e| **e == back).count();
     state.events.retain(|e| *e != back);
     for _ in 0..count {
@@ -93,6 +115,13 @@ fn terminal_backs(
         }
     }
     false
+}
+
+/// Why a terminal stays shut.
+#[derive(Clone, Copy)]
+enum Locked {
+    /// Locked out (the hacking menu's "TERMINAL LOCKED").
+    Out,
 }
 
 /// A terminal screen's items the player can pick (their conditions pass),
@@ -213,7 +242,11 @@ fn open(
         // Only the game's own menus show these (`game_menus`).
         Menu::Container(..)
         | Menu::Barter(..)
-        | Menu::Recipes(..)
+        | Menu::Recipe { .. }
+        | Menu::RepairServices(..)
+        | Menu::Teammate(..)
+        | Menu::CompanionWheel(..)
+        | Menu::Caravan { .. }
         | Menu::LevelUp(..)
         | Menu::Character(CharacterMenu::Traits { .. })
         | Menu::Character(CharacterMenu::TagSkills { .. })
@@ -223,14 +256,27 @@ fn open(
             println!("That menu can't be opened: the game's menus aren't available.");
             return None;
         }
-        // Locked unless its record says otherwise or the player's Science
-        // is enough (`world::terminal`: the hacking game isn't here).
-        Menu::Terminal(terminal, reference) => {
+        // A terminal the player gets into (`game_menus::hacking::use_terminal`
+        // decided).
+        Menu::Terminal(terminal, reference) => Open::Terminal {
+            reference,
+            stack: vec![terminal],
+            row: 0,
+            reading: None,
+            printed: String::new(),
+            locked: None,
+        },
+        // The hacking menu without the game's menu files: locked out shows
+        // as the menu would; otherwise the terminal counts as hacked.
+        Menu::Hacking(terminal, reference) => {
             use world::terminal::Access;
-            let access = world::terminal::Terminal::load(order, terminal)
-                .map(|t| world::terminal::try_hack(order, state, &t, reference));
-            if access == Some(Access::Hacked) {
-                println!("Hacked the terminal.");
+            let t = world::terminal::Terminal::load(order, terminal);
+            let access = t
+                .as_ref()
+                .map(|t| world::terminal::access(order, state, t, reference));
+            if let (Some(Access::Hack), Some(t)) = (access, &t) {
+                world::terminal::hacked(order, state, t, reference);
+                println!("Hacked the terminal (the hacking menu's files aren't available).");
             }
             Open::Terminal {
                 reference,
@@ -238,10 +284,7 @@ fn open(
                 row: 0,
                 reading: None,
                 printed: String::new(),
-                locked: match access {
-                    Some(Access::NeedsScience(n)) => Some(n),
-                    _ => None,
-                },
+                locked: (access == Some(Access::LockedOut)).then_some(Locked::Out),
             }
         }
     })
@@ -290,12 +333,11 @@ fn describe(order: &esm::LoadOrder, state: &world::scripting::GameState, open: &
                 }
                 s.push('\n');
             }
-            if let Some(needed) = locked {
-                // The game's words (`sHackIneligible`, with Science's name).
-                let text = world::scripting::game_setting_text(order, "sHackIneligible")
-                    .unwrap_or_else(|| "A %s skill of %d is required to hack this terminal.".into())
-                    .replacen("%s", &chargen::actor_value_name(order, 40), 1)
-                    .replacen("%d", &needed.to_string(), 1);
+            if let Some(why) = locked {
+                let text = match why {
+                    // `sHackingLockout3` and `4`, as the hacking menu shows.
+                    Locked::Out => "TERMINAL LOCKED\nPLEASE CONTACT AN ADMINISTRATOR".to_string(),
+                };
                 s.push_str(&format!("{text}\n\n(Enter or Esc leaves.)"));
                 return s;
             }
@@ -520,7 +562,7 @@ mod tests {
     #[test]
     fn force_terminal_back_pops_screens_then_closes() {
         let mut state = world::scripting::GameState::default();
-        let back = world::scripting::Event::More(world::more_functions::Shown::TerminalBack);
+        let back = world::scripting::Event::TerminalBack;
         let mut stack = vec![FormId(1), FormId(2), FormId(3)];
         let (mut row, mut printed) = (4, "Done.".to_string());
         // Nothing asked: nothing changes.

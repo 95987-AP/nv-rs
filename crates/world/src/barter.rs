@@ -125,6 +125,36 @@ pub fn value_at_condition(order: &LoadOrder, value: f32, condition: f32) -> f32 
     }
 }
 
+/// Whether a form has a value (`TESValueForm`: the kinds
+/// [`base_value`] reads).
+pub fn has_value(order: &LoadOrder, item: FormId) -> bool {
+    order.get(item).is_some_and(|rr| {
+        matches!(
+            rr.entry.header.kind.as_bytes(),
+            b"MISC"
+                | b"KEYM"
+                | b"IMOD"
+                | b"WEAP"
+                | b"ARMO"
+                | b"CMNY"
+                | b"CCRD"
+                | b"AMMO"
+                | b"BOOK"
+                | b"ALCH"
+                | b"INGR"
+        )
+    })
+}
+
+/// An item's value now: as `SetItemValue` set it, else as stored
+/// ([`base_value`]).
+pub fn value_now(order: &LoadOrder, state: &GameState, item: FormId) -> f32 {
+    match state.more.item_values.get(&item) {
+        Some(&v) => v as f32,
+        None => base_value(order, item),
+    }
+}
+
 /// An item's value as stored (`0048e8a0`): `DATA` (or `ENIT` for aid) of
 /// the kinds that have one; -1 for the rest.
 pub fn base_value(order: &LoadOrder, item: FormId) -> f32 {
@@ -151,7 +181,7 @@ pub fn base_value(order: &LoadOrder, item: FormId) -> f32 {
 
 /// What an item held is worth (`004bd400`): its value at its condition
 /// (weapons whose condition scripts changed; everything else whole),
-/// rounded to tenths. Weapon mods' values aren't added (mods aren't kept).
+/// and its fitted mods' values (`world::weapon_mods`), rounded to tenths.
 pub fn item_value(order: &LoadOrder, state: &GameState, holder: FormId, item: FormId) -> f32 {
     let condition = match state.weapon_health.get(&(holder, item)) {
         Some(&h) => (h * 100.0).min(100.0),
@@ -164,7 +194,8 @@ pub fn item_value(order: &LoadOrder, state: &GameState, holder: FormId, item: Fo
             }
         }
     };
-    let v = value_at_condition(order, base_value(order, item), condition);
+    let v = value_at_condition(order, value_now(order, state, item), condition)
+        + crate::weapon_mods::worth_added(order, state, holder, item);
     round_to(v, 0.1)
 }
 
@@ -320,7 +351,7 @@ pub fn accept(
         let equipped = state.is_equipped(PLAYER_REF, item);
         state.move_item(order, PLAYER_REF, into, item, n);
         if equipped && state.item_count(order, PLAYER_REF, item) == 0 {
-            state.unequip(PLAYER_REF, item);
+            state.unequip_item(order, PLAYER_REF, item);
         }
     }
     // The total as a whole number (`00406ce0`: floored).

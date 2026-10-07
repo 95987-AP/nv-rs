@@ -71,6 +71,11 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
     ("sInventoryDamagePerSecond", "DPS"),
     ("sInventoryDamageResistance", "DR"),
     ("sInventoryDamageThreshold", "DT"),
+    ("sInventoryRepair", "Repair"),
+    // Repairing.
+    ("sCantRepairPastMax", "CANNOT REPAIR PAST %.0f%s"),
+    ("sSelectItemToRepair", "CHOOSE ITEM TO REPAIR WITH"),
+    ("sMaintainItem", "Maintain"),
     ("sInventoryStrReq", "STR"),
     ("sInventoryEffects", "EFFECTS"),
     ("sModEffects", "MODS"),
@@ -152,7 +157,19 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
     ("sCrew", "Credits"),
     ("sCurrentAnteText", "Current Ante: "),
     ("sCurrentObjective", "CURRENT OBJECTIVE"),
+    ("sCWheelBackUp", "Back Up"),
+    ("sCWheelBeAggressive", "Be Aggressive"),
+    ("sCWheelBePassive", "Be Passive"),
+    ("sCWheelFollowMe", "Follow Me"),
+    ("sCWheelKeepDistance", "Keep Distance"),
+    ("sCWheelOpenInventory", "Open Inventory"),
+    ("sCWheelStayClose", "Stay Close"),
+    ("sCWheelTalkTo", "Talk To"),
     ("sCWheelTitle", "Companion Commands"),
+    ("sCWheelUseMelee", "Use Melee"),
+    ("sCWheelUseRanged", "Use Ranged"),
+    ("sCWheelUseStimpak", "Use Stimpak"),
+    ("sCWheelWaitHere", "Wait Here"),
     ("sDevice", "Device"),
     ("sDiscardCardText", "Discard Card"),
     ("sDiscardTrackText", "Discard Track"),
@@ -161,8 +178,71 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
     ("sExit", "Exit"),
     ("sExplosive", "EXPLOSIVE"),
     ("sForfeitGameText", "Forfeit Game"),
+    // The terminal menu (`00757b70` and the functions after it).
+    ("sComputersAddedNote", "Note Added: %s"),
+    ("sComputersBack", "Back"),
+    (
+        "sComputersHeader1",
+        "ROBCO INDUSTRIES UNIFIED OPERATING SYSTEM",
+    ),
+    ("sComputersHeader2", "COPYRIGHT 2075-2077 ROBCO INDUSTRIES"),
+    ("sComputersLogon", "LOGON ADMIN"),
+    ("sComputersWelcome", "Welcome to the service on SERVER1"),
+    ("sTerminalServerText1", "-Server 1-"),
+    ("sTerminalServerText10", "-Server 10-."),
+    ("sTerminalServerText2", "-Server 2-"),
+    ("sTerminalServerText3", "-Server 3-"),
+    ("sTerminalServerText4", "-Server 4-"),
+    ("sTerminalServerText5", "-Server 5-"),
+    ("sTerminalServerText6", "-Server 6-"),
+    ("sTerminalServerText7", "-Server 7-"),
+    ("sTerminalServerText8", "-Server 8-"),
+    ("sTerminalServerText9", "-Server 9-"),
+    // The hacking menu (`00765b80` and the functions after it).
+    (
+        "sHackIneligible",
+        "A %s skill of %d is required to hack this terminal.",
+    ),
+    ("sHackingAccessing1", "Please wait"),
+    ("sHackingAccessing2", "while system"),
+    ("sHackingAccessing3", "is accessed."),
+    ("sHackingCorrect", "correct"),
+    ("sHackingDenied", "Entry denied"),
+    ("sHackingDudRemoved", "Dud removed."),
+    ("sHackingGranted", "Exact match!"),
+    ("sHackingHeader", "ROBCO INDUSTRIES (TM) TERMLINK PROTOCOL"),
+    ("sHackingHeader2", "ENTER PASSWORD NOW"),
+    ("sHackingHeader3", "ATTEMPT(S) LEFT:"),
+    (
+        "sHackingIntro01",
+        "WELCOME TO ROBCO INDUSTRIES (TM) TERMLINK",
+    ),
+    ("sHackingIntro02", "SET TERMINAL/INQUIRE"),
+    ("sHackingIntro03", "RIT-V300"),
+    (
+        "sHackingIntro04",
+        "SET FILE/PROTECTION=OWNER:RWED ACCOUNTS.F",
+    ),
+    ("sHackingIntro05", "SET HALT RESTART/MAINT"),
+    (
+        "sHackingIntro06",
+        "Initializing Robco Industries(TM) MF Boot Agent v2.3.0",
+    ),
+    ("sHackingIntro07", "RETROS BIOS"),
+    ("sHackingIntro08", "RBIOS-4.02.08.00 52EE5.E7.E8"),
+    ("sHackingIntro09", "Copyright 2201-2203 Robco Ind."),
+    ("sHackingIntro10", "Uppermem: 64 KB"),
+    ("sHackingIntro11", "Root (5A8)"),
+    ("sHackingIntro12", "Maintenance Mode"),
+    ("sHackingIntro13", "RUN DEBUG/ACCOUNTS.F"),
+    ("sHackingLockout1", "Lockout in"),
+    ("sHackingLockout2", "progress."),
     ("sHackingLockout3", "TERMINAL LOCKED"),
     ("sHackingLockout4", "PLEASE CONTACT AN ADMINISTRATOR"),
+    ("sHackingSecurityReset", "SECURITY RESET..."),
+    ("sHackingToleranceReset1", "Allowance"),
+    ("sHackingToleranceReset2", "replenished."),
+    ("sHackingWarning", "!!! WARNING: LOCKOUT IMMINENT !!!"),
     ("sHowMany", "How many?"),
     ("sHowManyWait", "How long would you like to"),
     ("sIngredients", "Ingredients"),
@@ -183,6 +263,14 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
     ("sNew", "New"),
     ("sNext", "Next"),
     ("sNoItemsToRepair", "No items to repair"),
+    (
+        "sNoRepairHostileActorsNear",
+        "You cannot repair items when enemies are nearby.",
+    ),
+    (
+        "sNoRepairInCombat",
+        "You cannot repair items while in combat.",
+    ),
     ("sOk", "Ok"),
     ("sPCMenuHintRMB", "RMB)"),
     ("sPicksRemainingText", "Bobby Pins"),
@@ -194,13 +282,16 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
     ("sRecipes", "RECIPES"),
     ("sRedeemCode", "Enter Code"),
     ("sRemoveText", "Remove"),
+    ("sRepair", "REPAIR"),
     ("sRepairAllItems", "Repair All (%d)"),
+    ("sRepairCost", "Cost: %d caps"),
     ("sRepairItem", "Repair"),
     ("sRepairServicesTitle", "Repair Services"),
     ("sRepairSkill", "Repair Skill"),
     // The Pip-Boy's hot keys (read from the settings `00781ba0` loads).
     ("sCantHotkeyItem", "You cannot hotkey that item."),
     ("sCantHotkeyBrokenItem", "You cannot hotkey broken items."),
+    ("sRepairSkillTooLow", "%d%s REPAIR SKILL NEEDED"),
     ("sReset", "Reset"),
     ("sReturn", "Return"),
     ("sSave", "Save"),
@@ -261,8 +352,7 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
     ("sDayThursday", "Thursday"),
     ("sDayFriday", "Friday"),
     ("sDaySaturday", "Saturday"),
-    // The Pip-Boy's map (`00796fd0` case 0x0c: the player's marker) and
-    // ITEMS' Drop (`00780140` case 7).
+    // The Pip-Boy's map (`00796fd0` case 0x0c: the player's marker).
     ("sSetMarkerQuestion", "Do you want to set your marker?"),
     (
         "sMoveMarkerQuestion",
@@ -271,10 +361,61 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
     ("sMoveMarker", "Move It"),
     ("sRemoveMarker", "Remove It"),
     ("sLeaveMarker", "Leave It"),
+    // The Caravan menu's code (`0073d850`, `0073ea90`, `00740980`,
+    // `00741060`, `007490e0`; objects `011d2e68`, `011d3d48`,
+    // `011d4b58`, `011d1e6c`, `011d372c`, `011d43b4`, `011d47f8`), and
+    // the game screen's XML.
+    ("sCaravanDeckText", "Caravan Deck"),
+    ("sRSMRandomize", "Randomize"),
+    ("sCaravanYouWinText", "You win!"),
+    ("sCaravanYouLoseText", "You Lose!"),
+    ("sCaravanPressAnyKeyText", "Press Any Button to Continue"),
+    (
+        "sQuitCaravanText",
+        "If you quit now, you will forfeit the money wagered. Are you sure you wish to forfeit this match?",
+    ),
+    ("sCardCountText", "You must have at least 30 cards to play Caravan."),
+    ("sNetTotalText", "Net Total: "),
+    ("sPlaceCardText", "Place Card"),
+    ("sDiscardSelectedText", "Discard Selected"),
+    // The casino games (`world::casino`): the slot machine's buttons and
+    // lines (`007c0a40`), the shared texts.
+    ("sCurrentBetText", "Current Bet: "),
+    ("sChipCountText", "Chips: "),
+    ("sCasinoEarningsText", "Earnings: "),
+    ("sCasinoChipText", "chip"),
+    ("sPlural", "(s)"),
+    ("sYouWin", "You win"),
+    ("sYouLose", "You lose"),
+    ("sLuckyWinText", "You feel lucky. You win"),
+    ("sUnluckyLoseText", "You feel unlucky. You lose"),
+    ("sSpinText", "Spin"),
+    ("sIncreaseBetText", "Increase Bet"),
+    ("sDecreaseBetText", "Decrease Bet"),
+    ("sPayoutListText", "Payout List"),
+    ("sBetMax", "Bet Max"),
+    (
+        "sSlotPressAnyButtonText",
+        "Press any valid slot machine button to continue.",
+    ),
+    // The Pip-Boy's Drop (`00780140` case 7; objects `011d47a4`, `011d22c8`,
+    // `011d43e4`, `011d31f8`, `011d3d30`).
     (
         "sDropQuestItemWarning",
         "You cannot remove Quest Items from your Inventory.",
     ),
+    (
+        "sDropEquippedItemWarning",
+        "You cannot drop an equipped item until you complete your current action.",
+    ),
+    ("sNoJumpWarning", "You can not drop objects while in the air."),
+    ("sCantRemoveWornItem", "Unable to remove the worn item."),
+    (
+        "sNotEnoughRoomWarning",
+        "You do not have enough room to drop this object.",
+    ),
+    // Crafting: what was made (`sAddItemtoInventory`).
+    ("sAddItemtoInventory", "added"),
     ("sKeyring", "Keyring"),
     // The start menu (`007cc6e0` and its pages' handlers).
     ("sHelp", "Help"),
@@ -413,6 +554,20 @@ pub fn new_ui(
         }
     }
     ui
+}
+
+/// Whether a 360 pad is in use, as `globals()`' `_Has360Controller`: the
+/// exe sets it as the menus load (`0070adb0`) and again when the pad
+/// comes or goes (`00719630`), from `004b71d0`: XInput's pad 0 connected
+/// (`00709fd0`) and `[Interface] bDisable360Controller` off. The pad-only
+/// buttons follow it (ITEMS' Equip and Drop).
+pub fn set_pad(ui: &mut Ui, pad: bool) {
+    let Some(globals) = ui.globals else {
+        return;
+    };
+    if let Some(id) = ui.names.lookup_or_add("_Has360Controller") {
+        ui.set_number(globals, id, if pad { 1.0 } else { 0.0 });
+    }
 }
 
 /// `[Interface] fMenuBackgroundOpacity`'s default in the exe.

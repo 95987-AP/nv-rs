@@ -17,10 +17,8 @@
 //! process).
 
 pub mod actors;
-pub mod carried;
 pub mod challenges;
 pub mod destruction;
-pub mod menus;
 pub mod placed;
 pub mod procedures;
 pub mod radio;
@@ -62,9 +60,6 @@ pub enum Shown {
     /// `StopMagicShaderVisuals`: the reference's effects with that shader
     /// ended.
     ShaderVisualStopped { reference: FormId, shader: FormId },
-    /// `OpenTeammateContainer`: the container menu on a companion's things
-    /// (its mode [`actors::TEAMMATE_MODE`]).
-    TeammateContainer { who: FormId },
     /// `PushActorAway`: `who` is knocked down (the AI process's knock
     /// state 2) and thrown as a ragdoll from `from`'s centre with this
     /// force ([`actors::push_force`]).
@@ -75,22 +70,6 @@ pub enum Shown {
     },
     /// `FireWeapon`: a placed object fires a weapon ([`traps::shot_from`]).
     WeaponFired { from: FormId, weapon: FormId },
-    /// `ShowRecipeMenu`: the recipe (crafting) menu, sold by `vendor`,
-    /// maybe for one category (`RCCT`).
-    RecipeMenu {
-        vendor: FormId,
-        category: Option<FormId>,
-    },
-    /// A casino game's menu, with its casino (`CSNO`) and the script's
-    /// three numbers.
-    CasinoMenu {
-        game: menus::CasinoGame,
-        casino: FormId,
-        numbers: [i32; 3],
-    },
-    /// `ForceTerminalBack`: the terminal goes back a screen, or closes
-    /// from its first.
-    TerminalBack,
     /// `Autosave`, `ForceSave`, `SystemSave`: a save the game asks for.
     Save(SaveKind),
     /// `SetGlobalTimeMultiplier`: everything runs this much faster.
@@ -221,8 +200,6 @@ pub struct State {
     pub facing_up: HashMap<FormId, bool>,
     /// Effect shaders scripts put on references ([`shaders`]; not saved).
     pub shader_visuals: Vec<shaders::ShaderVisual>,
-    /// The player's Caravan cards ([`carried`]), saved.
-    pub cards: carried::Cards,
     /// What scripts did to people's dispositions toward the player
     /// ([`actors`]), saved.
     pub dispositions: actors::Dispositions,
@@ -245,6 +222,10 @@ pub struct State {
     /// → `00753420`, kind 0 SPECIAL, 1 tag skills).
     pub special_points: i32,
     pub tag_points: i32,
+    /// Bases whose value `SetItemValue` changed (`005d3e30` → `0048e960`:
+    /// the form's value data, +4, for every one of them; the form marked
+    /// changed, so saved).
+    pub item_values: HashMap<FormId, i32>,
     /// The seconds the effect script running now covers
     /// (`ScriptEffectElapsedSeconds`; `None` outside one; not saved).
     pub effect_seconds: Option<f32>,
@@ -298,26 +279,15 @@ pub fn describe(order: &LoadOrder, state: &GameState, shown: &Shown) -> String {
             Some(t) => format!("{} shows {} for {t} s", name(*reference), name(*shader)),
             None => format!("{} shows {}", name(*reference), name(*shader)),
         },
-        Shown::TerminalBack => "the terminal goes back a screen".to_string(),
         Shown::ShaderVisualStopped { reference, shader } => {
             format!("{} stops showing {}", name(*reference), name(*shader))
         }
-        Shown::TeammateContainer { who } => format!("{}'s things open to trade", name(*who)),
         Shown::PushedAway { who, from, force } => {
             format!("{} pushes {} away (force {force})", name(*from), name(*who))
         }
         Shown::WeaponFired { from, weapon } => {
             format!("{} fires {}", name(*from), name(*weapon))
         }
-        Shown::RecipeMenu { vendor, category } => match category {
-            Some(c) => format!("{} opens the recipe menu ({})", name(*vendor), name(*c)),
-            None => format!("{} opens the recipe menu", name(*vendor)),
-        },
-        Shown::CasinoMenu {
-            game,
-            casino,
-            numbers,
-        } => format!("{game:?} at {} ({numbers:?})", name(*casino)),
         Shown::Destruction {
             what,
             stage,
@@ -416,6 +386,7 @@ pub const READS: &[&str] = &[
     "IsCombatTarget",
     "IsIdlePlaying",
     "IsAnimPlaying",
+    "GetIsAlignment",
 ];
 
 /// The functions that change things ([`change`]), by the game's own names.
@@ -456,7 +427,6 @@ pub const CHANGES: &[&str] = &[
     "SetSecuritronExpression",
     "AddSPECIALPoints",
     "SetSPECIALPoints",
-    "ForceTerminalBack",
     "AddTagSkills",
     "SetRumble",
 ];
@@ -468,10 +438,8 @@ pub fn handled() -> impl Iterator<Item = &'static str> {
         .chain(CHANGES)
         .chain(radio::CHANGES)
         .chain(shaders::CHANGES)
-        .chain(carried::FUNCTIONS)
         .chain(actors::FUNCTIONS)
         .chain(traps::FUNCTIONS)
-        .chain(menus::FUNCTIONS)
         .chain(crate::sight::FUNCTIONS)
         .copied()
 }
@@ -917,6 +885,18 @@ fn read(facts: &Facts, name: &str, on: Option<FormId>, args: &[Value]) -> Option
             let who = on?;
             flag(actor(who) && s.combat.get(&who) == Some(&arg(0).form()))
         }
+        // `005a4dd0`: whether the caller's Karma (actor value 23) is in the
+        // band asked (`0047e040`, [`crate::reputation::alignment`]: 0 good,
+        // 1 neutral, 2 evil, 3 very good, 4 very evil).
+        "GetIsAlignment" => {
+            let who = on?;
+            let karma = facts.current_actor_value(who, 23).unwrap_or(0.0) as f32;
+            flag(
+                actor(who)
+                    && i64::from(crate::reputation::alignment(order, karma))
+                        == arg(0).number() as i64,
+            )
+        }
         _ => return None,
     })
 }
@@ -1005,17 +985,11 @@ pub(crate) fn change(
     if radio::CHANGES.contains(&name) {
         return Some(radio::carry_out(runner, name, target, args));
     }
-    if carried::FUNCTIONS.contains(&name) {
-        return Some(carried::carry_out(runner, name, target, args));
-    }
     if actors::FUNCTIONS.contains(&name) {
         return Some(actors::carry_out(runner, name, target, args));
     }
     if traps::FUNCTIONS.contains(&name) {
         return Some(traps::carry_out(runner, name, target, args));
-    }
-    if menus::FUNCTIONS.contains(&name) {
-        return Some(menus::carry_out(runner, name, target, args));
     }
     if shaders::CHANGES.contains(&name) {
         return Some(shaders::carry_out(runner, name, target, args));
@@ -1289,15 +1263,6 @@ fn carry_out(
         // for a while (`XInputSetState`) when one is connected; nothing in
         // the game changes, and nv-rs drives no rumble.
         "SetRumble" => {}
-        // `005dc4e0`: with the terminal menu (1057) open, its page stack
-        // is popped (`00758a80` → `0063f7b0`): the screen before is shown
-        // (`007586e0`), or with none left the terminal closes
-        // (`00757ea0`). Otherwise nothing. The viewer keeps the stack.
-        "ForceTerminalBack" => {
-            if runner.state.more.menu_open == Some(crate::terminal::TERMINAL_MENU) {
-                runner.state.events.push(Event::More(Shown::TerminalBack));
-            }
-        }
         _ => return None,
     }
     Some(0.0)
@@ -1338,6 +1303,11 @@ pub(crate) fn save_lines(state: &GameState, line: &mut dyn FnMut(String)) {
     v.sort_by_key(|(k, _)| **k);
     for (base, on) in v {
         line(format!("broadcast {} {}", id(*base), u8::from(*on)));
+    }
+    let mut v: Vec<_> = m.item_values.iter().collect();
+    v.sort_by_key(|(k, _)| **k);
+    for (base, value) in v {
+        line(format!("itemvalue {} {value}", id(*base)));
     }
     for (word, map) in [("combatstyle", &m.combat_styles), ("speaker", &m.speakers)] {
         let mut v: Vec<_> = map.iter().collect();
@@ -1385,7 +1355,6 @@ pub(crate) fn save_lines(state: &GameState, line: &mut dyn FnMut(String)) {
     placed::save_lines(state, line);
     destruction::save_lines(state, line);
     radio::save_lines(state, line);
-    carried::save_lines(state, line);
     actors::save_lines(state, line);
     traps::save_lines(state, line);
 }
@@ -1397,7 +1366,6 @@ pub(crate) fn load_line(state: &mut GameState, raw: &str) -> Option<Result<(), S
     if let Some(r) = placed::load_line(state, &parts)
         .or_else(|| destruction::load_line(state, &parts))
         .or_else(|| radio::load_line(state, &parts))
-        .or_else(|| carried::load_line(state, &parts))
         .or_else(|| actors::load_line(state, &parts))
         .or_else(|| traps::load_line(state, &parts))
     {
@@ -1449,6 +1417,9 @@ pub(crate) fn load_line(state: &mut GameState, raw: &str) -> Option<Result<(), S
             }
             "combatstyle" => {
                 m.combat_styles.insert(form(1)?, form(2)?);
+            }
+            "itemvalue" => {
+                m.item_values.insert(form(1)?, num(2)? as i32);
             }
             "speaker" => {
                 m.speakers.insert(form(1)?, form(2)?);

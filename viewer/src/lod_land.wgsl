@@ -55,6 +55,16 @@ struct LodLand {
     high_detail: vec4<f32>,
 }
 
+// The hour's light outdoors, shared by every surface (`shared_light.rs`):
+// the land is outdoors only and always takes it.
+struct SharedLight {
+    ambient: vec4<f32>,
+    directional_color: vec4<f32>,
+    directional_direction: vec4<f32>,
+    fog_color: vec4<f32>,
+    fog_range: vec4<f32>,
+}
+
 @group(2) @binding(100) var<uniform> lod: LodLand;
 @group(2) @binding(101) var base_texture: texture_2d<f32>;
 @group(2) @binding(102) var base_sampler: sampler;
@@ -71,6 +81,7 @@ struct LodLand {
 @group(2) @binding(111) var parent_normal_sampler: sampler;
 // x: the game's far clip plane (meters).
 @group(2) @binding(112) var<uniform> clip: vec4<f32>;
+@group(2) @binding(113) var<storage, read> shared_light: SharedLight;
 
 @vertex
 fn vertex(vertex: LodVertex) -> LodVertexOutput {
@@ -90,14 +101,14 @@ fn vertex(vertex: LodVertex) -> LodVertexOutput {
 }
 
 fn fog_amount(p: vec3<f32>) -> f32 {
-    if (lod.fog_range.w < 0.5) {
+    if (shared_light.fog_range.w < 0.5) {
         return 0.0;
     }
     let v = view_bindings::view.view_from_world * vec4<f32>(p, 1.0);
     let projection = view_bindings::view.clip_from_view;
-    let d = length(vec3<f32>(v.x * projection[0][0], v.y * projection[1][1], -v.z - lod.fog_range.z));
-    let span = max(lod.fog_range.y - lod.fog_range.x, 1e-4);
-    return pow(saturate((d - lod.fog_range.x) / span), lod.fog_color.w);
+    let d = length(vec3<f32>(v.x * projection[0][0], v.y * projection[1][1], -v.z - shared_light.fog_range.z));
+    let span = max(shared_light.fog_range.y - shared_light.fog_range.x, 1e-4);
+    return pow(saturate((d - shared_light.fog_range.x) / span), shared_light.fog_color.w);
 }
 
 @fragment
@@ -117,9 +128,9 @@ fn fragment(in: LodVertexOutput) -> FragmentOutput {
     // The game's axes (x east, y north, z up) to Bevy's.
     let g = stored * 2.0 - 1.0;
     let n = vec3<f32>(g.x, g.z, -g.y);
-    let light = max(lod.ambient.rgb + lod.sun_color.rgb * saturate(dot(n, lod.sun_direction.xyz)), vec3<f32>(0.0));
+    let light = max(shared_light.ambient.rgb + shared_light.directional_color.rgb * saturate(dot(n, shared_light.directional_direction.xyz)), vec3<f32>(0.0));
     let color = base * (0.55 + 0.8 * noise) * light;
-    let shaded = mix(color, lod.fog_color.rgb, fog_amount(in.world_position.xyz));
+    let shaded = mix(color, shared_light.fog_color.rgb, fog_amount(in.world_position.xyz));
     // The game's far clip plane: depth along the view.
     let view_depth = -(view_bindings::view.view_from_world * vec4<f32>(in.world_position.xyz, 1.0)).z;
     if (view_depth > clip.x) {

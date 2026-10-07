@@ -23,6 +23,17 @@ pub struct PcmSound {
     samples: Arc<[i16]>,
 }
 
+impl PcmSound {
+    /// Interleaved 16-bit samples at this rate.
+    pub fn new(channels: u16, rate: u32, samples: Vec<i16>) -> Self {
+        PcmSound {
+            channels: channels.max(1),
+            rate: rate.max(1),
+            samples: samples.into(),
+        }
+    }
+}
+
 pub struct PcmDecoder {
     sound: PcmSound,
     at: usize,

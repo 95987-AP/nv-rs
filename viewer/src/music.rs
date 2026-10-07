@@ -40,7 +40,14 @@ impl Plugin for MusicPlugin {
         app.init_resource::<Music>()
             .init_resource::<MusicRequests>()
             .add_audio_source::<MusicTrack>()
-            .add_systems(Update, play_music.after(crate::scripts::run_scripts));
+            // The game's music manager runs in its main loop, which a
+            // movie holds until it ends (`movie`).
+            .add_systems(
+                Update,
+                play_music
+                    .after(crate::scripts::run_scripts)
+                    .run_if(not(crate::movie::playing)),
+            );
     }
 }
 

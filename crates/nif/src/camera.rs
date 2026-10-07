@@ -413,7 +413,28 @@ impl Nif {
         if self.block_type(camera) != "NiCamera" {
             return Ok(None);
         }
-        // The camera: its object fields as a node's, then its frustum.
+        let Some((frustum, camera_controller)) = self.camera_frustum(camera)? else {
+            return Ok(None);
+        };
+        // The top node's controller: a transform controller with keys.
+        let (translation, rotation) = self.keyed_transform(node.av.net.controller)?;
+        let fov = self.keyed_fov(camera_controller)?;
+        Ok(Some(CameraModel {
+            root_name: node.av.net.name.clone(),
+            root_translation: node.av.transform.translation,
+            translation,
+            rotation,
+            frustum,
+            fov,
+        }))
+    }
+
+    /// An `NiCamera` block's frustum and its controller, as stored (its
+    /// object fields read as a node's first).
+    pub fn camera_frustum(&self, camera: usize) -> Result<Option<(Frustum, i32)>> {
+        if self.block_type(camera) != "NiCamera" {
+            return Ok(None);
+        }
         let mut r = self.reader(camera);
         r.i32("the name")?;
         let extra = r.u32("the extra data count")? as usize;
@@ -438,17 +459,7 @@ impl Nif {
             far: r.f32("the frustum")?,
             ortho: r.bool("the projection")?,
         };
-        // The top node's controller: a transform controller with keys.
-        let (translation, rotation) = self.keyed_transform(node.av.net.controller)?;
-        let fov = self.keyed_fov(camera_controller)?;
-        Ok(Some(CameraModel {
-            root_name: node.av.net.name.clone(),
-            root_translation: node.av.transform.translation,
-            translation,
-            rotation,
-            frustum,
-            fov,
-        }))
+        Ok(Some((frustum, camera_controller)))
     }
 
     /// The top node's keyed translation and rotation.

@@ -1,5 +1,4 @@
-//! Companions and actors: `OpenTeammateContainer`, `PushActorAway`,
-//! `SetDisposition`, `DispelAllSpells` and `GetCauseofDeath` (read in [`super::value`], kept
+//! Companions and actors: `PushActorAway`, `SetDisposition`, `DispelAllSpells` and `GetCauseofDeath` (read in [`super::value`], kept
 //! here by [`record_cause`]). Notes: `docs/DEAD_MONEY.md` "Companions and
 //! actors".
 
@@ -13,16 +12,7 @@ use crate::dialogue::PLAYER_REF;
 use crate::scripting::{game_setting, Event, Facts, GameState, Runner, Value};
 
 /// The functions here that change things, by the game's own names.
-pub const FUNCTIONS: &[&str] = &[
-    "OpenTeammateContainer",
-    "PushActorAway",
-    "SetDisposition",
-    "DispelAllSpells",
-];
-
-/// The container menu's mode for a companion's things (`00709470`'s fifth
-/// argument; 1 is a container, 2 pickpocketing).
-pub const TEAMMATE_MODE: u8 = 3;
+pub const FUNCTIONS: &[&str] = &["PushActorAway", "SetDisposition", "DispelAllSpells"];
 
 /// Agility's actor value number.
 const AGILITY: u16 = 10;
@@ -45,22 +35,6 @@ pub(super) fn carry_out(
     let order = runner.order;
     let arg = |i: usize| args.get(i).cloned().unwrap_or(Value::Number(0.0));
     match name {
-        // `005d9430`: on a person or creature who is the player's teammate
-        // (actor +0x18d), or any with the number given and not 0, the
-        // container menu opens on their things in its companion mode
-        // (`00709470` with mode 3). Always succeeds.
-        "OpenTeammateContainer" => {
-            let who = on?;
-            if is_actor(order, runner.state, who)
-                && (runner.state.teammates.contains(&who) || arg(0).number() as i32 != 0)
-            {
-                runner
-                    .state
-                    .events
-                    .push(Event::More(Shown::TeammateContainer { who }));
-            }
-            Some(1.0)
-        }
         // `005d6b60`: the caller pushes the actor given away from itself.
         "PushActorAway" => {
             let from = on?;

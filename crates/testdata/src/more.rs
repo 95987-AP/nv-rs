@@ -95,6 +95,10 @@ pub mod ids {
     pub const SONG: u32 = 0xE25;
     /// `AMLRadio`: largest attenuation distance 20 (× 100 units).
     pub const RADIO_MODEL: u32 = 0xE26;
+    /// An item whose `OnAdd` script (`TestMoverScript`) gives itself to
+    /// the crate (`RemoveMe CrateRef`).
+    pub const MOVER_SCRIPT: u32 = 0xE27;
+    pub const MOVER: u32 = 0xE28;
 }
 
 /// The world, written as `FalloutNV.esm` into a temporary Data folder.
@@ -215,8 +219,29 @@ pub fn more(tag: &str) -> TempData {
         0,
         &named(b"MISC", SAYER, "TestSayer", &sayer),
     ));
+    let mut mover_script = sub(b"SCHR", &[0; 20]);
+    mover_script.extend(sub(
+        b"SCTX",
+        b"scn TestMoverScript\nbegin OnAdd player\n\tRemoveMe CrateRef\nend",
+    ));
+    plugin.extend(group(
+        *b"SCPT",
+        0,
+        &named(b"SCPT", MOVER_SCRIPT, "TestMoverScript", &mover_script),
+    ));
+    let mut mover = sub(b"FULL", &zstr("Mover"));
+    mover.extend(sub(b"SCRI", &MOVER_SCRIPT.to_le_bytes()));
+    mover.extend(sub(b"DATA", &[0; 8]));
+    plugin.extend(group(
+        *b"MISC",
+        0,
+        &named(b"MISC", MOVER, "TestMover", &mover),
+    ));
     let mut card = sub(b"FULL", &zstr("Ace of Clubs"));
     card.extend(sub(b"SCRI", &CARD_SCRIPT.to_le_bytes()));
+    // Its suit and value (`INTV` twice, as the game's cards have them).
+    card.extend(sub(b"INTV", &1i32.to_le_bytes()));
+    card.extend(sub(b"INTV", &1i32.to_le_bytes()));
     card.extend(sub(b"DATA", &1i32.to_le_bytes()));
     plugin.extend(group(*b"CCRD", 0, &named(b"CCRD", CARD, "TestCard", &card)));
     let mut card_cup = sub(b"FULL", &zstr("Lucky cup"));

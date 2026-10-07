@@ -437,10 +437,10 @@ fn use_object(
     if r.is_item() {
         // Someone else's: stealing (`world::crime`).
         let owner = world::crime::owner_of(order, state, r.reference);
-        state.pick_up(order, r.reference, r.base, r.count);
-        // Its script's `OnAdd` blocks (Caravan cards join the player's
+        // Its script's `OnAdd` blocks run with the scripted items
+        // (`Runner::run_item_scripts`; Caravan cards join the player's
         // cards and leave the inventory).
-        Runner::new(order, cache, state).on_add(r.reference, PLAYER_REF);
+        state.pick_up(order, r.reference, r.base, r.count);
         if let Some(owner) = owner.filter(|_| !world::crime::may_take(order, state, owner)) {
             if world::crime::steal(order, state, r.reference, owner) {
                 println!("Seen stealing {}.", counted(r.base, r.count));
@@ -998,6 +998,8 @@ pub struct HereNow<'w> {
     virtual_time: ResMut<'w, Time<Virtual>>,
     /// The game's own menus open (their classes), for `MenuMode` blocks.
     menu_draw: Res<'w, crate::game_menus::MenuDraw>,
+    /// Movies scripts asked for (`PlayBink`).
+    movies: ResMut<'w, crate::movie::Movies>,
     player_idle: ResMut<'w, crate::player_idle::PlayerIdle>,
     seats: Res<'w, crate::sitting::Seats>,
     object_bounds: Option<Res<'w, ObjectBounds>>,
@@ -1059,6 +1061,7 @@ pub fn run_scripts(
         mut lockpicking,
         mut virtual_time,
         menu_draw,
+        mut movies,
         mut player_idle,
         seats,
         object_bounds,
@@ -1153,6 +1156,7 @@ pub fn run_scripts(
     loaded.insert(PLAYER_REF);
     loaded.extend(talkers.0.iter().map(|t| t.reference));
     world::more_functions::report_loaded(state, loaded);
+    state.player_heading = heading;
     match &exterior {
         Some(e) => {
             state.player_world = Some(e.grid.world.form_id);
@@ -1164,10 +1168,13 @@ pub fn run_scripts(
         }
     }
     // `--run`: each line as the console would run it, once the place is
-    // up and the player is in it.
+    // up and the player is in it; the scripted items' runs after each, so
+    // the next sees what they did (an item's `OnAdd`).
     if player.ready {
         for line in std::mem::take(&mut start_commands.0) {
-            let flow = Runner::new(order, &scripts.0, state).run_source(&line, None, None);
+            let mut runner = Runner::new(order, &scripts.0, state);
+            let flow = runner.run_source(&line, None, None);
+            runner.run_item_scripts();
             println!("{line}: {flow:?}");
         }
         // `--run-at`: later, in game mode.
@@ -1292,7 +1299,16 @@ pub fn run_scripts(
                     waiting.push(crate::menus::Menu::Container(c, name));
                 }
                 Some(Used::Terminal(t, r)) => {
-                    waiting.push(crate::menus::Menu::Terminal(t, r));
+                    use crate::game_menus::hacking::{use_terminal, Using};
+                    match use_terminal(order, state, t, r) {
+                        Using::Open(m) => waiting.push(m),
+                        Using::Refused(why) => {
+                            if let Some(s) = order.form_by_editor_id(crate::lockpick::POPUP_SOUND) {
+                                sound_requests.0.push(s);
+                            }
+                            announce(why, &mut notices);
+                        }
+                    }
                 }
                 Some(Used::Lockpick(r)) => lockpicking.request = Some(r),
                 Some(Used::Sleep) => {
@@ -1379,6 +1395,43 @@ pub fn run_scripts(
             }
             Event::Barter(merchant) => {
                 waiting.push(crate::menus::Menu::Barter(merchant));
+                None
+            }
+            // `game_menus::recipe`, with `world::crafting`'s rules.
+            Event::RecipeMenu { actor, category } => {
+                waiting.push(crate::menus::Menu::Recipe { actor, category });
+                None
+            }
+            Event::RepairServices(vendor) => {
+                waiting.push(crate::menus::Menu::RepairServices(vendor));
+                None
+            }
+            Event::TeammateContainer(who) => {
+                waiting.push(crate::menus::Menu::Teammate(who));
+                None
+            }
+            Event::Casino {
+                game,
+                casino,
+                min_bet,
+                max_bet,
+                ..
+            } => {
+                println!("{game:?} at {casino} (bets {min_bet} to {max_bet}): not shown yet.");
+                None
+            }
+            Event::Caravan {
+                npc,
+                deck,
+                difficulty,
+                share,
+            } => {
+                waiting.push(crate::menus::Menu::Caravan {
+                    npc,
+                    deck,
+                    difficulty,
+                    share,
+                });
                 None
             }
             // `ShowSleepWaitMenu` (its refusals already given): the game's
@@ -1548,9 +1601,10 @@ pub fn run_scripts(
                 );
                 None
             }
-            // Not played yet: said, so it's clear what scripts did.
-            Event::Video(file) => {
-                println!("A script plays the video {file} (Bink videos aren't played here).");
+            // Played by `movie::start_movies`, before anything else moves.
+            Event::Video(video) => {
+                println!("A script plays the movie {}.", video.file);
+                movies.queue.push_back(video);
                 None
             }
             // Played by `music::play_music`.
@@ -1568,12 +1622,15 @@ pub fn run_scripts(
             }
             Event::Menu(menu) => {
                 menus.push(menu);
-                Some(match menu {
+                match menu {
                     world::scripting::RACE_SEX_MENU => {
-                        "(The face and body menu would open here; kept as it is.)".to_string()
+                        Some("(The face and body menu would open here; kept as it is.)".to_string())
                     }
-                    _ => format!("(Menu {menu} would open here.)"),
-                })
+                    // Opened by their own events (`Event::RecipeMenu`,
+                    // `Event::Casino`); the number is for `MenuMode`.
+                    world::crafting::RECIPE_MENU | 1080..=1082 => None,
+                    _ => Some(format!("(Menu {menu} would open here.)")),
+                }
             }
             Event::Sound(sound) => {
                 sound_requests.0.push(sound);
@@ -1612,8 +1669,21 @@ pub fn run_scripts(
                 let base = world::scripting::base_of(order, what);
                 match base.and_then(|b| order.get(b)).map(|r| r.entry.header.kind) {
                     Some(k) if k.as_bytes() == b"TERM" => {
-                        waiting.push(crate::menus::Menu::Terminal(base.unwrap_or(what), what));
-                        None
+                        use crate::game_menus::hacking::{use_terminal, Using};
+                        match use_terminal(order, state, base.unwrap_or(what), what) {
+                            Using::Open(m) => {
+                                waiting.push(m);
+                                None
+                            }
+                            Using::Refused(why) => {
+                                if let Some(s) =
+                                    order.form_by_editor_id(crate::lockpick::POPUP_SOUND)
+                                {
+                                    sound_requests.0.push(s);
+                                }
+                                Some(why)
+                            }
+                        }
                     }
                     Some(k) if k.as_bytes() == b"CONT" => {
                         match locked(order, state, what, &name(what)) {
@@ -1644,6 +1714,10 @@ pub fn run_scripts(
                 }
             }
             Event::Activate { .. } => None,
+            // An item's own `ForceTerminalBack` is carried out by the
+            // terminal menu (`game_menus::computers`). From another script
+            // it isn't (the game's goes back if a terminal menu is open).
+            Event::TerminalBack => None,
             Event::More(shown) => {
                 println!("{}", world::more_functions::describe(order, state, &shown));
                 match shown {
@@ -1662,33 +1736,10 @@ pub fn run_scripts(
                     world::more_functions::Shown::TimeMultiplier(m) => {
                         virtual_time.set_relative_speed(m.max(0.0));
                     }
-                    // `OpenTeammateContainer`: the container menu on the
-                    // companion's things, titled with their name. Its
-                    // companion mode (3) is drawn as a container's (mode 1)
-                    // here.
-                    world::more_functions::Shown::TeammateContainer { who } => {
-                        let title = name(world::scripting::base_of(order, who).unwrap_or(who));
-                        waiting.push(crate::menus::Menu::Container(who, title));
-                    }
                     // `PushActorAway`: knocking someone down alive (a
                     // ragdoll that gets up again) isn't drawn yet; only the
                     // dead go limp here (`ActorRig::go_limp`).
                     world::more_functions::Shown::PushedAway { .. } => {}
-                    // `ShowRecipeMenu`: the recipe menu on the category
-                    // (`game_menus::recipe`).
-                    // [G] The menu's listing order, skill rule and click to
-                    // make aren't traced (`RecipeMenu::DoClick` is `007274b0`,
-                    // not read yet), so a script opens it only with
-                    // `world::guesses` on; `--open-menu recipes:` always does.
-                    world::more_functions::Shown::RecipeMenu { category, .. } => {
-                        if world::guesses::enabled() {
-                            waiting.push(crate::menus::Menu::Recipes(category));
-                        } else {
-                            println!(
-                                "ShowRecipeMenu: the recipe menu isn't traced yet (NV_GUESSES=1 opens it)."
-                            );
-                        }
-                    }
                     // `FireWeapon`: shot in `combat::object_shots`.
                     world::more_functions::Shown::WeaponFired { from, weapon } => {
                         object_shots.0.push((from, weapon));
