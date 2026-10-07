@@ -868,12 +868,23 @@ fn worn_armour_sum(
     sum
 }
 
+/// A worn armour's damage resistance (`004bdf90`): its `DNAM` i16 at 0
+/// (the form's `+0x178`) ÷ 100 (`004be080`), cut to a whole number (the
+/// FPU's truncating mode, control word | 0xc00): Vault 11's jumpsuit
+/// stores 100 for DR 1. At its condition: [`armour_figure_at`].
+// Translated from 004bdf90 and 004be080 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn armour_resistance(stored: i16) -> f32 {
+    (f32::from(stored) / 100.0).trunc()
+}
+
 /// Someone's damage resistance: their actor value (18) plus worn armour's
-/// (`ARMO` `DNAM` i16 at 0, each piece at its condition, the sum at most
-/// `fMaxArmorRating`: `008d22b0`).
+/// (`ARMO` `DNAM` i16 at 0 in hundredths, [`armour_resistance`]; each
+/// piece at its condition, the sum at most `fMaxArmorRating`: `008d22b0`).
 pub fn damage_resistance(order: &LoadOrder, state: &GameState, who: FormId) -> f32 {
+    // In hundredths (`004be080`); [`armour_figure_at`] truncates it as
+    // `004bdf90` does.
     let mut worn = worn_armour_sum(order, state, who, &|d| {
-        (d.len() >= 2).then(|| f32::from(i16::from_le_bytes([d[0], d[1]])))
+        (d.len() >= 2).then(|| f32::from(i16::from_le_bytes([d[0], d[1]])) / 100.0)
     });
     let most = game_setting(order, "fMaxArmorRating").unwrap_or(90.0);
     if most > 0.0 {
@@ -1850,6 +1861,18 @@ impl ReadyKey {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn worn_armour_resistance_is_stored_in_hundredths() {
+        // `VaultSuit11` stores 100, `OutfitTrenchcoat` 500,
+        // `DamWarTrooper` 2000, `ArmorTeslaPowerFX` 4000.
+        assert_eq!(super::armour_resistance(100), 1.0);
+        assert_eq!(super::armour_resistance(500), 5.0);
+        assert_eq!(super::armour_resistance(2000), 20.0);
+        assert_eq!(super::armour_resistance(4000), 40.0);
+        assert_eq!(super::armour_resistance(250), 2.0);
+        assert_eq!(super::armour_resistance(0), 0.0);
+    }
+
     use super::*;
     use KeyState::*;
     use ReadyAction::*;
