@@ -18,24 +18,43 @@ branch green.
   the Dead Money contributor's head tracking), physics batches 2 and 3,
   third-person weapon, start menu/radio/local map, NPC hit fix, the Dead
   Money contributor's branches (docs/CONTRIB_PLAYCON.md).
-- Possibly still running from the previous session (check each branch
-  for new commits and its docs/MILESTONES.md line before assuming):
-  - `claude/m2-death-ragdoll`: death animation into ragdoll.
-  - `claude/m2-radio-unify`: one radio state; the 2 key.
-  - `claude/contrib-chazm`: merging Chazm's PR #11 (terminals, hacking,
-    item scripts, repair, weapon mods, companions, Caravan, casinos,
-    crafting, Bink intro). Read docs/CONTRIB_CHAZM.md when it exists.
-  The computer was restarted while all three were running, so their
-  agents stopped mid-task. Their worktrees are
-  `%USERPROFILE%\nv-re\work\wt-death`, `wt-radio-unify` and
-  `wt-contrib-chazm`: check `git status` there for uncommitted work
-  (keep it; it's the agent's progress) and `git log` for commits, then
-  restart each as a new agent told what is already done. Chazm's PR is
-  fetched as `pr/11` (`git fetch origin pull/11/head:refs/remotes/pr/11`).
-  If one is finished (report in its docs, checks pass), merge it into
-  integration, run acceptance, publish. If one has stalled with no
-  commits, finish it or restart it as a new agent from where it stopped.
+- Stopped mid-task by a computer restart (their agents are gone; the work
+  is on disk in their worktrees under `%USERPROFILE%\nv-re\work\`):
+  - `wt-death`, branch `claude/m2-death-ragdoll` (death animation into
+    ragdoll; Cheyenne left standing after `Kill`): 2 commits plus
+    uncommitted changes in 4 files.
+  - `wt-radio-unify`, branch `claude/m2-radio-unify` (one radio state for
+    the Pip-Boy and the script functions; the 2 key, Ammo Swap vs hot
+    key 2): 1 commit plus uncommitted changes in 8 files.
+  - `wt-contrib-chazm`, branch `claude/contrib-chazm`: merging Chazm's
+    PR #11 (`pr/11`; terminals, hacking, item scripts, repair, weapon
+    mods, companions, Caravan, casinos, crafting, Bink intro, "faster NPC
+    pathing / mouse look"). The merge is in progress and uncommitted
+    (about 160 files staged or conflicted). Crafting, Caravan and
+    companion functions overlap the Dead Money merge: keep one traced
+    implementation (Chazm owns these areas, so his where equally traced)
+    without losing tests. Write docs/CONTRIB_CHAZM.md.
+  Resume each as a new agent in the same worktree: tell it to inspect
+  `git status`/`git log`/`git diff`, keep the work already there, and
+  finish the original task (each needs live verification, full checks
+  and `scripts/acceptance.ps1`). Then merge into integration, run
+  acceptance, publish, push.
 
+## First steps
+
+1. GitHub CLI: `gh` was installed for this session (`C:\Program
+   Files\GitHub CLI\gh.exe`; if it isn't there, `winget install
+   GitHub.cli`). It needs the user to sign in once (`gh auth login`, in
+   their own terminal); never handle their credentials. If `gh auth
+   status` fails, ask the user to run it, and use GitHub Desktop's git
+   for pushing meanwhile.
+2. GitHub tasks: the user may have created the 12 major-system issues
+   (TASKS.md M1–M12, titled `[task] M<n>. <name>`) from prefilled links.
+   Check with `gh issue list`; create any missing ones with `gh issue
+   create` (title and body from TASKS.md, plus the claiming rules from
+   CONTRIBUTING.md). Never post the maintainer's list (B-items) as issues.
+3. Resume the three stopped branches above (at most 3–4 agents at once).
+4. Then the maintainer's list.
 ## Choosing work
 
 1. Work the **maintainer's list** in TASKS.md (B1–B21: the build-11
@@ -91,7 +110,9 @@ branch green.
   play copy, writes WHATS-NEW.txt). Push integration afterwards.
 - Git isn't on PATH: use GitHub Desktop's
   (`%LOCALAPPDATA%\GitHubDesktop\app-3.6.6\resources\app\git\cmd\git.exe`).
-  No `gh` CLI.
+  `gh` (GitHub CLI) is installed once the user has signed it in; use it for
+  issues and pull requests (open PRs against `main` for contributors'
+  review when the user asks).
 
 ## Rules to keep
 
