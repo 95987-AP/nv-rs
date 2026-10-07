@@ -1729,6 +1729,29 @@ pub fn projectile_reach(order: &LoadOrder, projectile: FormId) -> Option<f32> {
     Some(speed * speed / (gravity * crate::combat_ai::WORLD_GRAVITY))
 }
 
+/// The projectile a weapon's shot is: the ammunition in use's (`AMMO`
+/// `DAT2` form at 4) when it names one, else the weapon's own (`DNAM` 36),
+/// as V.A.T.S. reads it (`world::vats`). The rockets' high-explosive and
+/// high-velocity loads (`MissileProjectileHE`, `…HV`), the 25 mm HE and
+/// 40 mm incendiary grenades fly their own projectiles this way.
+pub fn fired_projectile(
+    order: &LoadOrder,
+    state: &GameState,
+    shooter: FormId,
+    weapon: &Weapon,
+) -> Option<FormId> {
+    let from_ammo = weapon
+        .ammo_in_use(order, state, shooter)
+        .and_then(|a| order.get(a))
+        .and_then(|rr| {
+            let d = rr.record().ok()?.get(FourCC::new(b"DAT2"))?.data.clone();
+            (d.len() >= 8)
+                .then(|| rr.plugin.to_global(FormId(le_u32(&d, 4))))
+                .filter(|f| f.0 != 0)
+        });
+    from_ammo.or(weapon.projectile)
+}
+
 /// A creature's attack reach and type (`CREA` `RNAM` u8, `DATA` byte 0;
 /// the tutorial gecko 25, type 1): `None` for anyone else. From its
 /// template when it takes its base data (reach; which template flag covers

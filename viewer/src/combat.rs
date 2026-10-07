@@ -1037,6 +1037,11 @@ pub fn player_attack(
     };
     let pellet = weapon.clone().map(|mut w| {
         w.damage /= count as f32;
+        // The ammunition's own projectile when it names one (the rockets'
+        // HE and HV loads, `world::combat::fired_projectile`).
+        if !melee {
+            w.projectile = world::combat::fired_projectile(order, state, PLAYER_REF, &w);
+        }
         w
     });
     let heading = view[0].atan2(view[1]);

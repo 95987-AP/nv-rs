@@ -95,7 +95,8 @@ pub(crate) fn fire(
         q.push(Bolt {
             shooter,
             pellet: pellet.clone(),
-            missile: Missile::launch(origin, dir, speed, range),
+            missile: Missile::launch(origin, dir, speed, range)
+                .with_gravity(world::projectiles::missile_gravity(&record)),
             projectile: record,
         });
     }
@@ -152,10 +153,13 @@ pub fn fly_bolts(
     let age_max = world::projectiles::age_max(order);
     let mut flying = Vec::with_capacity(bolts.0.len());
     for mut bolt in std::mem::take(&mut bolts.0) {
-        let length = bolt.missile.step_length(dt);
+        // This frame's way: along its heading and, with gravity, falling
+        // (`world::projectiles::Missile::stretch`).
+        let stretch = bolt.missile.stretch(dt);
+        let length = stretch.length;
         let (from, dir, out) = (
             bolt.missile.position,
-            bolt.missile.direction,
+            stretch.direction,
             bolt.missile.travelled,
         );
         let (first, wall) = crate::fighting::met_first(
@@ -177,7 +181,7 @@ pub fn fly_bolts(
                 &mut caches,
                 (&mut hits, &mut messages),
                 &bolt,
-                (from, d, out + d),
+                (from, dir, d, out + d),
                 (victim, part),
             );
             continue;
@@ -199,7 +203,7 @@ pub fn fly_bolts(
             );
             continue;
         }
-        bolt.missile.advance(length, dt);
+        bolt.missile.advance(stretch, dt);
         if !bolt.missile.spent(age_max) {
             flying.push(bolt);
         }
@@ -221,7 +225,7 @@ fn strike(
         &mut crate::hud::HudMessages,
     ),
     bolt: &Bolt,
-    (from, d, out): ([f32; 3], f32, f32),
+    (from, dir, d, out): ([f32; 3], [f32; 3], f32, f32),
     (victim, part): (FormId, Option<u8>),
 ) {
     let me = bolt.shooter;
@@ -244,7 +248,6 @@ fn strike(
     if me == PLAYER_REF && hit.critical && alive {
         crate::combat::critical_message(order, state, messages, victim, sneak_attack);
     }
-    let dir = bolt.missile.direction;
     hits.0.push(crate::hiteffects::HitReport {
         attacker: me,
         target: Some(victim),

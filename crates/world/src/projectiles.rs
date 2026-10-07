@@ -16,6 +16,17 @@
 //!   `fArrowAgeMax` seconds, or past its range with nothing struck, it's
 //!   removed (`MissileProjectile::UpdateProjectile`, `009b8030`). See
 //!   [`Missile`].
+//! - Every projectile moves through a Havok character controller (a
+//!   `ProjectileListener` (Xbox PDB), made by `Projectile::InitHavok`,
+//!   `009be0a0` → `009c6440`) whose gravity is the projectile's
+//!   (`00966980`: 1 for lobbers, else the record's, `PROJ` `DATA` f32 at 4;
+//!   ÷ the time multiplier while its shooter has Turbo, effect 0x33). So a
+//!   missile with gravity (the grenade launchers' 40 mm grenades 1.5, the
+//!   Fat Man's nuke 1, the rockets 0) falls under the world's gravity × it
+//!   while its speed carries it along its heading (`009bf300`); its model is
+//!   turned to its way (run-time flag 0x40, set by `009b7cc0` for gravity
+//!   without "hitscan", read by `009bf470`). The AI's ballistic aim
+//!   (`009a7c60`, [`crate::explosions::launch_pitch`]) assumes that path.
 
 use esm::LoadOrder;
 
@@ -63,19 +74,43 @@ pub fn age_max(order: &LoadOrder) -> f32 {
     crate::scripting::game_setting(order, "fArrowAgeMax").unwrap_or(90.0)
 }
 
+/// The gravity a missile falls with, units a second² (`009be0a0`: the
+/// controller's gravity, [`ProjectileRecord::fall_gravity`], × the
+/// world's, [`crate::combat_ai::WORLD_GRAVITY`]); 0 for a hitscan one,
+/// which strikes at once. Turbo's share (÷ the time multiplier) isn't
+/// modelled.
+pub fn missile_gravity(p: &ProjectileRecord) -> f32 {
+    if p.flags & proj_flags::HITSCAN != 0 {
+        0.0
+    } else {
+        crate::combat_ai::WORLD_GRAVITY * p.fall_gravity()
+    }
+}
+
 /// A missile in flight (`MissileProjectile`, Xbox PDB): where it is, its
 /// heading (unit), its speed (units a second, as launched:
-/// [`crate::explosions::launch_speed`]), its range (the record's, the
-/// projectile's `+0xd4`, `009a7c40`), how far it has gone (`+0x110`) and
-/// for how long (`+0xd8`).
+/// [`crate::explosions::launch_speed`]), the gravity it falls with
+/// ([`missile_gravity`]) and how fast it falls now (units a second, its
+/// controller's vertical speed), its range (the record's, the
+/// projectile's `+0xd4`, `009a7c40`), how far it has gone (`+0x110`, the
+/// length of each frame's move, `009c4e60`) and for how long (`+0xd8`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Missile {
     pub position: [f32; 3],
     pub direction: [f32; 3],
     pub speed: f32,
+    pub gravity: f32,
+    pub falling: f32,
     pub range: f32,
     pub travelled: f32,
     pub age: f32,
+}
+
+/// One frame's way: the unit direction and the length.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Stretch {
+    pub direction: [f32; 3],
+    pub length: f32,
 }
 
 impl Missile {
@@ -84,27 +119,58 @@ impl Missile {
             position,
             direction,
             speed,
+            gravity: 0.0,
+            falling: 0.0,
             range,
             travelled: 0.0,
             age: 0.0,
         }
     }
 
-    /// How far it goes this frame: its speed × the frame's seconds
-    /// (`009bf300`), straight along its heading. Gravity on a missile
-    /// (record gravity > 0 without "hitscan": run-time flag 0x40 in
-    /// `009b7cc0`) isn't traced; the energy weapons' bolts have none.
+    /// The same, falling with `gravity` (units a second², [`missile_gravity`]).
+    pub fn with_gravity(mut self, gravity: f32) -> Missile {
+        self.gravity = gravity;
+        self
+    }
+
+    /// How far it goes this frame: its speed × the frame's seconds along
+    /// its heading (`009bf300`) and, with gravity, its fall: the
+    /// controller's vertical speed gains the gravity × the frame's seconds
+    /// first, then moves it (the order Havok's character controller steps
+    /// in is read from its use, not traced).
+    pub fn stretch(&self, seconds: f32) -> Stretch {
+        let t = seconds.max(0.0);
+        let falling = self.falling + self.gravity * t;
+        let mut v = self.direction.map(|d| d * self.speed);
+        v[2] -= falling;
+        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if l < 1e-6 || t == 0.0 {
+            return Stretch {
+                direction: self.direction,
+                length: 0.0,
+            };
+        }
+        Stretch {
+            direction: v.map(|x| x / l),
+            length: l * t,
+        }
+    }
+
+    /// How far it goes this frame along its heading alone (no fall).
     pub fn step_length(&self, seconds: f32) -> f32 {
         self.speed * seconds.max(0.0)
     }
 
-    /// Moves it `length` along its heading, `seconds` older.
-    pub fn advance(&mut self, length: f32, seconds: f32) {
+    /// Moves it along `stretch` (from [`Missile::stretch`] of the same
+    /// `seconds`), that much older and falling faster.
+    pub fn advance(&mut self, stretch: Stretch, seconds: f32) {
+        let t = seconds.max(0.0);
         for k in 0..3 {
-            self.position[k] += self.direction[k] * length;
+            self.position[k] += stretch.direction[k] * stretch.length;
         }
-        self.travelled += length;
-        self.age += seconds.max(0.0);
+        self.falling += self.gravity * t;
+        self.travelled += stretch.length;
+        self.age += t;
     }
 
     /// Whether it's done with (`009b8030`, after the frame's impacts):
@@ -114,7 +180,7 @@ impl Missile {
         self.age > age_max || self.travelled > self.range
     }
 
-    /// How long it takes to go `distance` (seconds).
+    /// How long it takes to go `distance` (seconds) along its heading.
     pub fn time_to(&self, distance: f32) -> f32 {
         if self.speed > 0.0 {
             distance / self.speed
@@ -163,8 +229,9 @@ mod tests {
         assert!((m.time_to(1500.0) - 0.2).abs() < 1e-6);
         let mut frames = 0;
         while !m.spent(90.0) {
-            let l = m.step_length(0.125);
-            assert_eq!(l, 937.5);
+            let l = m.stretch(0.125);
+            assert_eq!(l.length, 937.5);
+            assert_eq!(l.direction, [0.0, 1.0, 0.0]);
             m.advance(l, 0.125);
             frames += 1;
         }
@@ -173,7 +240,57 @@ mod tests {
         assert_eq!(m.position[1], 10312.5);
         // A slow one is spent by age.
         let mut slow = Missile::launch([0.0; 3], [1.0, 0.0, 0.0], 10.0, 10000.0);
-        slow.advance(slow.step_length(91.0), 91.0);
+        slow.advance(slow.stretch(91.0), 91.0);
         assert!(slow.spent(90.0) && slow.travelled < slow.range);
+    }
+
+    #[test]
+    fn grenade_launcher_rounds_fall_rockets_fly_straight() {
+        // `40mmGrenadeProjectile`: flags 0x0A, gravity 1.5, speed 1750;
+        // `MissileProjectile` (the rocket): gravity 0, speed 1550;
+        // `FatMan`: flags 0x02, gravity 1, speed 2500.
+        let mut grenade = record(0x0A, 1, 1750.0);
+        grenade.gravity = 1.5;
+        let rocket = record(0x0A, 1, 1550.0);
+        let mut nuke = record(0x02, 1, 2500.0);
+        nuke.gravity = 1.0;
+        let g = crate::combat_ai::WORLD_GRAVITY;
+        assert_eq!(missile_gravity(&grenade), 1.5 * g);
+        assert_eq!(missile_gravity(&rocket), 0.0);
+        assert_eq!(missile_gravity(&nuke), g);
+        // A bullet with gravity still strikes at once: none.
+        let mut bullet = record(0x01, 1, 23680.0);
+        bullet.gravity = 1.0;
+        assert_eq!(missile_gravity(&bullet), 0.0);
+        let fly = |p: &ProjectileRecord, dir: [f32; 3], seconds: f32| {
+            let mut m =
+                Missile::launch([0.0; 3], dir, p.speed, p.range).with_gravity(missile_gravity(p));
+            let mut left = seconds;
+            while left > 1e-5 {
+                let dt = left.min(1.0 / 60.0);
+                let s = m.stretch(dt);
+                m.advance(s, dt);
+                left -= dt;
+            }
+            m
+        };
+        // Fired level for a second: the grenade drops by the controller's
+        // fall (Σ g·i·dt² over 60 frames = 0.508 g); the rocket doesn't.
+        let m = fly(&grenade, [0.0, 1.0, 0.0], 1.0);
+        assert!((m.position[1] - 1750.0).abs() < 0.5);
+        let drop = 1.5 * g * 1830.0 / 3600.0;
+        assert!((m.position[2] + drop).abs() < 0.5, "{:?}", m.position);
+        assert!(m.travelled > 1750.0);
+        let r = fly(&rocket, [0.0, 1.0, 0.0], 1.0);
+        assert!((r.position[1] - 1550.0).abs() < 0.5 && r.position[2] == 0.0);
+        // Aimed as the AI aims (`009a7c60`'s low root), it comes down at
+        // the target 1500 units off, within a frame's fall.
+        let x = 1500.0;
+        let pitch = crate::explosions::launch_pitch(x, 0.0, 1750.0, 1.5 * g, false);
+        let dir = [0.0, pitch.cos(), pitch.sin()];
+        let t = x / (1750.0 * pitch.cos());
+        let m = fly(&grenade, dir, t);
+        assert!((m.position[1] - x).abs() < 1.0);
+        assert!(m.position[2].abs() < 15.0, "{:?}", m.position);
     }
 }

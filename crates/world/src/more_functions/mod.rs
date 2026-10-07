@@ -168,6 +168,8 @@ pub struct State {
     /// Ash and goo piles `AttachAshPile` made, and the corpse each stands
     /// for (the `ExtraAshPileRef` both carry, `0041e340`), by pile.
     pub ash_piles: HashMap<FormId, FormId>,
+    /// Placed mines disarmed or gone (`crate::mines`).
+    pub mines: crate::mines::MineStates,
     /// Limbs gone (extra data 0x5f): nothing dismembers here yet.
     pub limbs_gone: HashSet<(FormId, u8)>,
     /// People told to sneak (`SetForceSneak`, actor +0x125) and whose AI is
@@ -1427,6 +1429,7 @@ pub(crate) fn save_lines(state: &GameState, line: &mut dyn FnMut(String)) {
     radio::save_lines(state, line);
     actors::save_lines(state, line);
     traps::save_lines(state, line);
+    crate::mines::save_lines(state, line);
 }
 
 /// A saved line back: `None` if the word isn't one of these.
@@ -1438,6 +1441,7 @@ pub(crate) fn load_line(state: &mut GameState, raw: &str) -> Option<Result<(), S
         .or_else(|| radio::load_line(state, &parts))
         .or_else(|| actors::load_line(state, &parts))
         .or_else(|| traps::load_line(state, &parts))
+        .or_else(|| crate::mines::load_line(state, &parts))
     {
         return Some(r);
     }

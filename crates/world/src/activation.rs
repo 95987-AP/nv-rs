@@ -421,6 +421,16 @@ pub fn info(order: &LoadOrder, state: &GameState, reference: FormId) -> Option<I
         })
     } else if class == class::ACTIVATE && k == *b"CREA" {
         None
+    } else if k == *b"PROJ" && crate::mines::is_mine_reference(order, state, reference) {
+        // A placed projectile (no action class of its own) with a
+        // proximity: "Disarm Mine" (`sDisarmMine`) while armed, the table's
+        // "Take" once disarmed (run-time flag 0x200; `00775a00` at
+        // `007778fe`).
+        Some(if crate::mines::is_armed_mine(order, state, reference) {
+            text(order, "sDisarmMine", "Disarm Mine")
+        } else {
+            text(order, ACTION_TEXT[1].0, ACTION_TEXT[1].1)
+        })
     } else if class == class::READ {
         // Books say "Take" (the table's entry 1).
         Some(text(order, ACTION_TEXT[1].0, ACTION_TEXT[1].1))
@@ -461,8 +471,8 @@ pub fn info(order: &LoadOrder, state: &GameState, reference: FormId) -> Option<I
         out.empty = Some(text(order, "sEmpty", "Empty"));
     }
     // An ash or goo pile standing for a corpse (`ExtraAshPileRef`,
-    // `0041e310`): "Empty" when the corpse holds nothing (`00775a00`'s
-    // `local_99`).
+    // `0041e310`): "Empty" when the corpse holds nothing (`00775a00`,
+    // the test after its call to `0041e310`).
     let corpse = stands_for(order, state, reference);
     if corpse != reference && holds_nothing(order, state, corpse) {
         out.empty = Some(text(order, "sEmpty", "Empty"));

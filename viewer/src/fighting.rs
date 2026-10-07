@@ -762,24 +762,17 @@ fn ranged(
     let settings = c.settings;
     let s = |name: &str, d: f32| settings.get(order, name, d);
     let now = c.now;
-    let reach = w
-        .projectile
-        .and_then(|p| world::combat::projectile_reach(order, p));
+    // What the shot is: the ammunition's projectile when it names one.
+    let fired = world::combat::fired_projectile(order, state, walker.reference, w);
+    let reach = fired.and_then(|p| world::combat::projectile_reach(order, p));
     // A projectile that explodes keeps the thrower out of its blast.
-    let blast = w
-        .projectile
+    let explosion = fired
         .and_then(|p| world::explosions::ProjectileRecord::load(order, p))
         .filter(|p| p.explodes())
-        .and_then(|p| world::explosions::ExplosionRecord::load(order, p.explosion?))
-        .map(|e| {
-            world::explosions::blast_radius(
-                order,
-                state,
-                Some(walker.reference),
-                Some(w.form_id),
-                &e,
-            )
-        });
+        .and_then(|p| world::explosions::ExplosionRecord::load(order, p.explosion?));
+    let blast = explosion.as_ref().map(|e| {
+        world::explosions::blast_radius(order, state, Some(walker.reference), Some(w.form_id), e)
+    });
     let band = combat_ai::ranged_band_blast(Some((w, reach)), blast, &kit.style, &s);
     let d = distance(walker.position, goal);
     // A move ends when its path does, a chase within its distance, an
@@ -886,7 +879,8 @@ fn ranged(
     let (yaw, pitch) = offsets(walker.position, walker.heading, goal);
     let aimed = fight.in_sight
         && combat_ai::within_targeting_fov(&kit.style, yaw)
-        && (combat_ai::within_aim_arc(w.aim_arc, yaw, pitch) || d < band.min);
+        && (combat_ai::within_aim_arc(w.aim_arc, yaw, pitch) || d < band.min)
+        && blast_is_safe(c, state, walker, (&kit.style, explosion.as_ref()), goal);
     let attack = kit.attack_seconds(Some(w));
     // Not while reloading (`world::npc_combat`).
     let reloading = world::npc_combat::reloading(state, walker.reference);
@@ -943,6 +937,63 @@ fn ranged(
         gait: walking.then(|| fight.moving.map_or(Gait::FastWalk, |m| m.gait)),
         attacked: shoots,
     }
+}
+
+/// Whether an exploding shot or throw at `goal` may go (the attack
+/// procedures ask `CombatManager::CheckExplosionAttack`, `00992720`,
+/// `world::explosions::explosion_attack_allowed`): counted within the
+/// reach where its blast still does `fDangerousProjectileExplosionDamage`
+/// are the shooter, their side and bystanders. The game counts its combat
+/// group's members (`00992ba0`); here their side is whoever their factions
+/// make allies or friends of them (`world::factions::reaction`), and
+/// bystanders anyone else who isn't one of their targets (a reading of the
+/// group's masks, unresolved).
+fn blast_is_safe(
+    c: &FightCtx,
+    state: &GameState,
+    walker: &Walker,
+    (style, explosion): (&CombatStyle, Option<&world::explosions::ExplosionRecord>),
+    goal: [f32; 3],
+) -> bool {
+    let order = c.order;
+    let Some(e) = explosion else {
+        return true;
+    };
+    let units = c.settings.get(order, "fBSUnitsPerFoot", 22.0);
+    let me = walker.reference;
+    let responsibility = world::scripting::Facts {
+        order,
+        state,
+        speaker: None,
+    }
+    .current_actor_value(me, 3)
+    .unwrap_or(0.0) as f32;
+    world::explosions::explosion_attack_allowed(
+        Some((e.radius_units(units), e.damage)),
+        &world::explosions::DangerSettings::read(order),
+        style.flags,
+        responsibility,
+        |reach| {
+            let mut n = world::explosions::Nearby::default();
+            let near = |p: [f32; 3]| distance(p, goal) < reach;
+            if near(walker.position) {
+                n.own += 1;
+            }
+            for o in c.others.iter().filter(|o| o.reference != me && near(o.position)) {
+                if state.dead.contains(&o.reference) || walker.targets.list.contains(&o.reference) {
+                    continue;
+                }
+                match world::factions::reaction(order, state, me, o.reference) {
+                    world::factions::Reaction::Ally | world::factions::Reaction::Friend => {
+                        n.group += 1
+                    }
+                    world::factions::Reaction::Enemy => {}
+                    world::factions::Reaction::Neutral => n.spectators += 1,
+                }
+            }
+            n
+        },
+    )
 }
 
 /// A melee fighter's frame: closing in (`melee_approach`), then rolling
@@ -1326,6 +1377,9 @@ pub(crate) fn resolve_shots(
         let reach = w.range(order).unwrap_or(crate::combat::SHOT_RANGE);
         let mut pellet = w.clone();
         pellet.damage /= count.max(1) as f32;
+        // The ammunition's own projectile when it names one
+        // (`world::combat::fired_projectile`).
+        pellet.projectile = world::combat::fired_projectile(order, state, me, w);
         let (heading, pitch) = world::npc_aim::heading_pitch(origin, aim);
         // The line of fire (`009d0a30` → `009a6e90`): someone other than
         // the target or another of the shooter's targets first on the line

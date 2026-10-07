@@ -14,6 +14,7 @@ pub mod energy;
 pub mod fighting;
 pub mod functions;
 pub mod impacts;
+pub mod launchers;
 pub mod living;
 pub mod lod;
 pub mod long_paths;

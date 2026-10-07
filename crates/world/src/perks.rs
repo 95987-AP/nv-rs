@@ -133,6 +133,9 @@ pub mod entry {
     pub const CALCULATE_MY_CRITICAL_HIT_CHANCE: u8 = 1;
     /// The weapon's critical damage on a critical (`009b7060`).
     pub const CALCULATE_MY_CRITICAL_HIT_DAMAGE: u8 = 2;
+    /// A mine's chance (from 100) of going off for the player near it
+    /// (`009c39e0`: the player, the mine's projectile; Light Step sets 0).
+    pub const CALCULATE_MINE_EXPLODE_CHANCE: u8 = 4;
     /// On the one hit: their limb damage (`0089a760`: the one hit, the
     /// attacker, the attacker's weapon).
     pub const ADJUST_LIMB_DAMAGE: u8 = 6;

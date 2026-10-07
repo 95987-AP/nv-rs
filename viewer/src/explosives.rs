@@ -375,16 +375,24 @@ fn explode(
         ) else {
             continue;
         };
+        // Its object effect (`EMP`, fire), then whether it knocks them
+        // down (`009b00a0`; the fall itself is the physics').
+        for said in explosions::cast_enchantment(order, state, e, Some(thrower), t.reference) {
+            println!("  {}: {said}", t.reference);
+        }
+        let roll = state.roll();
+        let down = explosions::knocks_down(order, state, e, t.reference, damage * t.share, roll);
         let killed = state.dead.contains(&t.reference);
         let left = world::combat::health(order, state, t.reference)
             .unwrap_or(0.0)
             .max(0.0);
         println!(
-            "  {} at {:.0} units takes {:.1} ({left:.1} left){}.",
+            "  {} at {:.0} units takes {:.1} ({left:.1} left){}{}.",
             t.reference,
             t.distance,
             hit.dealt,
-            if killed { ", killed" } else { "" }
+            if killed { ", killed" } else { "" },
+            if down { ", knocked down" } else { "" }
         );
         hits.0.push(crate::hiteffects::HitReport {
             attacker: thrower,
