@@ -664,6 +664,10 @@ fn explode(
         hits.0.push(crate::hiteffects::HitReport {
             attacker: reporter,
             target: Some(t.reference),
+            // The explosion's hit carries its weapon source (`009b5770`:
+            // hit `+0x30` = `Explosion::pWeaponSource`, `+0xe0`,
+            // `009b0900`), whose impact set the hit sounds come from
+            // (`0088e1e0`) as for any hit.
             weapon: weapon.map(|w| w.form_id),
             point: position,
             havok: None,

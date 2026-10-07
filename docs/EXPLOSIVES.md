@@ -320,9 +320,12 @@ the rocket flew straight 1015 units into the house; damage 57.5 (100 ×
   a placed mine's own collision is left out of the casts (the exploding
   projectile's removal isn't traced); the pick's layer 0x27 filter isn't
   applied (every collider triangle counts).
-- Explosion hit reports carry the thrower's weapon, so the hit sounds are
-  the weapon's impact set (which set the game uses for blasts isn't
-  traced).
+- Explosion hits sound as the game's do: the hit carries the explosion's
+  weapon source (`009b5770` sets hit `+0x30` from `pWeaponSource`
+  `+0xe0`, `009b0900`) and the hit sounds come from that weapon's impact
+  set (`0088e1e0`, as for any hit). A placed mine's explosion is
+  reported with no weapon (default set); whether the game gives it the
+  projectile's weapon source isn't traced.
 
 Next action: in the original game, fire the grenade rifle level from the
 test scene's spot (where it lands), disarm a `NorthVegasHouseTools` mine
