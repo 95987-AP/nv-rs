@@ -185,7 +185,9 @@ fn main() {
     let mut window = Window { title, ..default() };
     if args.screenshot.is_some() {
         // The game's own resolution here, so pictures line up pixel for pixel.
-        window.resolution = WindowResolution::new(1920.0, 1080.0).with_scale_factor_override(1.0);
+        let (w, h) = args.screen_size.unwrap_or((1920, 1080));
+        window.resolution =
+            WindowResolution::new(w as f32, h as f32).with_scale_factor_override(1.0);
     }
     // Walking, except for screenshots, which keep the exact eye given.
     let player = walk::Player::new(args.screenshot.is_none() || args.walk);

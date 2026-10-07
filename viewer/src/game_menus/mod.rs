@@ -712,6 +712,7 @@ pub struct MenuInput<'w, 's> {
     fixed: Res<'w, FixedPointer>,
     clicks: ResMut<'w, FixedClicks>,
     fixed_keys: ResMut<'w, FixedKeys>,
+    pads: Query<'w, 's, &'static Gamepad>,
 }
 
 /// A key as the game's interface turns it into a menu code (`007154b0`):
@@ -772,6 +773,22 @@ pub(crate) fn run_open_menus(
     }
     let now = input.time.elapsed_secs_f64();
     let dt = input.time.delta_secs();
+    // The pad's left stick (XInput's ±32767 from Bevy's −1..1) and the
+    // mouse held, for Caravan.
+    let caravan_input = {
+        let axis = |a: GamepadAxis| {
+            let v = input.pads.iter().find_map(|g| g.get(a)).unwrap_or(0.0);
+            (v * 32767.0).round() as i32
+        };
+        caravan::PadInput {
+            pad: !input.pads.is_empty(),
+            stick: [
+                world::caravan::menu::stick_axis(axis(GamepadAxis::LeftStickX)),
+                -world::caravan::menu::stick_axis(axis(GamepadAxis::LeftStickY)),
+            ],
+            mouse_held: input.mouse.pressed(MouseButton::Left),
+        }
+    };
     dialog::update(screen, &game.0.order, dt);
     container::update(screen);
     textedit::update(screen, now * 1000.0);
@@ -1035,9 +1052,13 @@ pub(crate) fn run_open_menus(
         &mut wheel_voices,
         now * 1000.0,
     ));
-    sounds
-        .0
-        .extend(caravan::after(screen, &game.0, &mut state.0, now * 1000.0));
+    sounds.0.extend(caravan::after(
+        screen,
+        &game.0,
+        &mut state.0,
+        now * 1000.0,
+        caravan_input,
+    ));
     for (played, said) in [
         slots::after(
             screen,

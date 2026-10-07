@@ -667,7 +667,24 @@ impl CaravanScreen {
 
 /// Every frame: input passed on, the prompts' answers, the update, the
 /// effects, the tiles. Returns sounds.
-pub fn after(screen: &mut Screen, game: &Game, state: &mut GameState, now_ms: f64) -> Vec<FormId> {
+/// What Caravan reads of the mouse and pad each update.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PadInput {
+    /// A pad in use (`004b71d0`).
+    pub pad: bool,
+    /// Its left stick (`world::caravan::menu::stick_axis`; y down).
+    pub stick: [f32; 2],
+    /// A mouse button held (`InterfaceManager::fMouseHeldTime` above 0).
+    pub mouse_held: bool,
+}
+
+pub fn after(
+    screen: &mut Screen,
+    game: &Game,
+    state: &mut GameState,
+    now_ms: f64,
+    input: PadInput,
+) -> Vec<FormId> {
     let order = &game.order;
     let mut sounds = Vec::new();
     // Answers from the boxes above the menu.
@@ -723,18 +740,17 @@ pub fn after(screen: &mut Screen, game: &Game, state: &mut GameState, now_ms: f6
         for tile in std::mem::take(&mut c.menu.clicks) {
             fx.extend(c.game.click(tile, &mut dice));
         }
-        // The deck screen's scrollbar moved by the pointer (its arrows, the
-        // wheel, its marker let go): the cards move from the chosen one to
-        // where it was left (`007492f0`, `DoIdle`; what starts the game's
-        // drag besides a press on the bar itself, the interface's +0x48,
-        // isn't traced).
-        if c.game.screen == world::caravan::menu::Screen::Deck
-            && c.game.state == world::caravan::menu::state::IDLE
-            && !screen.interface.held()
-        {
-            if let Some(at) = c.menu.meter_moved(&mut screen.ui, c.game.chosen) {
-                c.game.meter_press();
-                c.game.meter_release(at);
+        // The pad's stick, and the mouse on the deck screen's scrollbar:
+        // a button held starts following a drag from the bar's value, and
+        // let go the cards move as far as it moved (`DoIdle`,
+        // `InterfaceManager::fMouseHeldTime`).
+        c.game.pad = input.pad;
+        c.game.stick = input.stick;
+        if let Some(bar) = c.menu.meter(&mut screen.ui) {
+            let before = c.game.chosen;
+            c.game.mouse(input.mouse_held, bar);
+            if c.game.chosen != before {
+                c.menu.meter_taken(c.game.chosen);
             }
         }
         let models = c.models.clone();

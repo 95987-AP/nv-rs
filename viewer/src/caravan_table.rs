@@ -11,9 +11,11 @@
 //! textures the menu set on their shapes, the table's lights where its
 //! camera rig has them.
 //!
-//! The camera keeps the file's frustum: its 45° across is kept and the
-//! height follows the window (the file's is 16:9's), where the game keeps
-//! both (stretched on another shape of screen).
+//! The camera keeps the file's frustum (45° across, 16:9) on any shape of
+//! window, stretched as the game's renderer stretches it: Gamebryo maps a
+//! camera's frustum onto its viewport (the whole screen) as it is, and
+//! nothing in the menu (`PrepareShared3DElements` `0073cbf0`,
+//! `Draw3DElements` `00740f30`) fits it to the screen ([`FileFrustum`]).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -109,6 +111,92 @@ pub fn track_x(c: &CaravanScreen) -> Option<f32> {
     }
     let across = local[2] / local[0];
     Some((across - f.left) / (f.right - f.left))
+}
+
+/// The table camera's projection: the file's frustum as it is, whatever
+/// the window's shape (a Gamebryo camera's frustum fills its viewport).
+/// `left`..`right` and `bottom`..`top` are the frustum's sides at a
+/// distance of 1; `near` and `far` in metres.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FileFrustum {
+    pub left: f32,
+    pub right: f32,
+    pub top: f32,
+    pub bottom: f32,
+    pub near: f32,
+    pub far: f32,
+}
+
+impl FileFrustum {
+    /// From the table's camera; without one, 45° across at 16:9, near 1,
+    /// far 5000 (what the file has).
+    pub fn new(f: Option<nif::camera::Frustum>) -> FileFrustum {
+        let (left, right, top, bottom, near, far) = match f {
+            Some(f) => (f.left, f.right, f.top, f.bottom, f.near, f.far),
+            None => {
+                let r = 22.5f32.to_radians().tan();
+                (-r, r, r * 9.0 / 16.0, -r * 9.0 / 16.0, 1.0, 5000.0)
+            }
+        };
+        FileFrustum {
+            left,
+            right,
+            top,
+            bottom,
+            near: near * space::METERS_PER_UNIT,
+            far: far * space::METERS_PER_UNIT,
+        }
+    }
+
+    /// The sides at a distance (`left`, `right`, `bottom`, `top`).
+    fn at(&self, z: f32) -> [f32; 4] {
+        [self.left * z, self.right * z, self.bottom * z, self.top * z]
+    }
+}
+
+impl bevy::render::camera::CameraProjection for FileFrustum {
+    /// Bevy's reversed, infinite-far depth (as its own perspective), off
+    /// centre as the file's sides say.
+    fn get_clip_from_view(&self) -> Mat4 {
+        let (w, h) = (self.right - self.left, self.top - self.bottom);
+        Mat4::from_cols(
+            Vec4::new(2.0 / w, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, 2.0 / h, 0.0, 0.0),
+            Vec4::new(
+                (self.right + self.left) / w,
+                (self.top + self.bottom) / h,
+                0.0,
+                -1.0,
+            ),
+            Vec4::new(0.0, 0.0, self.near, 0.0),
+        )
+    }
+
+    fn get_clip_from_view_for_sub(&self, _sub: &bevy::render::camera::SubCameraView) -> Mat4 {
+        self.get_clip_from_view()
+    }
+
+    /// The window's shape doesn't change it.
+    fn update(&mut self, _width: f32, _height: f32) {}
+
+    fn far(&self) -> f32 {
+        self.far
+    }
+
+    fn get_frustum_corners(&self, z_near: f32, z_far: f32) -> [bevy::math::Vec3A; 8] {
+        let corners = |z: f32| {
+            let z = z.abs();
+            let [l, r, b, t] = self.at(z);
+            [
+                bevy::math::Vec3A::new(r, b, -z),
+                bevy::math::Vec3A::new(r, t, -z),
+                bevy::math::Vec3A::new(l, t, -z),
+                bevy::math::Vec3A::new(l, b, -z),
+            ]
+        };
+        let (n, f) = (corners(z_near), corners(z_far));
+        [n[0], n[1], n[2], n[3], f[0], f[1], f[2], f[3]]
+    }
 }
 
 /// The camera's Bevy transform from its place in the game's space
@@ -215,11 +303,7 @@ fn show_table(
             &mut images,
             size,
         );
-        let frustum = models.frustum;
-        let (fov, near, far) = frustum
-            .map_or((45f32.to_radians() * 9.0 / 16.0, 1.0, 5000.0), |f| {
-                (2.0 * f.top.atan(), f.near, f.far)
-            });
+        let projection = FileFrustum::new(models.frustum);
         let camera = commands
             .spawn((
                 Camera3d::default(),
@@ -239,12 +323,7 @@ fn show_table(
                 },
                 Tonemapping::None,
                 DebandDither::Disabled,
-                Projection::from(PerspectiveProjection {
-                    fov,
-                    near: near * space::METERS_PER_UNIT,
-                    far: far * space::METERS_PER_UNIT,
-                    ..default()
-                }),
+                Projection::custom(projection),
                 Exposure {
                     ev100: crate::START_EV100,
                 },
@@ -284,6 +363,10 @@ fn show_table(
             settings.brightness,
         );
         *shown = Some(s);
+        // The pieces are there from the next frame (the commands run after
+        // this): placed and textured then, so a texture set as the menu
+        // opens isn't lost (as `casino_scene`).
+        return;
     }
     let Some(s) = shown.as_mut() else {
         return;
@@ -442,5 +525,44 @@ fn spawn_pieces(
             ))
             .id();
         s.entities.push(e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::render::camera::CameraProjection;
+
+    /// The file's frustum is Bevy's own perspective at 16:9, and stays so
+    /// whatever the window: on a 4:3 or 21:9 window it's stretched.
+    #[test]
+    fn the_file_frustum_ignores_the_window() {
+        let r = 22.5f32.to_radians().tan();
+        let f = FileFrustum::new(Some(nif::camera::Frustum {
+            left: -r,
+            right: r,
+            top: r * 9.0 / 16.0,
+            bottom: -r * 9.0 / 16.0,
+            near: 1.0,
+            far: 5000.0,
+            ortho: false,
+        }));
+        let mut bevy = PerspectiveProjection {
+            fov: 2.0 * (r * 9.0 / 16.0).atan(),
+            near: f.near,
+            ..default()
+        };
+        bevy.update(1920.0, 1080.0);
+        let mut fixed = f;
+        fixed.update(1024.0, 768.0);
+        let (a, b) = (fixed.get_clip_from_view(), bevy.get_clip_from_view());
+        assert!(a.abs_diff_eq(b, 1e-5), "{a} {b}");
+        // A point at the frustum's right edge lands on the screen's edge.
+        let p = a * Vec4::new(r * 10.0, 0.0, -10.0, 1.0);
+        assert!((p.x / p.w - 1.0).abs() < 1e-5);
+        // The corners at distance 2: the sides × 2.
+        let c = fixed.get_frustum_corners(-2.0, -4.0);
+        assert!((c[0].x - 2.0 * r).abs() < 1e-6 && (c[2].y - 2.0 * r * 9.0 / 16.0).abs() < 1e-6);
+        assert_eq!(fixed.far(), 5000.0 * space::METERS_PER_UNIT);
     }
 }
