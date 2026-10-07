@@ -183,12 +183,204 @@ picks a weapon):
   (`00575400`), or — in any slot but the upper body's — it covers the upper
   body too.
 - Then, when asked, the best weapon (`InventoryChanges::GetBestWeapon`,
-  `004c7400`, scored by the damage per second `00645380` works out).
+  `004c7400`, scored by the damage per second `00645380` works out:
+  below).
 
-Here: `world::companions::best_armour` and `wear_best_armour` (the
-viewer's container menu calls it on closing for a person);
-`GameState::equip_locked` (saved) records `EquipItem`'s flag. Not done:
-the weapon part (`00645380` isn't traced), and a creature's.
+Here: `world::companions::best_armour` and `wear_best_armour`;
+`GameState::equip_locked` (saved) records `EquipItem`'s flag. The viewer's
+container menu calls `world::companions::sort_out_gear` on closing in mode
+3: the armour and the weapon below.
+
+## What a companion holds after trading (2026-10-07)
+
+Read from `FalloutNV.exe` 1.4.0.525 and the Xbox 360 prototype's
+decompile (`x360_weapons.c`; names from its PDB).
+
+| What | PC | Xbox name |
+| --- | --- | --- |
+| The weapon part of sorting out what they wear | `006047c0` (person), `005f9e00` (creature) | `TESNPC::InitDefaultWorn`, `TESCreature::InitDefaultWorn` |
+| Asked from the container menu's closing | `0075b750` → `00606540` / `005f9e00` | `ContainerMenu::Close`, `TESNPC::InitParts` |
+| The best weapon | `004c7400` | `InventoryChanges::GetBestWeapon` |
+| Its ammunition | `004c7300` | `InventoryChanges::GetBestAmmoForWeapon` |
+| May they use it | `008bc9d0` | `Actor::CanUseWeapon` |
+| The rating | `00646060` → `00645380` | `CombatFormulas::CalcCombatWeaponDPS`, `…CalcWeaponDamagePerSecond` |
+| The shots a second with an entry | `00645dc0` | `CombatFormulas::GetWeaponShotsPerSecond` |
+| An animation group's action times | `005f3a20` (`TESAnimGroup` +0x18) | `TESAnimGroup::GetTime` |
+
+- **When.** Closing the container menu on a companion (mode 3): a person
+  through `00606540` asks for the armour and the weapon — the weapon
+  unless the package they run now has "Weapons Unequipped" (`PKDT`
+  flags 0x200000, `00441b00`), and never for the player (vtable +0x22c);
+  a creature (`005f9e00`) only the weapon. What they wear has been taken
+  off first (`004bfe50`; `004c0cf0` leaves what a script locked on), so
+  the weapon in hand goes unless locked there; the best one is put in
+  hand (`0088c830`) unless it's there already. With nothing to pick they
+  hold nothing. (`006047c0` has 16 callers besides — packages, resets —
+  not hooked here.)
+- **The best weapon** (`004c7400`, asked for any kind, 6, keeping a
+  locked one): a weapon in hand locked there (`EquipItem`'s no-unequip
+  flag, extra data 0x3e) is kept. Otherwise every weapon they carry —
+  the base container's entries first, in its order, then the inventory
+  changes' — that is of the kind asked, that they may use, and that has
+  ammunition with it or needs none, is rated; the highest rating above 0
+  wins, the first on a tie. Nothing while the actor is planting an
+  explosive (process +0x444, Xbox `bPlantedExplosive`; not modelled).
+  - May they use it (`008bc9d0`, asked "playable or not"): never a
+    "player only" weapon (`DNAM` flags2 0x1); a person any other; a
+    **creature only a weapon in its record's weapon list** (`CREA`
+    `LNAM`, a form list, the base's +0x158 set by `005f8bd0`; ED-E's is
+    `EmbeddedWeapons`, holding both of its zap guns).
+  - Ammunition (`004c7300`): the first of the weapon's kinds (a form
+    list's, or its one) they carry; whether it takes any.
+  - The rating is the combat one (`00646060`): the damage a second below
+    without perks, ÷ 10 for grenades, 0 for mines, 0 for a weapon "not
+    used in normal combat" (flags2 0x40), and ÷ 10000 for what their
+    combat style rules out (`CSSD` u32 at 40: 1 melee only puts guns down,
+    2 ranged only puts melee down). **The wheel's Ranged/Melee switch
+    works through this**: its lines run `SetCombatStyle
+    FollowersCombatStyleRanged` (restriction 2) or `…Melee` (1).
+  - What the rating is asked with: the ammunition found, the inventory
+    entry when the weapon has one (`ExtraContainerChanges`: here a weapon
+    worn, worn down, modded, or held in another number than the record
+    gives), and its condition — from its extra data, a weapon with no
+    health left passed over; one with no extra data gets the condition
+    the last one had (1 at first), as the game's loop leaves it.
+- **The player's animations rate everyone's guns.** With an entry the
+  figure's shots a second come from `00645dc0`, which reads the
+  **player's** third-person animations (`PlayerCharacter::GetAnimation(0)`)
+  whoever holds the gun: for a semi-automatic weapon, 1 ÷ the time of the
+  `a:` key of the attack group it plays (`DNAM` byte 41; 0xff
+  `AttackRight`), looked up for its animation kind as any group is
+  (`00495740`; 0 when the lookup lands on another group); else (automatic,
+  or no animations) the fire rate (`DNAM` 64) × the attack multiplier
+  (`DNAM` 60, + a fitted fire-rate mod); either × the weapon's speed
+  (`DNAM` 4) × the attack multiplier again. The editor's "attack shots a
+  second" (`DNAM` 88) is the same sum off the same files (the 9mm pistol:
+  1.25 ÷ `1hpattackright.kf`'s `a:R` at 0.4 s = 3.125; the caravan shotgun
+  1.5 ÷ `2hrattackleft.kf`'s `a:L` at 0.4667 = 3.214), so with the
+  animations loaded the vanilla weapons rate as their records say;
+  without them a semi-automatic is rated off its fire rate instead.
+- **An animation group's action times** (`005f3a20`): the sequence's
+  text keys in order, line by line; lines starting `m:`, `BlendIn:`,
+  `BlendOut:`, `Blend:`, `Decal:`, `Sound:`, `Enum:` (or a key `prn:`)
+  are other things; any other line that starts with the group kind's next
+  action name (`01199a50`: an attack's `Start`, `Hit`, `Eject`, `a:`,
+  `End`; a reload's `Start`, `End`) sets that action's time; an attack's
+  third may skip `Eject` for `a:`. Unset actions stay 0.
+
+## The damage per second
+
+`CombatFormulas::CalcWeaponDamagePerSecond` (`00645380`), with what its
+five callers pass (each passes 0 for its arguments 6, 7 and 9–12: a forced
+reload, the first jam chance, a critical chance without an actor, a
+critical damage multiplier, × 2, × 1.25; and −1, the holder's own skill):
+
+- 0 for a broken weapon (condition 0).
+- Damage: `DATA` damage × `fDamageWeaponMult` (+ a fitted damage mod's
+  value), × 1.3 with a split beam fitted (New Vegas only: not in the
+  Xbox prototype), through the ammunition's damage effects (multiplying
+  ones first, `0059a030`), + the projectiles (`00525b20`) × the
+  projectile's explosion damage; grenades and mines (animation 10, 11) the
+  explosion × `fDamageWeaponMult` instead and the jam index 10.
+- × (`fDamageSkillBase` + `fDamageSkillMult` × the holder's skill ÷ 100),
+  then, when asked (the cards ask, the combat rating doesn't), the
+  holder's perks' "Calculate Weapon Damage" (entry point 0: owner, weapon,
+  target the holder).
+- Rounds: the clip (with a clip mod) for guns other than grenades, mines
+  and throws (animation 13), else 1. Time: rounds ÷ (shots a second +
+  rounds × `fWeaponConditionJam(n)` × `DNAM` 96 jam time, n the condition
+  × 10 rounded half up; the master sets the first four to 0), + the reload
+  (`DNAM` 92) for a clip of `iMinClipSizeToAddReloadDelay` (2) or fewer;
+  for others than the player with a gun, the semi-automatic delay's
+  average beyond the attack × rounds, and automatics (or a short burst,
+  flags2 0x200) × (`fAutomaticWeaponBurstFireTime` + `…CooldownTime`) ÷
+  the cooldown.
+- Criticals: Critical Chance (actor value 14) × the weapon's `CRDT`
+  multiplier, within 0–100, ÷ 100 (÷ the shots a second for automatics)
+  × `CRDT` damage.
+- The damage × the condition's multiplier (`00646d00`: 1 above 0.75, else
+  1 − (0.75 − c) × 0.67); the figure (criticals + damage) × rounds ÷ time.
+- Fists: `fUnarmedDamageMult` × Unarmed Damage + `fDamageSkillMult` ×
+  Unarmed ÷ 100 over `fUnarmedNPCDPSMult` (1.57); a creature its own
+  attack damage over `fUnarmedCreatureDPSMult`.
+
+Who asks: the combat controller (`009993c0` via `00646060`: no perks, no
+entry — `world::npc_combat`), `GetBestWeapon` (above), the item cards
+(below), the recipe menu's card (`00728da0`: the player, condition 1,
+perks, no entry, no ammunition) and the player's cached figure
+(`008ac9d0`, `Actor::CalculateCachedWeaponDPS`).
+
+## The numbers on the item cards
+
+`Interface::PopulateItemStatsDisplay` (`00707e30`; the Pip-Boy's ITEMS
+card, and the container's and barter's) for a weapon:
+
+- **DPS** (mask 0x2): `00645380` for the player, at the weapon's
+  condition, with their perks and its inventory entry (so their mods
+  count and the shots a second come off their animations) and, for the
+  weapon in their hands, the ammunition it's loaded with (process +0x14c;
+  else the weapon's own); "%d" of it rounded half up (`004bd510`).
+- **Effects** (0x40): an aid item's or ingredient's effects; a weapon's
+  or apparel's enchantment's (`EITM`; not one flagged "hide effect",
+  `ENCH` `ENIT` flags 0x04); ammunition's own text (`00503a70`); a weapon
+  mod's description (`IMOD` `DESC`). Empty text hides the card, and a
+  weapon with a mod fitted never shows it (its mod cards take the place).
+- **An effect list's text** (`EffectItemList::BuildMenuString`,
+  `00406620`), as the player sees it: of the effects whose conditions pass
+  on the player (not the engine's "Usage Monitor Effect", form 0x14F),
+  those whose magic effect shows its name alone (`MGEF` flag 0x2000) are
+  written first, by name, one a line; the rest are summed by actor value
+  (`StatsMenu::StatusDataList`, `007e0b20`: archetypes with an actor
+  value, the table at `01183328`; the first one's duration kept, its
+  magnitude negative when the effect is detrimental, flag 4, its duration
+  none when it recovers, flag 2; "no magnitude" 0x100 and "no duration"
+  0x80 give 0) and written **latest-added first**, ", " between, each
+  `ABBR %+i` with the `AVIF` abbreviation (`ANAM`: "HP", "PER", "Rads")
+  and a duration `(%d%c)` or `(%.1f%c)`: seconds, minutes from 60, hours
+  from 3600. An amount: turned for the values counted the other way (the
+  actor value flag 0x200: rads, dehydration, hunger, sleep); for a
+  **medicine** (`ENIT` flag 4) × (`fMagicMedicineSkillBase` +
+  `fMagicMedicineSkillMult` × Medicine ÷ 100); for a **food** (flag 2, and
+  not every effect hostile or flagged 0x400000) × the same with Survival,
+  except on rads; Health's through "Modify Recovered Health" (entry point
+  12) in both; positive rads × (1 − the player's Rad Resistance, at most
+  `fPlayerMaxResistance` 85, ÷ 100) rounded down, a food's through
+  "Modify Radiation Consumed" (44); each truncated, and 0 written as 1.
+  (The master's Stimpak at Medicine 15: "HP +39"; Nuka-Cola: "Rads +3,
+  HP +2(25s)".)
+- **Ammunition's text** (`00503a70`): each `RCIL` effect as "%s %s %.2f"
+  — `sAmmoEffectDAM` "DAM", `…DR` "Target DR", `…DT` "Target DT",
+  `…Spread` "Gun Spread", `…Condition` "Gun CND", `…Fatigue` "Target
+  Fatigue" by its type, "+", "x" or "-" by its operation, the value — one
+  a line ("DAM x 1.20" for buckshot).
+
+Here: `world::dps` (`weapon_dps`, `shots_per_second`,
+`combat_weapon_dps`, `best_ammo`, `can_use_weapon`, `best_weapon`),
+`world::animation::action_times`, `world::companions::hold_best_weapon`
+and `sort_out_gear`, `world::item_card` (`card_dps`, `card_effects`,
+`effects_text`, `ammo_effects_text`); the Pip-Boy fills its ITEMS card's
+DPS and effects through them (`ui::pipboy::gather::gather_with`, given
+the player's set by the viewer's `AnimLibrary::player_library`).
+`world::npc_combat`'s controller figure is the same translation. Checks:
+`crates/world/tests/companion_weapons.rs` (on `testdata::companion_gear`,
+the master's values), `ui::pipboy::gather::tests::the_item_cards_dps_and_effects`.
+
+Seen in the viewer (2026-10-07, Mojave Outpost barracks, `--weapon
+Weap10mmSubmachineGun`): with Cass a teammate, her things opened
+(`OpenTeammateContainer 1`), the 50 rounds and the submachine gun clicked
+over and the menu closed, she put on her hat and outfit and took the gun
+(`00135F19 holds 00004321`); her list then holds the gun and rounds. The
+ITEMS card shows the 9mm pistol at "DPS 31" (Guns 15: (0.8 + 16 × 0.575)
+× 3.125 off `1hpattackright.kf`'s `a:R`); before the player's set was
+taken from the body's build it showed 16, the fire rate's figure.
+
+The recipe menu's card (`00728da0`, on `claude/repair-mod-followups`)
+would take: its DPS from `world::dps::weapon_dps` with the player,
+condition 1, perks on, no entry and no ammunition (no animations needed),
+and its effects card from `world::item_card::effects_text` on the
+product's effects (an aid item's list, else a weapon's or apparel's
+enchantment unless hidden) — once that branch and this one meet; nothing
+else on it changes.
 
 ## Teammates in the engine
 
@@ -309,8 +501,10 @@ view` outside, standing on the player's spot).
 - The viewer draws people in their record's clothes
   (`world::placement_of`): what a companion puts on after trading is in
   the state but not shown on them.
-- A companion's weapon picked after trading (`004c7400` by `00645380`'s
-  damage per second), and a creature companion's (`005f9e00`).
+- `InitDefaultWorn`'s other callers (packages, resets: 16 of them), and
+  `GetBestWeapon`'s explosive-planting check (process +0x444).
+- The viewer draws people with their record's weapon: the one picked is
+  in the state (redrawing NPCs' gear is another branch's).
 - The navmesh spot behind the player that those coming along are put on
   (`006e7e70`); here they're put on the player's own spot, as the game does
   when it finds none.

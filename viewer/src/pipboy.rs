@@ -1990,6 +1990,10 @@ pub struct Drawing<'w> {
     screens: ResMut<'w, Assets<ScreenMaterial>>,
     /// DATA › Local Map's line and pictures (`local_map`).
     local_map: Res<'w, crate::local_map::LocalMap>,
+    /// The player's third-person animations, which the ITEMS card's
+    /// damage a second reads the rate of fire from
+    /// (`world::dps::shots_per_second`).
+    library: Option<ResMut<'w, crate::anim_library::AnimLibrary>>,
 }
 
 /// Every frame while it's up: the menus filled from the game's state, the
@@ -2033,6 +2037,7 @@ pub(crate) fn update_pipboy(
         mut tiles,
         mut screens,
         local_map,
+        mut library,
     } = drawing;
     let order = &game.0.order;
     let now = time.elapsed_secs();
@@ -2168,7 +2173,13 @@ pub(crate) fn update_pipboy(
         f.x.atan2(-f.z).to_degrees()
     });
     let at = whereabouts(order, &state.0, &markers, heading, &mut pipboy.quest_points);
-    let mut input = ui::pipboy::gather::gather(order, &state.0, &at);
+    let mut input = match library
+        .as_deref_mut()
+        .and_then(|l| l.player_library(&game.0))
+    {
+        Some(mut lib) => ui::pipboy::gather::gather_with(order, &state.0, &at, Some(&mut lib)),
+        None => ui::pipboy::gather::gather(order, &state.0, &at),
+    };
     input.local_map = local_map.line.clone();
     input.note_audio = note_audio;
     b.pipboy.fill(&mut b.ui, &input);

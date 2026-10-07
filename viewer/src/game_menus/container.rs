@@ -11,9 +11,9 @@
 //! them something they've no room for (`0075dc80`,
 //! `world::items::has_room`) is refused with "<name>
 //! `sTeammateOverencumbered`" and their `FollowersOverburdened` line;
-//! `0075b750` closes it with `DRSTraderClose`, a person then choosing
-//! the armour they wear (`00606540`, `world::companions::
-//! wear_best_armour`).
+//! `0075b750` closes it with `DRSTraderClose`, the companion then
+//! choosing the armour they wear and the weapon they hold (`00606540`,
+//! `005f9e00`, `world::companions::sort_out_gear`).
 
 use cellview::Game;
 use esm::FormId;
@@ -183,6 +183,7 @@ pub fn after(
     scripts: &world::scripting::ScriptCache,
     state: &mut GameState,
     voices: &mut WheelVoices,
+    mut library: Option<&mut crate::anim_library::AnimLibrary>,
     now_ms: f64,
 ) -> Vec<FormId> {
     let order = &game.order;
@@ -309,17 +310,28 @@ pub fn after(
                 }
                 Request::AskQuantity { most, .. } => ask = Some(most),
                 Request::Close if mode == 3 => {
-                    // `0075b750`: a person sorts out what they wear
-                    // (`world::companions::wear_best_armour`; a creature's
-                    // weapons, `005f9e00`, aren't done).
-                    let person = base(order, reference)
-                        .and_then(|b| order.get(b))
-                        .is_some_and(|r| r.entry.header.kind.as_bytes() == b"NPC_");
-                    if person {
-                        for item in world::companions::wear_best_armour(order, state, reference) {
-                            println!("{reference} puts on {item}.");
-                        }
+                    // `0075b750`: the companion sorts out what they wear
+                    // and hold (`world::companions::sort_out_gear`: a
+                    // person their armour and, unless their package keeps
+                    // weapons away, the weapon `GetBestWeapon` rates best
+                    // — with the player's animations, as the game's
+                    // rating reads them; a creature its weapon).
+                    let s = |n: &str, d: f32| world::scripting::game_setting(order, n).unwrap_or(d);
+                    let mut lib = library.as_deref_mut().and_then(|l| l.player_library(game));
+                    let anims = lib
+                        .as_mut()
+                        .map(|l| l as &mut dyn world::animation::pick::Library);
+                    let before = world::dps::equipped_weapon(order, state, reference);
+                    for item in world::companions::sort_out_gear(order, state, reference, anims, &s)
+                    {
+                        println!("{reference} puts on {item}.");
                     }
+                    let after = world::dps::equipped_weapon(order, state, reference);
+                    println!(
+                        "{reference} holds {} (before {}).",
+                        after.map_or("nothing".into(), |w| w.to_string()),
+                        before.map_or("nothing".into(), |w| w.to_string()),
+                    );
                     sounds.extend(order.form_by_editor_id("DRSTraderClose"));
                 }
                 Request::Close => {

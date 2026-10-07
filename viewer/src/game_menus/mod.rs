@@ -684,6 +684,7 @@ pub(crate) fn run_open_menus(
     mut hacking_sounds: ResMut<hacking::HackingSounds>,
     mut hud_messages: ResMut<crate::hud::HudMessages>,
     mut wheel_voices: ResMut<companion_wheel::WheelVoices>,
+    mut library: Option<ResMut<crate::anim_library::AnimLibrary>>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         input.typed.clear();
@@ -924,6 +925,7 @@ pub(crate) fn run_open_menus(
         &scripts.0,
         &mut state.0,
         &mut wheel_voices,
+        library.as_deref_mut(),
         now * 1000.0,
     ));
     sounds

@@ -106,6 +106,7 @@ pub fn update_player_body(
     cameras: Query<&FlyCamera>,
     mut placed: Query<(&mut Transform, &mut Visibility)>,
     mut rigs: Query<&mut ActorRig>,
+    mut library: Option<ResMut<crate::anim_library::AnimLibrary>>,
 ) {
     let order = &game.0.order;
     let st = &state.0;
@@ -165,6 +166,12 @@ pub fn update_player_body(
             return;
         };
         let skeleton = scene.actors[0].skeleton.clone();
+        // The player's animations from the start (the game's from the
+        // load): the damage-a-second figures read their attack keys
+        // (`PlayerCharacter::GetAnimation(0)`, `world::dps`).
+        if let Some(lib) = library.as_deref_mut() {
+            lib.player = Some(lib.set_for(&game.0, &skeleton));
+        }
         body.scale = look.scale;
         let mut rig = ActorRig::new(skeleton, look.scale, 0.0);
         rig.joints = joints;
