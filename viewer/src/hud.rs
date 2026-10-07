@@ -56,7 +56,7 @@ use crate::{FlyCamera, GameFiles};
 const SHADER: Handle<Shader> = weak_handle!("3c8e51d2-7a4f-4b19-9e06-5d2b8f17a6c3");
 
 /// The render layer only the HUD's camera sees.
-const HUD_LAYER: usize = 23;
+pub(crate) const HUD_LAYER: usize = 23;
 
 /// The HUD's picture, which the image space pass lays over the scene.
 #[derive(Resource, Clone, ExtractResource)]

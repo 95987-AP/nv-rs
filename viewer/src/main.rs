@@ -47,6 +47,7 @@ mod player_camera;
 mod player_idle;
 mod present;
 mod radio;
+mod rendered_terminal;
 mod report;
 mod scope;
 mod scripts;
@@ -378,6 +379,7 @@ fn main() {
         .add_plugins(lockpick::LockpickPlugin)
         .add_plugins(caravan_table::CaravanTablePlugin)
         .add_plugins(casino_scene::CasinoScenePlugin)
+        .add_plugins(rendered_terminal::RenderedTerminalPlugin)
         .add_audio_source::<sounds::PcmSound>()
         // The first-person camera runs the image space passes with the
         // main camera's grade, once everything has set it.

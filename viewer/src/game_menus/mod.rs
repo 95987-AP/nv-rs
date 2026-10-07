@@ -46,7 +46,7 @@ use bevy::input::ButtonState;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use cellview::{Game, TextureData};
-use ui::draw::{DrawItem, Textures};
+use ui::draw::{DrawItem, DrawKind, Textures};
 use ui::menu::{Effect, Interface, MenuCode};
 use ui::names::{kind, t};
 use ui::TileId;
@@ -78,6 +78,11 @@ pub struct Screen {
     pub ui: ui::Ui,
     pub interface: Interface,
     pub open: Vec<OpenMenu>,
+    /// Menus closed and fading out (`ui::fade`): drawn, not run; bottom
+    /// first.
+    pub fading: Vec<OpenMenu>,
+    /// The menus' fade states and the fades running (`ui::fade`).
+    pub fades: ui::fade::Fades,
     size: UVec2,
     /// The cursor's picture.
     cursor: Option<TileId>,
@@ -95,10 +100,21 @@ pub struct Screen {
     pub pointer: Option<(f32, f32)>,
     /// The mouse's movement this frame, in pixels (roulette's cursor).
     pub mouse_move: (f32, f32),
+    /// The player left a terminal or the hacking game this frame (their
+    /// `Leave`): the rendered terminal fades out (`rendered_terminal`).
+    pub terminal_left: bool,
     sizes: HashMap<String, Option<(u32, u32)>>,
     atlases: HashMap<String, Option<ui::Atlas>>,
     /// `nif` tiles' models (the start menu's pause background).
     models: HashMap<String, Option<Vec<start::ModelPiece>>>,
+}
+
+/// How a closed menu leaves (`Screen::close`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Close {
+    Fade,
+    Instant,
+    Now,
 }
 
 /// A menu on screen.
@@ -442,6 +458,8 @@ impl Screen {
             ui,
             interface: Interface::default(),
             open: Vec::new(),
+            fading: Vec::new(),
+            fades: ui::fade::Fades::default(),
             size,
             cursor,
             fade: None,
@@ -450,6 +468,7 @@ impl Screen {
             quantity_owner: None,
             pointer: None,
             mouse_move: (0.0, 0.0),
+            terminal_left: false,
             sizes: HashMap::new(),
             atlases: HashMap::new(),
             models: HashMap::new(),
@@ -461,6 +480,78 @@ impl Screen {
         self.open.iter().map(OpenMenu::tile).collect()
     }
 
+    /// Whether the game's menus hold the game: one open, or one still
+    /// fading out (the game stays in menu mode until the fades end,
+    /// `00711ea0`).
+    pub fn busy(&self) -> bool {
+        !self.open.is_empty() || !self.fading.is_empty()
+    }
+
+    /// Menus opened since the last look start fading in (every menu here
+    /// opens with `Menu::PrepForVisibility(0)`, `00a1dc20`: its tile
+    /// hidden and `StartFadeIn`; only the Pip-Boy's pages and the HUD
+    /// open at once). `dt` is the frame's seconds.
+    fn show_new(&mut self, dt: f32) {
+        for tile in self.menu_tiles() {
+            if !self.fades.knows(tile) {
+                self.fades.show(&mut self.ui, tile, false, dt);
+                let secs = ui::fade::seconds(&mut self.ui, tile);
+                println!("Menu {} fading in ({secs} s).", self.ui.tiles[tile].name);
+            }
+        }
+    }
+
+    /// A closed menu leaves the screen: it fades out
+    /// (`Menu::StartFadeOut`, `00a1d910`), hides at once and goes at the
+    /// frame's end (`InstantFadeOut`, `00a1d9e0`), or, `Close::Now`, goes
+    /// now (the terminal's power button deletes it, `007ffd50`; a menu
+    /// closed before it was ever shown, whose `StartFadeOut` does nothing
+    /// in the game, too).
+    fn close(&mut self, m: OpenMenu, how: Close, dt: f32) {
+        let tile = m.tile();
+        self.interface.let_go_of(&self.ui, tile);
+        let fading = match how {
+            Close::Fade => self.fades.start_fade_out(&mut self.ui, tile, dt),
+            Close::Instant => {
+                self.fades.instant_fade_out(&mut self.ui, tile);
+                true
+            }
+            Close::Now => false,
+        };
+        if fading {
+            let secs = ui::fade::seconds(&mut self.ui, tile);
+            match how {
+                Close::Instant => println!("Menu {} gone at once.", self.ui.tiles[tile].name),
+                _ => println!("Menu {} fading out ({secs} s).", self.ui.tiles[tile].name),
+            }
+            self.fading.push(m);
+        } else {
+            self.fades.forget(tile);
+            self.ui.detach(tile);
+        }
+    }
+
+    /// The frame's end for the menus' fades (`00711ea0`): what they're
+    /// drawn with this frame, and the faded-out menus taken away.
+    fn end_fades(&mut self) {
+        let tiles: Vec<TileId> = self
+            .fading
+            .iter()
+            .chain(self.open.iter())
+            .map(OpenMenu::tile)
+            .collect();
+        for (tile, _) in self.fades.frame(&mut self.ui, &tiles) {
+            // Kept menus (not marked to leave the stack) would only be
+            // hidden; every closed menu here is let go of either way.
+            if let Some(i) = self.fading.iter().position(|m| m.tile() == tile) {
+                println!("Menu {} faded out.", self.ui.tiles[tile].name);
+                self.fading.remove(i);
+                self.fades.forget(tile);
+                self.ui.detach(tile);
+            }
+        }
+    }
+
     /// Loads a menu file for a menu's code (`ui::menu::load`), above the
     /// menus open.
     pub fn load(
@@ -469,7 +560,13 @@ impl Screen {
         path: &str,
         code: &mut dyn MenuCode,
     ) -> Result<TileId, String> {
-        let open = self.menu_tiles();
+        // Every menu the interface has, those fading out too (`00a1dfb0`).
+        let open: Vec<TileId> = self
+            .fading
+            .iter()
+            .chain(self.open.iter())
+            .map(OpenMenu::tile)
+            .collect();
         let depth = ui::menu::next_depth(&mut self.ui, &open);
         let mut read = |p: &str| game.assets.read(p).ok().flatten();
         let tile = ui::menu::load(&mut self.ui, &mut read, path, code, depth)?;
@@ -538,8 +635,9 @@ fn screen<'a>(menus: &'a mut GameMenus, game: &Game, size: UVec2) -> Option<&'a 
         return None;
     }
     if menus.screen.as_ref().is_none_or(|s| s.size != size) {
-        if menus.screen.as_ref().is_some_and(|s| !s.open.is_empty()) {
-            // Menus open keep their layout until they close.
+        if menus.screen.as_ref().is_some_and(|s| s.busy()) {
+            // Menus open (or fading out) keep their layout until they
+            // close.
         } else {
             let built = Screen::build(game, size);
             if built.ui.fonts.iter().all(Option::is_none) {
@@ -691,7 +789,7 @@ fn open_menus(
     }
     // The Pip-Boy's questions (over it, so the player isn't ready anyway).
     asks::open(screen, &game.0, &mut asks);
-    queue.game_open = !screen.open.is_empty();
+    queue.game_open = screen.busy();
     if wanted && !to_perks {
         menus.levelup_to_perks = false;
     }
@@ -741,6 +839,10 @@ pub struct MenuInput<'w, 's> {
     clicks: ResMut<'w, FixedClicks>,
     fixed_keys: ResMut<'w, FixedKeys>,
     pads: Query<'w, 's, &'static Gamepad>,
+    /// Terminals drawn on the terminal's screen: the pointer goes through
+    /// it.
+    rendered: ResMut<'w, crate::rendered_terminal::RenderedTerminal>,
+    hud: Option<Res<'w, crate::hud::HudLayer>>,
 }
 
 /// A key as the game's interface turns it into a menu code (`007154b0`):
@@ -795,12 +897,24 @@ pub(crate) fn run_open_menus(
         input.typed.clear();
         return;
     };
+    let dt = input.time.delta_secs();
+    // Before the menus run, the fades move on (`0070b8f0` → `00716320`);
+    // menus opened since start fading in.
+    screen.fades.update(dt);
+    screen.show_new(dt);
     if screen.open.is_empty() {
         input.typed.clear();
+        // Menus still fading out hold the game until they're gone.
+        if !screen.fading.is_empty() {
+            screen.end_fades();
+            queue.game_open = screen.busy();
+            if !screen.busy() && conversation.0.is_none() && !queue.pipboy {
+                player.ready = true;
+            }
+        }
         return;
     }
     let now = input.time.elapsed_secs_f64();
-    let dt = input.time.delta_secs();
     // The pad's left stick (XInput's ±32767 from Bevy's −1..1) and the
     // mouse held, for Caravan.
     let caravan_input = {
@@ -817,6 +931,15 @@ pub(crate) fn run_open_menus(
             mouse_held: input.mouse.pressed(MouseButton::Left),
         }
     };
+    // A rendered menu is up (the terminal's model: `00707af0`): the
+    // message box and "how many?" close without a fade.
+    let rendered_up = input.rendered.prepare(&game.0, input.hud.is_some())
+        && screen
+            .open
+            .iter()
+            .chain(screen.fading.iter())
+            .any(|m| matches!(m, OpenMenu::Hacking(_) | OpenMenu::Computers(_)));
+    let mut power_off_menu = None;
     dialog::update(screen, &game.0.order, dt);
     container::update(screen);
     textedit::update(screen, now * 1000.0);
@@ -832,6 +955,7 @@ pub(crate) fn run_open_menus(
             rest_down,
             pointer: here,
             mouse_move,
+            fades,
             ..
         } = &mut *screen;
         // The mouse's raw movement (roulette's cursor, `00a239e0`).
@@ -840,18 +964,12 @@ pub(crate) fn run_open_menus(
             return;
         };
         let menu = top.tile();
-        // The pointer, in menu units.
-        let k = ui.screen_size.resolution_converter();
-        let pointer = match input.fixed.0 {
-            // A 1920 × 1080 picture's pixels: the screen is 960 units high.
-            Some((x, y)) => Some((x * 960.0 / 1080.0, y * 960.0 / 1080.0)),
-            None => input
-                .windows
-                .single()
-                .ok()
-                .and_then(|w| w.physical_cursor_position().map(|p| (p.x * k, p.y * k))),
-        };
-        *here = pointer;
+        // The pointer reaches a menu only while it's shown, not while it
+        // fades in (`0070c4a0`); the keys do.
+        let shown = fades.takes_pointer(menu);
+        if !shown {
+            interface.let_go_of(ui, menu);
+        }
         // `--menu-click`: pressed this frame, let go the next.
         let release = std::mem::take(&mut input.clicks.release);
         let press = {
@@ -859,7 +977,59 @@ pub(crate) fn run_open_menus(
             due.map(|i| input.clicks.at.remove(i)).is_some()
         };
         input.clicks.release = press;
-        if let Some((x, y)) = pointer {
+        // The pointer, in menu units.
+        let k = ui.screen_size.resolution_converter();
+        let window = input.windows.single().ok();
+        let rendered = matches!(top, OpenMenu::Hacking(_) | OpenMenu::Computers(_))
+            && input.rendered.prepare(&game.0, input.hud.is_some());
+        let mut power_button = false;
+        let pointer = if rendered {
+            // On the terminal's screen (`007fb790`): where the ray through
+            // the pointer meets it; `--menu-pointer` is a 1920 × 1080
+            // picture's pixels, as elsewhere.
+            let size = window.map_or(UVec2::new(1920, 1080), |w| {
+                UVec2::new(w.physical_width(), w.physical_height())
+            });
+            let at = match input.fixed.0 {
+                Some((x, y)) => Some(Vec2::new(
+                    x * size.x as f32 / 1920.0,
+                    y * size.y as f32 / 1080.0,
+                )),
+                None => window.and_then(|w| w.physical_cursor_position()),
+            };
+            let click = input.mouse.just_pressed(MouseButton::Left) || press;
+            at.and_then(|p| input.rendered.hit(&game.0, p, size, click))
+                .map(|hit| {
+                    power_button = click && hit == cellview::rendered_terminal::Hit::Exit;
+                    crate::rendered_terminal::RenderedTerminal::menu_pointer(hit)
+                })
+        } else {
+            match input.fixed.0 {
+                // A 1920 × 1080 picture's pixels: the screen is 960 units
+                // high.
+                Some((x, y)) => Some((x * 960.0 / 1080.0, y * 960.0 / 1080.0)),
+                None => {
+                    window.and_then(|w| w.physical_cursor_position().map(|p| (p.x * k, p.y * k)))
+                }
+            }
+        };
+        *here = pointer;
+        // The terminal's power button (`007ffba0` → `007ffd50`): the
+        // menu leaves and the terminal goes at once.
+        if power_button {
+            use ui::menu::MenuCode;
+            power_off_menu = Some(menu);
+            match top {
+                OpenMenu::Hacking(h) => {
+                    h.menu
+                        .special_key(ui, ui::menus::hacking::LEAVE, now * 1000.0);
+                }
+                OpenMenu::Computers(c) => c.menu.close(ui),
+                _ => {}
+            }
+            input.rendered.power_off = true;
+        }
+        if let (Some((x, y)), true) = (pointer, shown) {
             if let OpenMenu::Vigor(v) = top {
                 v.pointer = Some(Vec2::new(x / k, y / k));
             }
@@ -880,9 +1050,11 @@ pub(crate) fn run_open_menus(
         }
         // A meter's bar held under the pointer follows it (`007cf6a0`, id
         // 0x66).
-        if let (OpenMenu::Start(s), Some((x, _)), true) =
-            (&mut *top, pointer, input.mouse.pressed(MouseButton::Left))
-        {
+        if let (OpenMenu::Start(s), Some((x, _)), true) = (
+            &mut *top,
+            pointer,
+            shown && input.mouse.pressed(MouseButton::Left),
+        ) {
             let bar = interface.dragging.or(interface.over).filter(|&o| {
                 ui.has(o, t::ID) && ui.number(o, t::ID) as i32 == ui::menus::start::id::BAR
             });
@@ -895,7 +1067,9 @@ pub(crate) fn run_open_menus(
             MouseScrollUnit::Pixel => input.scroll.delta.y / 40.0,
         }
         .round() as i32;
-        interface.wheel(ui, menu, top.code(), notches);
+        if shown {
+            interface.wheel(ui, menu, top.code(), notches);
+        }
         // Keys.
         let shift =
             input.keys.pressed(KeyCode::ShiftLeft) || input.keys.pressed(KeyCode::ShiftRight);
@@ -1011,6 +1185,24 @@ pub(crate) fn run_open_menus(
                 println!("--menu-keys: the mouse moved {dx}, {dy}");
                 mouse_move.0 += dx;
                 mouse_move.1 += dy;
+                continue;
+            }
+            // "tab": what Tab and Escape do in the hacking and terminal
+            // menus (their code 10, leaving).
+            if k.eq_ignore_ascii_case("tab") {
+                use ui::menu::MenuCode;
+                println!("--menu-keys: {k}");
+                match top {
+                    OpenMenu::Hacking(h) => {
+                        h.menu
+                            .special_key(ui, ui::menus::hacking::LEAVE, now * 1000.0);
+                    }
+                    OpenMenu::Computers(c) => {
+                        c.menu
+                            .special_key(ui, ui::menus::computers::LEAVE, now * 1000.0);
+                    }
+                    _ => {}
+                }
                 continue;
             }
             let code = match k.to_ascii_lowercase().as_str() {
@@ -1147,28 +1339,40 @@ pub(crate) fn run_open_menus(
         println!("{n}");
         hud_messages.queue.push(n.into());
     }
-    // Closed menus leave the screen; a service menu closing brings the
-    // conversation back (`007640a0`).
+    // Closed menus leave the screen, fading out (`ui::fade`); a service
+    // menu closing brings the conversation back (`007640a0`).
     let mut i = 0;
     while i < screen.open.len() {
         if screen.open[i].closed() {
             let m = screen.open.remove(i);
-            screen.ui.detach(m.tile());
+            let service = m.is_service();
+            let how = if power_off_menu == Some(m.tile()) {
+                Close::Now
+            } else if matches!(m, OpenMenu::Message(_) | OpenMenu::Quantity(_))
+                && (queue.pipboy || rendered_up)
+            {
+                // `007a8df0`, `007abdf0`: at once over a rendered menu.
+                Close::Instant
+            } else {
+                Close::Fade
+            };
+            screen.close(m, how, dt);
             if screen.open.is_empty() {
                 screen.interface.over = None;
                 screen.interface.focus = None;
             }
-            if m.is_service() {
+            if service {
                 dialog::service_closed(screen);
             }
         } else {
             i += 1;
         }
     }
-    let open = &screen.open;
-    queue.game_open = !open.is_empty();
+    // The frame's end: the fades laid on (`00711ea0`).
+    screen.end_fades();
+    queue.game_open = screen.busy();
     // (A box over the Pip-Boy closing leaves the Pip-Boy up.)
-    if open.is_empty() && conversation.0.is_none() && !queue.pipboy {
+    if !screen.busy() && conversation.0.is_none() && !queue.pipboy {
         player.ready = true;
     }
 }
@@ -1268,7 +1472,8 @@ pub(crate) fn start_menu_frame(
 }
 
 /// The open menus' pictures and the cursor, for the HUD's layer.
-fn draw_menus(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_menus(
     game: Res<GameFiles>,
     mut menus: ResMut<GameMenus>,
     mut draw: ResMut<MenuDraw>,
@@ -1276,8 +1481,19 @@ fn draw_menus(
     fixed: Res<FixedPointer>,
     time: Res<Time<bevy::time::Real>>,
     pipboy: Option<Res<crate::pipboy::Pipboy>>,
+    mut rendered: ResMut<crate::rendered_terminal::RenderedTerminal>,
+    hud: Option<Res<crate::hud::HudLayer>>,
 ) {
+    let rendered_on = rendered.prepare(&game.0, hud.is_some());
+    let mut terminal_items: Vec<DrawItem> = Vec::new();
+    let terminal_open = menus.screen.as_ref().is_some_and(|s| {
+        s.open
+            .iter()
+            .any(|m| matches!(m, OpenMenu::Hacking(_) | OpenMenu::Computers(_)))
+    });
+    rendered.menu_open = terminal_open;
     let Some(screen) = menus.screen.as_deref_mut() else {
+        rendered.items.clear();
         if !draw.0.is_empty() {
             draw.0.clear();
         }
@@ -1286,16 +1502,6 @@ fn draw_menus(
         }
         return;
     };
-    let tiles = screen.menu_tiles();
-    // Each menu's fade alpha (the conversation's under a service menu).
-    let alphas: Vec<f32> = screen
-        .open
-        .iter()
-        .map(|m| match m {
-            OpenMenu::Dialog(d) => d.fade.alpha(),
-            _ => 1.0,
-        })
-        .collect();
     let mut items: Vec<DrawItem> = Vec::new();
     // The fade to black moves every frame (`007011d0`) and is drawn under
     // the menus while it lasts.
@@ -1321,32 +1527,64 @@ fn draw_menus(
                 items.extend(ui::draw_list(&mut screen.ui, fader, &mut files, &|_| None));
             }
         }
-        // Every picture's own size (`filewidth` / `fileheight`), as the
-        // game's tile refresh sets it for any picture: the tutorial box's
-        // Vault-Tec symbol and the start menu's title are sized from it.
-        for &menu in &tiles {
+        // Menus fading out under the open ones, each with its fade
+        // (`ui::fade`).
+        for (fading, m) in screen
+            .fading
+            .iter()
+            .map(|m| (true, m))
+            .chain(screen.open.iter().map(|m| (false, m)))
+        {
+            let menu = m.tile();
+            // Every picture's own size (`filewidth` / `fileheight`), as the
+            // game's tile refresh sets it for any picture: the tutorial box's
+            // Vault-Tec symbol and the start menu's title are sized from it.
             ui::draw::update_file_sizes(&mut screen.ui, menu, &mut files);
-        }
-        for (&menu, &alpha) in tiles.iter().zip(&alphas) {
-            let first = items.len();
-            let drawn = ui::draw_list(&mut screen.ui, menu, &mut files, &|_| None);
-            items.extend(ui::draw::faded(&mut screen.ui, drawn, alpha));
-            // A start menu's `nif` tile (the pause background).
-            start::background_draws(
-                &mut screen.ui,
-                &screen.open,
-                &game.0,
-                &mut screen.models,
-                &mut items,
-                menu,
-                first,
-            );
+            // The conversation's alpha under a service menu.
+            let alpha = match m {
+                OpenMenu::Dialog(d) => d.fade.alpha(),
+                _ => 1.0,
+            };
+            let mut list = ui::draw_list(&mut screen.ui, menu, &mut files, &|_| None);
+            // The terminal's and the hacking menu's on the terminal's own
+            // screen (`rendered_terminal`).
+            if rendered_on && matches!(m, OpenMenu::Hacking(_) | OpenMenu::Computers(_)) {
+                for item in &list {
+                    if let DrawKind::Text { font, .. } = item.kind {
+                        if let Some(Some(f)) = screen.ui.fonts.get(font.wrapping_sub(1)) {
+                            rendered
+                                .font_paths
+                                .entry(font)
+                                .or_insert_with(|| ui::draw::font_textures(f));
+                        }
+                    }
+                }
+                let value = screen.fades.value(menu);
+                ui::fade::fade_items(&mut screen.ui, menu, value, &mut list);
+                terminal_items.extend(list);
+            } else {
+                let first = items.len();
+                items.extend(ui::draw::faded(&mut screen.ui, list, alpha));
+                // A start menu's `nif` tile (the pause background).
+                start::background_draws(
+                    &mut screen.ui,
+                    if fading { &screen.fading } else { &screen.open },
+                    &game.0,
+                    &mut screen.models,
+                    &mut items,
+                    menu,
+                    first,
+                );
+                let value = screen.fades.value(menu);
+                ui::fade::fade_items(&mut screen.ui, menu, value, &mut items[first..]);
+            }
         }
         // The cursor over everything while a menu is open (the Pip-Boy
         // too: it moves over the screen and the model's buttons,
         // `007f8720`, except where DATA's map hides it, `0079a130`) and
         // the pointer is in the window.
-        let wanted = !tiles.is_empty()
+        let wanted = !screen.open.is_empty()
+            || !screen.fading.is_empty()
             || pipboy
                 .as_ref()
                 .is_some_and(|p| p.open && !p.cursor_hidden());
@@ -1373,6 +1611,9 @@ fn draw_menus(
         }
     }
     let _ = kind::IMAGE;
+    if rendered.items != terminal_items {
+        rendered.items = terminal_items;
+    }
     if draw.0 != items {
         draw.0 = items;
     }
@@ -1387,5 +1628,107 @@ fn draw_menus(
         .collect();
     if draw.1 != classes {
         draw.1 = classes;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::fade::State;
+    use ui::menus::message::MessageMenu;
+
+    /// The menus with no game files: a 1920 × 1080 screen.
+    fn bare() -> Screen {
+        let ui = ui::Ui::new(
+            ui::Screen {
+                width_px: 1920,
+                height_px: 1080,
+                safe_x: 15.0,
+                safe_y: 15.0,
+            },
+            ui::SystemColors::new(None, None),
+            Box::new(|_| None),
+        );
+        Screen {
+            ui,
+            interface: Interface::default(),
+            open: Vec::new(),
+            fading: Vec::new(),
+            fades: ui::fade::Fades::default(),
+            size: UVec2::new(1920, 1080),
+            cursor: None,
+            fade: None,
+            fader: None,
+            rest_down: false,
+            quantity_owner: None,
+            pointer: None,
+            terminal_left: false,
+            sizes: HashMap::new(),
+            atlases: HashMap::new(),
+            models: HashMap::new(),
+        }
+    }
+
+    fn open_message(s: &mut Screen) -> TileId {
+        let tile =
+            s.ui.load_menu(
+                b"<menu name=\"M\"><image name=\"a\"><filename>solid.dds</filename></image></menu>",
+                &mut |_| None,
+            )
+            .unwrap();
+        s.ui.set_number(tile, t::VISIBLE, 1.0);
+        s.open.push(OpenMenu::Message(MessageMenu::new(tile)));
+        tile
+    }
+
+    /// A menu opened fades in over its `menufade` (0.25), the pointer
+    /// reaching it only once it's shown; closed, it fades out, drawn but
+    /// not run, holding the game until it's gone.
+    #[test]
+    fn menus_fade_in_and_out() {
+        let mut s = bare();
+        let m = open_message(&mut s);
+        s.show_new(0.1);
+        s.end_fades();
+        assert_eq!(s.fades.state(m), State::FadingIn);
+        assert!((s.fades.value(m) - 0.4).abs() < 1e-6);
+        assert!(!s.fades.takes_pointer(m));
+        s.fades.update(0.2);
+        s.end_fades();
+        assert_eq!(s.fades.state(m), State::Shown);
+        assert!(s.fades.takes_pointer(m));
+        // Closed.
+        s.ui.set_number(m, ui::menu::LEAVE_STACK, 1.0);
+        let closed = s.open.remove(0);
+        s.close(closed, Close::Fade, 0.1);
+        assert!(s.open.is_empty() && s.busy());
+        s.end_fades();
+        assert!((s.fades.value(m) - 0.6).abs() < 1e-6);
+        assert!(s.ui.is_under(m, s.ui.screen));
+        s.fades.update(0.2);
+        s.end_fades();
+        assert!(!s.busy());
+        assert!(!s.ui.is_under(m, s.ui.screen));
+    }
+
+    /// The power button's and an instant close.
+    #[test]
+    fn menus_closed_at_once() {
+        let mut s = bare();
+        let m = open_message(&mut s);
+        s.show_new(1.0);
+        s.end_fades();
+        let closed = s.open.remove(0);
+        s.close(closed, Close::Now, 0.0);
+        assert!(!s.busy() && !s.ui.is_under(m, s.ui.screen));
+        let m = open_message(&mut s);
+        s.show_new(1.0);
+        s.end_fades();
+        s.ui.set_number(m, ui::menu::LEAVE_STACK, 1.0);
+        let closed = s.open.remove(0);
+        s.close(closed, Close::Instant, 0.0);
+        assert_eq!(s.ui.number(m, t::VISIBLE), 0.0);
+        s.end_fades();
+        assert!(!s.busy());
     }
 }

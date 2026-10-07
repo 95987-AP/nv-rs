@@ -283,6 +283,7 @@ pub fn after(
     now_ms: f64,
 ) -> Vec<Menu> {
     let mut then = Vec::new();
+    let mut left = false;
     for m in &mut screen.open {
         let OpenMenu::Hacking(h) = m else {
             continue;
@@ -329,9 +330,18 @@ pub fn after(
                         then.push(Menu::Terminal(h.terminal, h.reference));
                     }
                 }
+                // Leaving (`00766aa0`): the power down (`007ffe40`), the
+                // rendered terminal fading out (`007ffaf0`).
+                Request::Leave => {
+                    if let Some(f) = form(ui::menus::computers::sound::POWER_DOWN) {
+                        sounds.orders.push(Order::At(now_ms, f));
+                    }
+                    left = true;
+                }
             }
         }
     }
+    screen.terminal_left |= left;
     then
 }
 

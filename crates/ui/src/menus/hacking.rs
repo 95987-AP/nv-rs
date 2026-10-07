@@ -61,6 +61,7 @@
 use world::grass::Twister;
 use world::hacking::{Game, Outcome, Selection, FILE_CHARS, LINE_CHARS, ROWS};
 
+use super::computers::LEAVE_FADE;
 use super::typed::Line;
 use crate::menu::{self, MenuCode};
 use crate::names::t;
@@ -190,6 +191,9 @@ pub enum Request {
     LockedOut,
     /// The menu closed; the terminal's menu opens if `Granted` came.
     Close,
+    /// The player left (`00766aa0`): the power-down sound plays and the
+    /// rendered terminal fades out; after [`Request::Close`].
+    Leave,
 }
 
 /// Where the menu is (`eStage`).
@@ -985,7 +989,12 @@ impl MenuCode for HackingMenu {
     fn special_key(&mut self, ui: &mut Ui, code: i32, _now: f64) -> bool {
         if code == LEAVE {
             self.stage = Stage::Done;
-            self.close(ui, self.now);
+            if !self.closed {
+                // `00766aa0`: the menu fades out over 0.75 s (`menufade`).
+                ui.set_number(self.menu, t::MENUFADE, LEAVE_FADE);
+                self.close(ui, self.now);
+                self.requests.push(Request::Leave);
+            }
             return true;
         }
         false
@@ -1192,6 +1201,8 @@ mod tests {
         run(&mut ui, &mut m, now + 200.0, now + 3200.0, 16.0);
         assert!(m.closed);
         assert!(m.requests.contains(&Request::Close));
+        // Handed over to the terminal's menu, not left: no power down.
+        assert!(!m.requests.contains(&Request::Leave));
     }
 
     /// Down to the last attempt the header warns and flashes; at none the
@@ -1237,5 +1248,16 @@ mod tests {
         assert!(m.special_key(&mut ui, LEAVE, 1.0));
         assert!(m.closed);
         assert_eq!(ui.number(m.menu, menu::LEAVE_STACK), 1.0);
+        // Leaving fades it out over 0.75 s (`00766aa0`).
+        assert_eq!(ui.number(m.menu, t::MENUFADE), LEAVE_FADE);
+        let close = m.requests.iter().position(|r| *r == Request::Close);
+        let leave = m.requests.iter().position(|r| *r == Request::Leave);
+        assert!(close.is_some() && leave > close);
+        // Only once.
+        assert!(m.special_key(&mut ui, LEAVE, 2.0));
+        assert_eq!(
+            m.requests.iter().filter(|r| **r == Request::Leave).count(),
+            1
+        );
     }
 }
