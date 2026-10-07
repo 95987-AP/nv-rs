@@ -13,6 +13,7 @@ mod casino_scene;
 mod chatter;
 mod clutter;
 mod combat;
+mod companions;
 mod controls;
 mod crosshair;
 mod daylight;
@@ -380,6 +381,7 @@ fn main() {
         .add_plugins(caravan_table::CaravanTablePlugin)
         .add_plugins(casino_scene::CasinoScenePlugin)
         .add_plugins(rendered_terminal::RenderedTerminalPlugin)
+        .add_plugins(companions::CompanionsPlugin)
         .add_audio_source::<sounds::PcmSound>()
         // The first-person camera runs the image space passes with the
         // main camera's grade, once everything has set it.

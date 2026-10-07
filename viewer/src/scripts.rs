@@ -90,9 +90,6 @@ pub struct CellScripts {
     /// The game's reference-script pass: attached cells, pending events,
     /// trigger occupancy.
     scheduler: world::ref_scripts::RefScripts,
-    /// The player's place (worldspace, else interior) when teammates were
-    /// last brought along ([`bring_teammates`]).
-    space: Option<FormId>,
 }
 
 /// World-space bounds of rendered placed objects in the loaded cell(s).
@@ -247,31 +244,6 @@ pub fn door_opens(
         .events
         .retain(|e| !matches!(e, Event::Activate { what, .. } if *what == door));
     opened
-}
-
-/// The player's teammates come with them through a door or a move to
-/// another place: they're where the player is (and walk to their follow
-/// distance there). Those still in the same world stay where they are.
-/// [G] Not traced (Dead Money contributor, 2026-10-06): the game moves its
-/// followers (`ExtraFollower`, `iNumberActorsAllowedToFollowPlayer`)
-/// by rules not read yet. No base-game acceptance route has a teammate.
-fn bring_teammates(order: &esm::LoadOrder, state: &mut world::scripting::GameState) {
-    let (Some(at), Some(cell)) = (state.player_position, state.player_cell) else {
-        return;
-    };
-    let space = state.player_world.unwrap_or(cell);
-    for t in state.teammates.clone() {
-        if state.dead.contains(&t) || state.more.down.contains_key(&t) {
-            continue;
-        }
-        if state.place(order, t).is_some_and(|p| p.0 == space) {
-            continue;
-        }
-        state.spaces.insert(t, (space, cell));
-        state.positions.insert(t, (at, 0.0));
-        state.evaluate.insert(t);
-        println!("{t} comes along.");
-    }
 }
 
 /// The attached cells (in the game's pass order) and how to read one's
@@ -1136,13 +1108,6 @@ pub fn run_scripts(
         feet,
     );
     let cells: Vec<FormId> = attached.iter().map(|(c, _)| *c).collect();
-    let space = state.player_world.or(state.player_cell);
-    if space != cell_scripts.space {
-        cell_scripts.space = space;
-        if world::guesses::enabled() {
-            bring_teammates(order, state);
-        }
-    }
     refresh_cell_scripts(
         order,
         &scripts.0,
@@ -1365,6 +1330,10 @@ pub fn run_scripts(
             }
             Event::TeammateContainer(who) => {
                 waiting.push(crate::menus::Menu::Teammate(who));
+                None
+            }
+            Event::BackUp(who) => {
+                println!("{who} steps back from the player (default package 0x27): not carried out here.");
                 None
             }
             // `Create`'s checks as the command runs (`005cf040` and the

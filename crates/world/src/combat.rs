@@ -341,7 +341,9 @@ pub struct Hit {
 /// (`fAVDUnarmedDamageBase` 0.5 + `…Mult` 0.05 × Unarmed) for
 /// hand-to-hand and fists; C = 1 above 75% condition, else 1 − 0.67 ×
 /// (0.75 − condition) (the `fDamage…WeapCond…` settings aren't used for
-/// this). `power` is `fDamagePowerAttackBonus` (2) for a power attack.
+/// this). `power` is `fDamagePowerAttackBonus` (2) for a power attack. A
+/// player's teammate's damage is also × their Nerve
+/// ([`crate::companions::nerve`]).
 pub fn weapon_damage(
     order: &LoadOrder,
     state: &GameState,
@@ -424,7 +426,9 @@ pub fn weapon_damage_at(
         1.0 - 0.67 * (0.75 - condition)
     };
     let scale = state.scales.get(&attacker).copied().unwrap_or(1.0);
-    (base * skill_factor * power + added) * condition * scale
+    // A teammate's Nerve (`00644ce0`'s last factor).
+    let nerve = crate::companions::nerve(order, state, attacker);
+    (base * skill_factor * power + added) * condition * scale * nerve
 }
 
 /// [`weapon_damage`] for a weapon, without a power attack.
@@ -573,7 +577,9 @@ pub fn with_ammo(effects: &[(u32, u32, f32)], kind: u32, value: f32) -> f32 {
 /// actor value and worn armour's, after the ammunition's threshold
 /// effects, then the perks': see [`hit_through_armour`]), then the
 /// ammunition's damage effects (hollow points × 1.75: after the
-/// threshold, as the game does it). With no attacker: nobody's perks.
+/// threshold, as the game does it). With no attacker: nobody's perks. A
+/// player's teammate's resistance and threshold are × their Nerve
+/// ([`crate::companions::nerve`]).
 pub fn through_armour(
     order: &LoadOrder,
     state: &GameState,
@@ -632,10 +638,13 @@ pub fn armour_hit(
     let setting = |n: &str, default: f32| game_setting(order, n).unwrap_or(default);
     let effects = ammo.map(|a| ammo_effects(order, a)).unwrap_or_default();
     let least = damage * setting("fMinDamMultiplier", 0.2);
+    // A teammate's Nerve raises both, before the ammunition's effects
+    // (`009b5a30`).
+    let nerve = crate::companions::nerve(order, state, target);
     let resist = with_ammo(
         &effects,
         1,
-        damage_resistance(order, state, target).min(100.0),
+        damage_resistance(order, state, target).min(100.0) * nerve,
     );
     let resist = (resist / 100.0)
         .min(setting("fMaxArmorRating", 85.0) / 100.0)
@@ -643,7 +652,7 @@ pub fn armour_hit(
     let mut threshold = with_ammo(
         &effects,
         2,
-        worn_damage_threshold(order, state, target).max(0.0),
+        worn_damage_threshold(order, state, target).max(0.0) * nerve,
     );
     if let Some((who, weapon)) = attacker {
         // A block adds the blocker's skill to the threshold, before the
@@ -1238,7 +1247,8 @@ fn restore_after_essential_down(state: &mut GameState, who: FormId) {
 }
 
 /// Those who are down count their seconds; at 0 they get up
-/// (`Event::GotUp`).
+/// (`Event::GotUp`). The player's teammate's seconds stand still while
+/// the player fights.
 // Translated from 00888b50 (decompiled, FalloutNV.exe 1.4.0.525): in life
 // state 6 the process's essential-down timer counts down
 // (`ModEssentialDownTimer`, +0xe0) while the actor lies knocked down; at 0
@@ -1248,8 +1258,20 @@ pub fn advance_down(_order: &LoadOrder, state: &mut GameState, seconds: f32) {
     if state.more.down.is_empty() {
         return;
     }
+    // A teammate's time runs only while the player isn't fighting
+    // (`crate::companions::down_time_runs`, the same function's test).
+    let held: Vec<FormId> = state
+        .more
+        .down
+        .keys()
+        .filter(|w| !crate::companions::down_time_runs(state, **w))
+        .copied()
+        .collect();
     let mut up = Vec::new();
     for (who, left) in state.more.down.iter_mut() {
+        if held.contains(who) {
+            continue;
+        }
         *left -= seconds;
         if *left <= 0.0 {
             up.push(*who);
@@ -1343,12 +1365,31 @@ pub fn fall_damage(order: &LoadOrder, fall: f32) -> f64 {
 /// `fFallLegDamageMult`; the exe's defaults), and for the player a hard or
 /// light landing sound (`FSTLandHardHeavy` above
 /// `fHardLandingDamageThreshold` 500 from the INI, else
-/// `FSTLandHardLight`). Creatures that fly (`ACBS` flag 0x20) take none.
-/// The damage taken.
+/// `FSTLandHardLight`). Creatures that fly (`ACBS` flag 0x20) take none,
+/// nor does the player's teammate, nor a person other than the player in
+/// a worldspace flagged "no NPC fall damage" (`WRLD` `DATA` 0x40, the
+/// worldspace's +0x4c, `00586320`). The damage taken.
+///
+/// Translated from 008a62b0 (decompiled, FalloutNV.exe 1.4.0.525).
 pub fn land(order: &LoadOrder, state: &mut GameState, who: FormId, fall: f32) -> f64 {
     let damage = fall_damage(order, fall);
     if damage <= 0.0 || flies(order, who) {
         return 0.0;
+    }
+    if who != PLAYER_REF {
+        let person = base_of(order, who)
+            .and_then(|b| order.get(b))
+            .is_some_and(|r| r.entry.header.kind.as_bytes() == b"NPC_");
+        let world = state.place(order, who).map(|(space, ..)| space);
+        let spared_here = world
+            .and_then(|w| order.get(w))
+            .filter(|r| r.entry.header.kind.as_bytes() == b"WRLD")
+            .and_then(|r| r.record().ok())
+            .and_then(|r| r.get(esm::sig::DATA).and_then(|d| d.data.first().copied()))
+            .is_some_and(|f| f & 0x40 != 0);
+        if (person && spared_here) || state.teammates.contains(&who) {
+            return 0.0;
+        }
     }
     hurt(order, state, who, damage, who);
     // Fall damage goes to the damage virtual (`0089d6f0`) directly, not

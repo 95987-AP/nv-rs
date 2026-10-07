@@ -222,6 +222,20 @@ pub fn world_map(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> Opti
 
 /// Everything the Pip-Boy shows, from the game's state.
 pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyInput {
+    gather_with(order, state, at, None)
+}
+
+/// [`gather`] with the player's third-person animations, which a weapon's
+/// damage a second on the ITEMS card reads its rate of fire from
+/// (`world::dps::shots_per_second`); without them the card's figure uses
+/// the weapon's fire rate.
+pub fn gather_with(
+    order: &LoadOrder,
+    state: &GameState,
+    at: &Whereabouts,
+    mut anims: Option<&mut dyn world::animation::pick::Library>,
+) -> PipboyInput {
+    let setting = |n: &str, d: f32| world::scripting::game_setting(order, n).unwrap_or(d);
     let facts = Facts {
         order,
         state,
@@ -412,10 +426,14 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
                 line.damage = Some(damage);
                 let ammo = w.ammo_in_use(order, state, PLAYER_REF);
                 line.projectiles = w.shot(order, ammo).0.max(1);
-                // The DPS card's value (`00645380`: the damage with the
-                // skill, condition and critical terms, over the time a clip
-                // takes with its reload) isn't worked out yet: left empty.
-                line.dps = None;
+                // The DPS card's value (`00707e30` → `00645380`, the
+                // player's perks, mods and loaded ammunition:
+                // `world::item_card::card_dps`).
+                let lib: Option<&mut dyn world::animation::pick::Library> = match anims {
+                    Some(ref mut a) => Some(&mut **a),
+                    None => None,
+                };
+                line.dps = Some(world::item_card::card_dps(order, state, &w, lib, &setting));
                 line.condition = Some(world::combat::weapon_condition(state, PLAYER_REF, item));
                 line.repairable = world::repair::can_repair(order, state, item);
                 if let Some(a) = ammo.or_else(|| w.ammo.first().copied()) {
@@ -479,10 +497,11 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
             line.condition = Some(world::combat::weapon_condition(state, PLAYER_REF, item));
             line.repairable = world::repair::can_repair(order, state, item);
         }
-        // Aid's and ammunition's effects text (`00406620`, `00503a70`: the
-        // effects with their magnitudes and durations, joined) isn't
-        // written yet, so their effects card stays hidden, as the game's
-        // does for an item without one.
+        // The effects card's text (`00707e30`: aid's effects, `00406620`;
+        // an enchantment's on weapons and apparel; ammunition's,
+        // `00503a70`; a weapon mod's description; none for a modded
+        // weapon): `world::item_card::card_effects`.
+        line.effects = world::item_card::card_effects(order, state, item);
         items.push(line);
     }
 
@@ -858,5 +877,32 @@ mod tests {
         // Another worldspace's marker isn't shown.
         world::map::set_custom_marker(&mut state, FormId(0x811), [0.0; 3]);
         assert_eq!(world_map(&order, &state, &at).unwrap().custom, None);
+    }
+
+    /// The ITEMS card's damage a second and effects (`00707e30`; the
+    /// figures are `world::item_card`'s): the player's 9mm pistol at Guns
+    /// 50 rates 20 a second without animations (12 a shot and 0.8 of
+    /// criticals at the fire rate's 1.5625), a Stimpak shows "HP +39" at
+    /// Medicine 15, the pistol (no enchantment) no effects.
+    #[test]
+    fn the_item_cards_dps_and_effects() {
+        use testdata::companion_gear::ids::*;
+        let data = testdata::companion_gear::companion_gear("pipboy-card-dps");
+        let order =
+            LoadOrder::from_data_dir(data.path(), &esm::ActivePlugins::OfficialOnly).unwrap();
+        let mut state = GameState::new(&order);
+        for (av, v) in [(41, 50.0), (14, 5.0), (37, 15.0)] {
+            state.actor_values.insert((PLAYER_REF, av), v);
+        }
+        for (item, n) in [(PISTOL, 1), (AMMO_9MM, 20), (STIMPAK, 2)] {
+            state.items.insert((PLAYER_REF, FormId(item)), n);
+        }
+        let input = gather(&order, &state, &Whereabouts::default());
+        let line = |form: u32| input.items.iter().find(|l| l.form == form).unwrap();
+        let dps = line(PISTOL).dps.unwrap();
+        assert!((dps - 20.0).abs() < 1e-3, "{dps}");
+        assert_eq!(line(PISTOL).effects, None);
+        assert_eq!(line(STIMPAK).effects.as_deref(), Some("HP +39"));
+        assert_eq!(line(STIMPAK).dps, None);
     }
 }

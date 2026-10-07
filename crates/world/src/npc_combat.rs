@@ -39,7 +39,7 @@ use crate::combat::{self, Weapon};
 use crate::combat_ai::{CombatStyle, Setting};
 use crate::dialogue::PLAYER_REF;
 use crate::explosions::{ExplosionRecord, ProjectileRecord};
-use crate::scripting::{Facts, GameState, Runner};
+use crate::scripting::{GameState, Runner};
 
 /// The combat weapon kinds (`COMBAT_WEAPON_TYPE` (Xbox PDB)), the index of
 /// each kind's slot in the arsenal (`009993c0`: `+0x3c + kind × 4`).
@@ -74,7 +74,7 @@ pub fn is_gun(w: &Weapon) -> bool {
 /// The explosion a weapon's projectile makes, if any (the projectile
 /// `00525a90` gives: the weapon's own, `DNAM` 36; an ammunition's own
 /// projectile isn't looked at here).
-fn explosion_of(order: &LoadOrder, w: &Weapon) -> Option<ExplosionRecord> {
+pub(crate) fn explosion_of(order: &LoadOrder, w: &Weapon) -> Option<ExplosionRecord> {
     let p = ProjectileRecord::load(order, w.projectile?)?;
     ExplosionRecord::load(order, p.explosion?)
 }
@@ -201,6 +201,13 @@ pub struct DpsWeapon {
 /// their own damage). 0 for a broken weapon (condition 0).
 // Translated from 00645380 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn dps(i: &DpsInputs, s: Setting) -> f32 {
+    dps_with(i, &|d| d, s)
+}
+
+/// [`dps`] with the holder's perks on a weapon's damage once the skill
+/// has scaled it (`00645380`'s fourth argument: "Calculate Weapon Damage",
+/// entry point 0, `005e58f0`; see [`crate::dps`]).
+pub fn dps_with(i: &DpsInputs, perks: &dyn Fn(f32) -> f32, s: Setting) -> f32 {
     if i.condition <= 0.0 {
         return 0.0;
     }
@@ -221,6 +228,7 @@ pub fn dps(i: &DpsInputs, s: Setting) -> f32 {
                 _ => shots = w.clip as i32,
             }
             damage *= s("fDamageSkillBase", 0.5) + s("fDamageSkillMult", 0.5) * w.skill / 100.0;
+            damage = perks(damage);
             time = w.shots_per_second;
             if !matches!(w.animation, 10 | 11 | 13) {
                 time += shots as f32 * jam_chance(jam_at, s) * w.jam_time;
@@ -290,7 +298,7 @@ fn jam_chance(index: i32, s: Setting) -> f32 {
 /// An ammunition's damage effects (`0059a030`, kind 0): the multiplying
 /// ones first, then the adding and subtracting ones in turn.
 // Translated from 0059a030 (decompiled, FalloutNV.exe 1.4.0.525)
-fn ammo_damage(order: &LoadOrder, ammo: FormId, damage: f32) -> f32 {
+pub(crate) fn ammo_damage(order: &LoadOrder, ammo: FormId, damage: f32) -> f32 {
     let effects = combat::ammo_effects(order, ammo);
     let mut d = damage;
     for &(k, op, x) in &effects {
@@ -308,11 +316,9 @@ fn ammo_damage(order: &LoadOrder, ammo: FormId, damage: f32) -> f32 {
     d
 }
 
-/// [`dps`] for `who` with `weapon` (`None`: fists) at `condition`, looked
-/// up from the records and their actor values. Critical Chance (14) is
-/// worked out as `combat::critical` does (`fAVDCritLuckBase` +
-/// `fAVDCritLuckMult` × Luck) and Unarmed Damage (56) as
-/// `combat::weapon_damage` does, where scripts haven't set them.
+/// [`dps`] for `who` with `weapon` (`None`: fists) at `condition`, as the
+/// combat controller asks (`00646060` from `009993c0`: no perks, no
+/// inventory entry, the weapon's own ammunition): [`crate::dps::weapon_dps`].
 pub fn damage_per_second(
     order: &LoadOrder,
     state: &GameState,
@@ -321,68 +327,17 @@ pub fn damage_per_second(
     condition: f32,
     s: Setting,
 ) -> f32 {
-    let facts = Facts {
+    crate::dps::weapon_dps(
         order,
         state,
-        speaker: None,
-    };
-    let av = |a: u16| facts.current_actor_value(who, a).unwrap_or(0.0) as f32;
-    let set = |a: u16| state.actor_values.get(&(who, a)).map(|v| *v as f32);
-    let crit_chance =
-        set(14).unwrap_or_else(|| s("fAVDCritLuckBase", 0.0) + s("fAVDCritLuckMult", 1.0) * av(11));
-    let unarmed_skill = av(combat::av::UNARMED);
-    let unarmed_damage = set(56).unwrap_or_else(|| {
-        s("fAVDUnarmedDamageBase", 0.5) + s("fAVDUnarmedDamageMult", 0.05) * unarmed_skill
-    });
-    let creature = combat::is_creature(order, who);
-    let weapon = weapon.map(|w| {
-        let explosion = explosion_of(order, w);
-        let weapon_mult = s("fDamageWeaponMult", 1.0);
-        let mut damage = w.damage * weapon_mult;
-        let ammo = w.ammo.first().copied();
-        if let Some(a) = ammo {
-            damage = ammo_damage(order, a, damage);
-        }
-        if let Some(e) = &explosion {
-            // Each projectile's explosion (`00525b20`: the weapon's count,
-            // or the ammunition's).
-            damage += w.shot(order, ammo).0 as f32 * e.damage;
-        }
-        DpsWeapon {
-            animation: w.animation,
-            damage,
-            explosive_damage: explosion.as_ref().map(|e| e.damage * weapon_mult),
-            skill: av(w.skill),
-            clip: w.clip,
-            shots_per_second: w.shots_per_second,
-            reload_time: w.reload_time,
-            jam_time: dnam_f32(order, w.form_id, 96).unwrap_or(0.0),
-            flags1: w.flags1,
-            flags2: w.flags2,
-            semi_auto_delay: w.semi_auto_delay,
-            crit_chance: crit_chance * w.crit_mult,
-            crit_damage: w.crit_damage,
-        }
-    });
-    dps(
-        &DpsInputs {
-            weapon,
-            condition,
-            player: who == PLAYER_REF,
-            creature_damage: if creature {
-                combat::creature_damage(order, who)
-            } else {
-                None
-            },
-            unarmed_damage,
-            unarmed_skill,
-        },
+        &crate::dps::DpsCall::controller(who, weapon, condition),
+        None,
         s,
     )
 }
 
 /// A float in a weapon's `DNAM`.
-fn dnam_f32(order: &LoadOrder, weapon: FormId, at: usize) -> Option<f32> {
+pub(crate) fn dnam_f32(order: &LoadOrder, weapon: FormId, at: usize) -> Option<f32> {
     let record = order.get(weapon)?.record().ok()?;
     let d = record.get(esm::FourCC::new(b"DNAM"))?;
     (d.data.len() >= at + 4).then(|| crate::cell::le_f32(&d.data, at))
@@ -404,22 +359,19 @@ pub fn combat_dps(
     style: &CombatStyle,
     s: Setting,
 ) -> f32 {
-    if weapon.is_some_and(|w| w.flags2 & 0x40 != 0) {
-        return 0.0;
-    }
-    let mut d = damage_per_second(order, state, who, weapon, condition, s);
-    let k = weapon.map_or(kind::HAND_TO_HAND, |w| combat_weapon_type(order, w, s));
-    if k == kind::GRENADE {
-        d /= 10.0;
-    } else if k == kind::MINE {
-        d = 0.0;
-    }
-    restricted(d, weapon.map(is_gun), style.weapon_restrictions)
+    crate::dps::combat_weapon_dps(
+        order,
+        state,
+        &crate::dps::DpsCall::controller(who, weapon, condition),
+        style,
+        None,
+        s,
+    )
 }
 
 /// The style's weapon restriction on a rating (`00646060`): `gun` `None`
 /// for fists.
-fn restricted(d: f32, gun: Option<bool>, restriction: u32) -> f32 {
+pub(crate) fn restricted(d: f32, gun: Option<bool>, restriction: u32) -> f32 {
     match restriction {
         1 if gun == Some(true) => d / 10000.0,
         2 if gun != Some(true) => d / 10000.0,

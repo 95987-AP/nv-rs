@@ -24,6 +24,10 @@ use world::animation::pick::Library;
 pub struct AnimLibrary {
     sets: HashMap<String, Arc<AnimSet>>,
     sequences: HashMap<String, Option<Arc<nif::Sequence>>>,
+    /// The player's third-person set, once their body has animated
+    /// (`PlayerCharacter::GetAnimation(0)`: the damage-a-second figures
+    /// read the player's attack animations, `world::dps`).
+    pub player: Option<Arc<AnimSet>>,
 }
 
 /// The folders (paths under `meshes\`, lower case) an actor's animations
@@ -101,12 +105,41 @@ impl AnimLibrary {
         set
     }
 
+    /// The player's animations as `world::dps` asks for them (the first
+    /// file of a group with several), when their body has animated.
+    pub fn player_library<'a>(&'a mut self, game: &'a cellview::Game) -> Option<PlayerLibrary<'a>> {
+        let set = self.player.clone()?;
+        Some(PlayerLibrary {
+            set,
+            library: self,
+            game,
+        })
+    }
+
     /// A file's sequence (a path under `meshes\`), read once.
     pub fn sequence_at(&mut self, game: &cellview::Game, path: &str) -> Option<Arc<nif::Sequence>> {
         self.sequences
             .entry(assets::mesh_path(path))
             .or_insert_with(|| crate::viewmodel::sequence(game, path).map(Arc::new))
             .clone()
+    }
+}
+
+/// The player's set for `world::dps` (their attack animations' `a:` keys).
+pub struct PlayerLibrary<'a> {
+    set: Arc<AnimSet>,
+    library: &'a mut AnimLibrary,
+    game: &'a cellview::Game,
+}
+
+impl Library for PlayerLibrary<'_> {
+    fn set(&self) -> &AnimSet {
+        &self.set
+    }
+
+    fn sequence(&mut self, id: u16) -> Option<Arc<nif::Sequence>> {
+        let path = self.set.file(id, 0)?.to_string();
+        self.library.sequence_at(self.game, &path)
     }
 }
 

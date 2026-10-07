@@ -484,6 +484,88 @@ impl GroupData {
     }
 }
 
+/// The names of each group kind's action keys (the table at `01199a50`,
+/// action × 11 + kind): a kind's actions are matched in this order, an
+/// empty name ending them.
+pub const ACTION_KEYS: [[&str; 5]; 11] = [
+    ["Start", "End", "", "", ""],
+    ["Start", "End", "", "", ""],
+    ["Start", "StartLoop", "EndLoop", "End", ""],
+    ["Start", "Attach", "End", "", ""],
+    ["Start", "Detach", "End", "", ""],
+    ["Start", "Hit", "Eject", "a:", "End"],
+    ["Start", "Hit", "End", "", ""],
+    ["Start", "Hold", "Release", "Attach", "End"],
+    ["Start", "Release", "Attach", "End", ""],
+    ["Start", "Fire", "Loop", "End", ""],
+    ["Start", "Hit", "End", "", ""],
+];
+
+/// The times a sequence's text keys give its group's actions
+/// (`TESAnimGroup::GetTime` (Xbox PDB), the group's array at +0x18, as the
+/// text key parser `005f3a20` fills it): the keys are read in order, line
+/// by line; lines starting `m:`, `BlendIn:`, `BlendOut:`, `Blend:`,
+/// `Decal:`, `Sound:` or `Enum:` (and a key starting `prn:`) are other
+/// things; any other line is the group's next action if it starts with
+/// that action's name ([`ACTION_KEYS`], case aside: an attack's are
+/// `Start`, `Hit`, `Eject`, `a:`, `End`), when it sets that action's time;
+/// lines that don't are passed over. An attack's third key may skip
+/// `Eject` for `a:` (`01199ad4`). Actions without a key keep 0 (the array
+/// starts zeroed, `005f2450`). The special idle's `StartLoop` rule for
+/// group 2 isn't here.
+///
+/// Translated from 005f3a20 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn action_times(group: u8, keys: &[(f32, String)]) -> [f32; 5] {
+    let kind = GROUPS
+        .get(usize::from(group))
+        .map_or(0, |g| usize::from(g.2));
+    let names = ACTION_KEYS[kind.min(10)];
+    let starts = |line: &str, prefix: &str| {
+        line.len() >= prefix.len()
+            && line.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+    };
+    let mut times = [0.0f32; 5];
+    let mut stage = 0usize;
+    for (time, text) in keys {
+        if starts(text, "prn:") {
+            continue;
+        }
+        for line in text.split(['\r', '\n']).filter(|l| !l.is_empty()) {
+            if [
+                "m:",
+                "BlendIn:",
+                "BlendOut:",
+                "Blend:",
+                "Decal:",
+                "Sound:",
+                "Enum:",
+            ]
+            .iter()
+            .any(|p| starts(line, p))
+            {
+                continue;
+            }
+            // The kind's stages run 0, 1, 2 … to its first empty name
+            // (the table at `011977e8` holds -1 there).
+            if stage >= 5 || (stage > 0 && names[stage].is_empty()) {
+                continue;
+            }
+            let mut action = stage;
+            if kind == 5 && stage == 2 && starts(line, names[3]) {
+                action = 3;
+                stage = 3;
+            }
+            if starts(line, names[action]) {
+                if *time > -1.0 {
+                    times[action] = *time;
+                }
+                stage += 1;
+            }
+        }
+    }
+    times
+}
+
 /// The blend time from one group to the next (`004949a0`): the frames
 /// the old group blends out by or the new one in by, whichever is more,
 /// at 30 a second; none → `fAnimationDefaultBlend`; ÷ `fAnimationMult`.

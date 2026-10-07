@@ -754,7 +754,8 @@ destinations, and Act 2 itself.
   sandbox, wander, guard, patrol or find one) keeps within 200 units of the
   player (a guess, `world::ai::TEAMMATE_DISTANCE`); Dead Money's own
   follow packages still win. Teammates come along when the player moves to
-  another place (`bring_teammates`).
+  another place (now the traced `world::companions::come_along`, which
+  replaced the guessed `bring_teammates`).
 - **The intermittent native crash.** It was the graphics running out: every
   square of a town made its own copy of each texture and one material for
   each model, so a 3 by 3 or 5 by 5 spread of the Villa's dense squares held

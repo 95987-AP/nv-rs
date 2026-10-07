@@ -892,6 +892,7 @@ pub(crate) fn run_open_menus(
     mut hud_messages: ResMut<crate::hud::HudMessages>,
     mut wheel_voices: ResMut<companion_wheel::WheelVoices>,
     mut casino_lock: ResMut<casino::CasinoLock>,
+    mut library: Option<ResMut<crate::anim_library::AnimLibrary>>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         input.typed.clear();
@@ -941,10 +942,11 @@ pub(crate) fn run_open_menus(
             .any(|m| matches!(m, OpenMenu::Hacking(_) | OpenMenu::Computers(_)));
     let mut power_off_menu = None;
     dialog::update(screen, &game.0.order, dt);
-    container::update(screen);
+    container::update(screen, now * 1000.0);
     textedit::update(screen, now * 1000.0);
     vigor::update(screen, dt);
     companion_wheel::update(screen, &mut wheel_voices, now * 1000.0);
+    companion_wheel::stick(screen, input.pads.iter().next().map(|p| p.left_stick()));
     // The Rest control (T) this frame, for the sleep/wait menu.
     let mut rest_pressed = false;
     {
@@ -1250,9 +1252,15 @@ pub(crate) fn run_open_menus(
     // What the menus did.
     let order = &game.0.order;
     message::after(&mut screen.open, &mut state.0, &mut sounds, order);
-    sounds
-        .0
-        .extend(container::after(screen, &game.0, &scripts.0, &mut state.0));
+    sounds.0.extend(container::after(
+        screen,
+        &game.0,
+        &scripts.0,
+        &mut state.0,
+        &mut wheel_voices,
+        library.as_deref_mut(),
+        now * 1000.0,
+    ));
     sounds
         .0
         .extend(barter::after(screen, &game.0, &mut state.0));

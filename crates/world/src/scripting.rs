@@ -261,6 +261,11 @@ pub struct GameState {
     /// Which way the player faces (radians clockwise from north), kept by
     /// whatever moves them; what [`Self::place`] gives for them.
     pub player_heading: f32,
+    /// The player was put somewhere (`MoveTo`, fast travel:
+    /// [`crate::script_functions::player_moved`]) and those coming along
+    /// haven't been brought yet (`world::companions::come_along`; the
+    /// viewer takes it). Not saved.
+    pub player_placed: bool,
     /// The player's level (1 in a new game) and perks, with their ranks
     /// past the first (`world::perks`).
     pub player_level: u16,
@@ -469,6 +474,11 @@ pub struct GameState {
     /// (`UnequipItem`: `None`), or for something put on over the same body
     /// slots (`Some(that)`, `0088db20`).
     pub taken_off: HashMap<FormId, Vec<(FormId, Option<FormId>)>>,
+    /// Things equipped with `EquipItem`'s no-unequip flag, (person, item):
+    /// the worn entry's extra data 0x3e (`005d0060` → `0041ab70`), which
+    /// keeps them in their slot when a person picks their armour again
+    /// (`004c8220`).
+    pub equip_locked: HashSet<(FormId, FormId)>,
     /// Who's fighting whom: attacker → target (`StartCombat`, being hit,
     /// an aggressive creature seeing the player).
     pub combat: HashMap<FormId, FormId>,
@@ -1215,6 +1225,11 @@ pub enum Event {
     /// `OpenTeammateContainer`: trading things with a companion (the
     /// container menu's mode 3).
     TeammateContainer(FormId),
+    /// The companion wheel's Back Up (`00756930` → `008a7760`,
+    /// `Actor::InitiateBackUpPackage` (Xbox PDB)): the companion is given
+    /// their default package 0x27 (a `BackUpPackage`, away from the
+    /// player). Packages are the AI's to carry out.
+    BackUp(FormId),
     /// `ShowCaravanMenu`: a game of Caravan against this person with their
     /// deck, the AI's difficulty and the share of their funds they bet
     /// (`world::caravan`).
@@ -2296,6 +2311,9 @@ impl Facts<'_> {
     /// recent shot, no body armour weight (all guesses until the viewer
     /// supplies them).
     pub fn detection(&self, who: FormId, other: FormId) -> Option<i32> {
+        if crate::companions::hidden_with_player(self.state, other) {
+            return Some(crate::companions::HIDDEN_WITH_PLAYER);
+        }
         let inputs = self.detection_inputs(who, other, true, None)?;
         Some(crate::detection::value(self.order, &inputs))
     }
@@ -2365,7 +2383,13 @@ impl Facts<'_> {
             perception: av(who, 6),
             in_combat: fighting.is_some(),
             fighting_other: fighting.is_some_and(|t| t != other),
-            sneak: av(other, 42),
+            // A teammate sneaks as well as the player does, if better
+            // (`008a0d10`).
+            sneak: if s.teammates.contains(&other) {
+                av(other, 42).max(av(PLAYER_REF, 42))
+            } else {
+                av(other, 42)
+            },
             target_level: f32::from(self.level(other).unwrap_or(1)),
             detector_level: f32::from(self.level(who).unwrap_or(1)),
         })
@@ -3294,6 +3318,12 @@ impl<'a> Runner<'a> {
         };
         // V.A.T.S.'s melee moves and automatic melee weapons (`world::vats`).
         damage *= crate::vats::attack_damage_mult(order, self.state, attacker, weapon);
+        // A teammate's Nerve once more for a melee, unarmed or creature
+        // attack (`009b5170`; on top of `00644ce0`'s for weapons and
+        // fists); a shot's damage (`009b5650`) has it once.
+        if weapon.map_or(true, |w| w.is_melee()) {
+            damage *= crate::companions::nerve(order, self.state, attacker);
+        }
         let sneak = attacker == PLAYER_REF
             && self.state.player_sneaking
             && self
@@ -3917,10 +3947,23 @@ impl<'a> Runner<'a> {
             // One weapon in hand; clothes take off what's on the same slots.
             "EquipItem" => {
                 let who = target?;
-                self.state.equip(self.order, who, arg(0).form());
+                let item = arg(0).form();
+                self.state.equip(self.order, who, item);
+                // The no-unequip flag (`005d0060`: set or cleared on the
+                // worn entry, `0041ab70`).
+                if self.state.is_equipped(who, item) {
+                    if args.get(1).is_some_and(|a| a.number() != 0.0) {
+                        self.state.equip_locked.insert((who, item));
+                    } else {
+                        self.state.equip_locked.remove(&(who, item));
+                    }
+                }
             }
             "UnequipItem" => {
-                self.state.unequip_item(self.order, target?, arg(0).form());
+                let who = target?;
+                let item = arg(0).form();
+                self.state.unequip_item(self.order, who, item);
+                self.state.equip_locked.remove(&(who, item));
             }
             "KillActor" => {
                 let who = target?;

@@ -11,8 +11,9 @@
 //! them something they've no room for (`0075dc80`,
 //! `world::items::has_room`) is refused with "<name>
 //! `sTeammateOverencumbered`" and their `FollowersOverburdened` line;
-//! `0075b750` closes it with `DRSTraderClose`. (Not here: the companion
-//! choosing what to wear afterwards, `00606540`.)
+//! `0075b750` closes it with `DRSTraderClose`, the companion then
+//! choosing the armour they wear and the weapon they hold (`00606540`,
+//! `005f9e00`, `world::companions::sort_out_gear`).
 
 use cellview::Game;
 use esm::FormId;
@@ -21,6 +22,7 @@ use ui::menus::quantity::{self, QuantityMenu};
 use world::dialogue::PLAYER_REF;
 use world::scripting::{Facts, GameState, Runner};
 
+use super::companion_wheel::WheelVoices;
 use super::{OpenMenu, Screen};
 use crate::menus::Menu;
 
@@ -31,6 +33,9 @@ const CARRY_WEIGHT: u16 = 13;
 pub struct ContainerScreen {
     pub menu: ContainerMenu,
     pub reference: FormId,
+    /// A companion's bark to say once the menu runs (`0075bc80`'s
+    /// `FollowersTrade`).
+    pub bark: Option<&'static str>,
 }
 
 /// Whether this module shows a request.
@@ -38,15 +43,28 @@ pub fn takes(menu: &Menu) -> bool {
     matches!(menu, Menu::Container(..) | Menu::Teammate(..))
 }
 
-/// A companion says a line of a topic (`0075ec60`), by its editor ID.
-fn say_topic(order: &esm::LoadOrder, state: &mut GameState, who: FormId, topic: &str) {
-    if let Some(topic) = order.form_by_editor_id(topic) {
-        state.events.push(world::scripting::Event::Talk {
-            speaker: who,
-            to: PLAYER_REF,
-            topic: Some(topic),
-            conversation: false,
-        });
+/// A companion's bark on the menu (`0075ec60`): their line for the topic
+/// (picked as the wheel picks it, `world::companions::say_topic`, no
+/// scripts run) voiced and on `CM_Subtitle` (`0075eea0`).
+#[allow(clippy::too_many_arguments)]
+fn bark(
+    c: &mut ContainerScreen,
+    ui: &mut ui::Ui,
+    game: &Game,
+    scripts: &world::scripting::ScriptCache,
+    state: &mut GameState,
+    voices: &mut WheelVoices,
+    topic: &str,
+    now_ms: f64,
+) {
+    let order = &game.order;
+    let who = c.reference;
+    let Some(info) = world::companions::say_topic(order, scripts, state, who, topic, false) else {
+        println!("Container menu: {who} has no line for {topic}.");
+        return;
+    };
+    if let Some((text, until)) = super::companion_wheel::line(order, voices, who, &info, now_ms) {
+        c.menu.say(ui, &text, until);
     }
 }
 
@@ -137,9 +155,10 @@ pub fn open(screen: &mut Screen, game: &Game, state: &mut GameState, request: Me
     }
     println!("Container menu: {}.", menu.name);
     let mut sounds = Vec::new();
+    let mut bark = None;
     if mode == 3 {
         sounds.extend(order.form_by_editor_id("DRSTraderOpen"));
-        say_topic(order, state, reference, "FollowersTrade");
+        bark = Some("FollowersTrade");
     } else if let Some(s) =
         base(order, reference).and_then(|b| world::sound::container_sound(order, b, true))
     {
@@ -150,6 +169,7 @@ pub fn open(screen: &mut Screen, game: &Game, state: &mut GameState, request: Me
         .push(OpenMenu::Container(Box::new(ContainerScreen {
             menu,
             reference,
+            bark,
         })));
     sounds
 }
@@ -162,6 +182,9 @@ pub fn after(
     game: &Game,
     scripts: &world::scripting::ScriptCache,
     state: &mut GameState,
+    voices: &mut WheelVoices,
+    mut library: Option<&mut crate::anim_library::AnimLibrary>,
+    now_ms: f64,
 ) -> Vec<FormId> {
     let order = &game.order;
     let mut sounds = Vec::new();
@@ -200,6 +223,18 @@ pub fn after(
                 sounds.push(id);
             }
         }
+        if let Some(topic) = c.bark.take() {
+            bark(
+                c,
+                &mut screen.ui,
+                game,
+                scripts,
+                state,
+                voices,
+                topic,
+                now_ms,
+            );
+        }
         let reference = c.reference;
         let mode = c.menu.mode;
         let requests: Vec<Request> = std::mem::take(&mut c.menu.requests);
@@ -226,7 +261,16 @@ pub fn after(
                             buttons: Vec::new(),
                             icon: Some(world::message_icon::SAD.to_string()),
                         });
-                        say_topic(order, state, reference, "FollowersOverburdened");
+                        bark(
+                            c,
+                            &mut screen.ui,
+                            game,
+                            scripts,
+                            state,
+                            voices,
+                            "FollowersOverburdened",
+                            now_ms,
+                        );
                         continue;
                     }
                     let (giver, taker) = match from {
@@ -268,6 +312,28 @@ pub fn after(
                 }
                 Request::AskQuantity { most, .. } => ask = Some(most),
                 Request::Close if mode == 3 => {
+                    // `0075b750`: the companion sorts out what they wear
+                    // and hold (`world::companions::sort_out_gear`: a
+                    // person their armour and, unless their package keeps
+                    // weapons away, the weapon `GetBestWeapon` rates best
+                    // — with the player's animations, as the game's
+                    // rating reads them; a creature its weapon).
+                    let s = |n: &str, d: f32| world::scripting::game_setting(order, n).unwrap_or(d);
+                    let mut lib = library.as_deref_mut().and_then(|l| l.player_library(game));
+                    let anims = lib
+                        .as_mut()
+                        .map(|l| l as &mut dyn world::animation::pick::Library);
+                    let before = world::dps::equipped_weapon(order, state, reference);
+                    for item in world::companions::sort_out_gear(order, state, reference, anims, &s)
+                    {
+                        println!("{reference} puts on {item}.");
+                    }
+                    let after = world::dps::equipped_weapon(order, state, reference);
+                    println!(
+                        "{reference} holds {} (before {}).",
+                        after.map_or("nothing".into(), |w| w.to_string()),
+                        before.map_or("nothing".into(), |w| w.to_string()),
+                    );
                     sounds.extend(order.form_by_editor_id("DRSTraderClose"));
                 }
                 Request::Close => {
@@ -305,11 +371,14 @@ pub fn open_quantity(screen: &mut Screen, game: &Game, most: i32) {
     }
 }
 
-/// Every frame: the quantity menu's ticks.
-pub fn update(screen: &mut Screen) {
+/// Every frame: the quantity menu's ticks, the subtitle's time
+/// (`0075eac0`).
+pub fn update(screen: &mut Screen, now_ms: f64) {
     for m in screen.open.iter_mut() {
-        if let OpenMenu::Quantity(q) = m {
-            q.update(&mut screen.ui);
+        match m {
+            OpenMenu::Quantity(q) => q.update(&mut screen.ui),
+            OpenMenu::Container(c) => c.menu.update(&mut screen.ui, now_ms),
+            _ => {}
         }
     }
 }

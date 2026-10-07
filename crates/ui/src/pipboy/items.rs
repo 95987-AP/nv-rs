@@ -129,7 +129,9 @@ pub fn row_text(item: &ItemLine) -> String {
 /// 0x3c (weight, value, condition, and the ammunition card holding the
 /// weight class) with DR or DT (0x1 / 0x1000; "--" in DR with neither),
 /// everything else weight and value (0xc), with the effects (0x40) when
-/// it has any (aid, ammunition).
+/// it has any (aid, ammunition, a weapon mod, an enchanted weapon or
+/// piece of apparel; never a modded weapon: `world::item_card::
+/// card_effects` leaves those without).
 pub fn card_mask(item: &ItemLine) -> u32 {
     let mut m = match item.tab {
         ItemTab::Weapons if item.damage.is_some() => 0xc3e,
@@ -150,7 +152,7 @@ pub fn card_mask(item: &ItemLine) -> u32 {
         }
         _ => 0xc,
     };
-    if item.effects.as_deref().is_some_and(|e| !e.is_empty()) && item.tab != ItemTab::Weapons {
+    if item.effects.as_deref().is_some_and(|e| !e.is_empty()) {
         m |= 0x40;
     }
     m
@@ -423,8 +425,7 @@ impl ItemsMenu {
                 "DAMInfo" => item
                     .damage
                     .map_or("--".into(), |v| damage_text(v, item.projectiles)),
-                // `00645380`'s value, "%d" rounded; none worked out yet:
-                // left empty.
+                // `00645380`'s value, "%d" rounded half up (`004bd510`).
                 "DPSInfo" => item
                     .dps
                     .map_or(String::new(), |v| format!("{}", round_half_up(v))),
@@ -963,6 +964,10 @@ pub(crate) mod tests {
         stimpak.effects = Some("Restore Health".into());
         assert_eq!(card_mask(&stimpak), 0x4c);
         assert_eq!(card_mask(&item("Tin Can", ItemTab::Misc)), 0xc);
+        // An enchanted weapon shows its effects too (`00707e30`; a modded
+        // one has none to show).
+        gun.effects = Some("PER +1".into());
+        assert_eq!(card_mask(&gun), 0xc7e);
     }
 
     #[test]

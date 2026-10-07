@@ -379,6 +379,9 @@ pub fn ignores_friendly_hits(order: &LoadOrder, state: &GameState, who: FormId) 
 /// off is allowed again, unless the script asked to keep it off (bit 1)
 /// (or the player's flag 0x02 at +0x244 is set, not modelled).
 pub fn player_moved(state: &mut GameState) {
+    // Its last step brings followers and teammates along (`0093c200` →
+    // `00973de0`, `world::companions::come_along`).
+    state.player_placed = true;
     let ft = &mut state.set_by_scripts.fast_travel;
     if !ft.keep {
         ft.enabled = true;
