@@ -680,6 +680,82 @@ pub fn item_mod_input(
     }
 }
 
+/// The crafting menu's item card for a recipe's product (`00728da0`, for
+/// the base item: full condition, no mods): weapons their damage and
+/// projectiles a shot (`006450f0`, `00525b20(0, 0, 0)`), the strength they
+/// need (`DNAM` u32 at 168) and their ammunition's title ("short name
+/// (0/held)", or the name alone for a weapon that regenerates its
+/// ammunition, `00709430`: `DNAM` f32 at 176, the weapon's +0x1a4; "--"
+/// without ammunition); armour its resistance at full condition; every
+/// item its value through `00647c00` with 1 (percent) and its weight
+/// (`0048ebc0`, hardcore counting ammunition). The DPS (`00645380`) and
+/// the effects' text (`00406620`) aren't worked out yet (as on ITEMS'
+/// card): left empty, the effects card hidden.
+pub fn recipe_card(
+    order: &LoadOrder,
+    state: &GameState,
+    item: FormId,
+) -> crate::menus::recipe::Card {
+    use crate::menus::recipe::{Card, CardKind};
+    let kind_of = order.get(item).map(|r| r.entry.header.kind);
+    let value =
+        world::barter::value_at_condition(order, world::barter::value_now(order, state, item), 1.0);
+    let weight = world::items::weight(order, item, state.living.hardcore);
+    let dnam = order
+        .get(item)
+        .and_then(|r| r.record().ok())
+        .and_then(|r| r.get(DNAM).map(|s| s.data.clone()))
+        .unwrap_or_default();
+    let u32_at = |at: usize| {
+        (dnam.len() >= at + 4)
+            .then(|| u32::from_le_bytes([dnam[at], dnam[at + 1], dnam[at + 2], dnam[at + 3]]))
+    };
+    let kind = if kind_of == Some(WEAP) {
+        match world::combat::Weapon::load(order, item) {
+            Some(w) => {
+                let damage =
+                    world::combat::weapon_damage_at(order, state, PLAYER_REF, Some(&w), false, 1.0);
+                let regenerates = u32_at(176).is_some_and(|b| f32::from_bits(b) != 0.0);
+                let ammo = match w.ammo.first().copied() {
+                    Some(a) => {
+                        let name = record_text(order, a, FourCC::new(b"ONAM"))
+                            .or_else(|| record_name(order, a))
+                            .unwrap_or_default();
+                        if regenerates {
+                            name
+                        } else {
+                            let held = state.item_count(order, PLAYER_REF, a);
+                            format!("{name} (0/{held})")
+                        }
+                    }
+                    None => "--".into(),
+                };
+                CardKind::Weapon {
+                    dps: None,
+                    damage,
+                    projectiles: w.shot(order, None).0,
+                    strength: u32_at(168).map_or(0, |s| s as i32),
+                    ammo,
+                }
+            }
+            None => CardKind::Other,
+        }
+    } else if kind_of == Some(ARMO) {
+        let (dr, _) = world::repair::armour_stats(order, item).unwrap_or((0.0, 0.0));
+        CardKind::Armour {
+            resistance: world::repair::armour_at(dr.trunc(), 1.0).ceil() as i32,
+        }
+    } else {
+        CardKind::Other
+    };
+    Card {
+        kind,
+        value,
+        weight,
+        effects: String::new(),
+    }
+}
+
 /// What the repair screen shows for an item (`007b7020`, `007b6aa0`,
 /// `007b57f0`): its condition and figure, the player's Repair, and a line
 /// for it and for every one of each thing that can mend it
@@ -859,5 +935,42 @@ mod tests {
         // Another worldspace's marker isn't shown.
         world::map::set_custom_marker(&mut state, FormId(0x811), [0.0; 3]);
         assert_eq!(world_map(&order, &state, &at).unwrap().custom, None);
+    }
+
+    /// `00728da0`'s numbers for a recipe's product: `TestPistol` (value
+    /// 100, weight 1.5, no ammunition, no strength) a weapon card with its
+    /// value through `00647c00` at "1 percent" (100 x 0.25 + 0.1^1.5 x
+    /// 0.03162 x 0.75 x 100, rounded: 25) and "--" for ammunition;
+    /// `TestArmor` (DR 0) an armour card; `TestMedicine` the plain card.
+    #[test]
+    fn a_recipes_product_card() {
+        use crate::menus::recipe::CardKind;
+        let data = testdata::quests("ui-recipe-card");
+        let order =
+            LoadOrder::from_data_dir(data.path(), &esm::ActivePlugins::OfficialOnly).unwrap();
+        let state = GameState::new(&order);
+        let pistol = recipe_card(&order, &state, FormId(testdata::quest_ids::PISTOL));
+        assert_eq!(pistol.value, 25.0);
+        assert_eq!(pistol.weight, 1.5);
+        match pistol.kind {
+            CardKind::Weapon {
+                dps,
+                damage,
+                projectiles,
+                strength,
+                ammo,
+            } => {
+                assert_eq!(dps, None);
+                assert!(damage > 0.0);
+                assert_eq!(projectiles, 1);
+                assert_eq!(strength, 0);
+                assert_eq!(ammo, "--");
+            }
+            k => panic!("{k:?}"),
+        }
+        let armour = recipe_card(&order, &state, FormId(testdata::quest_ids::ARMOR));
+        assert_eq!(armour.kind, CardKind::Armour { resistance: 0 });
+        let medicine = recipe_card(&order, &state, FormId(testdata::quest_ids::MEDICINE));
+        assert_eq!(medicine.kind, CardKind::Other);
     }
 }
