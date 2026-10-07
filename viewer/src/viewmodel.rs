@@ -89,6 +89,8 @@ pub fn spawn_camera(commands: &mut Commands, parent: Entity, exposure: Exposure)
                 ..default()
             },
             Tonemapping::None,
+            // No light clusters: nothing here is lit by Bevy's lights.
+            bevy::pbr::ClusterConfig::None,
             Projection::from(PerspectiveProjection {
                 fov: cellview::vertical_fov(FIRST_PERSON_FOV_DEGREES),
                 near: FIRST_PERSON_NEAR * space::METERS_PER_UNIT,

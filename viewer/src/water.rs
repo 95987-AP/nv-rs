@@ -656,6 +656,8 @@ fn setup_water(
         }),
         // Stored values, as the scene's: no tone mapping or dithering.
         Tonemapping::None,
+        // No light clusters: nothing here is lit by Bevy's lights.
+        bevy::pbr::ClusterConfig::None,
         DebandDither::Disabled,
         msaa,
         Exposure::default(),

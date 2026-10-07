@@ -1438,6 +1438,10 @@ fn setup(mut commands: Commands) {
         // The game clips what's too bright rather than rolling it off, and
         // the lighting shader already gives the game's brightness.
         Tonemapping::None,
+        // No light clusters: every surface is lit by the game's lights in
+        // its own shader, never Bevy's (there are none), so working out
+        // which of them reach each cluster is wasted.
+        bevy::pbr::ClusterConfig::None,
         Projection::from(PerspectiveProjection {
             // The game's: its 75° setting is the width of a 4:3 picture,
             // and wider windows keep that height.
