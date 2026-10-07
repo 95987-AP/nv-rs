@@ -34,7 +34,21 @@ branch green.
     companion functions overlap the Dead Money merge: keep one traced
     implementation (Chazm owns these areas, so his where equally traced)
     without losing tests. Write docs/CONTRIB_CHAZM.md.
-  Resume each as a new agent in the same worktree: tell it to inspect
+  - Chazm's PR #12 (performance; fetch with `git fetch origin
+    pull/12/head:refs/remotes/pr/12`): 18 commits on top of integration
+    `22d3461`, 41 files (+1635/-253). Not started. It doesn't contain PR
+    #11; its first commit repeats PR #11's "no per-minute lighting hitch,
+    faster NPC pathing, mouse look", so merge PR #11 first and expect
+    that one to collide. Review each commit as behaviour-preserving
+    (performance must not change behaviour), especially "places share
+    the textures already on the GPU": the Dead Money contributor's
+    texture cache was dropped because keying by file path mixes up
+    tinted face and hair textures made from the same file; check this
+    one doesn't. Also check present mode "mailbox", bindless materials
+    and "no light clusters" don't change what's drawn (screenshots of
+    Doc's house and Goodsprings before and after). Measure frame times
+    before and after on the acceptance routes and record them in the
+    pull request's merge notes and docs/MILESTONES.md.  Resume each as a new agent in the same worktree: tell it to inspect
   `git status`/`git log`/`git diff`, keep the work already there, and
   finish the original task (each needs live verification, full checks
   and `scripts/acceptance.ps1`). Then merge into integration, run
