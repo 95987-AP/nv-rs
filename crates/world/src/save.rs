@@ -397,6 +397,15 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     for (r, n) in broken {
         line(format!("brokenlock {} {n}", id(*r)));
     }
+    let terminals: BTreeMap<_, _> = state.terminal_states.iter().collect();
+    for (r, t) in terminals {
+        line(format!(
+            "terminal {} {} {}",
+            id(*r),
+            u8::from(t.hacked),
+            t.lockouts
+        ));
+    }
     // An effect, then its script's variables.
     for e in &state.active_effects {
         line(
@@ -435,6 +444,9 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     crate::script_functions::save_lines(state, &mut line);
     crate::living::save_lines(state, &mut line);
     crate::more_functions::save_lines(state, &mut line);
+    crate::caravan::save_lines(state, &mut line);
+    crate::casino::save_lines(state, &mut line);
+    crate::weapon_mods::save_lines(state, &mut line);
     out
 }
 
@@ -761,6 +773,15 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
             "brokenlock" => {
                 state.broken_locks.insert(form(1)?, num(2)? as u32);
             }
+            "terminal" => {
+                state.terminal_states.insert(
+                    form(1)?,
+                    crate::terminal::TerminalState {
+                        hacked: num(2)? != 0.0,
+                        lockouts: num(3)? as u8,
+                    },
+                );
+            }
             "effect" => {
                 let flag = |i: usize| num(i).map(|v| v != 0.0);
                 state.active_effects.push(crate::magic::ActiveEffect {
@@ -808,6 +829,9 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
             _ => match crate::living::load_line(&mut state, raw)
                 .or_else(|| crate::script_functions::load_line(&mut state, raw))
                 .or_else(|| crate::more_functions::load_line(&mut state, raw))
+                .or_else(|| crate::caravan::load_line(&mut state, raw))
+                .or_else(|| crate::casino::load_line(&mut state, raw))
+                .or_else(|| crate::weapon_mods::load_line(&mut state, raw))
             {
                 Some(Ok(())) => {}
                 Some(Err(_)) | None => return Err(bad()),

@@ -800,6 +800,17 @@ impl Twister {
         v
     }
 
+    /// A word for a range of `n` (`00aa5230(n)`, through `005a00a0`): 0
+    /// without drawing for 0; the word masked by `n` for −1 (`u32::MAX`)
+    /// and 0x7FFF; otherwise the word modulo `n`.
+    pub fn below(&mut self, n: u32) -> u32 {
+        match n {
+            0 => 0,
+            u32::MAX | 0x7FFF => self.next_u32() & n,
+            n => self.next_u32() % n,
+        }
+    }
+
     /// 0..32767, as the game's `rand(0, 0x7FFF)` gives it (`00944460`).
     pub fn below_32768(&mut self) -> i32 {
         (self.next_u32() & 0x7FFF) as i32

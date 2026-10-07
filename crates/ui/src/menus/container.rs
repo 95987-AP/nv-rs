@@ -170,6 +170,9 @@ pub struct ContainerMenu {
     /// The filter-step sound's number (`+0x94`: 3, -1 while stepping on
     /// by itself).
     filter_sound: i32,
+    /// What it's for (`+0x80`): 1 a container or a body, 3 a companion's
+    /// things (`OpenTeammateContainer`); 2 and 4 aren't here.
+    pub mode: i32,
     /// What the menu asks of the game, and sounds to play (editor IDs).
     pub requests: Vec<Request>,
     pub sounds: Vec<String>,
@@ -246,6 +249,7 @@ impl ContainerMenu {
             ask_quantity_at: ASK_QUANTITY_AT,
             weights: (0.0, 0.0),
             filter_sound: 3,
+            mode: 1,
             requests: Vec::new(),
             sounds: Vec::new(),
             closed: false,
@@ -283,6 +287,12 @@ impl ContainerMenu {
         }
         if let Some(sub) = ui.find(self.menu, "CM_Subtitle") {
             ui.set_text(sub, t::STRING, "");
+        }
+        // A companion's things (`0075bc80` mode 3): no Take All.
+        if self.mode == 3 {
+            if let Some(take_all) = self.tile(10) {
+                ui.set_number(take_all, t::VISIBLE, 0.0);
+            }
         }
         self.fit_name(ui);
         // The item card's titles (`_Title` on ids 14..18).
@@ -1064,5 +1074,19 @@ mod tests {
         // The space bar closes it.
         assert!(m.key(&mut ui, 0x20, 0.0));
         assert!(m.closed);
+    }
+
+    /// `0075bc80` mode 3 (a companion's things): Take All is hidden.
+    #[test]
+    fn a_companions_things_have_no_take_all() {
+        let mut ui = test_support::ui();
+        let mut m = ContainerMenu::new(0);
+        m.menu = test_support::load(&mut ui, &test_support::container_menu(), &mut m);
+        m.name = "Cass".into();
+        m.mode = 3;
+        assert!(m.open(&mut ui, Vec::new(), Vec::new()));
+        assert_eq!(ui.number(m.tiles[10].unwrap(), t::VISIBLE), 0.0);
+        let (mut ui, m) = opened(Vec::new(), Vec::new(), "Box");
+        assert_ne!(ui.number(m.tiles[10].unwrap(), t::VISIBLE), 0.0);
     }
 }

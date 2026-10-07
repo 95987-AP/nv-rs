@@ -1,23 +1,39 @@
-//! The recipe menu (`menus\recipe_menu.xml`, class `RecipeMenu` 1077),
-//! opened by a script's `ShowRecipeMenu` (a workbench, a campfire, a
-//! reloading bench, the Sierra Madre vending machines).
+//! Crafting (`menus\recipe_menu.xml`, class `RecipeMenu` 1077, vtable
+//! `0107048c` in FalloutNV.exe): the recipes of a category on the left, the
+//! one under the pointer's ingredients, skill and category on the right,
+//! Accept to make it. Read from the code (`00726ff0` and the functions
+//! after it; names from the Xbox 360 prototype's symbols, Xbox PDB). The
+//! rules (what is listed, how many can be made, making) are
+//! `world::crafting`'s; this is the menu's side:
 //!
-//! What the file lays out, read from it: the recipes in a list box (id 3,
-//! rows of the file's `RM_list_template`, id 15) under a title (id 1, `sRecipes`)
-//! with filter arrows (ids 0 and 2); on the right "Made at ..." (id 4), the
-//! skill requirement (id 5) and the ingredients' list box (id 6); Accept
-//! (id 7, key A) and Exit (id 8, key X); the recipe's picture (id 9).
+//! * opening (`RecipeMenu::Create` (Xbox PDB), `00726ff0`): list boxes on
+//!   ids 3 and 6 (the code asks for `CM_list_template`, which the file lacks,
+//!   so the lookup ends on its `RM_list_template`); the title (1)
+//!   `sRecipes`, 13 `sSkillRequirement`, 11 `sIngredients`, 12 `sMadeAt`,
+//!   Accept (7) `sAccept`, Exit (8) `sExit`, the two buttons then 20 units
+//!   further left; then filled.
+//! * filling (`00727680`): one line (template id 15) per recipe in the
+//!   order given, its alpha 255, or 127 when none can be made; the filter's
+//!   subcategories.
+//! * the filter (clicks on 0, 1 and 2, `007274b0`; the arrows, special
+//!   codes 4 and 3, `00728420`): the index (`0119fbf4`, -1 for all, kept
+//!   from one opening to the next) steps down on 0 and up on 1 and 2,
+//!   wrapping through -1; the title shows `sRecipes` or the subcategory's
+//!   name; lines of other subcategories are filtered out (`00728d60`).
+//! * the pointer on a recipe (`00727b10` with id 15): the item picture and
+//!   card (9, 10) hidden, then the caller's [`Details`]: the category (4,
+//!   alpha 127 when it isn't the menu's), the ingredients heading (11), the
+//!   ingredient lines (6, alpha 127 when short), the skill (5, alpha 127
+//!   when too low), Accept's `target` (only when it can be made) and the
+//!   first product's picture (9).
+//! * Accept (7, `007274b0` case 7): the quantity menu for how many (at most
+//!   as many as can be made), then the making (`007284f0`), which closes
+//!   the menu; Exit (8): closes it (`00727430`).
 //!
-//! What this port does with it is **not** read from the menu class's code
-//! (`00726ff0` and the functions after it aren't traced yet): every rule
-//! below that isn't the file's own is a guess, listed in
-//! `docs/DEAD_MONEY.md` "Crafting": a row under the pointer is chosen
-//! (the interface does that for every list box) and shows its details;
-//! Accept (or A) makes the chosen recipe when its skill and ingredients are
-//! there, and the button is off (`target` 0, which answers a key with the
-//! cancel sound) otherwise; the arrows (and Left / Right) go through the
-//! sub-categories with all of them first; a recipe that can't be made yet
-//! has the "failed check" look.
+//! Not here: the item card (`RecipeMenu::PopulateItemStatsDisplay`,
+//! `00728da0`), the ingredient list's own pointer (an ingredient's
+//! picture), the controller's list switching (special 0xd, 0xe) and the
+//! accept button's cross-fade (`00728a70`).
 
 use crate::list::ListBox;
 use crate::menu::{self, MenuCode};
@@ -26,91 +42,123 @@ use crate::tile::{TileId, Ui};
 
 /// The menu's file.
 pub const FILE: &str = "menus\\recipe_menu.xml";
-/// Its class number.
+/// Its class number (`00726f00`).
 pub const CLASS: i32 = 1077;
-/// The id of the list's rows (the template's).
-pub const ROW_ID: i32 = 15;
-/// The recipes' template, and the ingredients' (the same one).
-const TEMPLATE: &str = "RM_list_template";
-const TILE_COUNT: usize = 16;
+/// A list line's id (the template's).
+pub const LINE_ID: i32 = 15;
+/// The template the code asks for.
+const TEMPLATE: &str = "CM_list_template";
 
-/// One ingredient of a recipe: its name, how many the player has and the
-/// recipe needs.
+const LEFT_ARROW: usize = 0;
+const TITLE: usize = 1;
+const RIGHT_ARROW: usize = 2;
+const RECIPES: usize = 3;
+const MADE_AT: usize = 4;
+const SKILL: usize = 5;
+const INGREDIENTS: usize = 6;
+const ACCEPT: usize = 7;
+const EXIT: usize = 8;
+const ICON: usize = 9;
+const CARD: usize = 10;
+const INGREDIENTS_TITLE: usize = 11;
+const MADE_AT_TITLE: usize = 12;
+const SKILL_TITLE: usize = 13;
+
+/// The alphas the code gives lines and fields (`00700320(0xfa9, ..)`).
+const BRIGHT: f32 = 255.0;
+const DIM: f32 = 127.0;
+
+/// A recipe line: its text ("name" or "name (n)"), whether it can be made
+/// at least once, and its subcategory (a form ID) for the filter.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Ingredient {
-    pub name: String,
-    pub have: i32,
-    pub need: i32,
-}
-
-/// One recipe as the menu shows it.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct RecipeLine {
-    /// The recipe's form.
-    pub form: u32,
-    pub name: String,
-    /// Its sub-category's form (see [`Filter`]).
-    pub sub: u32,
-    /// Whether the player has the skill and every ingredient.
+pub struct Line {
+    pub text: String,
     pub makeable: bool,
-    /// "Science 40", empty for none.
+    pub subcategory: u32,
+}
+
+/// What the right side shows for the recipe under the pointer.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Details {
+    /// The recipe's category name, and whether it is dimmed (not the
+    /// menu's category).
+    pub made_at: String,
+    pub made_at_dim: bool,
+    /// For a recipe of one ingredient and several products, its
+    /// subcategory's name (its products are listed then); `None` for
+    /// `sIngredients`.
+    pub heading: Option<String>,
+    /// The ingredient (or product) lines: text, and whether dimmed.
+    pub parts: Vec<(String, bool)>,
+    /// "skill (have/need)", empty for none, and whether dimmed.
     pub skill: String,
-    pub ingredients: Vec<Ingredient>,
-    /// The picture of what it makes.
-    pub icon: String,
+    pub skill_dim: bool,
+    /// Accept can be used.
+    pub can_make: bool,
+    /// The first product's picture.
+    pub icon: Option<String>,
 }
 
-/// A sub-category the filter arrows go to.
+/// What the menu asks of the game.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Filter {
-    pub form: u32,
-    pub name: String,
-}
-
-/// What the menu asks of its caller.
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
-    /// Make this recipe (Accept).
-    Make(u32),
+    /// The pointer is on this line (its index): give its details.
+    Show(usize),
+    /// Accept on this line: ask how many and make them.
+    Make(usize),
+    /// Exit.
+    Close,
 }
 
-/// The recipe menu.
 #[derive(Debug)]
 pub struct RecipeMenu {
     pub menu: TileId,
-    /// `SetTile` ids 0..16 (`RM_Items_LeftFilterArrow` 0, `RM_ItemsTitle`
-    /// 1, the right arrow 2, the recipes' list 3, `RM_MadeAtVariable` 4,
-    /// `RM_SkillRequirement` 5, the ingredients' list 6, Accept 7, Exit 8,
-    /// `RM_ItemIcon` 9, `RM_ItemData` 10).
-    pub tiles: [Option<TileId>; TILE_COUNT],
-    /// The recipes' list and the ingredients'.
-    pub lists: [ListBox; 2],
-    pub lines: Vec<RecipeLine>,
-    pub filters: Vec<Filter>,
-    /// The filter (0 all, then `filters` in turn).
-    pub filter: usize,
-    /// "Workbench", ...: the category's name.
-    pub made_at: String,
-    /// The recipe chosen (its index in `lines`).
-    pub chosen: Option<usize>,
+    pub tiles: [Option<TileId>; 14],
+    /// The recipes (`+0x6c`) and the ingredients (`+0xa0`).
+    pub recipes: ListBox,
+    pub parts: ListBox,
+    pub lines: Vec<Line>,
+    /// The filter's subcategories: form ID and name.
+    pub filters: Vec<(u32, String)>,
+    /// The filter's index (`0119fbf4`): -1 for all.
+    pub filter: i32,
+    /// The line whose details are shown (`011d8e94`).
+    pub shown: Option<usize>,
     pub requests: Vec<Request>,
-    pub sounds: Vec<String>,
     pub closed: bool,
 }
 
+fn setting(ui: &Ui, name: &str) -> String {
+    ui.setting_text(name).unwrap_or_default()
+}
+
+/// A line's alpha goes on its first child (`007b5370` reads the new
+/// line's child list; the template's first child is `ListItemText`).
+fn line_alpha(ui: &mut Ui, line: TileId, dim: bool) {
+    let text = ui.tiles[line]
+        .children
+        .first()
+        .copied()
+        .or_else(|| ui.find_below(line, "ListItemText"));
+    if let Some(text) = text {
+        ui.set_number(text, t::ALPHA, if dim { DIM } else { BRIGHT });
+    }
+}
+
 impl RecipeMenu {
-    pub fn new(menu: TileId) -> RecipeMenu {
+    /// A menu whose filter starts at `filter` (what it was when the menu
+    /// last closed; -1 the first time).
+    pub fn new(menu: TileId, filter: i32) -> RecipeMenu {
         RecipeMenu {
             menu,
-            tiles: [None; TILE_COUNT],
-            lists: [ListBox::default(), ListBox::default()],
+            tiles: [None; 14],
+            recipes: ListBox::default(),
+            parts: ListBox::default(),
             lines: Vec::new(),
             filters: Vec::new(),
-            filter: 0,
-            made_at: String::new(),
-            chosen: None,
+            filter,
+            shown: None,
             requests: Vec::new(),
-            sounds: Vec::new(),
             closed: false,
         }
     }
@@ -119,155 +167,135 @@ impl RecipeMenu {
         self.tiles.get(id).copied().flatten()
     }
 
-    /// Opens it; false when the file lacks one of its tiles.
-    pub fn open(
-        &mut self,
-        ui: &mut Ui,
-        made_at: &str,
-        lines: Vec<RecipeLine>,
-        filters: Vec<Filter>,
-    ) -> bool {
-        if (0..=9).any(|i| self.tile(i).is_none()) {
-            return false;
+    fn set_text(&self, ui: &mut Ui, id: usize, text: &str) {
+        if let Some(tile) = self.tile(id) {
+            ui.set_text(tile, t::STRING, text);
         }
-        for (i, id) in [(0, 3), (1, 6)] {
-            if let Some(list) = self.tile(id) {
-                self.lists[i] = ListBox::new(ui, list, TEMPLATE);
+    }
+
+    fn set(&self, ui: &mut Ui, id: usize, trait_id: i32, value: f32) {
+        if let Some(tile) = self.tile(id) {
+            ui.set_number(tile, trait_id, value);
+        }
+    }
+
+    /// Opens it (`00726ff0`) with the lines (in the order to show them) and
+    /// the filter's subcategories; false without its lists.
+    pub fn open(&mut self, ui: &mut Ui, lines: Vec<Line>, filters: Vec<(u32, String)>) -> bool {
+        let (Some(recipes), Some(parts)) = (self.tile(RECIPES), self.tile(INGREDIENTS)) else {
+            return false;
+        };
+        self.recipes = ListBox::new(ui, recipes, TEMPLATE);
+        self.parts = ListBox::new(ui, parts, TEMPLATE);
+        for (id, name) in [
+            (TITLE, "sRecipes"),
+            (SKILL_TITLE, "sSkillRequirement"),
+            (INGREDIENTS_TITLE, "sIngredients"),
+            (MADE_AT_TITLE, "sMadeAt"),
+            (ACCEPT, "sAccept"),
+            (EXIT, "sExit"),
+        ] {
+            let s = setting(ui, name);
+            self.set_text(ui, id, &s);
+        }
+        for id in [ACCEPT, EXIT] {
+            if let Some(tile) = self.tile(id) {
+                let x = ui.number(tile, t::X);
+                ui.set_number(tile, t::X, x - 20.0);
             }
         }
-        self.made_at = made_at.to_string();
         self.lines = lines;
         self.filters = filters;
-        self.filter = 0;
-        self.chosen = None;
+        if self.filter >= self.filters.len() as i32 {
+            self.filter = -1;
+        }
+        for (i, line) in self.lines.iter().enumerate() {
+            if let Some(tile) = self.recipes.add(ui, self.menu, i as i32, Some(&line.text)) {
+                line_alpha(ui, tile, !line.makeable);
+            }
+        }
+        self.apply_filter(ui);
         ui.set_number(self.menu, menu::LEAVE_STACK, 0.0);
         ui.set_number(self.menu, t::VISIBLE, 1.0);
-        self.fill(ui);
+        ui.refresh();
         true
     }
 
-    /// Replaces the recipes after one was made (what the player has
-    /// changed); the choice stays on the same recipe when it's still there.
-    pub fn refreshed(&mut self, ui: &mut Ui, lines: Vec<RecipeLine>) {
-        let keep = self.chosen.and_then(|i| self.lines.get(i)).map(|l| l.form);
-        self.lines = lines;
-        self.fill(ui);
-        if let Some(form) = keep {
-            self.choose_form(ui, form);
-        }
-    }
-
-    fn custom(ui: &mut Ui, name: &str) -> i32 {
-        ui.names.lookup_or_add(name).unwrap_or(0)
-    }
-
-    /// The lines the filter lets through (indexes into `lines`).
-    fn shown(&self) -> Vec<usize> {
-        let sub = match self.filter {
-            0 => None,
-            n => self.filters.get(n - 1).map(|f| f.form),
+    /// The title and the filtered lines for the filter's index
+    /// (`007274b0` cases 0 to 2, `00728d60`).
+    fn apply_filter(&mut self, ui: &mut Ui) {
+        let title = match usize::try_from(self.filter)
+            .ok()
+            .and_then(|i| self.filters.get(i))
+        {
+            Some((_, name)) => name.clone(),
+            None => setting(ui, "sRecipes"),
         };
-        (0..self.lines.len())
-            .filter(|&i| sub.map_or(true, |s| self.lines[i].sub == s))
-            .collect()
+        self.set_text(ui, TITLE, &title);
+        let only = usize::try_from(self.filter)
+            .ok()
+            .and_then(|i| self.filters.get(i))
+            .map(|(id, _)| *id);
+        let lines = self.lines.clone();
+        self.recipes.filter(ui, &|value| {
+            only.is_some_and(|sub| {
+                lines
+                    .get(value as usize)
+                    .is_some_and(|l| l.subcategory != sub)
+            })
+        });
+        ui.refresh();
     }
 
-    /// Fills the recipes' list for the filter, the title with the filter's
-    /// name, and clears the details.
-    fn fill(&mut self, ui: &mut Ui) {
-        let shown = self.shown();
-        self.lists[0].clear(ui);
-        for i in shown {
-            let (name, makeable) = (self.lines[i].name.clone(), self.lines[i].makeable);
-            if let Some(tile) = self.lists[0].add(ui, self.menu, i as i32, Some(&name)) {
-                ui.tiles[tile].failed = !makeable;
+    fn step_filter(&mut self, ui: &mut Ui, up: bool) {
+        let n = self.filters.len() as i32;
+        self.filter += if up { 1 } else { -1 };
+        if self.filter < -1 {
+            self.filter = n - 1;
+        } else if self.filter >= n {
+            self.filter = -1;
+        }
+        self.apply_filter(ui);
+    }
+
+    /// Shows the details of the line under the pointer (`00727b10`).
+    pub fn show_details(&mut self, ui: &mut Ui, line: usize, d: &Details) {
+        self.shown = Some(line);
+        self.set(ui, CARD, t::VISIBLE, 0.0);
+        self.set(ui, ICON, t::VISIBLE, 0.0);
+        self.set_text(ui, MADE_AT, &d.made_at);
+        self.set(
+            ui,
+            MADE_AT,
+            t::ALPHA,
+            if d.made_at_dim { DIM } else { BRIGHT },
+        );
+        let heading = d
+            .heading
+            .clone()
+            .unwrap_or_else(|| setting(ui, "sIngredients"));
+        self.set_text(ui, INGREDIENTS_TITLE, &heading);
+        self.parts.clear(ui);
+        for (i, (text, dim)) in d.parts.iter().enumerate() {
+            if let Some(tile) = self.parts.add(ui, self.menu, i as i32, Some(text)) {
+                line_alpha(ui, tile, *dim);
             }
         }
-        if let Some(title) = self.tile(1) {
-            let s = match self.filter {
-                0 => ui.setting_text("sRecipes").unwrap_or_default(),
-                n => self
-                    .filters
-                    .get(n - 1)
-                    .map(|f| f.name.to_uppercase())
-                    .unwrap_or_default(),
-            };
-            ui.set_text(title, t::STRING, &s);
-        }
-        self.chosen = None;
-        self.details(ui);
-    }
-
-    /// Chooses the row of a recipe, if it's listed.
-    fn choose_form(&mut self, ui: &mut Ui, form: u32) {
-        let Some(index) = self.lines.iter().position(|l| l.form == form) else {
-            return;
-        };
-        let row = self.lists[0]
-            .items
-            .iter()
-            .find(|i| i.value == index as i32)
-            .map(|i| i.tile);
-        if let Some(row) = row {
-            self.lists[0].select(ui, Some(row));
-            self.chosen = Some(index);
-            self.details(ui);
-        }
-    }
-
-    /// Shows the chosen recipe's details (or none): where it's made, the
-    /// skill, the ingredients, the picture; Accept on or off.
-    fn details(&mut self, ui: &mut Ui) {
-        let line = self.chosen.and_then(|i| self.lines.get(i)).cloned();
-        let made_at = if line.is_some() {
-            self.made_at.as_str()
-        } else {
-            ""
-        };
-        if let Some(tile) = self.tile(4) {
-            ui.set_text(tile, t::STRING, made_at);
-        }
-        if let Some(tile) = self.tile(5) {
-            let s = line.as_ref().map(|l| l.skill.as_str()).unwrap_or("");
-            ui.set_text(tile, t::STRING, s);
-        }
-        self.lists[1].clear(ui);
-        let value = Self::custom(ui, "_Value");
-        if let Some(line) = &line {
-            for ing in &line.ingredients {
-                if let Some(row) = self.lists[1].add(ui, self.menu, 0, Some(&ing.name)) {
-                    ui.set_string(row, value, &format!("{}/{}", ing.have, ing.need));
-                    ui.tiles[row].failed = ing.have < ing.need;
-                }
-            }
-        }
-        if let Some(icon) = self.tile(9) {
-            match line.as_ref().filter(|l| !l.icon.is_empty()) {
-                Some(l) => {
-                    ui.set_string(icon, t::FILENAME, &l.icon);
-                    ui.set_number(icon, t::VISIBLE, 1.0);
-                }
-                None => ui.set_number(icon, t::VISIBLE, 0.0),
-            }
-        }
-        if let Some(accept) = self.tile(7) {
-            let on = line.as_ref().is_some_and(|l| l.makeable);
-            ui.set_number(accept, t::TARGET, f32::from(on));
+        self.set_text(ui, SKILL, &d.skill);
+        self.set(ui, SKILL, t::ALPHA, if d.skill_dim { DIM } else { BRIGHT });
+        self.set(ui, ACCEPT, t::TARGET, if d.can_make { 1.0 } else { 0.0 });
+        if let (Some(icon), Some(tile)) = (&d.icon, self.tile(ICON)) {
+            ui.set_string(tile, t::FILENAME, icon);
+            ui.set_number(tile, t::VISIBLE, 1.0);
         }
         ui.refresh();
     }
 
-    /// Steps the filter by one either way, wrapping.
-    fn step_filter(&mut self, ui: &mut Ui, by: i32) {
-        let n = self.filters.len() as i32 + 1;
-        self.filter = (self.filter as i32 + by).rem_euclid(n) as usize;
-        if let Some(s) = menu::menu_sound(3) {
-            self.sounds.push(s.to_string());
+    /// Exit, and the end of making (`00727430`).
+    pub fn close(&mut self, ui: &mut Ui) {
+        if self.closed {
+            return;
         }
-        self.fill(ui);
-    }
-
-    fn close(&mut self, ui: &mut Ui) {
         ui.set_number(self.menu, menu::LEAVE_STACK, 1.0);
         self.closed = true;
     }
@@ -279,255 +307,327 @@ impl MenuCode for RecipeMenu {
     }
 
     fn set_tile(&mut self, id: i32, tile: TileId) {
-        if (0..TILE_COUNT as i32).contains(&id) {
+        if (0..14).contains(&id) {
             self.tiles[id as usize] = Some(tile);
         }
     }
 
+    /// The recipes and the ingredients: the pointer chooses lines in them
+    /// (`00717e70`).
+    fn lists(&mut self) -> Vec<&mut ListBox> {
+        vec![&mut self.recipes, &mut self.parts]
+    }
+
+    /// `007274b0`.
     fn click(&mut self, ui: &mut Ui, id: i32, _tile: Option<TileId>, _now: f64) {
         match id {
-            0 => self.step_filter(ui, -1),
-            2 => self.step_filter(ui, 1),
+            0 => self.step_filter(ui, false),
+            1 | 2 => self.step_filter(ui, true),
             7 => {
-                if let Some(line) = self.chosen.and_then(|i| self.lines.get(i)) {
-                    if line.makeable {
-                        self.requests.push(Request::Make(line.form));
-                    }
+                let usable = self
+                    .tile(ACCEPT)
+                    .is_some_and(|tile| ui.number(tile, t::TARGET) != 0.0);
+                if let Some(line) = self.shown.filter(|_| usable) {
+                    self.requests.push(Request::Make(line));
                 }
             }
-            8 => self.close(ui),
-            // A row clicked: it was chosen under the pointer; the click
-            // makes it (a guess; the buttons do the same).
-            ROW_ID => self.click(ui, 7, None, 0.0),
+            8 => {
+                self.requests.push(Request::Close);
+                self.close(ui);
+            }
             _ => {}
         }
     }
 
-    fn mouseover(&mut self, ui: &mut Ui, id: i32, _tile: TileId) {
-        if id != ROW_ID {
+    /// `00727b10` with a recipe line.
+    fn mouseover(&mut self, ui: &mut Ui, id: i32, tile: TileId) {
+        if id != LINE_ID {
             return;
         }
-        let list = &self.lists[0];
-        let chosen = list
-            .selected
-            .and_then(|s| list.value_of(s))
-            .map(|v| v as usize);
-        if chosen.is_some() && chosen != self.chosen {
-            self.chosen = chosen;
-            self.details(ui);
+        if let Some(value) = self
+            .recipes
+            .items
+            .iter()
+            .find(|i| i.tile == tile)
+            .map(|i| i.value)
+        {
+            let _ = ui;
+            self.requests.push(Request::Show(value as usize));
         }
     }
 
-    fn special_key(&mut self, ui: &mut Ui, code: i32, _now: f64) -> bool {
+    /// `00728420`: Left and Right step the filter.
+    fn special_key(&mut self, ui: &mut Ui, code: i32, now: f64) -> bool {
         match code {
-            menu::special::LEFT => self.click(ui, 0, None, 0.0),
-            menu::special::RIGHT => self.click(ui, 2, None, 0.0),
-            _ => return false,
+            menu::special::RIGHT => {
+                self.click(ui, RIGHT_ARROW as i32, None, now);
+                true
+            }
+            menu::special::LEFT => {
+                self.click(ui, LEFT_ARROW as i32, None, now);
+                true
+            }
+            _ => false,
         }
-        true
-    }
-
-    fn lists(&mut self) -> Vec<&mut ListBox> {
-        self.lists.iter_mut().collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::menus::test_support::{self, list_box, LIST_ITEM};
+    use crate::menus::test_support;
 
-    /// A recipe menu laid out like `recipe_menu.xml`.
-    fn recipe_menu() -> String {
-        format!(
-            "<menu name=\"RecipeMenu\"><class>&RecipeMenu;</class>
-               <_PCButton_A>RM_ButtonX</_PCButton_A><_PCButton_X>RM_ButtonB</_PCButton_X>
-               <rect name=\"NOGLOW_BRANCH\">
-                 <rect name=\"RM_ItemsRect\"><locus>&true;</locus>
-                   <image name=\"RM_Items_LeftFilterArrow\"><id>0</id><filename>a.dds</filename><target>&true;</target></image>
-                   <text name=\"RM_ItemsTitle\"><id>1</id><font>6</font></text>
-                   <image name=\"RM_Items_RightFilterArrow\"><id>2</id><filename>a.dds</filename><target>&true;</target></image>
-                   {}
-                 </rect>
-                 <rect name=\"RM_ContainerRect\"><locus>&true;</locus>
-                   <text name=\"RM_MadeAtVariable\"><id>4</id><font>3</font></text>
-                   <text name=\"RM_SkillRequirement\"><id>5</id><font>3</font></text>
-                   {}
-                 </rect>
-                 <image name=\"RM_ButtonX\"><id>7</id><target>&false;</target><filename>a.dds</filename></image>
-                 <image name=\"RM_ButtonB\"><id>8</id><target>&true;</target><filename>a.dds</filename></image>
-                 <image name=\"RM_ItemIcon\"><id>9</id><visible>&false;</visible></image>
-                 <rect name=\"RM_ItemData\"><id>10</id></rect>
-               </rect>
-               <template name=\"RM_list_template\"><hotrect name=\"RM_list_template_container\">{LIST_ITEM}<id>15</id>
-                 <_Value></_Value>
-                 <text name=\"ListItemText\"><font>2</font><string><copy src=\"parent()\" trait=\"string\"/></string></text>
-               </hotrect></template>
-             </menu>",
-            list_box("RM_Items_InventoryList", 3, 462.0, "365"),
-            list_box("RM_Items_IngredientList", 6, 442.0, "225"),
-        )
-    }
-
-    fn line(form: u32, name: &str, sub: u32, makeable: bool) -> RecipeLine {
-        RecipeLine {
-            form,
-            name: name.into(),
-            sub,
+    fn line(text: &str, makeable: bool, subcategory: u32) -> Line {
+        Line {
+            text: text.into(),
             makeable,
-            skill: if makeable {
-                String::new()
-            } else {
-                "Science 40".into()
-            },
-            ingredients: vec![
-                Ingredient {
-                    name: "Scrap".into(),
-                    have: 2,
-                    need: 2,
-                },
-                Ingredient {
-                    name: "Water".into(),
-                    have: 0,
-                    need: 1,
-                },
-            ],
-            icon: String::new(),
+            subcategory,
         }
     }
 
-    fn opened() -> (Ui, RecipeMenu) {
+    fn opened(filter: i32) -> (Ui, RecipeMenu) {
         let mut ui = test_support::ui();
-        let mut m = RecipeMenu::new(0);
-        m.menu = test_support::load(&mut ui, &recipe_menu(), &mut m);
+        let mut m = RecipeMenu::new(0, filter);
+        m.menu = test_support::load(&mut ui, &test_support::recipe_menu(), &mut m);
         let lines = vec![
-            line(1, "Bullets", 20, false),
-            line(2, "Stew", 10, true),
-            line(3, "Tea", 10, true),
+            line("Healing Powder", true, 0x19),
+            line("Rounds (10)", true, 0x2A),
+            line("Stimpak", false, 0x19),
         ];
-        let filters = vec![
-            Filter {
-                form: 20,
-                name: "Ammo".into(),
-            },
-            Filter {
-                form: 10,
-                name: "Aid".into(),
-            },
-        ];
-        assert!(m.open(&mut ui, "Workbench", lines, filters));
+        let filters = vec![(0x19, "Aid".to_string()), (0x2A, "Ammo".to_string())];
+        assert!(m.open(&mut ui, lines, filters));
         (ui, m)
     }
 
-    fn row(m: &RecipeMenu, value: i32) -> TileId {
-        m.lists[0]
-            .items
-            .iter()
-            .find(|i| i.value == value)
-            .unwrap()
-            .tile
+    fn shown(ui: &mut Ui, m: &RecipeMenu) -> Vec<(String, f32)> {
+        m.recipes
+            .shown_items(ui, 0, i32::MAX)
+            .into_iter()
+            .map(|l| {
+                (
+                    ui.string(l.tile, t::STRING).unwrap_or_default(),
+                    ui.number(ui.tiles[l.tile].children[0], t::ALPHA),
+                )
+            })
+            .collect()
+    }
+
+    /// `00726ff0`, `00727680`, `007274b0`: the settings, the lines with
+    /// their alphas, and the filter stepping through -1.
+    #[test]
+    fn opening_and_the_filter() {
+        let (mut ui, mut m) = opened(-1);
+        let s = |ui: &mut Ui, m: &RecipeMenu, id: usize| {
+            ui.string(m.tiles[id].unwrap(), t::STRING)
+                .unwrap_or_default()
+        };
+        assert_eq!(s(&mut ui, &m, TITLE), "RECIPES");
+        assert_eq!(s(&mut ui, &m, ACCEPT), "Accept");
+        assert_eq!(s(&mut ui, &m, EXIT), "Exit");
+        assert_eq!(
+            shown(&mut ui, &m),
+            [
+                ("Healing Powder".to_string(), 255.0),
+                ("Rounds (10)".to_string(), 255.0),
+                ("Stimpak".to_string(), 127.0)
+            ]
+        );
+        // Up: Aid, then Ammo, then all again.
+        m.click(&mut ui, 2, None, 0.0);
+        assert_eq!(s(&mut ui, &m, TITLE), "Aid");
+        assert_eq!(shown(&mut ui, &m).len(), 2);
+        m.click(&mut ui, 1, None, 0.0);
+        assert_eq!(s(&mut ui, &m, TITLE), "Ammo");
+        assert_eq!(shown(&mut ui, &m)[0].0, "Rounds (10)");
+        m.click(&mut ui, 2, None, 0.0);
+        assert_eq!(m.filter, -1);
+        assert_eq!(shown(&mut ui, &m).len(), 3);
+        // Down from all: the last subcategory.
+        m.click(&mut ui, 0, None, 0.0);
+        assert_eq!(s(&mut ui, &m, TITLE), "Ammo");
+        // Kept: a new menu starts where it was.
+        let (mut ui, m) = opened(1);
+        assert_eq!(
+            ui.string(m.tiles[TITLE].unwrap(), t::STRING).as_deref(),
+            Some("Ammo")
+        );
+    }
+
+    /// `00727b10`, `007274b0` cases 7 and 8: details, Accept only when it
+    /// can be made, Exit closes.
+    #[test]
+    fn details_accept_and_exit() {
+        let (mut ui, mut m) = opened(-1);
+        let first = m.recipes.items[0].tile;
+        m.mouseover(&mut ui, LINE_ID, first);
+        assert_eq!(m.requests, [Request::Show(0)]);
+        let d = Details {
+            made_at: "Campfire".into(),
+            made_at_dim: false,
+            heading: None,
+            parts: vec![
+                ("Broc Flower (1/1)".into(), false),
+                ("Xander Root (0/1)".into(), true),
+            ],
+            skill: String::new(),
+            skill_dim: false,
+            can_make: false,
+            icon: Some("Interface\\Icons\\Items\\healingpowder.dds".into()),
+        };
+        m.show_details(&mut ui, 0, &d);
+        let parts: Vec<(String, f32)> = m
+            .parts
+            .shown_items(&mut ui, 0, i32::MAX)
+            .into_iter()
+            .map(|l| {
+                (
+                    ui.string(l.tile, t::STRING).unwrap_or_default(),
+                    ui.number(ui.tiles[l.tile].children[0], t::ALPHA),
+                )
+            })
+            .collect();
+        assert_eq!(
+            parts,
+            [
+                ("Broc Flower (1/1)".to_string(), 255.0),
+                ("Xander Root (0/1)".to_string(), 127.0)
+            ]
+        );
+        assert_eq!(ui.number(m.tiles[ICON].unwrap(), t::VISIBLE), 1.0);
+        // Accept does nothing while it can't be made.
+        m.requests.clear();
+        m.click(&mut ui, 7, None, 0.0);
+        assert!(m.requests.is_empty());
+        m.show_details(
+            &mut ui,
+            0,
+            &Details {
+                can_make: true,
+                ..d
+            },
+        );
+        m.click(&mut ui, 7, None, 0.0);
+        assert_eq!(m.requests, [Request::Make(0)]);
+        m.click(&mut ui, 8, None, 0.0);
+        assert!(m.closed);
+        assert_eq!(ui.number(m.menu, menu::LEAVE_STACK), 1.0);
+    }
+
+    // The Dead Money contributor's menu tests, adapted to this menu: the
+    // details come from the caller ([`Details`]), the filter's "all" is -1,
+    // and making closes the menu (`007284f0`), so the list is not refreshed
+    // in place.
+
+    fn details(can_make: bool, skill: &str) -> Details {
+        Details {
+            made_at: "Workbench".into(),
+            made_at_dim: false,
+            heading: None,
+            parts: vec![("Scrap (2/2)".into(), false), ("Water (0/1)".into(), true)],
+            skill: skill.into(),
+            skill_dim: !skill.is_empty(),
+            can_make,
+            icon: None,
+        }
+    }
+
+    fn accept_on(ui: &mut Ui, m: &RecipeMenu) -> f32 {
+        ui.number(m.tiles[ACCEPT].unwrap(), t::TARGET)
     }
 
     #[test]
     fn opening_lists_every_recipe_with_nothing_chosen() {
-        let (mut ui, m) = opened();
-        assert_eq!(m.lists[0].items.len(), 3);
-        assert_eq!(m.chosen, None);
+        let (mut ui, m) = opened(-1);
+        assert_eq!(m.recipes.items.len(), 3);
+        assert_eq!(m.shown, None);
         assert_eq!(
-            ui.string(m.tiles[1].unwrap(), t::STRING).as_deref(),
+            ui.string(m.tiles[TITLE].unwrap(), t::STRING).as_deref(),
             Some("RECIPES")
         );
-        // A recipe that can't be made yet looks failed.
-        assert!(ui.tiles[row(&m, 0)].failed);
-        assert!(!ui.tiles[row(&m, 1)].failed);
+        // A recipe that can't be made yet is dimmed.
+        assert_eq!(shown(&mut ui, &m)[2].1, DIM);
         // Accept is off.
-        assert_eq!(ui.number(m.tiles[7].unwrap(), t::TARGET), 0.0);
+        assert_eq!(accept_on(&mut ui, &m), 0.0);
     }
 
     #[test]
     fn choosing_a_row_shows_its_details_and_turns_accept_on() {
-        let (mut ui, mut m) = opened();
-        m.lists[0].select(&mut ui, Some(row(&m, 1)));
-        m.mouseover(&mut ui, ROW_ID, row(&m, 1));
-        assert_eq!(m.chosen, Some(1));
+        let (mut ui, mut m) = opened(-1);
+        let row = m.recipes.items[1].tile;
+        m.mouseover(&mut ui, LINE_ID, row);
+        assert_eq!(m.requests, [Request::Show(1)]);
+        m.show_details(&mut ui, 1, &details(true, ""));
+        assert_eq!(m.shown, Some(1));
         assert_eq!(
-            ui.string(m.tiles[4].unwrap(), t::STRING).as_deref(),
+            ui.string(m.tiles[MADE_AT].unwrap(), t::STRING).as_deref(),
             Some("Workbench")
         );
-        assert_eq!(m.lists[1].items.len(), 2);
-        let value = RecipeMenu::custom(&mut ui, "_Value");
-        let water = m.lists[1].items[1].tile;
-        assert_eq!(ui.string(water, value).as_deref(), Some("0/1"));
-        // The ingredient the player lacks looks failed.
-        assert!(ui.tiles[water].failed);
-        assert!(!ui.tiles[m.lists[1].items[0].tile].failed);
-        assert_eq!(ui.number(m.tiles[7].unwrap(), t::TARGET), 1.0);
-        // The one that can't be made: its skill shows and Accept goes off.
-        m.lists[0].select(&mut ui, Some(row(&m, 0)));
-        m.mouseover(&mut ui, ROW_ID, row(&m, 0));
+        assert_eq!(m.parts.items.len(), 2);
+        // The ingredient the player lacks is dimmed.
+        let water = m.parts.items[1].tile;
+        assert_eq!(ui.string(water, t::STRING).as_deref(), Some("Water (0/1)"));
+        assert_eq!(ui.number(ui.tiles[water].children[0], t::ALPHA), DIM);
+        assert_eq!(accept_on(&mut ui, &m), 1.0);
+        // One that can't be made: its skill shows and Accept goes off.
+        m.show_details(&mut ui, 2, &details(false, "Science (39/40)"));
         assert_eq!(
-            ui.string(m.tiles[5].unwrap(), t::STRING).as_deref(),
-            Some("Science 40")
+            ui.string(m.tiles[SKILL].unwrap(), t::STRING).as_deref(),
+            Some("Science (39/40)")
         );
-        assert_eq!(ui.number(m.tiles[7].unwrap(), t::TARGET), 0.0);
+        assert_eq!(ui.number(m.tiles[SKILL].unwrap(), t::ALPHA), DIM);
+        assert_eq!(accept_on(&mut ui, &m), 0.0);
     }
 
     #[test]
     fn accept_asks_to_make_only_a_makeable_choice() {
-        let (mut ui, mut m) = opened();
+        let (mut ui, mut m) = opened(-1);
         m.click(&mut ui, 7, None, 0.0);
         assert!(m.requests.is_empty());
-        m.lists[0].select(&mut ui, Some(row(&m, 0)));
-        m.mouseover(&mut ui, ROW_ID, row(&m, 0));
+        m.show_details(&mut ui, 2, &details(false, "Science (39/40)"));
         m.click(&mut ui, 7, None, 0.0);
         assert!(m.requests.is_empty());
-        m.lists[0].select(&mut ui, Some(row(&m, 2)));
-        m.mouseover(&mut ui, ROW_ID, row(&m, 2));
+        m.show_details(&mut ui, 0, &details(true, ""));
         m.click(&mut ui, 7, None, 0.0);
-        assert_eq!(m.requests, [Request::Make(3)]);
+        assert_eq!(m.requests, [Request::Make(0)]);
         assert!(!m.closed);
     }
 
     #[test]
     fn the_arrows_go_through_the_sub_categories() {
-        let (mut ui, mut m) = opened();
+        let (mut ui, mut m) = opened(-1);
         m.click(&mut ui, 2, None, 0.0);
-        assert_eq!(m.filter, 1);
-        assert_eq!(m.lists[0].items.len(), 1);
-        assert_eq!(
-            ui.string(m.tiles[1].unwrap(), t::STRING).as_deref(),
-            Some("AMMO")
-        );
+        assert_eq!(m.filter, 0);
+        assert_eq!(shown(&mut ui, &m).len(), 2);
         assert!(m.special_key(&mut ui, menu::special::RIGHT, 0.0));
-        assert_eq!(m.lists[0].items.len(), 2);
-        assert_eq!(
-            ui.string(m.tiles[1].unwrap(), t::STRING).as_deref(),
-            Some("AID")
-        );
+        assert_eq!(m.filter, 1);
+        assert_eq!(shown(&mut ui, &m).len(), 1);
+        assert!(m.special_key(&mut ui, menu::special::LEFT, 0.0));
+        assert_eq!(m.filter, 0);
         // Round to all, and back from all to the last.
         m.click(&mut ui, 2, None, 0.0);
-        assert_eq!((m.filter, m.lists[0].items.len()), (0, 3));
+        m.click(&mut ui, 2, None, 0.0);
+        assert_eq!((m.filter, shown(&mut ui, &m).len()), (-1, 3));
         m.click(&mut ui, 0, None, 0.0);
-        assert_eq!(m.filter, 2);
+        assert_eq!(m.filter, 1);
     }
 
     #[test]
-    fn after_making_the_list_follows_what_the_player_has() {
-        let (mut ui, mut m) = opened();
-        m.lists[0].select(&mut ui, Some(row(&m, 2)));
-        m.mouseover(&mut ui, ROW_ID, row(&m, 2));
-        let mut lines = m.lines.clone();
-        lines[2].makeable = false;
-        m.refreshed(&mut ui, lines);
-        assert_eq!(m.chosen, Some(2));
-        assert_eq!(ui.number(m.tiles[7].unwrap(), t::TARGET), 0.0);
-        assert!(ui.tiles[row(&m, 2)].failed);
+    fn after_making_the_menu_closes() {
+        let (mut ui, mut m) = opened(-1);
+        m.show_details(&mut ui, 0, &details(true, ""));
+        m.click(&mut ui, 7, None, 0.0);
+        assert_eq!(m.requests, [Request::Make(0)]);
+        // The making's end (`00727430`).
+        m.close(&mut ui);
+        assert!(m.closed);
+        assert_eq!(ui.number(m.menu, menu::LEAVE_STACK), 1.0);
     }
 
     #[test]
     fn exit_closes() {
-        let (mut ui, mut m) = opened();
+        let (mut ui, mut m) = opened(-1);
         m.click(&mut ui, 8, None, 0.0);
         assert!(m.closed);
+        assert_eq!(m.requests, [Request::Close]);
     }
 }

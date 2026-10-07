@@ -150,7 +150,7 @@ pub fn living(
         }
         state.stock(order, who);
         for (item, n) in state.inventory(order, who) {
-            let v = pickpocket::stack_value(order, item, n);
+            let v = pickpocket::stack_value(order, &state, item, n);
             writeln!(
                 out,
                 "      {} x{n}: value {v:.0}, chance {}%",

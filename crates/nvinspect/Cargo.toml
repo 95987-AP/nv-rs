@@ -18,6 +18,7 @@ shaders = { path = "../shaders" }
 physics = { path = "../physics" }
 script = { path = "../script" }
 mp3 = { path = "../mp3" }
+bink = { path = "../bink" }
 cellview = { path = "../cellview" }
 ui = { path = "../ui" }
 speedtree = { path = "../speedtree" }

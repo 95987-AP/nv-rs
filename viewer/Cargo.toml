@@ -21,6 +21,7 @@ nif = { path = "../crates/nif" }
 preview = { path = "../crates/preview" }
 assets = { path = "../crates/assets" }
 ui = { path = "../crates/ui" }
+bink = { path = "../crates/bink" }
 speedtree = { path = "../crates/speedtree" }
 # Decodes the game's .ogg sounds (already in the build through Bevy's audio,
 # whose own .ogg playback crashed the viewer in Dead Money's Villa).

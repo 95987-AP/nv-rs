@@ -895,6 +895,8 @@ fn ranged(
             .ranged
             .update(now, w, &kit.style, aimed, attack, dice.unit(), &s);
     if shoots {
+        // The attack's noise (`world::noise`).
+        world::noise::attacked(order, state, walker.reference, w);
         match world::npc_combat::fired(order, state, walker.reference, w) {
             world::npc_combat::AfterShot::Reloading(t) => {
                 println!("{now:.1} s: {} reloads ({t:.1} s).", walker.reference)
@@ -1024,6 +1026,9 @@ fn melee(
             fight.attack_until = now + kit.attack_seconds(weapon);
             if let Some(sound) = weapon.and_then(|w| w.sound) {
                 c.sounds.0.push(sound);
+            }
+            if let Some(w) = weapon {
+                world::noise::attacked(order, state, walker.reference, w);
             }
             let dealt = Runner::new(order, c.scripts, state).strike(
                 walker.reference,

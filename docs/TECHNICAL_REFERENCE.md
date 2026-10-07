@@ -836,8 +836,8 @@ F forces the lock (the chance is shown; failing breaks it for good, and then onl
 key opens it), E leaves. Every number, sound and timing is the game's, read from its
 code. A picked lock gives experience the first time and counts as stealing if it's
 someone else's. Too little skill gets the game's "You need a lockpick skill of 50 to
-pick this lock."; locks that need a key say so. Locked terminals still open only with
-enough Science (the hacking game isn't here).
+pick this lock."; locks that need a key say so. Locked terminals open through the
+game's hacking screen (see `docs/HACKING.md`).
 
 `nvinspect <Data> lockpick <door or container, or a lock level> [skill]` prints what
 a lock does: the sweet spot and its rings at your screen size, how long a pin lasts,
@@ -904,8 +904,10 @@ reloading (Rapid Reload, and Agility: reloads take longer below 5 and
 less above), attack speed (Fast Shot, Slayer; attack animations now play
 at each weapon's own rate), carrying (Pack Rat; fast travel is refused
 while over-encumbered unless you have Long Haul), cases and cells coming
-back from shots (Hand Loader, Vigilant Recycler), and weapon wear
-(Built to Destroy; weapons now wear a little with every attack, as in the
+back from shots (Hand Loader, Vigilant Recycler), and weapon and armour
+wear (armour wears as its damage threshold soaks up hits, and gives less
+DT below half condition; "Your armor condition is dangerously low." below
+25%) (Built to Destroy; weapons now wear a little with every attack, as in the
 game). `nvinspect "<Data folder>" perks` lists every perk's entries and
 conditions. Perks whose mechanic isn't here yet (mines, terminal lockouts,
 addiction, Mister Sandman and Cannibal, Meltdown, repairing, knockdowns,
@@ -979,7 +981,22 @@ formula (the item's condition, your Barter skill, perks); clicking a line
 offers it, the running total and the caps that will change hands show at
 the bottom, Accept settles the trade, Exit with an offer asks "Cancel
 transaction?". `nvinspect "<Data folder>" barter TrudyREF` lists a
-merchant's goods and prices. Inventories start
+merchant's goods and prices.
+
+Merchants who repair (Mick in Freeside, Samuel at the 188, Old Lady
+Gibson, Raul, Calamity, Major Knight, Dale Barton, Sato) do it through the
+game's repair services screen when their dialogue says so: your damaged
+weapons and armour with what mending each costs, the condition and damage
+(or DT/DR) now and after, Repair All; how far they mend and what they ask
+come from their Repair skill by the game's own formulas (see
+`docs/REPAIR.md`). `--open-menu repair:REF` opens a vendor's for testing.
+
+Companions trade things with you when their dialogue says so ("Let's
+trade equipment."): the game's container screen on their things, without
+Take All; they refuse what they've no room for ("Cass can't carry any
+more.") and say their trading lines (see `docs/COMPANIONS.md`).
+`--open-menu teammate:REF` opens one for testing.
+Inventories start
 as the records list them, with leveled lists picked for your level; I
 shows what you carry (E on a skill book reads it: +3 to its skill, +4
 with Comprehension, and the book is used up, as in the game) and J your
@@ -1187,8 +1204,9 @@ ITEMS and DATA; Enter equips, takes off or uses the chosen item, or makes
 the chosen quest the active one; on the Status page Enter uses a Stimpak
 (RadAway under RAD). On STATS the letter keys press the buttons that show
 them (S Stimpak, E Doctor's Bag, A RadAway, X Rad-X, R reputations on the
-General page); the Repair and Mod buttons on ITEMS don't work yet. Tab puts
-it away.
+General page); R on ITEMS repairs the chosen weapon with another like it
+(or one on its repair list) as the game's repair screen does, E going back;
+the Mod button doesn't work yet. Tab puts it away.
 
 STATS shows your level, health, action points, experience, limbs, rads and
 effects, your S.P.E.C.I.A.L. and skills with their pictures and
@@ -1200,7 +1218,7 @@ places you've found, your quests with their objectives, notes and radio
 stations.
 
 Not there yet: the mouse (so travelling from the map), the local map,
-repairing and modding, the DPS figure and effect descriptions on item cards,
+modding, the DPS figure and effect descriptions on item cards,
 and the light actually lighting the room.
 
 For screenshots: `--pipboy stats`, `--pipboy items:1` (the tab from 0),

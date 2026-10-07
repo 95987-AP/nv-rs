@@ -93,6 +93,16 @@ struct LandBlend {
     offset: vec4<f32>,
 }
 
+// The hour's light outdoors, shared by every surface (`shared_light.rs`):
+// the land is outdoors only and always takes it.
+struct SharedLight {
+    ambient: vec4<f32>,
+    directional_color: vec4<f32>,
+    directional_direction: vec4<f32>,
+    fog_color: vec4<f32>,
+    fog_range: vec4<f32>,
+}
+
 @group(2) @binding(100) var<uniform> game: GameLighting;
 @group(2) @binding(101) var base_0: texture_2d<f32>;
 @group(2) @binding(102) var base_1: texture_2d<f32>;
@@ -114,19 +124,20 @@ struct LandBlend {
 @group(2) @binding(118) var lod_normal: texture_2d<f32>;
 @group(2) @binding(119) var lod_noise: texture_2d<f32>;
 @group(2) @binding(120) var lod_sampler: sampler;
+@group(2) @binding(121) var<storage, read> shared_light: SharedLight;
 
 // As `game_lit.wgsl`'s: the length of the position after the game's
 // projection (x and y scaled by it, depth from its near plane), then
 // saturate((d - near) / (far - near)) ^ power.
 fn fog_amount(p: vec3<f32>) -> f32 {
-    if (game.fog_range.w < 0.5) {
+    if (shared_light.fog_range.w < 0.5) {
         return 0.0;
     }
     let v = view_bindings::view.view_from_world * vec4<f32>(p, 1.0);
     let projection = view_bindings::view.clip_from_view;
-    let d = length(vec3<f32>(v.x * projection[0][0], v.y * projection[1][1], -v.z - game.fog_range.z));
-    let span = max(game.fog_range.y - game.fog_range.x, 1e-4);
-    return pow(saturate((d - game.fog_range.x) / span), game.fog_color.w);
+    let d = length(vec3<f32>(v.x * projection[0][0], v.y * projection[1][1], -v.z - shared_light.fog_range.z));
+    let span = max(shared_light.fog_range.y - shared_light.fog_range.x, 1e-4);
+    return pow(saturate((d - shared_light.fog_range.x) / span), shared_light.fog_color.w);
 }
 
 @vertex
@@ -194,9 +205,9 @@ fn fragment(in: TerrainVertexOutput) -> FragmentOutput {
     let m = bent * inverseSqrt(max(dot(bent, bent), 1e-12));
 
     let p = in.world_position.xyz;
-    let sun = normalize(game.directional_direction.xyz);
-    var light = game.ambient.rgb;
-    light += game.directional_color.rgb * saturate(dot(m, vec3<f32>(dot(t, sun), dot(b, sun), dot(vertex_normal, sun))));
+    let sun = normalize(shared_light.directional_direction.xyz);
+    var light = shared_light.ambient.rgb;
+    light += shared_light.directional_color.rgb * saturate(dot(m, vec3<f32>(dot(t, sun), dot(b, sun), dot(vertex_normal, sun))));
     let count = min(u32(game.scale.y), 64u);
     for (var i = 0u; i < count; i += 1u) {
         let g = game.lights[i];
@@ -213,7 +224,7 @@ fn fragment(in: TerrainVertexOutput) -> FragmentOutput {
     // The vertex color arrives as stored values (the mesh carries them
     // unconverted).
     let fog = in.fog_blend.x;
-    var shaded = mix(light * color * in.color.rgb, game.fog_color.rgb, fog);
+    var shaded = mix(light * color * in.color.rgb, shared_light.fog_color.rgb, fog);
     // The blend pass, over the finished quarter (alpha blending, depth
     // equal): the distant land's colour there, lit by the ambient and the
     // sun with its world-space normal map, fogged the same way.
@@ -235,6 +246,6 @@ fn lod_blend(uv: vec2<f32>, sun: vec3<f32>, fog: f32) -> vec3<f32> {
     let g = textureSample(lod_normal, lod_sampler, uv).rgb * 2.0 - 1.0;
     // The game's axes (x east, y north, z up) to Bevy's.
     let n = vec3<f32>(g.x, g.z, -g.y);
-    let light = game.ambient.rgb + game.directional_color.rgb * saturate(dot(n, sun));
-    return mix(base * (0.55 + 0.8 * noise) * light, game.fog_color.rgb, fog);
+    let light = shared_light.ambient.rgb + shared_light.directional_color.rgb * saturate(dot(n, sun));
+    return mix(base * (0.55 + 0.8 * noise) * light, shared_light.fog_color.rgb, fog);
 }

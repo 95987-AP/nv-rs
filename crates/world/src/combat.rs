@@ -109,6 +109,9 @@ pub struct Weapon {
     /// animations start from (1 on the vanilla weapons; the game's weapon
     /// `+0xf8`, read by `004e4620`).
     pub speed: f32,
+    /// What its shots' cone is multiplied by: 1, or a fitted split beam
+    /// mod's second value (`00523150`; `world::weapon_mods::modded`).
+    pub cone_mult: f32,
 }
 
 impl Weapon {
@@ -172,6 +175,7 @@ impl Weapon {
             aim_arc: f(100).unwrap_or(0.0),
             semi_auto_delay: (f(128).unwrap_or(0.0), f(132).unwrap_or(0.0)),
             speed: f(4).unwrap_or(1.0),
+            cone_mult: 1.0,
         })
     }
 
@@ -255,7 +259,7 @@ impl Weapon {
     /// carrying the weapon's damage ÷ the count; the cone the weapon's min
     /// spread (degrees) after the ammunition's spread effects — the
     /// spread × wobble term is always 0 in the game, and the player's sway
-    /// doesn't move unscoped shots.
+    /// doesn't move unscoped shots; all of it × [`Weapon::cone_mult`].
     pub fn shot(&self, order: &LoadOrder, ammo: Option<FormId>) -> (u32, f32) {
         let from_ammo = ammo
             .and_then(|a| order.get(a))
@@ -271,7 +275,8 @@ impl Weapon {
         let effects = ammo.map(|a| ammo_effects(order, a)).unwrap_or_default();
         let cone = with_ammo(&effects, 3, self.min_spread)
             .max(0.0)
-            .to_radians();
+            .to_radians()
+            * self.cone_mult;
         (count, cone)
     }
 
@@ -344,6 +349,20 @@ pub fn weapon_damage(
     weapon: Option<&Weapon>,
     power: bool,
 ) -> f32 {
+    let condition = weapon.map_or(1.0, |w| weapon_condition(state, attacker, w.form_id));
+    weapon_damage_at(order, state, attacker, weapon, power, condition)
+}
+
+/// [`weapon_damage`] with the weapon at a condition (0..1) other than its
+/// own (the repair menus' "after" figures, `006450f0` with a condition).
+pub fn weapon_damage_at(
+    order: &LoadOrder,
+    state: &GameState,
+    attacker: FormId,
+    weapon: Option<&Weapon>,
+    power: bool,
+    condition: f32,
+) -> f32 {
     let setting = |n: &str, default: f32| game_setting(order, n).unwrap_or(default);
     let facts = Facts {
         order,
@@ -382,21 +401,28 @@ pub fn weapon_damage(
         Some(w) if w.animation == 0 => unarmed(),
         Some(w) if matches!(w.animation, 1 | 2 | 13) => av(17).max(0.0),
         Some(_) => 0.0,
-    };
+    } + weapon
+        .and_then(|w| {
+            // A damage mod's value (`004bd8d0` in `00644ce0`).
+            crate::weapon_mods::bonus(
+                order,
+                crate::weapon_mods::flags(state, attacker, w.form_id),
+                w.form_id,
+                crate::weapon_mods::effect::DAMAGE,
+            )
+        })
+        .unwrap_or(0.0);
     let power = if power {
         setting("fDamagePowerAttackBonus", 2.0)
     } else {
         1.0
     };
     let base = weapon.map_or(1.0, |w| w.damage) * setting("fDamageWeaponMult", 1.0);
-    let condition = weapon.map_or(1.0, |w| {
-        let c = weapon_condition(state, attacker, w.form_id);
-        if c > 0.75 {
-            1.0
-        } else {
-            1.0 - 0.67 * (0.75 - c)
-        }
-    });
+    let condition = if weapon.is_none() || condition > 0.75 {
+        1.0
+    } else {
+        1.0 - 0.67 * (0.75 - condition)
+    };
     let scale = state.scales.get(&attacker).copied().unwrap_or(1.0);
     (base * skill_factor * power + added) * condition * scale
 }
@@ -578,6 +604,31 @@ pub fn hit_through_armour(
     target: FormId,
     ammo: Option<FormId>,
 ) -> f32 {
+    armour_hit(order, state, damage, attacker, target, ammo).damage
+}
+
+/// A hit through armour: the damage left, and what it wears off the
+/// target's armour.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ArmourHit {
+    pub damage: f32,
+    /// The hit's `fArmorDamage` (Xbox PDB `HitData`, `009b5a30`):
+    /// `fDamageToArmorPercentage` (0.5) × the damage × the resistance's
+    /// share, plus `fDamageToArmorPercentage` × the threshold taken off (at
+    /// most what's left above the 20% floor); none for a hit doing fatigue
+    /// damage (none here). See [`wear_armour`].
+    pub armour_damage: f32,
+}
+
+/// [`hit_through_armour`] with what the hit wears off the armour.
+pub fn armour_hit(
+    order: &LoadOrder,
+    state: &GameState,
+    damage: f32,
+    attacker: Option<(FormId, Option<FormId>)>,
+    target: FormId,
+    ammo: Option<FormId>,
+) -> ArmourHit {
     let setting = |n: &str, default: f32| game_setting(order, n).unwrap_or(default);
     let effects = ammo.map(|a| ammo_effects(order, a)).unwrap_or_default();
     let least = damage * setting("fMinDamMultiplier", 0.2);
@@ -618,6 +669,8 @@ pub fn hit_through_armour(
             &[Tab::Target(who), held],
         );
     }
+    let wear = setting("fDamageToArmorPercentage", 0.5);
+    let mut armour_damage = wear * damage * resist;
     let after = damage * (1.0 - resist) - threshold.max(0.0);
     let mut after = with_ammo(&effects, 0, after);
     if let Some((who, weapon)) = attacker {
@@ -630,27 +683,72 @@ pub fn hit_through_armour(
             &[perks::weapon_tab(weapon), Tab::Target(target)],
         );
     }
-    after.max(least)
+    armour_damage += wear * threshold.max(0.0).min(after - least);
+    ArmourHit {
+        damage: after.max(least),
+        armour_damage,
+    }
+}
+
+/// A piece of armour's damage threshold or resistance at a condition
+/// 0..1 (`004be0b0`, `004bdf90`): the record's figure truncated, × 1 above
+/// half condition and 0.5 + the condition at or below (`00646360`,
+/// `00646d40`), rounded up (`00476b20`).
+pub fn armour_figure_at(value: f32, condition: f32) -> f32 {
+    let factor = if condition <= 0.5 {
+        1.0 - (0.5 - condition)
+    } else {
+        1.0
+    };
+    (value.trunc() * factor).ceil()
+}
+
+/// What someone's worn armour adds to a figure (`008d2110` the damage
+/// threshold, `008d22b0` the resistance): each piece worn once, its
+/// figure at its condition ([`armour_figure_at`]); `pick` reads the figure
+/// from the record's `DNAM`.
+fn worn_armour_sum(
+    order: &LoadOrder,
+    state: &GameState,
+    who: FormId,
+    pick: &dyn Fn(&[u8]) -> Option<f32>,
+) -> f32 {
+    let mut seen: Vec<FormId> = Vec::new();
+    let mut sum = 0.0;
+    for &item in state.equipped.get(&who).into_iter().flatten() {
+        if seen.contains(&item) {
+            continue;
+        }
+        let Some(rr) = order
+            .get(item)
+            .filter(|r| r.entry.header.kind.as_bytes() == b"ARMO")
+        else {
+            continue;
+        };
+        let Some(v) = rr
+            .record()
+            .ok()
+            .and_then(|r| r.get(DNAM).and_then(|d| pick(&d.data)))
+        else {
+            continue;
+        };
+        seen.push(item);
+        sum += armour_figure_at(v, weapon_condition(state, who, item));
+    }
+    sum
 }
 
 /// Someone's damage resistance: their actor value (18) plus worn armour's
-/// (`ARMO` `DNAM` i16 at 0; how the game sums worn armour into it isn't
-/// traced).
+/// (`ARMO` `DNAM` i16 at 0, each piece at its condition, the sum at most
+/// `fMaxArmorRating`: `008d22b0`).
 pub fn damage_resistance(order: &LoadOrder, state: &GameState, who: FormId) -> f32 {
-    let worn: f32 = state
-        .equipped
-        .get(&who)
-        .into_iter()
-        .flatten()
-        .filter_map(|&item| {
-            let rr = order
-                .get(item)
-                .filter(|r| r.entry.header.kind.as_bytes() == b"ARMO")?;
-            let record = rr.record().ok()?;
-            let d = record.get(DNAM).filter(|s| s.data.len() >= 2)?;
-            Some(f32::from(i16::from_le_bytes([d.data[0], d.data[1]])))
-        })
-        .sum();
+    let mut worn = worn_armour_sum(order, state, who, &|d| {
+        (d.len() >= 2).then(|| f32::from(i16::from_le_bytes([d[0], d[1]])))
+    });
+    let most = game_setting(order, "fMaxArmorRating").unwrap_or(90.0);
+    if most > 0.0 {
+        worn = worn.min(most);
+    }
     worn + Facts {
         order,
         state,
@@ -671,8 +769,9 @@ pub fn sneak_multiplier(order: &LoadOrder, melee: bool) -> f32 {
     }
 }
 
-/// A weapon's condition, 0 to 1: full unless scripts changed it
-/// (`SetWeaponHealthPerc`) or it was worn down ([`damage_weapon`]).
+/// An item's condition, 0 to 1 (weapons and armour): full unless scripts
+/// changed it (`SetWeaponHealthPerc`, `AddItemHealthPercent`), it was worn
+/// down ([`damage_item`]) or repaired (`world::repair`).
 pub fn weapon_condition(state: &GameState, holder: FormId, weapon: FormId) -> f32 {
     state
         .weapon_health
@@ -681,12 +780,9 @@ pub fn weapon_condition(state: &GameState, holder: FormId, weapon: FormId) -> f3
         .unwrap_or(1.0)
 }
 
-/// An item of `holder`'s loses `points` of health (the actor's
-/// `DamageItem`, `00891360`): the holder's perks' "Modify Item Damage"
-/// (entry point 68: Built to Destroy × 1.15, Regular Maintenance × 0.5)
-/// first, then the points come off the item's health (its `DATA` health
-/// at full), never below 0. Weapons only here (the condition kept per
-/// holder and weapon, as a share of the full health).
+/// A weapon of `holder`'s loses `points` of health ([`damage_item`]: the
+/// perks' "Modify Item Damage", entry point 68: Built to Destroy × 1.15,
+/// Regular Maintenance × 0.5).
 pub fn damage_weapon(
     order: &LoadOrder,
     state: &mut GameState,
@@ -694,7 +790,25 @@ pub fn damage_weapon(
     weapon: &Weapon,
     points: f32,
 ) {
-    if points <= 0.0 || weapon.health <= 0 {
+    damage_item(order, state, holder, weapon.form_id, points);
+}
+
+/// An item of `holder`'s (a weapon or armour) loses `points` of health
+/// (`00891360`): nothing for none; the holder's perks' "Modify Item
+/// Damage" (entry point 68) first; then its health less the points, nothing
+/// left below 1; the condition kept as a share of its full health
+/// (`world::repair::max_health`). The player is told when one drops from
+/// 25% or more to below it: `sWeaponLowCond` / `sArmorLowCond`, with
+/// `WPNBreak`. A weapon left with nothing breaks ([`break_weapon`]).
+pub fn damage_item(
+    order: &LoadOrder,
+    state: &mut GameState,
+    holder: FormId,
+    item: FormId,
+    points: f32,
+) {
+    let full = crate::repair::max_health(order, item) as f32;
+    if points <= 0.0 || full <= 0.0 {
         return;
     }
     let points = perks::apply_for(
@@ -705,9 +819,107 @@ pub fn damage_weapon(
         points,
         &[],
     );
-    let now = weapon_condition(state, holder, weapon.form_id);
-    let after = (now - points / weapon.health as f32).max(0.0);
-    state.weapon_health.insert((holder, weapon.form_id), after);
+    let before = weapon_condition(state, holder, item);
+    let mut health = before * full - points;
+    if health < 1.0 {
+        health = 0.0;
+    }
+    let after = health / full;
+    state.weapon_health.insert((holder, item), after);
+    if holder == PLAYER_REF && (before * 100.0).min(100.0) >= 25.0 && after * 100.0 < 25.0 {
+        let kind = order.get(item).map(|r| r.entry.header.kind);
+        let (setting, default) = if kind == Some(WEAP) {
+            (
+                "sWeaponLowCond",
+                "Your weapon condition is dangerously low.",
+            )
+        } else {
+            ("sArmorLowCond", "Your armor condition is dangerously low.")
+        };
+        let text = crate::scripting::game_setting_text(order, setting)
+            .unwrap_or_else(|| default.to_string());
+        state.events.push(Event::Message {
+            title: None,
+            text,
+            buttons: Vec::new(),
+        });
+        if let Some(sound) = order.form_by_editor_id("WPNBreak") {
+            state.events.push(Event::Sound(sound));
+        }
+    }
+    if health <= 0.0 && order.get(item).is_some_and(|r| r.entry.header.kind == WEAP) {
+        break_weapon(order, state, holder, item);
+    }
+}
+
+/// A weapon with no health left breaks (`00891360` at 0): the player is
+/// told (`sWeaponBreak`, `WPNBreak`) and it's taken off; someone else drops
+/// it (the actor's slot 0x3cc), unless it can't be dropped (`DNAM` flags
+/// 0x08), is embedded (0x20) or is a quest item, which they only put
+/// away. (Broken things can't be put back on: `GameState::equip`.)
+fn break_weapon(order: &LoadOrder, state: &mut GameState, holder: FormId, item: FormId) {
+    if holder == PLAYER_REF {
+        let text = crate::scripting::game_setting_text(order, "sWeaponBreak")
+            .unwrap_or_else(|| "Your weapon has broken.".to_string());
+        state.events.push(Event::Message {
+            title: None,
+            text,
+            buttons: Vec::new(),
+        });
+        if let Some(sound) = order.form_by_editor_id("WPNBreak") {
+            state.events.push(Event::Sound(sound));
+        }
+        state.unequip_item(order, holder, item);
+        return;
+    }
+    let flags = Weapon::load(order, item).map_or(0, |w| w.flags1);
+    let keep =
+        flags & (0x08 | 0x20) != 0 || crate::script_functions::is_quest_item(order, state, item);
+    state.unequip_item(order, holder, item);
+    if !keep {
+        state.dropped.insert((holder, item));
+    }
+}
+
+/// What a hit on the player wears off their armour (`0089a760`, with the
+/// hit's `fArmorDamage`, Xbox PDB `HitData`): when above 0, a hit on the
+/// head (part 1 or 2) wears what's worn on the head (biped slot 0), else
+/// the hair slot's (1); any other hit what's worn on the upper body (2)
+/// (`0089d8b0`); through [`damage_item`]. Only the player's armour wears
+/// (the actor's slot 0x360).
+pub fn wear_armour(
+    order: &LoadOrder,
+    state: &mut GameState,
+    who: FormId,
+    part: Option<u8>,
+    points: f32,
+) {
+    if who != PLAYER_REF || points <= 0.0 {
+        return;
+    }
+    let head = matches!(part, Some(1) | Some(2));
+    let slots: &[u32] = if head { &[0x1, 0x2] } else { &[0x4] };
+    let worn: Vec<FormId> = state.equipped.get(&who).cloned().unwrap_or_default();
+    let biped = |item: FormId| {
+        order
+            .get(item)
+            .filter(|r| r.entry.header.kind.as_bytes() == b"ARMO")
+            .and_then(|r| r.record().ok())
+            .and_then(|r| {
+                r.get(FourCC::new(b"BMDT"))
+                    .filter(|s| s.data.len() >= 4)
+                    .map(|s| le_u32(&s.data, 0))
+            })
+    };
+    for &slot in slots {
+        if let Some(&item) = worn
+            .iter()
+            .find(|&&i| biped(i).is_some_and(|b| b & slot != 0))
+        {
+            damage_item(order, state, who, item, points);
+            return;
+        }
+    }
 }
 
 /// What an attack wears off the weapon used (`00893a40` as an attack
@@ -1214,22 +1426,10 @@ pub fn damage_threshold(order: &LoadOrder, state: &GameState, who: FormId) -> f3
 }
 
 /// Someone's damage threshold before perks: their actor value plus worn
-/// armour's.
+/// armour's (`ARMO` `DNAM` f32 at 4, each piece at its condition:
+/// `008d2110`).
 pub fn worn_damage_threshold(order: &LoadOrder, state: &GameState, who: FormId) -> f32 {
-    let worn: f32 = state
-        .equipped
-        .get(&who)
-        .into_iter()
-        .flatten()
-        .filter_map(|&item| {
-            let rr = order
-                .get(item)
-                .filter(|r| r.entry.header.kind.as_bytes() == b"ARMO")?;
-            let record = rr.record().ok()?;
-            let d = record.get(DNAM).filter(|s| s.data.len() >= 8)?;
-            Some(le_f32(&d.data, 4))
-        })
-        .sum();
+    let worn = worn_armour_sum(order, state, who, &|d| (d.len() >= 8).then(|| le_f32(d, 4)));
     let facts = Facts {
         order,
         state,
@@ -1279,7 +1479,13 @@ pub fn weapon_in_hand(order: &LoadOrder, state: &GameState, who: FormId) -> Opti
             crate::actor::carried_weapon(order, base_of(order, who)?)
         }
     })?;
-    Weapon::load(order, id)
+    // As its mods change it (`world::weapon_mods`).
+    Some(crate::weapon_mods::modded(
+        order,
+        state,
+        who,
+        Weapon::load(order, id)?,
+    ))
 }
 
 /// How far a projectile carries, as the combat AI measures it

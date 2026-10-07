@@ -15,12 +15,14 @@
 //! # Ok::<(), cellview::Error>(())
 //! ```
 
+pub mod caravan;
 pub mod game;
 pub mod grass;
 pub mod impacts;
 pub mod lockpick;
 pub mod music;
 pub mod particles;
+pub mod slots;
 pub mod sound;
 pub mod space;
 pub mod texture;
@@ -1279,7 +1281,7 @@ impl TextureCache<'_> {
 
 /// Reads a texture, correcting a wrong file extension as the game's own
 /// files sometimes need (`chromedull_e.nif` for `.dds`).
-fn read_texture(assets: &Assets, path: &str) -> Option<(String, Vec<u8>)> {
+pub(crate) fn read_texture(assets: &Assets, path: &str) -> Option<(String, Vec<u8>)> {
     let mut candidates = vec![path.to_string()];
     if !path.ends_with(".dds") {
         if let Some((stem, _)) = path.rsplit_once('.') {
@@ -1316,7 +1318,7 @@ fn start_point(scene: &CellScene) -> Start {
     }
 }
 
-fn column_major(t: &nif::math::Transform) -> [f32; 16] {
+pub fn column_major(t: &nif::math::Transform) -> [f32; 16] {
     let r = &t.rotation;
     let s = t.scale;
     [

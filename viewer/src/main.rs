@@ -8,6 +8,7 @@ mod actors;
 mod ai;
 mod anim_library;
 mod args;
+mod caravan_table;
 mod chatter;
 mod clutter;
 mod combat;
@@ -34,6 +35,7 @@ mod lod_objects;
 mod look;
 mod map;
 mod menus;
+mod movie;
 mod music;
 mod particles;
 mod pipboy;
@@ -44,6 +46,7 @@ mod radio;
 mod report;
 mod scope;
 mod scripts;
+mod shared_light;
 mod sight;
 mod sitting;
 mod sounds;
@@ -74,7 +77,7 @@ use bevy::render::render_resource::{
 };
 use bevy::render::renderer::RenderDevice;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
-use bevy::window::WindowResolution;
+use bevy::window::{CursorGrabMode, WindowResolution};
 use cellview::{space, Blend, Game, GpuFormat, TextureData, ViewerScene};
 use exterior::{ExteriorStart, PendingExterior};
 use grade::{GradePlugin, ImageSpaceGrade};
@@ -238,6 +241,7 @@ fn main() {
             |section, key| game.settings.float(section, key),
         )))
         .insert_resource(GameFiles(game))
+        .insert_resource(movie::Movies::new(data.clone(), args.movies))
         .init_resource::<scripts::Scripts>()
         .init_resource::<player_idle::PlayerIdle>()
         .init_resource::<look::LookAnchors>()
@@ -333,11 +337,19 @@ fn main() {
         .insert_resource(game_menus::StartMenu(args.open_menu.clone()))
         .insert_resource(scripts::StartUse(args.use_on.clone()))
         .insert_resource(game_menus::FixedPointer(args.menu_pointer))
+        .insert_resource(game_menus::FixedClicks {
+            at: args.menu_clicks.clone(),
+            release: false,
+        })
+        .insert_resource(game_menus::FixedKeys(args.menu_keys.clone()))
         .add_plugins((GradePlugin, GameLightingPlugin, TerrainPlugin, LodPlugin))
+        .add_plugins(shared_light::SharedLightPlugin)
         // After the default plugins: they load shaders.
         .add_plugins((hud::HudPlugin, pipboy::PipboyPlugin))
         .add_plugins(game_menus::GameMenusPlugin)
         .insert_resource(pipboy::StartPipboy(args.pipboy.clone()))
+        .insert_resource(pipboy::StartPipboyKeys(args.pipboy_keys.clone()))
+        .insert_resource(pipboy::PretendPad(args.pad))
         .add_plugins(grass::GrassPlugin)
         .add_plugins(trees::TreePlugin)
         .add_plugins(water::WaterPlugin)
@@ -351,9 +363,14 @@ fn main() {
         .add_plugins(explosives::ExplosivesPlugin)
         .add_plugins(clutter::ClutterPlugin)
         .add_plugins(lockpick::LockpickPlugin)
+        .add_plugins(caravan_table::CaravanTablePlugin)
         .add_audio_source::<sounds::PcmSound>()
         // The first-person camera runs the image space passes with the
         // main camera's grade, once everything has set it.
+        .add_systems(
+            PreUpdate,
+            movie::withhold_input.after(bevy::input::InputSystem),
+        )
         .add_systems(PostUpdate, viewmodel::copy_grade.after(grade::adapt_eyes))
         // The camera is the eye during the frame; the third-person view
         // moves it once everything has used it, and the eye comes back
@@ -439,6 +456,9 @@ fn main() {
                     doors::update_doors,
                 )
                     .chain(),
+                (movie::start_movies, movie::play_movies)
+                    .chain()
+                    .after(scripts::run_scripts),
                 walk::toggle_walking,
                 adjust_exposure,
                 // The cell's grade, then the screen effects scripts applied.
@@ -1912,6 +1932,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2024,6 +2045,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2103,6 +2125,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2168,6 +2191,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2253,12 +2277,14 @@ fn srgb_decode(c: f32) -> f32 {
     }
 }
 
-/// `--fps`: frames counted, and the time since the last report.
+/// `--fps`: frames counted, the time since the last report and the
+/// longest frame in it (a hitch).
 #[derive(Resource, Default)]
 struct FrameCounter {
     on: bool,
     frames: u32,
     seconds: f32,
+    longest: f32,
 }
 
 fn report_fps(time: Res<Time>, mut counter: ResMut<FrameCounter>) {
@@ -2267,14 +2293,17 @@ fn report_fps(time: Res<Time>, mut counter: ResMut<FrameCounter>) {
     }
     counter.frames += 1;
     counter.seconds += time.delta_secs();
+    counter.longest = counter.longest.max(time.delta_secs());
     if counter.seconds >= 2.0 {
         println!(
-            "{:.0} frames per second ({:.1} ms a frame)",
+            "{:.0} frames per second ({:.1} ms a frame, longest {:.1} ms)",
             counter.frames as f32 / counter.seconds,
-            1000.0 * counter.seconds / counter.frames as f32
+            1000.0 * counter.seconds / counter.frames as f32,
+            1000.0 * counter.longest
         );
         counter.frames = 0;
         counter.seconds = 0.0;
+        counter.longest = 0.0;
     }
 }
 
@@ -2425,6 +2454,7 @@ fn lit_material(
             _ => 0.0,
         };
         GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 emissive: Vec4::new(ur, ug, ub, 0.0),
                 surface: Vec4::new(0.0, 0.0, 1.0, fog_mode),
@@ -2458,6 +2488,7 @@ fn lit_material(
             .and_then(|(e, _)| e.mask)
             .and_then(|i| textures[i].clone());
         GameLit {
+            shared: crate::shared_light::BUFFER,
             lighting: GameLighting {
                 emissive: Vec4::new(er, eg, eb, flag(glow.is_some())),
                 specular,
@@ -2588,7 +2619,7 @@ fn help_text(ev100: f32, speed: f32, walking: bool) -> String {
             .to_string()
     } else {
         format!(
-            "Flying: hold a mouse button to look; WASD, Space/Ctrl up/down, Shift faster, \
+            "Flying: the mouse looks; WASD, Space/Ctrl up/down, Shift faster, \
              wheel: speed ({speed:.1} m/s), E to use things"
         )
     };
@@ -2694,14 +2725,24 @@ fn grab_cursor(
     let grab = player.walking
         && window.focused
         && !mouse_in_menus(menus.as_deref(), conversation.as_deref(), vats.as_deref());
-    let (mode, visible) = if grab {
-        (bevy::window::CursorGrabMode::Locked, false)
+    // Windows can't lock the pointer: there it's confined and put back in
+    // the middle each frame (the look reads the mouse's own motion).
+    let (mode, visible) = if !grab {
+        (CursorGrabMode::None, true)
+    } else if cfg!(target_os = "windows") {
+        (CursorGrabMode::Confined, false)
     } else {
-        (bevy::window::CursorGrabMode::None, true)
+        (CursorGrabMode::Locked, false)
     };
     if window.cursor_options.grab_mode != mode || window.cursor_options.visible != visible {
         window.cursor_options.grab_mode = mode;
         window.cursor_options.visible = visible;
+    }
+    if grab && cfg!(target_os = "windows") {
+        let middle = Vec2::new(window.width(), window.height()) / 2.0;
+        if window.cursor_position() != Some(middle) {
+            window.set_cursor_position(Some(middle));
+        }
     }
 }
 

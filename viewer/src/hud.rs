@@ -62,6 +62,11 @@ const HUD_LAYER: usize = 23;
 #[derive(Resource, Clone, ExtractResource)]
 pub struct HudLayer(pub Handle<Image>);
 
+/// The HUD's camera (it writes the HUD's picture each frame; while a menu's
+/// 3D scene is drawn into it first it blends over it: `caravan_table`).
+#[derive(Component)]
+pub struct HudCamera;
+
 /// Whether the game's HUD is drawn (`--no-hud` turns it off).
 #[derive(Resource)]
 pub struct ShowHud(pub bool);
@@ -287,6 +292,7 @@ fn setup_hud_layer(
         DebandDither::Disabled,
         Msaa::Off,
         RenderLayers::layer(HUD_LAYER),
+        HudCamera,
     ));
     let mut white = Image::new_fill(
         Extent3d {

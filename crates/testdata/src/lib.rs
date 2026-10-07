@@ -1449,6 +1449,89 @@ pub mod quest_ids {
     /// of the time (as the 9mm round's "Case, 9mm").
     pub const CASED_AMMO: u32 = 0xA97;
     pub const CASE: u32 = 0xA98;
+    /// A bundle of cases whose script, on reaching the player, gives 25
+    /// cases and removes itself (as the game's `Case10mmAddScript`).
+    pub const CASE_BUNDLE: u32 = 0xAF0;
+    pub const CASE_BUNDLE_SCRIPT: u32 = 0xAF1;
+    /// A bundle whose `OnAdd` only marks it and whose `GameMode` gives 5
+    /// cases and removes it (as the game's `PrimerShotshellAddScript`).
+    pub const LATE_BUNDLE: u32 = 0xAF2;
+    pub const LATE_BUNDLE_SCRIPT: u32 = 0xAF3;
+    /// A hat whose script sets `TestGlobal` to 99 when the player puts it
+    /// on and 7 when they take it off (as the faction outfits' warnings).
+    pub const SCRIPTED_HAT: u32 = 0xAF4;
+    pub const SCRIPTED_HAT_SCRIPT: u32 = 0xAF5;
+    /// The pistol's repair list (`REPL`: `TestPistolRepairList`, the
+    /// rifle), the game data's repair settings (`fRepairSkillMax` 10,
+    /// `fItemRepairCostMult` 2; two forms from here), `JuryRigging` (entry
+    /// point 48 "Has Jury Rigging" set 1, as the game's perk) and a
+    /// revolver like the pistol (one-handed pistol, Guns; value 50, health
+    /// 100) that isn't on its list.
+    pub const REPAIR_LIST: u32 = 0xAF6;
+    pub const REPAIR_SETTINGS: u32 = 0xAF7;
+    pub const JURY_RIGGING: u32 = 0xAF9;
+    pub const REVOLVER: u32 = 0xAFA;
+    /// Armour as the game's (`DATA` value, health, weight; `DNAM` DR 0 and
+    /// DT): `TestArmor` on the upper body (DT 10, health 100, value 100),
+    /// `TestHelmet` on the head (DT 4, health 50).
+    pub const ARMOR: u32 = 0xAFB;
+    pub const HELMET: u32 = 0xAFC;
+    /// Things for dropping: `TestKeepsake`, whose `OnDrop Player` sets
+    /// `TestGlobal` to 42 (as the Platinum Chip's removes its note), and
+    /// `TestRefusedGift`, whose `OnAdd DocRef` drops it (as the companions'
+    /// faction outfits' `DropMe`).
+    pub const KEEPSAKE: u32 = 0xAFD;
+    pub const KEEPSAKE_SCRIPT: u32 = 0xAFE;
+    pub const REFUSED_GIFT: u32 = 0xAFF;
+    pub const REFUSED_GIFT_SCRIPT: u32 = 0xB20;
+    /// The companion wheel's: `FollowersWait`, Doc's line for it ("I'll sit
+    /// tight.", begin `set DocRef.Waiting to 1`, end `set TestGlobal to
+    /// 7`, as Boone's), `Regenerating` and his line for it ("Much
+    /// better."), and the default objects (`DOBJ`, the Stimpak first:
+    /// `TestStimpak`). `TestDocScript` has the four variables the wheel
+    /// reads.
+    pub const FOLLOWERS_WAIT: u32 = 0xB50;
+    pub const WAIT_LINE: u32 = 0xB51;
+    pub const REGENERATING: u32 = 0xB52;
+    pub const REGENERATING_LINE: u32 = 0xB53;
+    pub const DEFAULT_OBJECTS: u32 = 0xB54;
+    /// Weapon mods: `TestModGun` (damage 10, clip 8, weight 3, health 100,
+    /// value 100) with three slots: `TestExtMag` (clip +7), `TestBarrel`
+    /// (damage +5) and `TestLightFrame` (weight −1), each worth 20.
+    pub const MOD_GUN: u32 = 0xB5A;
+    pub const EXT_MAG: u32 = 0xB5B;
+    pub const BARREL: u32 = 0xB5C;
+    pub const LIGHT_FRAME: u32 = 0xB5D;
+    /// Its models: `MODL` `Weapons\ModGun.NIF`, `MWD1`
+    /// `Weapons\ModGunExt.NIF`, `MWD3` `Weapons\ModGunExtBarrel.NIF`;
+    /// first person `WNAM` `1stPersonModGun` (`Weapons\1stModGun.NIF`),
+    /// `WNM1` `1stPersonModGunExt` (`Weapons\1stModGunExt.NIF`).
+    pub const FIRST_PERSON_GUN: u32 = 0xB5E;
+    pub const FIRST_PERSON_GUN_EXT: u32 = 0xB5F;
+    /// Noise: `TestLoudGun` (a pistol, `VNAM` 0 loud) whose first slot is
+    /// `TestSilencer` (effect 11) and second `TestBeamSplitter` (effect 12,
+    /// +2 projectiles, cone × 0.5; min spread 2°), and `TestKnife`
+    /// (one-handed melee).
+    /// The gecko's `NAM5` is 0 (loud).
+    pub const LOUD_GUN: u32 = 0xB60;
+    pub const SILENCER: u32 = 0xB61;
+    pub const KNIFE: u32 = 0xB62;
+    pub const BEAM_SPLITTER: u32 = 0xB63;
+    /// Caravan: `TestCardAce` (hearts ace), `TestCardQueen` (spades queen),
+    /// both with `TestCardScript` (the game's `CardAddToPlayerScript`:
+    /// `OnAdd`, held by the player, `AddCardToPlayer` and `RemoveMe`), and
+    /// `TestCaravanDeck` with both.
+    pub const CARD_ACE: u32 = 0xB55;
+    pub const CARD_QUEEN: u32 = 0xB56;
+    pub const CARD_SCRIPT: u32 = 0xB57;
+    pub const CARAVAN_DECK: u32 = 0xB58;
+    /// A casino laid out as FalloutNV.esm's are (`CSNO`: eight `MODL`s,
+    /// `MOD2` to `MOD4`, seven `ICON`s, four `ICO2`s, a 0x38-byte `DATA`):
+    /// `TestCasino` "Gommorah" with Gomorrah's numbers (shuffle 0.2,
+    /// payout 1.5, two stops each, three decks, limit 9000, `TestQuest` its
+    /// comps quest), played with `TestChip` (`CHIP`, no `DATA`).
+    pub const CASINO: u32 = 0xB64;
+    pub const CHIP: u32 = 0xB65;
     /// Settings the perks' rules read (seven forms from here):
     /// `fPackRatThreshold` 2, `fPackRatModifier` 0.5, `fAgilityReloadBase`
     /// 5, `fAgilityReloadModifier` 0.1, `fDamageToWeaponValue` 0.2,
@@ -1548,6 +1631,53 @@ pub fn quests(tag: &str) -> TempData {
     caps.extend(sub(b"FULL", &zstr("Bottle Cap")));
 
     let mut scripts = script(
+        CASE_BUNDLE_SCRIPT,
+        "TestCaseBundleScript",
+        "scn TestCaseBundleScript\nBegin OnAdd Player\n\tPlayer.AddItem TestCase 25\n\tRemoveMe\nEnd\n",
+    );
+    scripts.extend(script(
+        CARD_SCRIPT,
+        "TestCardScript",
+        "scn TestCardScript
+begin OnAdd
+	if GetContainer != player
+		return
+	else
+		AddCardToPlayer
+		RemoveMe
+	endif
+end
+",
+    ));
+    scripts.extend(script(
+        KEEPSAKE_SCRIPT,
+        "TestKeepsakeScript",
+        "scn TestKeepsakeScript
+Begin OnDrop Player
+	set TestGlobal to 42
+End
+",
+    ));
+    scripts.extend(script(
+        REFUSED_GIFT_SCRIPT,
+        "TestRefusedGiftScript",
+        "scn TestRefusedGiftScript
+Begin OnAdd DocRef
+	DropMe
+End
+",
+    ));
+    scripts.extend(script(
+        LATE_BUNDLE_SCRIPT,
+        "TestLateBundleScript",
+        "scn TestLateBundleScript\nint killme\nBegin OnAdd Player\n\tset killme to 1\nEnd\nBegin GameMode\n\tif killme == 1\n\t\tPlayer.AddItem TestCase 5\n\t\tRemoveMe\n\tendif\nEnd\n",
+    ));
+    scripts.extend(script(
+        SCRIPTED_HAT_SCRIPT,
+        "TestScriptedHatScript",
+        "scn TestScriptedHatScript\nBegin OnEquip Player\n\tset TestGlobal to 99\nEnd\nBegin OnUnequip Player\n\tset TestGlobal to 7\nEnd\n",
+    ));
+    scripts.extend(script(
         QUEST_SCRIPT,
         "TestQuestScript",
         "scn TestQuestScript\n\
@@ -1565,7 +1695,7 @@ pub fn quests(tag: &str) -> TempData {
          \t\tendif\n\
          \tendif\n\
          End",
-    );
+    ));
     scripts.extend(script(
         GECKO_SCRIPT,
         "TestGeckoScript",
@@ -1585,6 +1715,8 @@ pub fn quests(tag: &str) -> TempData {
         DOC_SCRIPT,
         "TestDocScript",
         "scn TestDocScript\nshort iTalked\nshort iByDoor\n\
+         short Waiting\nshort FollowerSwitchAggressive\nshort IsFollowingLong\n\
+         short CombatStyleRanged\n\
          Begin OnActivate Player\n\tset iTalked to iTalked + 1\nEnd\n\
          Begin OnActivate DoorRef\n\tset iByDoor to 1\nEnd",
     ));
@@ -1806,6 +1938,16 @@ pub fn quests(tag: &str) -> TempData {
     weapon_dnam[104..108].copy_from_slice(&41u32.to_le_bytes()); // Guns
     weapon_dnam[116..120].copy_from_slice(&1.0f32.to_le_bytes()); // limb damage
     pistol.extend(sub(b"DNAM", &weapon_dnam.clone()));
+    pistol.extend(sub(b"REPL", &REPAIR_LIST.to_le_bytes()));
+    let mut revolver = edid("TestRevolver");
+    revolver.extend(sub(b"FULL", &zstr("Revolver")));
+    let mut revolver_data = 50i32.to_le_bytes().to_vec();
+    revolver_data.extend(100i32.to_le_bytes());
+    revolver_data.extend(1.0f32.to_le_bytes());
+    revolver_data.extend(12i16.to_le_bytes());
+    revolver_data.push(6);
+    revolver.extend(sub(b"DATA", &revolver_data));
+    revolver.extend(sub(b"DNAM", &weapon_dnam.clone()));
     // A two-handed rifle: damage 20, limb damage × 1.
     let mut rifle = edid("TestRifle");
     rifle.extend(sub(b"FULL", &zstr("Rifle")));
@@ -1829,6 +1971,7 @@ pub fn quests(tag: &str) -> TempData {
     gecko_data.extend(8i16.to_le_bytes());
     gecko_data.extend([5; 7]);
     gecko.extend(sub(b"DATA", &gecko_data));
+    gecko.extend(sub(b"NAM5", &0u32.to_le_bytes()));
     let mut bottle = edid("TestBottle");
     bottle.extend(sub(b"SCRI", &BOTTLE_SCRIPT.to_le_bytes()));
     // A healing item: its effect restores health (archetype 0, actor
@@ -1967,6 +2110,30 @@ pub fn quests(tag: &str) -> TempData {
     let mut apparel = clothes(SHIRT, "TestShirt", 0x04);
     apparel.extend(clothes(COAT, "TestCoat", 0x04 | 0x08));
     apparel.extend(clothes(HAT, "TestHat", 0x400));
+    let mut hat = edid("TestScriptedHat");
+    hat.extend(sub(b"FULL", &zstr("Scripted Hat")));
+    hat.extend(sub(b"SCRI", &SCRIPTED_HAT_SCRIPT.to_le_bytes()));
+    hat.extend(sub(b"BMDT", &[0, 4, 0, 0, 0, 0, 0, 0]));
+    apparel.extend(record(b"ARMO", SCRIPTED_HAT, &hat));
+    let armour = |id: u32, name: &str, slots: u32, value: i32, health: i32, dt: f32| {
+        let mut d = edid(name);
+        d.extend(sub(b"FULL", &zstr(name)));
+        let mut bmdt = slots.to_le_bytes().to_vec();
+        bmdt.extend([0; 4]);
+        d.extend(sub(b"BMDT", &bmdt));
+        let mut data = value.to_le_bytes().to_vec();
+        data.extend(health.to_le_bytes());
+        data.extend(5.0f32.to_le_bytes());
+        d.extend(sub(b"DATA", &data));
+        let mut dnam = 0i16.to_le_bytes().to_vec();
+        dnam.extend([0; 2]);
+        dnam.extend(dt.to_le_bytes());
+        dnam.extend([0; 4]);
+        d.extend(sub(b"DNAM", &dnam));
+        record(b"ARMO", id, &d)
+    };
+    apparel.extend(armour(ARMOR, "TestArmor", 0x04, 100, 100, 10.0));
+    apparel.extend(armour(HELMET, "TestHelmet", 0x01, 40, 50, 4.0));
     // A trait (DATA: trait, level, ranks, playable, hidden) and a perk.
     let mut perks = Vec::new();
     for (id, name, is_trait) in [(TRAIT, "Test Trait", 1u8), (PERK, "Test Perk", 0)] {
@@ -2153,6 +2320,7 @@ pub fn quests(tag: &str) -> TempData {
             vec![],
         ),
         (ADAMANTIUM, "Adamantium", 0, 6, 3, 3, 0.5, vec![guns(2)]),
+        (JURY_RIGGING, "JuryRigging", 0, 48, 1, 1, 1.0, vec![]),
     ] {
         perks.extend(entry_perk(
             id,
@@ -2163,6 +2331,16 @@ pub fn quests(tag: &str) -> TempData {
             tabs,
             value,
             &conditions,
+        ));
+    }
+    for (i, (name, value)) in [("fRepairSkillMax", 10.0f32), ("fItemRepairCostMult", 2.0)]
+        .into_iter()
+        .enumerate()
+    {
+        settings.extend(setting(
+            REPAIR_SETTINGS + i as u32,
+            name,
+            &value.to_le_bytes(),
         ));
     }
     for (i, (name, value)) in [
@@ -2245,6 +2423,42 @@ pub fn quests(tag: &str) -> TempData {
     lines.extend(record(b"INFO", OTHER_LINE, &other));
     let mut dialogue = greeting;
     dialogue.extend(group(GREETING.to_le_bytes(), 7, &lines));
+    // The companion wheel's topics (the game's `FollowersWait`,
+    // `Regenerating`), with Doc's lines.
+    for (topic, info, name, said, scripts) in [
+        (
+            FOLLOWERS_WAIT,
+            WAIT_LINE,
+            "FollowersWait",
+            "I'll sit tight.",
+            Some(("set DocRef.Waiting to 1", "set TestGlobal to 7")),
+        ),
+        (
+            REGENERATING,
+            REGENERATING_LINE,
+            "Regenerating",
+            "Much better.",
+            None,
+        ),
+    ] {
+        let mut d = edid(name);
+        d.extend(sub(b"QSTI", &QUEST.to_le_bytes()));
+        d.extend(sub(b"DATA", &[0, 0]));
+        dialogue.extend(record(b"DIAL", topic, &d));
+        let mut line = sub(b"DATA", &[0, 0, 0, 0]);
+        line.extend(sub(b"QSTI", &QUEST.to_le_bytes()));
+        line.extend(sub(b"TRDT", &[0; 24]));
+        line.extend(sub(b"NAM1", &zstr(said)));
+        line.extend(condition(72, [DOC, 0], 1.0));
+        if let Some((begin, end)) = scripts {
+            line.extend(sub(b"SCHR", &[0; 20]));
+            line.extend(sub(b"SCTX", begin.as_bytes()));
+            line.extend(sub(b"NEXT", &[]));
+            line.extend(sub(b"SCHR", &[0; 20]));
+            line.extend(sub(b"SCTX", end.as_bytes()));
+        }
+        dialogue.extend(group(topic.to_le_bytes(), 7, &record(b"INFO", info, &line)));
+    }
     // Topics to ask about: (topic, its line, name, top-level, priority,
     // who answers, the line's prompt, a topic the line teaches).
     let topics = [
@@ -2563,11 +2777,11 @@ pub fn quests(tag: &str) -> TempData {
     plugin.extend(group(*b"AMMO", 0, &ammunition));
     let mut cowhand_list = edid("CowhandList");
     cowhand_list.extend(sub(b"LNAM", &PISTOL.to_le_bytes()));
-    plugin.extend(group(
-        *b"FLST",
-        0,
-        &record(b"FLST", COWHAND_LIST, &cowhand_list),
-    ));
+    let mut lists = record(b"FLST", COWHAND_LIST, &cowhand_list);
+    let mut repair_list = edid("TestPistolRepairList");
+    repair_list.extend(sub(b"LNAM", &RIFLE.to_le_bytes()));
+    lists.extend(record(b"FLST", REPAIR_LIST, &repair_list));
+    plugin.extend(group(*b"FLST", 0, &lists));
     let mut testville = edid("RepTestville");
     testville.extend(sub(b"FULL", &zstr("Testville")));
     testville.extend(sub(b"DATA", &20.0f32.to_le_bytes()));
@@ -2575,7 +2789,88 @@ pub fn quests(tag: &str) -> TempData {
     plugin.extend(group(*b"IMAD", 0, &record(b"IMAD", FLASH, &flash)));
     let mut weapons = record(b"WEAP", PISTOL, &pistol);
     weapons.extend(record(b"WEAP", RIFLE, &rifle));
+    weapons.extend(record(b"WEAP", REVOLVER, &revolver));
+    // A gun with three mod slots (`WMI1`–`WMI3`; `DNAM` effects at 140,
+    // values at 152).
+    let mut mod_gun = edid("TestModGun");
+    mod_gun.extend(sub(b"FULL", &zstr("Mod Gun")));
+    mod_gun.extend(sub(b"MODL", &zstr("Weapons\\ModGun.NIF")));
+    mod_gun.extend(sub(b"MWD1", &zstr("Weapons\\ModGunExt.NIF")));
+    mod_gun.extend(sub(b"MWD3", &zstr("Weapons\\ModGunExtBarrel.NIF")));
+    mod_gun.extend(sub(b"WNAM", &FIRST_PERSON_GUN.to_le_bytes()));
+    mod_gun.extend(sub(b"WNM1", &FIRST_PERSON_GUN_EXT.to_le_bytes()));
+    for (sig, item) in [
+        (b"WMI1", EXT_MAG),
+        (b"WMI2", BARREL),
+        (b"WMI3", LIGHT_FRAME),
+    ] {
+        mod_gun.extend(sub(sig, &item.to_le_bytes()));
+    }
+    let mut mod_gun_data = 100i32.to_le_bytes().to_vec();
+    mod_gun_data.extend(100i32.to_le_bytes());
+    mod_gun_data.extend(3.0f32.to_le_bytes());
+    mod_gun_data.extend(10i16.to_le_bytes());
+    mod_gun_data.push(8);
+    mod_gun.extend(sub(b"DATA", &mod_gun_data));
+    let mut mod_dnam = weapon_dnam.clone();
+    mod_dnam[0] = 3;
+    for (i, (effect, value)) in [(2u32, 7.0f32), (1, 5.0), (4, 1.0)].into_iter().enumerate() {
+        mod_dnam[140 + 4 * i..144 + 4 * i].copy_from_slice(&effect.to_le_bytes());
+        mod_dnam[152 + 4 * i..156 + 4 * i].copy_from_slice(&value.to_le_bytes());
+    }
+    mod_gun.extend(sub(b"DNAM", &mod_dnam));
+    weapons.extend(record(b"WEAP", MOD_GUN, &mod_gun));
+    let mut loud_gun = edid("TestLoudGun");
+    loud_gun.extend(sub(b"WMI1", &SILENCER.to_le_bytes()));
+    loud_gun.extend(sub(b"WMI2", &BEAM_SPLITTER.to_le_bytes()));
+    loud_gun.extend(sub(b"DATA", &mod_gun_data));
+    let mut loud_dnam = weapon_dnam.clone();
+    loud_dnam[0] = 3;
+    loud_dnam[140..144].copy_from_slice(&11u32.to_le_bytes());
+    loud_dnam[144..148].copy_from_slice(&12u32.to_le_bytes());
+    loud_dnam[156..160].copy_from_slice(&2.0f32.to_le_bytes());
+    loud_dnam[188..192].copy_from_slice(&0.5f32.to_le_bytes());
+    loud_dnam[16..20].copy_from_slice(&2.0f32.to_le_bytes()); // min spread
+    loud_gun.extend(sub(b"DNAM", &loud_dnam));
+    loud_gun.extend(sub(b"VNAM", &0u32.to_le_bytes()));
+    weapons.extend(record(b"WEAP", LOUD_GUN, &loud_gun));
+    let mut knife = edid("TestKnife");
+    knife.extend(sub(b"DATA", &mod_gun_data));
+    let mut knife_dnam = weapon_dnam.clone();
+    knife_dnam[0] = 1;
+    knife.extend(sub(b"DNAM", &knife_dnam));
+    weapons.extend(record(b"WEAP", KNIFE, &knife));
     plugin.extend(group(*b"WEAP", 0, &weapons));
+    let first_person = |id: u32, name: &str, model: &str| {
+        let mut d = edid(name);
+        d.extend(sub(b"MODL", &zstr(model)));
+        record(b"STAT", id, &d)
+    };
+    let mut first_person_models = first_person(
+        FIRST_PERSON_GUN,
+        "1stPersonModGun",
+        "Weapons\\1stModGun.NIF",
+    );
+    first_person_models.extend(first_person(
+        FIRST_PERSON_GUN_EXT,
+        "1stPersonModGunExt",
+        "Weapons\\1stModGunExt.NIF",
+    ));
+    plugin.extend(group(*b"STAT", 0, &first_person_models));
+    let weapon_mod = |id: u32, name: &str| {
+        let mut d = edid(name);
+        d.extend(sub(b"FULL", &zstr(name)));
+        let mut data = 20i32.to_le_bytes().to_vec();
+        data.extend(0.5f32.to_le_bytes());
+        d.extend(sub(b"DATA", &data));
+        record(b"IMOD", id, &d)
+    };
+    let mut mods = weapon_mod(EXT_MAG, "TestExtMag");
+    mods.extend(weapon_mod(BARREL, "TestBarrel"));
+    mods.extend(weapon_mod(LIGHT_FRAME, "TestLightFrame"));
+    mods.extend(weapon_mod(SILENCER, "TestSilencer"));
+    mods.extend(weapon_mod(BEAM_SPLITTER, "TestBeamSplitter"));
+    plugin.extend(group(*b"IMOD", 0, &mods));
     plugin.extend(group(*b"CREA", 0, &record(b"CREA", GECKO, &gecko)));
     let mut bodies = record(
         b"BPTD",
@@ -2675,6 +2970,31 @@ pub fn quests(tag: &str) -> TempData {
     case_data.extend(0.0f32.to_le_bytes());
     case.extend(sub(b"DATA", &case_data));
     misc.extend(record(b"MISC", CASE, &case));
+    let mut bundle = edid("TestCaseBundle");
+    bundle.extend(sub(b"FULL", &zstr("Case Bundle")));
+    bundle.extend(sub(b"SCRI", &CASE_BUNDLE_SCRIPT.to_le_bytes()));
+    bundle.extend(sub(b"DATA", &case_data));
+    misc.extend(record(b"MISC", CASE_BUNDLE, &bundle));
+    let mut late = edid("TestLateBundle");
+    late.extend(sub(b"FULL", &zstr("Late Bundle")));
+    late.extend(sub(b"SCRI", &LATE_BUNDLE_SCRIPT.to_le_bytes()));
+    late.extend(sub(b"DATA", &case_data));
+    misc.extend(record(b"MISC", LATE_BUNDLE, &late));
+    for (id, name, full, s) in [
+        (KEEPSAKE, "TestKeepsake", "Keepsake", KEEPSAKE_SCRIPT),
+        (
+            REFUSED_GIFT,
+            "TestRefusedGift",
+            "Refused Gift",
+            REFUSED_GIFT_SCRIPT,
+        ),
+    ] {
+        let mut d = edid(name);
+        d.extend(sub(b"FULL", &zstr(full)));
+        d.extend(sub(b"SCRI", &s.to_le_bytes()));
+        d.extend(sub(b"DATA", &case_data));
+        misc.extend(record(b"MISC", id, &d));
+    }
     plugin.extend(group(*b"MISC", 0, &misc));
     plugin.extend(group(*b"LVLI", 0, &record(b"LVLI", LEVELED, &leveled)));
     let mut packages = record(b"PACK", TRAVEL, &travel);
@@ -2695,6 +3015,82 @@ pub fn quests(tag: &str) -> TempData {
     plugin.extend(group(*b"DOOR", 0, &record(b"DOOR", DOOR, &door)));
     plugin.extend(group(*b"CONT", 0, &record(b"CONT", CHEST, &chest)));
     plugin.extend(group(*b"DIAL", 0, &dialogue));
+    // Caravan cards (suit, then value) and a deck.
+    let caravan_card = |id: u32, name: &str, suit: u32, value: u32| {
+        let mut d = edid(name);
+        d.extend(sub(b"FULL", &zstr(name)));
+        d.extend(sub(b"SCRI", &CARD_SCRIPT.to_le_bytes()));
+        d.extend(sub(b"INTV", &suit.to_le_bytes()));
+        d.extend(sub(b"INTV", &value.to_le_bytes()));
+        d.extend(sub(b"DATA", &2u32.to_le_bytes()));
+        record(b"CCRD", id, &d)
+    };
+    let mut cards = caravan_card(CARD_ACE, "TestCardAce", 1, 1);
+    cards.extend(caravan_card(CARD_QUEEN, "TestCardQueen", 2, 13));
+    plugin.extend(group(*b"CCRD", 0, &cards));
+    let mut caravan_deck = edid("TestCaravanDeck");
+    caravan_deck.extend(sub(b"FULL", &zstr("Test Deck")));
+    caravan_deck.extend(sub(b"CARD", &CARD_ACE.to_le_bytes()));
+    caravan_deck.extend(sub(b"CARD", &CARD_QUEEN.to_le_bytes()));
+    plugin.extend(group(
+        *b"CDCK",
+        0,
+        &record(b"CDCK", CARAVAN_DECK, &caravan_deck),
+    ));
+    // A casino and its chip.
+    let mut chip = edid("TestChip");
+    chip.extend(sub(b"FULL", &zstr("Test Chip")));
+    chip.extend(sub(b"MODL", &zstr("clutter\\casino\\PokerChip01.nif")));
+    plugin.extend(group(*b"CHIP", 0, &record(b"CHIP", CHIP, &chip)));
+    let mut casino = edid("TestCasino");
+    casino.extend(sub(b"FULL", &zstr("Gommorah")));
+    for m in [
+        "NV_Blackjack-Chip_001.NIF",
+        "NV_Blackjack-Chip_005.NIF",
+        "NV_Blackjack-Chip_010.NIF",
+        "NV_Blackjack-Chip_025.NIF",
+        "NV_Blackjack-Chip_100.NIF",
+        "NV_Blackjack-Chip_S.NIF",
+        "NV_Roulette-Chip.NIF",
+        "NV_SlotMachine-Minigame-Gom.NIF",
+    ] {
+        casino.extend(sub(b"MODL", &zstr(m)));
+    }
+    casino.extend(sub(b"MOD2", &zstr("NV_SlotMachine-Minigame-Gom.NIF")));
+    casino.extend(sub(b"MOD3", &zstr("NV_Blackjack-Table-Gom.NIF")));
+    casino.extend(sub(b"MOD4", &zstr("NV_Roulette-Table-Gom.NIF")));
+    for n in [1, 2, 3, 4, 6, 7, 5] {
+        casino.extend(sub(
+            b"ICON",
+            &zstr(&format!("NV_SlotMachine-Symbol{n}.dds")),
+        ));
+    }
+    for _ in 0..4 {
+        casino.extend(sub(b"ICO2", &zstr("DeckG\\cardG_back.dds")));
+    }
+    let mut casino_data = Vec::new();
+    casino_data.extend(0.2f32.to_le_bytes());
+    casino_data.extend(1.5f32.to_le_bytes());
+    for _ in 0..7 {
+        casino_data.extend(2i32.to_le_bytes());
+    }
+    casino_data.extend(3i32.to_le_bytes());
+    casino_data.extend(9000i32.to_le_bytes());
+    casino_data.extend(CHIP.to_le_bytes());
+    casino_data.extend(QUEST.to_le_bytes());
+    casino_data.extend([0u8; 4]);
+    casino.extend(sub(b"DATA", &casino_data));
+    plugin.extend(group(*b"CSNO", 0, &record(b"CSNO", CASINO, &casino)));
+    // The default objects: the Stimpak first.
+    let mut objects = edid("DefaultObjectManager");
+    let mut slots = STIMPAK.to_le_bytes().to_vec();
+    slots.extend([0; 4 * 33]);
+    objects.extend(sub(b"DATA", &slots));
+    plugin.extend(group(
+        *b"DOBJ",
+        0,
+        &record(b"DOBJ", DEFAULT_OBJECTS, &objects),
+    ));
     plugin.extend(cells);
     data.write("FalloutNV.esm", &plugin);
     data

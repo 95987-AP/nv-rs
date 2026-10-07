@@ -742,6 +742,9 @@ pub fn move_actors(
     if !frozen {
         world::combat::advance_down(order, state, dt);
     }
+    // Attacks' noise wears off (`world::noise::update`, the actors'
+    // update `00886360`).
+    world::noise::update(state, dt);
     let game_hour = state.global(order, "GameHour").unwrap_or(12.0);
     let player_velocity = match (state.player_position, last.player) {
         (Some(p), Some(q)) if dt > 0.0 => [0, 1, 2].map(|k| (p[k] - q[k]) / dt),

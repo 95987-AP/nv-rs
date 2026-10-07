@@ -87,6 +87,10 @@ pub struct LodLand {
     /// x: the game's far clip plane in meters ([`GAME_FAR_CLIP`]).
     #[uniform(112)]
     pub clip: Vec4,
+    /// The hour's light (`crate::shared_light::BUFFER`): the ambient, the
+    /// sun and the fog (the params' own copies aren't read).
+    #[storage(113, read_only)]
+    pub shared: Handle<bevy::render::storage::ShaderStorageBuffer>,
 }
 
 impl MaterialExtension for LodLand {
@@ -197,6 +201,7 @@ impl Spawner<'_, '_> {
         let material = self.lod_materials.add(LodLandMaterial {
             base: StandardMaterial::default(),
             extension: LodLand {
+                shared: crate::shared_light::BUFFER,
                 params,
                 base: base.clone(),
                 normals: normals.clone(),

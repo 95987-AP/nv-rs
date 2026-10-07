@@ -6,6 +6,7 @@ use esm::{FormId, FourCC, LoadOrder};
 use world::dialogue::PLAYER_REF;
 use world::scripting::{Facts, GameState};
 
+use super::repair::{RepairInput, RepairRow};
 use super::{
     ItemLine, ItemTab, MarkerLine, NoteLine, PipboyInput, QuestLine, ReputationLine, StatLine,
     WorldMapLine,
@@ -170,19 +171,7 @@ pub fn date_time(state: &GameState, order: &LoadOrder) -> String {
     )
 }
 
-/// A default object (the `DOBJ` record `DefaultObjectManager`: its `DATA`
-/// an array of forms, `0058db10` reading slot n): 0 the Stimpak, 2 Rad-X,
-/// 3 RadAway, 21 the Doctor's Bag (the STATS menu's aid buttons,
-/// `007da2c0`).
-pub fn default_object(order: &LoadOrder, index: usize) -> Option<FormId> {
-    let rr = order.records_of_type(FourCC::new(b"DOBJ")).next()?;
-    let rr = order.get(rr.form_id)?;
-    let record = rr.record().ok()?;
-    let data = record.get(esm::sig::DATA)?.data.clone();
-    let at = index * 4;
-    let raw = u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?);
-    (raw != 0).then(|| rr.plugin.to_global(FormId(raw)))
-}
+pub use world::items::default_object;
 
 /// The world map for a worldspace: its `ICON` picture, `MNAM` (usable
 /// width and height u32, then the north-west and south-east cells' x, y
@@ -229,60 +218,6 @@ pub fn world_map(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> Opti
         custom,
         quest: at.quest.iter().map(|&p| place(p)).collect(),
     })
-}
-
-/// Whether ITEMS' Repair button can be pressed for an item. Translated
-/// from 00781860 (decompiled, FalloutNV.exe 1.4.0.525),
-/// `InventoryMenu::IsItemRepairable` (Xbox PDB): a weapon or apparel below
-/// full condition, of which the player carries two or more, or with
-/// another item that can mend it (its repair list `REPL`, `004d4bd0`)
-/// carried and not equipped. (The game also counts another of the same
-/// item in worse condition among single ones; the world keeps one
-/// condition per carried weapon, so that case is the "two or more".)
-fn repairable(
-    order: &LoadOrder,
-    state: &GameState,
-    item: FormId,
-    count: i32,
-    condition: Option<f32>,
-) -> bool {
-    let Some(kind) = order.get(item).map(|r| r.entry.header.kind) else {
-        return false;
-    };
-    if kind != WEAP && kind != ARMO {
-        return false;
-    }
-    if condition.unwrap_or(1.0) >= 1.0 {
-        return false;
-    }
-    if count >= 2 {
-        return true;
-    }
-    let Some(list) = order
-        .get(item)
-        .and_then(|r| r.record().ok().map(|rec| (r.plugin, rec)))
-        .and_then(|(plugin, rec)| {
-            rec.get(FourCC::new(b"REPL"))
-                .filter(|s| s.data.len() >= 4)
-                .map(|s| {
-                    plugin.to_global(FormId(u32::from_le_bytes([
-                        s.data[0], s.data[1], s.data[2], s.data[3],
-                    ])))
-                })
-        })
-    else {
-        return false;
-    };
-    let menders = world::perks::form_list(order, list);
-    state
-        .inventory(order, PLAYER_REF)
-        .iter()
-        .any(|&(other, n)| {
-            other != item
-                && n > 0
-                && menders.contains(&other)
-                && !state.is_equipped(PLAYER_REF, other)
-        })
 }
 
 /// Everything the Pip-Boy shows, from the game's state.
@@ -426,6 +361,7 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
                 weight_class: None,
                 effects: None,
                 repairable: false,
+                modded: false,
             });
             continue;
         }
@@ -448,7 +384,7 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
                 kind.as_bytes(),
                 b"WEAP" | b"ARMO" | b"ALCH" | b"INGR" | b"BOOK"
             ),
-            value: info.as_ref().map_or(0, |i| i.value),
+            value: world::items::value(order, state, item),
             weight: info.as_ref().map_or(0.0, |i| i.weight),
             icon: record_text(order, item, ICON),
             damage: None,
@@ -462,14 +398,17 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
             weight_class: None,
             effects: None,
             repairable: false,
+            modded: world::weapon_mods::flags(state, PLAYER_REF, item) != 0,
         };
         if kind == WEAP {
             if let Some(w) = world::combat::Weapon::load(order, item) {
                 // The damage card (`006450f0`, drawn at the file's alpha 0):
                 // the hit's damage (`00644ce0`, `world::combat::
-                // hit_damage`); `006450f0` then applies the ammunition's
-                // damage effects and perk entry 0, not done here.
-                let damage = world::combat::hit_damage(order, state, PLAYER_REF, &w);
+                // hit_damage`) × a split beam's 1.3; `006450f0` also
+                // applies the ammunition's damage effects and perk entry 0,
+                // not done here.
+                let damage = world::combat::hit_damage(order, state, PLAYER_REF, &w)
+                    * world::weapon_mods::shown_damage_mult(order, state, PLAYER_REF, item);
                 line.damage = Some(damage);
                 let ammo = w.ammo_in_use(order, state, PLAYER_REF);
                 line.projectiles = w.shot(order, ammo).0.max(1);
@@ -478,6 +417,7 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
                 // takes with its reload) isn't worked out yet: left empty.
                 line.dps = None;
                 line.condition = Some(world::combat::weapon_condition(state, PLAYER_REF, item));
+                line.repairable = world::repair::can_repair(order, state, item);
                 if let Some(a) = ammo.or_else(|| w.ammo.first().copied()) {
                     let held = state.item_count(order, PLAYER_REF, a);
                     // In the clip: the equipped weapon's own clip in the
@@ -536,13 +476,13 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
             } else {
                 0
             });
-            line.condition = Some(1.0);
+            line.condition = Some(world::combat::weapon_condition(state, PLAYER_REF, item));
+            line.repairable = world::repair::can_repair(order, state, item);
         }
         // Aid's and ammunition's effects text (`00406620`, `00503a70`: the
         // effects with their magnitudes and durations, joined) isn't
         // written yet, so their effects card stays hidden, as the game's
         // does for an item without one.
-        line.repairable = repairable(order, state, item, count, line.condition);
         items.push(line);
     }
 
@@ -692,6 +632,96 @@ pub fn gather(order: &LoadOrder, state: &GameState, at: &Whereabouts) -> PipboyI
         }),
         // The caller's (the sound playing).
         note_audio: None,
+    }
+}
+
+/// The mod screen's contents for a weapon of the player's (`00784710`,
+/// `007840f0`): its name, condition, picture and damage; the mods fitted to
+/// it, then the player's that fit it (`world::weapon_mods::fitting`), each
+/// with its name and description (`DESC`).
+pub fn item_mod_input(
+    order: &LoadOrder,
+    state: &GameState,
+    weapon: FormId,
+) -> super::item_mod::ItemModInput {
+    use super::item_mod::{ItemModInput, ModRow};
+    let condition = world::repair::condition(state, PLAYER_REF, weapon);
+    let row = |m: FormId, fitted: bool| ModRow {
+        form: m.0,
+        name: world::items::item_info(order, m).map_or_else(String::new, |i| i.name),
+        description: record_text(order, m, esm::FourCC::new(b"DESC")).unwrap_or_default(),
+        fitted,
+    };
+    let flags = world::weapon_mods::flags(state, PLAYER_REF, weapon);
+    let mut rows: Vec<ModRow> = world::weapon_mods::slots(order, weapon)
+        .map(|slots| {
+            (0..3)
+                .filter(|&i| flags & (1 << i) != 0)
+                .filter_map(|i| slots[i].item)
+                .map(|m| row(m, true))
+                .collect()
+        })
+        .unwrap_or_default();
+    rows.extend(
+        world::weapon_mods::fitting(order, state, PLAYER_REF, weapon)
+            .into_iter()
+            .map(|m| row(m, false)),
+    );
+    ItemModInput {
+        weapon: weapon.0,
+        name: world::items::item_info(order, weapon).map_or_else(String::new, |i| i.name),
+        condition,
+        icon: record_text(order, weapon, ICON),
+        damage: world::repair::shown_stat(order, state, weapon, condition / 100.0)
+            .and_then(|s| s.value)
+            .unwrap_or(0),
+        rows,
+    }
+}
+
+/// What the repair screen shows for an item (`007b7020`, `007b6aa0`,
+/// `007b57f0`): its condition and figure, the player's Repair, and a line
+/// for it and for every one of each thing that can mend it
+/// (`world::repair::parts`), in the player's things' order.
+pub fn repair_input(order: &LoadOrder, state: &GameState, chosen: FormId) -> RepairInput {
+    let skill = world::repair::skill(order, state, PLAYER_REF);
+    let condition = world::repair::condition(state, PLAYER_REF, chosen);
+    let armour = |f: FormId| order.get(f).is_some_and(|r| r.entry.header.kind == ARMO);
+    let mut rows = Vec::new();
+    for p in world::repair::parts(order, state, chosen) {
+        if p.chosen {
+            let mends_to = world::repair::mended_condition(order, skill, condition, condition);
+            rows.push(RepairRow {
+                form: chosen.0,
+                name: p.name.clone(),
+                condition,
+                armour: armour(chosen),
+                equipped: state.is_equipped(PLAYER_REF, chosen),
+                chosen: true,
+                mends_to,
+                stat_after: world::repair::shown_stat(order, state, chosen, mends_to),
+            });
+        }
+        for i in 0..p.count {
+            rows.push(RepairRow {
+                form: p.item.0,
+                name: p.name.clone(),
+                condition: p.condition,
+                armour: armour(p.item),
+                equipped: p.equipped && i == 0,
+                chosen: false,
+                mends_to: p.mends_to,
+                stat_after: world::repair::shown_stat(order, state, chosen, p.mends_to),
+            });
+        }
+    }
+    RepairInput {
+        chosen: chosen.0,
+        condition,
+        icon: record_text(order, chosen, ICON),
+        skill,
+        stat: world::repair::shown_stat(order, state, chosen, condition / 100.0),
+        rows,
     }
 }
 

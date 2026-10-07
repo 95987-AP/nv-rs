@@ -327,7 +327,10 @@ pub fn update_file_sizes(ui: &mut Ui, root: TileId, textures: &mut dyn Textures)
     let mut stack = vec![root];
     while let Some(tile) = stack.pop() {
         stack.extend(ui.tiles[tile].children.iter().copied());
-        if !matches!(ui.tiles[tile].kind, kind::IMAGE | kind::HOTRECT) {
+        if !matches!(
+            ui.tiles[tile].kind,
+            kind::IMAGE | kind::HOTRECT | kind::RADIAL
+        ) {
             continue;
         }
         let Some((texture, _)) = picture_of(ui, tile, textures) else {
@@ -367,7 +370,12 @@ pub fn clips(ui: &mut Ui, tile: TileId) -> bool {
         return ui.number(tile, t::CLIPS) != 0.0;
     }
     match ui.tiles[tile].parent {
-        Some(p) if matches!(ui.tiles[p].kind, kind::IMAGE | kind::HOTRECT | kind::TEXT) => {
+        Some(p)
+            if matches!(
+                ui.tiles[p].kind,
+                kind::IMAGE | kind::HOTRECT | kind::TEXT | kind::RADIAL
+            ) =>
+        {
             clips(ui, p)
         }
         _ => false,
@@ -476,7 +484,10 @@ pub fn draw_list(
     let mut items = Vec::new();
     for tile in order {
         let k = ui.tiles[tile].kind;
-        if !matches!(k, kind::IMAGE | kind::HOTRECT | kind::TEXT) || !ui.shown(tile) {
+        // A radial tile (`RadialTile`, vtable `01095750`) draws as the
+        // image it is.
+        if !matches!(k, kind::IMAGE | kind::HOTRECT | kind::TEXT | kind::RADIAL) || !ui.shown(tile)
+        {
             continue;
         }
         let color = tile_color(ui, tile);

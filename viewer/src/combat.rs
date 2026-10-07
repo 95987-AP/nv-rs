@@ -896,6 +896,8 @@ pub fn player_attack(
         let ammo = w.ammo_in_use(order, state, PLAYER_REF);
         let wear = combat::attack_wear(order, ammo);
         combat::damage_weapon(order, state, PLAYER_REF, w, wear);
+        // Heard for a while (`world::noise::attacked`).
+        world::noise::attacked(order, state, PLAYER_REF, w);
     }
     attack.next = now + weapon.as_ref().map_or(0.5, |w| w.shot_interval());
     attack.fired_at = Some(now);

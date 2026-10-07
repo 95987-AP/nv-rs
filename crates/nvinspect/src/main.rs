@@ -18,6 +18,7 @@ mod land_cmd;
 mod living_cmd;
 mod lockpick_cmd;
 mod meshes_cmd;
+mod movie_cmd;
 mod music_cmd;
 mod music_place_cmd;
 mod nif_cmd;
@@ -26,6 +27,7 @@ mod play_cmd;
 mod records;
 mod render_cmd;
 mod scripts_cmd;
+mod sha256;
 mod shader_cmd;
 mod trees_cmd;
 mod ui_cmd;
@@ -54,6 +56,7 @@ TARGET is one of:
     a shader package (.sdp)    the game's compiled shaders, from
                                Data\\Shaders
     an MP3 (.mp3)              one music track, from Data\\Music
+    a Bink movie (.bik)        e.g. Data\\Video\\FNVIntro.bik
     a folder of MP3s           e.g. Data\\Music: every track in it and in
                                the folders below
 
@@ -99,11 +102,12 @@ COMMANDS FOR PLUGINS AND DATA FOLDERS:
                           where it leads and the navmesh path there
     barter <REF>          what a merchant sells (their merchant
                           container) and the prices a new character pays
-    craft [CATEGORY]      the recipes the recipe menu lists for a category
-                          (an RCCT editor ID: CampfireRecipes, WorkbenchRecipes,
-                          ReloadingBenchRecipes ...; every category without
-                          one) for a new character: skill, ingredients and
-                          what each makes
+    recipes <CATEGORY> [ITEM:N ...] [AV=VALUE ...]
+                          the crafting menu of a recipe category (RCCT,
+                          e.g. CampfireRecipes) for a new character given
+                          those items and actor values (skills 32 to 45):
+                          each listed recipe, how many can be made, its
+                          skill, ingredients and products, and the filter
     vats <ID> [WEAPON] [DISTANCE]
                           what V.A.T.S. offers a new character against a
                           person or creature with a weapon (else fists):
@@ -289,6 +293,18 @@ COMMANDS FOR MUSIC (.mp3):
     wav [OUT] [SECONDS]   decode to a 16-bit .wav (all of it, or the first
                           SECONDS)
 
+COMMANDS FOR MOVIES (.bik):
+    info                  size, frame rate, frame count, keyframes and the
+                          audio tracks
+    frames [OUT] [bgrx]   decode every frame; write each frame's number, 0
+                          (or 1 if it had an error) and the SHA-256 of its
+                          Y, V and U planes, one line each, to OUT (the
+                          format research/nv-oracle's nv-bink writes from
+                          the game's own library); with bgrx, the SHA-256 of
+                          the frame in 32-bit colour as the game shows it
+    audio OUT [TRACK]     decode an audio track (default 0) to OUT as raw
+                          interleaved 16-bit little-endian samples
+
 COMMANDS FOR A FOLDER OF MP3s:
     check                 decode every track, one line each
 
@@ -303,7 +319,8 @@ OPTIONS:
                       Documents\\My Games\\FalloutNV, else the install's
                       Fallout_default.ini
     --all-meshes      check-assets: also check meshes no record uses
-    --force           extract, obj, png, dump, wav: overwrite existing files
+    --force           extract, obj, png, dump, wav, frames, audio: overwrite
+                      existing files
 
 RENDER-CELL OPTIONS:
     --variants        render with both rotation orders (xyz, the game's,
@@ -442,6 +459,7 @@ enum Target {
     ShaderPackage(PathBuf),
     Music(PathBuf),
     MusicFolder(PathBuf),
+    Movie(PathBuf),
 }
 
 fn main() -> ExitCode {
@@ -503,10 +521,11 @@ fn run(args: &[String]) -> Result<(), CliError> {
                 | Target::Texture(_)
                 | Target::ShaderPackage(_)
                 | Target::Music(_)
+                | Target::Movie(_)
         )
     {
         return Err(CliError::Usage(
-            "--force only applies to extract, obj, png, dump and wav".into(),
+            "--force only applies to extract, obj, png, dump, wav, frames and audio".into(),
         ));
     }
 
@@ -528,6 +547,7 @@ fn run(args: &[String]) -> Result<(), CliError> {
             shader_cmd::run_file(&mut out, &path, command, rest, &options)?
         }
         Target::Music(path) => music_cmd::run_file(&mut out, &path, command, rest, &options)?,
+        Target::Movie(path) => movie_cmd::run_file(&mut out, &path, command, rest, &options)?,
         Target::MusicFolder(path) => {
             let command = positional.get(1).map_or("check", String::as_str);
             music_cmd::run_folder(&mut out, &path, command, rest, &options)?
@@ -622,6 +642,7 @@ fn classify(arg: &str) -> Result<Target, CliError> {
         // "Gamebryo File Format..." or "NetImmerse File Format..."
         Ok(_) if &magic == b"Game" || &magic == b"NetI" => Ok(Target::Mesh(path.into())),
         Ok(_) if &magic == b"DDS " => Ok(Target::Texture(path.into())),
+        Ok(_) if &magic[..3] == b"BIK" => Ok(Target::Movie(path.into())),
         Ok(_) => Ok(Target::Plugin(path.into())),
     }
 }

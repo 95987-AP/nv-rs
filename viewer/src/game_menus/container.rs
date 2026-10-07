@@ -4,6 +4,15 @@
 //! with the game's sounds, the theft rules (`world::crime`) and the
 //! container's `OnClose` block when it closes. "How many?" is the quantity
 //! menu (`ui::menus::quantity`) over it.
+//!
+//! A companion's things (mode 3, `menus::Menu::Teammate`,
+//! `OpenTeammateContainer`): `0075bc80` opens it with `DRSTraderOpen` and
+//! the companion saying their `FollowersTrade` line (`0075ec60`); giving
+//! them something they've no room for (`0075dc80`,
+//! `world::items::has_room`) is refused with "<name>
+//! `sTeammateOverencumbered`" and their `FollowersOverburdened` line;
+//! `0075b750` closes it with `DRSTraderClose`. (Not here: the companion
+//! choosing what to wear afterwards, `00606540`.)
 
 use cellview::Game;
 use esm::FormId;
@@ -26,7 +35,28 @@ pub struct ContainerScreen {
 
 /// Whether this module shows a request.
 pub fn takes(menu: &Menu) -> bool {
-    matches!(menu, Menu::Container(..))
+    matches!(menu, Menu::Container(..) | Menu::Teammate(..))
+}
+
+/// A companion says a line of a topic (`0075ec60`), by its editor ID.
+fn say_topic(order: &esm::LoadOrder, state: &mut GameState, who: FormId, topic: &str) {
+    if let Some(topic) = order.form_by_editor_id(topic) {
+        state.events.push(world::scripting::Event::Talk {
+            speaker: who,
+            to: PLAYER_REF,
+            topic: Some(topic),
+            conversation: false,
+        });
+    }
+}
+
+/// A reference's name (its base's `FULL`).
+fn name_of(order: &esm::LoadOrder, reference: FormId) -> String {
+    base(order, reference)
+        .and_then(|b| order.get(b))
+        .and_then(|r| r.record().ok())
+        .and_then(|r| r.full_name())
+        .unwrap_or_default()
 }
 
 /// A holder's things as the menu reads them (`world::items`).
@@ -71,10 +101,12 @@ fn base(order: &esm::LoadOrder, reference: FormId) -> Option<FormId> {
 
 /// Opens the container menu for a request.
 pub fn open(screen: &mut Screen, game: &Game, state: &mut GameState, request: Menu) -> Vec<FormId> {
-    let Menu::Container(reference, name) = request else {
-        return Vec::new();
-    };
     let order = &game.order;
+    let (reference, name, mode) = match request {
+        Menu::Container(reference, name) => (reference, name, 1),
+        Menu::Teammate(who) => (who, name_of(order, who), 3),
+        _ => return Vec::new(),
+    };
     let mut menu = ContainerMenu::new(0);
     let tile = match screen.load(game, FILE, &mut menu) {
         Ok(t) => t,
@@ -85,6 +117,7 @@ pub fn open(screen: &mut Screen, game: &Game, state: &mut GameState, request: Me
     };
     menu.menu = tile;
     menu.name = name;
+    menu.mode = mode;
     // `0075e380`: titles in upper case when the game's language is
     // English (`[General] sLanguage`, default "ENGLISH").
     menu.english = game
@@ -104,7 +137,10 @@ pub fn open(screen: &mut Screen, game: &Game, state: &mut GameState, request: Me
     }
     println!("Container menu: {}.", menu.name);
     let mut sounds = Vec::new();
-    if let Some(s) =
+    if mode == 3 {
+        sounds.extend(order.form_by_editor_id("DRSTraderOpen"));
+        say_topic(order, state, reference, "FollowersTrade");
+    } else if let Some(s) =
         base(order, reference).and_then(|b| world::sound::container_sound(order, b, true))
     {
         sounds.push(s);
@@ -135,7 +171,7 @@ pub fn after(
     for m in screen.open.iter_mut() {
         match m {
             OpenMenu::Container(_) => below = true,
-            OpenMenu::Barter(_) => below = false,
+            OpenMenu::Barter(_) | OpenMenu::Recipe(_) => below = false,
             OpenMenu::Quantity(q) => {
                 if below {
                     if let Some(n) = q.answer.take() {
@@ -165,11 +201,32 @@ pub fn after(
             }
         }
         let reference = c.reference;
+        let mode = c.menu.mode;
         let requests: Vec<Request> = std::mem::take(&mut c.menu.requests);
         for request in requests {
             match request {
                 Request::Move { from, form, count } => {
                     let item = FormId(form);
+                    // A companion with no room for it (`0075dc80`).
+                    if mode == 3
+                        && from == Side::Player
+                        && !world::items::has_room(order, state, reference, item, count)
+                    {
+                        let text = format!(
+                            "{} {}",
+                            c.menu.name,
+                            world::scripting::game_setting_text(order, "sTeammateOverencumbered")
+                                .unwrap_or_else(|| "can't carry any more.".into())
+                        );
+                        println!("{text}");
+                        state.events.push(world::scripting::Event::Message {
+                            title: None,
+                            text,
+                            buttons: Vec::new(),
+                        });
+                        say_topic(order, state, reference, "FollowersOverburdened");
+                        continue;
+                    }
                     let (giver, taker) = match from {
                         Side::Player => (PLAYER_REF, reference),
                         Side::Container => (reference, PLAYER_REF),
@@ -185,7 +242,7 @@ pub fn after(
                             .iter()
                             .any(|(i, _)| *i == item)
                     {
-                        state.unequip(giver, item);
+                        state.unequip_item(order, giver, item);
                     }
                     // Taking from someone else's container is stealing
                     // (`world::crime`).
@@ -208,6 +265,9 @@ pub fn after(
                     }
                 }
                 Request::AskQuantity { most, .. } => ask = Some(most),
+                Request::Close if mode == 3 => {
+                    sounds.extend(order.form_by_editor_id("DRSTraderClose"));
+                }
                 Request::Close => {
                     if let Some(s) = base(order, reference)
                         .and_then(|b| world::sound::container_sound(order, b, false))

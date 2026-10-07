@@ -1,10 +1,12 @@
 //! Day and night outdoors: the light follows the game's clock (`GameHour`,
 //! which runs at `TimeScale`). The weather's colours for the hour
 //! (`world::weather::time_weights`), the fog between its day and night
-//! distances, and the sun's place (`world::weather::sun_at`) go into every
-//! outdoor material, the terrain, the distant land, the sky dome, the
-//! clouds and the sun, a game minute at a time; newly loaded squares take
-//! the light of the hour as they appear.
+//! distances, and the sun's place (`world::weather::sun_at`) go into the
+//! light every outdoor surface shares (`crate::shared_light`: the lit
+//! surfaces, the terrain, the distant land), the sky dome, the clouds and
+//! the sun, a game minute at a time. Lit surfaces are switched to the
+//! shared light once (all of them on the first frame outdoors, then each
+//! as it appears); the materials aren't touched as the hour moves.
 
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
@@ -13,8 +15,7 @@ use esm::FormId;
 use crate::dialogue::DialogueState;
 use crate::exterior::Exterior;
 use crate::lighting::GameLitMaterial;
-use crate::lod::LodLandMaterial;
-use crate::terrain::TerrainMaterial;
+use crate::shared_light::{MenuLit, SharedLight, SharedLightNow};
 use crate::{light_fields, CloudScroll, GameFiles, SkyEntity};
 
 /// The sky dome's own vertex colours: how much of each of its three colours
@@ -36,45 +37,38 @@ pub struct Stars {
     pub fade: Vec<f32>,
 }
 
-/// The weathers the light last followed (current, fading out), and the
-/// hour last applied.
+/// The weathers the light last followed (current, fading out), the hour
+/// last applied, and whether every lit surface outdoors takes the shared
+/// light.
 #[derive(Resource, Default)]
 pub struct Daylight {
     shown: Option<(Option<FormId>, Option<FormId>)>,
     applied: Option<f32>,
+    switched: bool,
 }
 
 /// One game minute, in hours: how far the clock moves before the light is
 /// worked out again.
 const MINUTE: f32 = 1.0 / 60.0;
 
-/// Lit materials just put on screen (not the sky's).
-type NewLit = (Added<MeshMaterial3d<GameLitMaterial>>, Without<SkyEntity>);
+/// Lit surfaces outdoors (not the sky, not a 3D menu's pieces).
+type Outdoors = (Without<SkyEntity>, Without<MenuLit>);
+/// Those just put on screen.
+type NewLit = (
+    Added<MeshMaterial3d<GameLitMaterial>>,
+    Without<SkyEntity>,
+    Without<MenuLit>,
+);
 /// A sky dome or stars just put on screen.
 type NewSky = Or<(Added<SkyWeights>, Added<Stars>)>;
 
 #[derive(SystemParam)]
 pub struct Lit<'w, 's> {
     lit: ResMut<'w, Assets<GameLitMaterial>>,
-    terrain: ResMut<'w, Assets<TerrainMaterial>>,
-    lod: ResMut<'w, Assets<LodLandMaterial>>,
+    shared: ResMut<'w, SharedLightNow>,
     meshes: ResMut<'w, Assets<Mesh>>,
-    all_lit: Query<'w, 's, &'static MeshMaterial3d<GameLitMaterial>, Without<SkyEntity>>,
+    all_lit: Query<'w, 's, &'static MeshMaterial3d<GameLitMaterial>, Outdoors>,
     new_lit: Query<'w, 's, &'static MeshMaterial3d<GameLitMaterial>, NewLit>,
-    all_terrain: Query<'w, 's, &'static MeshMaterial3d<TerrainMaterial>>,
-    new_terrain: Query<
-        'w,
-        's,
-        &'static MeshMaterial3d<TerrainMaterial>,
-        Added<MeshMaterial3d<TerrainMaterial>>,
-    >,
-    all_lod: Query<'w, 's, &'static MeshMaterial3d<LodLandMaterial>>,
-    new_lod: Query<
-        'w,
-        's,
-        &'static MeshMaterial3d<LodLandMaterial>,
-        Added<MeshMaterial3d<LodLandMaterial>>,
-    >,
     domes: Query<'w, 's, (&'static Mesh3d, &'static SkyWeights)>,
     new_domes: Query<'w, 's, (), NewSky>,
     stars: Query<'w, 's, (&'static Mesh3d, &'static Stars)>,
@@ -82,8 +76,9 @@ pub struct Lit<'w, 's> {
     suns: Query<'w, 's, (&'static Mesh3d, &'static SunDisk, &'static mut Visibility)>,
 }
 
-/// Outdoors, every frame: once the clock has moved a game minute (or new
-/// things have appeared), the light of the hour.
+/// Outdoors, every frame: once the clock has moved a game minute, the
+/// light of the hour; lit surfaces not yet on the shared light switched to
+/// it.
 #[allow(clippy::too_many_arguments)]
 pub fn follow_the_clock(
     game: Res<GameFiles>,
@@ -99,6 +94,7 @@ pub fn follow_the_clock(
     let daylight = &mut *daylight;
     let Some(mut exterior) = exterior else {
         daylight.applied = None;
+        daylight.switched = false;
         return;
     };
     let order = &game.0.order;
@@ -122,8 +118,7 @@ pub fn follow_the_clock(
     let all = daylight
         .applied
         .is_none_or(|h| (h - hour).abs() >= MINUTE || lit.new_domes.iter().next().is_some());
-    let newcomers =
-        !lit.new_lit.is_empty() || !lit.new_terrain.is_empty() || !lit.new_lod.is_empty();
+    let newcomers = !lit.new_lit.is_empty() || !daylight.switched;
     if !all && !newcomers {
         return;
     }
@@ -153,25 +148,29 @@ pub fn follow_the_clock(
         settings.brightness,
     );
 
-    // Materials: every one when the hour moved, else the new ones.
-    let lit_handles: Vec<AssetId<GameLitMaterial>> = if all {
-        lit.all_lit.iter().map(|m| m.0.id()).collect()
-    } else {
-        lit.new_lit.iter().map(|m| m.0.id()).collect()
+    // The shared light (the terrain and the distant land always read it).
+    let now = SharedLight {
+        ambient: fields.ambient,
+        directional_color: fields.directional_color,
+        directional_direction: fields.directional_direction,
+        fog_color: fields.fog_color,
+        fog_range: fields.fog_range,
     };
+    if lit.shared.0 != now {
+        lit.shared.0 = now;
+    }
+    // Lit surfaces onto it: every one the first time outdoors, else the
+    // new ones (their own copy kept up to date with it too).
+    let lit_handles: Vec<AssetId<GameLitMaterial>> = if daylight.switched {
+        lit.new_lit.iter().map(|m| m.0.id()).collect()
+    } else {
+        lit.all_lit.iter().map(|m| m.0.id()).collect()
+    };
+    daylight.switched = true;
     for id in lit_handles {
         if let Some(m) = lit.lit.get_mut(id) {
             fields.apply(&mut m.extension.lighting);
-        }
-    }
-    let terrain_handles: Vec<AssetId<TerrainMaterial>> = if all {
-        lit.all_terrain.iter().map(|m| m.0.id()).collect()
-    } else {
-        lit.new_terrain.iter().map(|m| m.0.id()).collect()
-    };
-    for id in terrain_handles {
-        if let Some(m) = lit.terrain.get_mut(id) {
-            fields.apply(&mut m.extension.lighting);
+            m.extension.lighting.scale.z = 1.0;
         }
     }
     if let Some(p) = exterior.lod_params.as_mut() {
@@ -180,21 +179,6 @@ pub fn follow_the_clock(
         p.sun_direction = fields.directional_direction;
         p.fog_color = fields.fog_color;
         p.fog_range = fields.fog_range;
-    }
-    let lod_handles: Vec<AssetId<LodLandMaterial>> = if all {
-        lit.all_lod.iter().map(|m| m.0.id()).collect()
-    } else {
-        lit.new_lod.iter().map(|m| m.0.id()).collect()
-    };
-    for id in lod_handles {
-        if let Some(m) = lit.lod.get_mut(id) {
-            let p = &mut m.extension.params;
-            p.ambient = fields.ambient;
-            p.sun_color = fields.directional_color;
-            p.sun_direction = fields.directional_direction;
-            p.fog_color = fields.fog_color;
-            p.fog_range = fields.fog_range;
-        }
     }
     // What's lit by the place later (people coming in) takes it too; the
     // first-person view's materials were among those above.

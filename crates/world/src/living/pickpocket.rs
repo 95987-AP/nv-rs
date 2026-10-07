@@ -9,7 +9,9 @@
 //! player's teammate, used by the player **while sneaking**, has their
 //! pockets picked, unless they have caught the player before: "<name> has
 //! already caught you." (`sNoPickPocketAgain`; names and texts joined as
-//! `%s %s`). Anyone else is talked to. Facing, light and being seen play
+//! `%s %s`). A teammate brings up their wheel, or nothing when they can't
+//! take orders (`00754d90`, [`crate::companions::wheel_allowed`]). Anyone
+//! else is talked to. Facing, light and being seen play
 //! no part. (Creatures' own "allow pickpocket" and a few process flags in
 //! the test aren't read: only people are pickpocketed here.)
 //!
@@ -64,6 +66,10 @@ pub enum Use {
     Pickpocket,
     /// Talking.
     Talk,
+    /// A teammate's wheel (`CompanionWheelMenu`, [`crate::companions`]).
+    Wheel,
+    /// A teammate who can't take orders now: nothing happens.
+    Nothing,
 }
 
 /// The player uses a person (`005fa330`; see the module notes). `fleeing`:
@@ -92,6 +98,15 @@ pub fn use_person(order: &LoadOrder, state: &GameState, who: FormId, fleeing: bo
             return joined("sNoPickPocketAgain", " has already caught you.");
         }
         return Use::Pickpocket;
+    }
+    // The player using a teammate: their wheel, or nothing (`005fa330`
+    // after the pickpocketing, `00754d90`).
+    if state.teammates.contains(&who) {
+        return if crate::companions::wheel_allowed(order, state, who) {
+            Use::Wheel
+        } else {
+            Use::Nothing
+        };
     }
     Use::Talk
 }
@@ -127,8 +142,8 @@ pub fn chance(order: &LoadOrder, state: &GameState, target: FormId, value: f64) 
 }
 
 /// V when taking (`0075e240`): the item's value × how many.
-pub fn stack_value(order: &LoadOrder, item: FormId, count: i32) -> f64 {
-    let unit = crate::items::item_info(order, item).map_or(0, |i| i.value);
+pub fn stack_value(order: &LoadOrder, state: &GameState, item: FormId, count: i32) -> f64 {
+    let unit = crate::items::value(order, state, item);
     f64::from(unit) * f64::from(count.max(0))
 }
 
@@ -243,7 +258,7 @@ pub fn attempt(
         }
     }
     let value = if taking {
-        stack_value(order, item, count)
+        stack_value(order, state, item, count)
     } else {
         1.0
     };
