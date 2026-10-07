@@ -343,6 +343,15 @@ game does (`00763ff0`/`007640a0`, menu fades `00a1d910`/`00a1db20`);
 unit-tested and verified live with Chet; details and gaps in
 [DIALOGUE.md](DIALOGUE.md).
 
+B16 local map, 2026-10-07 (`claude/b16-local-map`): the Pip-Boy local map's
+scale, zoom limits and steps re-traced and found as implemented (see
+[PIPBOY.md](PIPBOY.md)); fixed the map running off to its limits after any
+drag (the drag's movement was added on every refresh, not once), a drag
+flung off when the pointer left the Pip-Boy's screen, the map not centred
+again when DATA / the tab is shown or the pictures finish, and added the
+pad's sticks (zoom, pan); unit-tested, verified live with the mouse; not
+compared with the original.
+
 ## M2 blocker batch: gunfight packages
 
 `claude/m2-packages` (2026-10-06): flee, guard, procedure lists, package
