@@ -11,8 +11,9 @@
 //! them something they've no room for (`0075dc80`,
 //! `world::items::has_room`) is refused with "<name>
 //! `sTeammateOverencumbered`" and their `FollowersOverburdened` line;
-//! `0075b750` closes it with `DRSTraderClose`. (Not here: the companion
-//! choosing what to wear afterwards, `00606540`.)
+//! `0075b750` closes it with `DRSTraderClose`, a person then choosing
+//! the armour they wear (`00606540`, `world::companions::
+//! wear_best_armour`).
 
 use cellview::Game;
 use esm::FormId;
@@ -308,6 +309,17 @@ pub fn after(
                 }
                 Request::AskQuantity { most, .. } => ask = Some(most),
                 Request::Close if mode == 3 => {
+                    // `0075b750`: a person sorts out what they wear
+                    // (`world::companions::wear_best_armour`; a creature's
+                    // weapons, `005f9e00`, aren't done).
+                    let person = base(order, reference)
+                        .and_then(|b| order.get(b))
+                        .is_some_and(|r| r.entry.header.kind.as_bytes() == b"NPC_");
+                    if person {
+                        for item in world::companions::wear_best_armour(order, state, reference) {
+                            println!("{reference} puts on {item}.");
+                        }
+                    }
                     sounds.extend(order.form_by_editor_id("DRSTraderClose"));
                 }
                 Request::Close => {

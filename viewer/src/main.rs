@@ -12,6 +12,7 @@ mod caravan_table;
 mod chatter;
 mod clutter;
 mod combat;
+mod companions;
 mod controls;
 mod daylight;
 mod dialogue;
@@ -364,6 +365,7 @@ fn main() {
         .add_plugins(clutter::ClutterPlugin)
         .add_plugins(lockpick::LockpickPlugin)
         .add_plugins(caravan_table::CaravanTablePlugin)
+        .add_plugins(companions::CompanionsPlugin)
         .add_audio_source::<sounds::PcmSound>()
         // The first-person camera runs the image space passes with the
         // main camera's grade, once everything has set it.

@@ -192,6 +192,240 @@ pub fn nerve(order: &LoadOrder, state: &GameState, who: FormId) -> f32 {
     charisma * 0.05 + 1.0
 }
 
+/// Body slot 2, the upper body (`BMDT` bit 2).
+const UPPER_BODY: u32 = 2;
+/// The biped slots a person's armour is picked for (`006047c0`: 0 to 19).
+const BIPED_SLOTS: u32 = 20;
+
+/// An armour's body slots (`BMDT`), resistance (`DNAM` i16 at 0, kept ×
+/// 100: the game's `004be080` divides it) and threshold (`DNAM` f32 at 4).
+fn armour_figures(order: &LoadOrder, item: FormId) -> Option<(u32, f32, f32)> {
+    let rr = order
+        .get(item)
+        .filter(|r| r.entry.header.kind.as_bytes() == b"ARMO")?;
+    let record = rr.record().ok()?;
+    let slots = crate::actor::Armor::load(order, item).map_or(0, |a| a.slots);
+    let d = record
+        .get(esm::FourCC::new(b"DNAM"))
+        .map(|s| s.data.clone())
+        .unwrap_or_default();
+    let dr = if d.len() >= 2 {
+        f32::from(u16::from_le_bytes([d[0], d[1]])) / 100.0
+    } else {
+        0.0
+    };
+    let dt = if d.len() >= 8 {
+        f32::from_le_bytes([d[4], d[5], d[6], d[7]])
+    } else {
+        0.0
+    };
+    Some((slots, dr, dt))
+}
+
+/// What someone would wear in a body slot (`InventoryChanges::GetBestArmor`
+/// (Xbox PDB), `004c8220`, asked to keep what's locked on): what they wear
+/// there with `EquipItem`'s no-unequip flag ([`GameState::equip_locked`],
+/// extra data 0x3e) stays; else of the armour they hold (count above 0)
+/// covering the slot, the one scoring highest, the first on a tie (their
+/// record's contents first, in its order, then the rest): its resistance
+/// truncated (the game scales it by `00646d40`'s condition factor, but of
+/// the item's health itself rather than its share of full health, which
+/// is 1 for any health above 0.5) plus its threshold. A piece worn down
+/// to no health isn't picked.
+///
+/// Translated from 004c8220 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn best_armour(order: &LoadOrder, state: &GameState, who: FormId, slot: u32) -> Option<FormId> {
+    let covers =
+        |item: FormId| armour_figures(order, item).is_some_and(|(s, _, _)| s & (1 << slot) != 0);
+    if let Some(&locked) = state.equipped.get(&who).and_then(|worn| {
+        worn.iter()
+            .find(|&&i| covers(i) && state.equip_locked.contains(&(who, i)))
+    }) {
+        return Some(locked);
+    }
+    let held = state.inventory(order, who);
+    let mut order_seen: Vec<FormId> = Vec::new();
+    for (item, _) in crate::scripting::base_contents(order, who) {
+        if !order_seen.contains(&item) {
+            order_seen.push(item);
+        }
+    }
+    for (item, _) in &held {
+        if !order_seen.contains(item) {
+            order_seen.push(*item);
+        }
+    }
+    let mut best: Option<(f32, FormId)> = None;
+    for item in order_seen {
+        if !held.iter().any(|(i, n)| *i == item && *n > 0) {
+            continue;
+        }
+        let Some((slots, dr, dt)) = armour_figures(order, item) else {
+            continue;
+        };
+        if slots & (1 << slot) == 0 {
+            continue;
+        }
+        if let (Some(c), Some(full)) = (
+            state.weapon_health.get(&(who, item)),
+            crate::repair::stated_health(order, item),
+        ) {
+            if c * full as f32 <= 0.0 {
+                continue;
+            }
+        }
+        let score = dr.trunc() + dt;
+        if best.map_or(true, |(b, _)| score > b) {
+            best = Some((score, item));
+        }
+    }
+    best.map(|(_, item)| item)
+}
+
+/// A companion sorting out what they wear after trading (the container
+/// menu closing in mode 3, `0075b750`; for a person `00606540` →
+/// `TESNPC::InitDefaultWorn` (Xbox PDB), `006047c0`): for each body slot 0
+/// to 19 in turn, [`best_armour`] for it is put on unless the upper-body
+/// piece already put on covers this slot, it's worn already, or (in any
+/// slot but the upper body's) it covers the upper body too; the upper
+/// body's piece is the one later slots are measured against. Returns what
+/// was put on.
+///
+/// The weapon part (`004c7400`, `InventoryChanges::GetBestWeapon`, which
+/// scores by the damage per second `00645380` works out) and a creature's
+/// (`005f9e00`, weapons only) aren't done.
+///
+/// Translated from 006047c0 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn wear_best_armour(order: &LoadOrder, state: &mut GameState, who: FormId) -> Vec<FormId> {
+    let covers = |item: FormId, slot: u32| {
+        armour_figures(order, item).is_some_and(|(s, _, _)| s & (1 << slot) != 0)
+    };
+    let mut body: Option<FormId> = None;
+    let mut put_on = Vec::new();
+    for slot in 0..BIPED_SLOTS {
+        let Some(item) = best_armour(order, state, who, slot) else {
+            continue;
+        };
+        if body.is_some_and(|b| covers(b, slot)) || state.is_equipped(who, item) {
+            continue;
+        }
+        if slot == UPPER_BODY {
+            body = Some(item);
+        } else if covers(item, UPPER_BODY) {
+            continue;
+        }
+        state.equip(order, who, item);
+        put_on.push(item);
+    }
+    put_on
+}
+
+/// How far from the player someone following them must be to be brought
+/// along (`00973de0`: 350 units).
+pub const FOLLOW_CATCH_UP: f32 = 350.0;
+
+/// Whether someone is following the player (`009549a0`;
+/// `PlayerCharacter::IsActorFollowingPlayer` (Xbox PDB)): not dead, not
+/// disabled, and the package they run now a Follow (1) or Accompany (7)
+/// one aimed at the player. (Also in the game, not looked at here: the
+/// actor's vtable +0x234 and `00437bf0` tests, `008a6210`.)
+///
+/// Translated from 009549a0 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn follows_player(order: &LoadOrder, state: &GameState, who: FormId) -> bool {
+    if who == PLAYER_REF
+        || state.dead.contains(&who)
+        || !crate::enabled_now(order, who, &state.disabled)
+    {
+        return false;
+    }
+    crate::ai::current_package(order, state, who)
+        .and_then(|p| crate::ai::followed(&p))
+        .is_some_and(|(target, _)| target == PLAYER_REF)
+}
+
+/// Who comes along when the player has been put somewhere — through a
+/// load door, by a script's `MoveTo` or by fast travel (all end in the
+/// player's positioning, `0093c200`, whose last step is `00973de0`; fast
+/// travel, `0093cdf0`, first does the same for those following to its
+/// marker, `00973ee0`): of the actors running near the player before
+/// (`near`, the game's high-process list), each one alive that is the
+/// player's teammate, or that follows the player ([`follows_player`]) and
+/// is now more than [`FOLLOW_CATCH_UP`] away (in another place counts), is
+/// moved to the player (`008ad910` → `Actor::MoveActorAndFollowers` (Xbox
+/// PDB), `008ad1c0`) — except a teammate whose `Waiting` variable is 1,
+/// whom `008ad1c0` passes over. Moved ones stand up from furniture, are put
+/// where the player stands facing their way (the game first looks for a
+/// spot on the navmesh behind the player, spaced by each one's radius,
+/// `006e7e70`, and uses the player's own spot when it finds none; that
+/// search is the pathing's and isn't done here) and look at their packages
+/// again. Returns those moved.
+///
+/// Translated from 00973de0, 00973ee0, 008ad1c0 (decompiled,
+/// FalloutNV.exe 1.4.0.525).
+pub fn come_along(
+    order: &LoadOrder,
+    scripts: &ScriptCache,
+    state: &mut GameState,
+    near: &[FormId],
+) -> Vec<FormId> {
+    let Some((space, cell, at, heading)) = state.place(order, PLAYER_REF) else {
+        return Vec::new();
+    };
+    let mut moved = Vec::new();
+    for &who in near {
+        if who == PLAYER_REF || moved.contains(&who) || state.dead.contains(&who) {
+            continue;
+        }
+        let teammate = state.teammates.contains(&who);
+        let far = || match state.place(order, who) {
+            Some((s, _, p, _)) => {
+                s != space
+                    || ((p[0] - at[0]).powi(2) + (p[1] - at[1]).powi(2) + (p[2] - at[2]).powi(2))
+                        .sqrt()
+                        > FOLLOW_CATCH_UP
+            }
+            None => false,
+        };
+        if !(teammate || (follows_player(order, state, who) && far())) {
+            continue;
+        }
+        // `008ad1c0`: not a waiting teammate, nor someone disabled.
+        if !crate::enabled_now(order, who, &state.disabled)
+            || (teammate && variable(order, scripts, state, who, "Waiting") == 1.0)
+        {
+            continue;
+        }
+        state.stand(who);
+        state.spaces.insert(who, (space, cell));
+        state.positions.insert(who, (at, heading));
+        state.evaluate.insert(who);
+        moved.push(who);
+    }
+    moved
+}
+
+/// Whether the player is fighting: fighting someone, or someone fighting
+/// them (as `IsInCombat` on the player reads here; the game's
+/// `PlayerCharacter::IsPlayerCharacterInCombat` (Xbox PDB), `00953c50`,
+/// keeps a flag at +0xdf0).
+pub fn player_in_combat(state: &GameState) -> bool {
+    state.combat.contains_key(&PLAYER_REF) || state.combat.values().any(|t| *t == PLAYER_REF)
+}
+
+/// Whether a knocked-out essential actor's time down runs this frame
+/// (`00888b50`, life state 6): for the player's teammate only while the
+/// player isn't in combat (so a companion knocked out in a fight gets up
+/// once it's over, `fEssentialDeathTime` after); for anyone else always.
+/// When it runs out they get up (`008a1800`, `008a0960`; a teammate's
+/// also queues hint 11, `008d5cb0`). A teammate is essential only outside
+/// Hardcore (`0087f3d0`, `more_functions::is_essential`): in Hardcore
+/// they die. `combat::advance_down` holds the time with it.
+///
+/// Translated from 00888b50 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn down_time_runs(state: &GameState, who: FormId) -> bool {
+    !(state.teammates.contains(&who) && player_in_combat(state))
+}
+
 /// The Stimpak (`DOBJ` default object 0).
 pub fn stimpak(order: &LoadOrder) -> Option<FormId> {
     crate::items::default_object(order, 0)

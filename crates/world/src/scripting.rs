@@ -256,6 +256,11 @@ pub struct GameState {
     /// Which way the player faces (radians clockwise from north), kept by
     /// whatever moves them; what [`Self::place`] gives for them.
     pub player_heading: f32,
+    /// The player was put somewhere (`MoveTo`, fast travel:
+    /// [`crate::script_functions::player_moved`]) and those coming along
+    /// haven't been brought yet (`world::companions::come_along`; the
+    /// viewer takes it). Not saved.
+    pub player_placed: bool,
     /// The player's level (1 in a new game) and perks, with their ranks
     /// past the first (`world::perks`).
     pub player_level: u16,
@@ -459,6 +464,11 @@ pub struct GameState {
     pub discovered: HashSet<FormId>,
     /// What people have equipped (`EquipItem`), by person.
     pub equipped: HashMap<FormId, Vec<FormId>>,
+    /// Things equipped with `EquipItem`'s no-unequip flag, (person, item):
+    /// the worn entry's extra data 0x3e (`005d0060` → `0041ab70`), which
+    /// keeps them in their slot when a person picks their armour again
+    /// (`004c8220`).
+    pub equip_locked: HashSet<(FormId, FormId)>,
     /// Who's fighting whom: attacker → target (`StartCombat`, being hit,
     /// an aggressive creature seeing the player).
     pub combat: HashMap<FormId, FormId>,
@@ -3852,10 +3862,23 @@ impl<'a> Runner<'a> {
             // One weapon in hand; clothes take off what's on the same slots.
             "EquipItem" => {
                 let who = target?;
-                self.state.equip(self.order, who, arg(0).form());
+                let item = arg(0).form();
+                self.state.equip(self.order, who, item);
+                // The no-unequip flag (`005d0060`: set or cleared on the
+                // worn entry, `0041ab70`).
+                if self.state.is_equipped(who, item) {
+                    if args.get(1).is_some_and(|a| a.number() != 0.0) {
+                        self.state.equip_locked.insert((who, item));
+                    } else {
+                        self.state.equip_locked.remove(&(who, item));
+                    }
+                }
             }
             "UnequipItem" => {
-                self.state.unequip_item(self.order, target?, arg(0).form());
+                let who = target?;
+                let item = arg(0).form();
+                self.state.unequip_item(self.order, who, item);
+                self.state.equip_locked.remove(&(who, item));
             }
             "KillActor" => {
                 let who = target?;

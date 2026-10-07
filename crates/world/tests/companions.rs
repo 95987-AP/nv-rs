@@ -196,3 +196,181 @@ fn nerve() {
     state.actor_values.insert((player, 8), 14.0);
     assert!((companions::nerve(&order, &state, doc) - 1.5).abs() < 1e-6);
 }
+
+/// After trading (`0075b750` → `00606540` → `006047c0`): per body slot
+/// the best armour (`004c8220`: resistance + threshold, the first on a
+/// tie), not one covering the upper body outside its own slot, and what's
+/// locked on with `EquipItem`'s flag kept.
+#[test]
+fn a_companion_picks_their_armour() {
+    use world::companions;
+    let (_data, order) = order("companions-armour");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let doc = FormId(DOC_REF);
+    state.stock(&order, doc);
+    for item in [SHIRT, COAT, HAT, ARMOR, HELMET] {
+        state.items.insert((doc, FormId(item)), 1);
+    }
+    assert_eq!(
+        companions::best_armour(&order, &state, doc, 2),
+        Some(FormId(ARMOR))
+    );
+    assert_eq!(
+        companions::best_armour(&order, &state, doc, 0),
+        Some(FormId(HELMET))
+    );
+    // The coat covers the upper body and a hand: only the upper body's
+    // pick puts such a thing on.
+    assert_eq!(
+        companions::best_armour(&order, &state, doc, 3),
+        Some(FormId(COAT))
+    );
+    // Slot by slot: the helmet (0), the armour (2), the hat (10).
+    assert_eq!(
+        companions::wear_best_armour(&order, &mut state, doc),
+        vec![FormId(HELMET), FormId(ARMOR), FormId(HAT)]
+    );
+    assert!(!state.is_equipped(doc, FormId(COAT)));
+    // Again: nothing new.
+    assert!(companions::wear_best_armour(&order, &mut state, doc).is_empty());
+
+    // The shirt locked on (`EquipItem TestShirt 1`) stays.
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "DocRef.EquipItem TestShirt 1",
+        None,
+        None,
+    );
+    assert!(state.is_equipped(doc, FormId(SHIRT)));
+    assert_eq!(
+        companions::best_armour(&order, &state, doc, 2),
+        Some(FormId(SHIRT))
+    );
+    companions::wear_best_armour(&order, &mut state, doc);
+    assert!(state.is_equipped(doc, FormId(SHIRT)));
+    assert!(!state.is_equipped(doc, FormId(ARMOR)));
+    // Without the flag it's picked again.
+    Runner::new(&order, &scripts, &mut state).run_source("DocRef.EquipItem TestShirt", None, None);
+    companions::wear_best_armour(&order, &mut state, doc);
+    assert!(state.is_equipped(doc, FormId(ARMOR)));
+}
+
+/// Coming along when the player is put somewhere (`0093c200` →
+/// `00973de0` → `008ad1c0`): a teammate near the player comes (not one
+/// waiting); someone else only when following the player.
+#[test]
+fn teammates_come_along() {
+    use world::companions;
+    let (_data, order) = order("companions-along");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let doc = FormId(DOC_REF);
+    // The player somewhere else entirely.
+    let elsewhere = FormId(0xFFF0);
+    state.player_cell = Some(elsewhere);
+    state.player_world = None;
+    state.player_position = Some([10.0, 20.0, 30.0]);
+    state.player_heading = 1.5;
+    // Not a teammate, not following: stays.
+    assert!(companions::come_along(&order, &scripts, &mut state, &[doc]).is_empty());
+    // A teammate waiting (`Waiting` 1): stays.
+    state.teammates.insert(doc);
+    companions::set_variable(&order, &scripts, &mut state, doc, "Waiting", 1.0);
+    assert!(companions::come_along(&order, &scripts, &mut state, &[doc]).is_empty());
+    // Following again: comes, to where the player stands.
+    companions::set_variable(&order, &scripts, &mut state, doc, "Waiting", 0.0);
+    assert_eq!(
+        companions::come_along(&order, &scripts, &mut state, &[doc]),
+        vec![doc]
+    );
+    assert_eq!(
+        state.place(&order, doc),
+        Some((elsewhere, elsewhere, [10.0, 20.0, 30.0], 1.5))
+    );
+    assert!(state.evaluate.contains(&doc));
+    // Dead: no.
+    state.dead.insert(doc);
+    state.player_position = Some([5000.0, 0.0, 0.0]);
+    assert!(companions::come_along(&order, &scripts, &mut state, &[doc]).is_empty());
+}
+
+/// Ammunition (`Actor::ShouldUseAmmo`, `Actor::UseAmmo`, carried out by
+/// `world::npc_combat`): a teammate's shots use theirs up; someone else's
+/// don't.
+#[test]
+fn a_teammates_shots_use_ammunition() {
+    use world::npc_combat::{fired, should_use_ammo};
+    let (_data, order) = order("companions-ammo");
+    let mut state = GameState::new(&order);
+    let doc = FormId(DOC_REF);
+    // The test pistol firing the cased rounds.
+    let mut pistol = world::combat::Weapon::load(&order, FormId(PISTOL)).unwrap();
+    let ammo = FormId(CASED_AMMO);
+    pistol.ammo = vec![ammo];
+    state.stock(&order, doc);
+    state.items.insert((doc, ammo), 10);
+    assert!(!should_use_ammo(&state, doc, &pistol));
+    fired(&order, &mut state, doc, &pistol);
+    assert_eq!(state.item_count(&order, doc, ammo), 10);
+    state.teammates.insert(doc);
+    assert!(should_use_ammo(&state, doc, &pistol));
+    let per = i32::from(pistol.ammo_use.max(1));
+    fired(&order, &mut state, doc, &pistol);
+    assert_eq!(state.item_count(&order, doc, ammo), 10 - per);
+    // A weapon not playable: not even a teammate's.
+    let mut npc_gun = pistol.clone();
+    npc_gun.flags1 |= 0x80;
+    assert!(!should_use_ammo(&state, doc, &npc_gun));
+    // "NPCs use ammo": anyone's.
+    npc_gun.flags2 |= 0x02;
+    state.teammates.remove(&doc);
+    assert!(should_use_ammo(&state, doc, &npc_gun));
+    assert!(should_use_ammo(
+        &state,
+        world::dialogue::PLAYER_REF,
+        &pistol
+    ));
+}
+
+/// A fall (`008a62b0`): the player's teammate takes no damage from it.
+#[test]
+fn teammates_take_no_fall_damage() {
+    let (_data, order) = order("companions-fall");
+    let mut state = GameState::new(&order);
+    let doc = FormId(DOC_REF);
+    assert!(world::combat::land(&order, &mut state, doc, 1000.0) > 0.0);
+    state.damage.remove(&doc);
+    state.dead.remove(&doc);
+    state.teammates.insert(doc);
+    assert_eq!(world::combat::land(&order, &mut state, doc, 1000.0), 0.0);
+    assert!(!state.damage.contains_key(&doc));
+}
+
+/// Knocked out (`00888b50`): a teammate's time down stops while the
+/// player fights; in Hardcore a teammate isn't essential (`0087f3d0`).
+#[test]
+fn a_knocked_out_teammate_waits_for_the_fight_to_end() {
+    use world::companions;
+    let (_data, order) = order("companions-down");
+    let mut state = GameState::new(&order);
+    let doc = FormId(DOC_REF);
+    let gecko = FormId(GECKO_REF);
+    assert!(companions::down_time_runs(&state, doc));
+    state.combat.insert(gecko, world::dialogue::PLAYER_REF);
+    assert!(companions::down_time_runs(&state, doc));
+    state.teammates.insert(doc);
+    assert!(!companions::down_time_runs(&state, doc));
+    // Down in the fight: the time stands still (`combat::advance_down`).
+    state.more.down.insert(doc, 10.0);
+    world::combat::advance_down(&order, &mut state, 60.0);
+    assert!(state.more.down.contains_key(&doc));
+    state.combat.clear();
+    assert!(companions::down_time_runs(&state, doc));
+    world::combat::advance_down(&order, &mut state, 9.9);
+    assert!(state.more.down.contains_key(&doc));
+    world::combat::advance_down(&order, &mut state, 0.2);
+    assert!(!state.more.down.contains_key(&doc));
+    assert!(world::more_functions::is_essential(&order, &state, doc));
+    state.living.hardcore = true;
+    assert!(!world::more_functions::is_essential(&order, &state, doc));
+}

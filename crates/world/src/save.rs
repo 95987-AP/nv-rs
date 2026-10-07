@@ -358,6 +358,10 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
             line(format!("hotkey {i} {}", id(*item)));
         }
     }
+    let locked: BTreeSet<_> = state.equip_locked.iter().collect();
+    for (who, item) in locked {
+        line(format!("equiplocked {} {}", id(*who), id(*item)));
+    }
     let dropped: BTreeSet<_> = state.dropped.iter().collect();
     for (who, weapon) in dropped {
         line(format!("dropped {} {}", id(*who), id(*weapon)));
@@ -724,6 +728,9 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                 if slot < 8 {
                     state.hotkeys[slot] = Some(form(2)?);
                 }
+            }
+            "equiplocked" => {
+                state.equip_locked.insert((form(1)?, form(2)?));
             }
             "dropped" => {
                 state.dropped.insert((form(1)?, form(2)?));

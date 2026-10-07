@@ -1244,7 +1244,8 @@ fn restore_after_essential_down(state: &mut GameState, who: FormId) {
 }
 
 /// Those who are down count their seconds; at 0 they get up
-/// (`Event::GotUp`).
+/// (`Event::GotUp`). The player's teammate's seconds stand still while
+/// the player fights.
 // Translated from 00888b50 (decompiled, FalloutNV.exe 1.4.0.525): in life
 // state 6 the process's essential-down timer counts down
 // (`ModEssentialDownTimer`, +0xe0) while the actor lies knocked down; at 0
@@ -1254,8 +1255,20 @@ pub fn advance_down(_order: &LoadOrder, state: &mut GameState, seconds: f32) {
     if state.more.down.is_empty() {
         return;
     }
+    // A teammate's time runs only while the player isn't fighting
+    // (`crate::companions::down_time_runs`, the same function's test).
+    let held: Vec<FormId> = state
+        .more
+        .down
+        .keys()
+        .filter(|w| !crate::companions::down_time_runs(state, **w))
+        .copied()
+        .collect();
     let mut up = Vec::new();
     for (who, left) in state.more.down.iter_mut() {
+        if held.contains(who) {
+            continue;
+        }
         *left -= seconds;
         if *left <= 0.0 {
             up.push(*who);
@@ -1349,12 +1362,31 @@ pub fn fall_damage(order: &LoadOrder, fall: f32) -> f64 {
 /// `fFallLegDamageMult`; the exe's defaults), and for the player a hard or
 /// light landing sound (`FSTLandHardHeavy` above
 /// `fHardLandingDamageThreshold` 500 from the INI, else
-/// `FSTLandHardLight`). Creatures that fly (`ACBS` flag 0x20) take none.
-/// The damage taken.
+/// `FSTLandHardLight`). Creatures that fly (`ACBS` flag 0x20) take none,
+/// nor does the player's teammate, nor a person other than the player in
+/// a worldspace flagged "no NPC fall damage" (`WRLD` `DATA` 0x40, the
+/// worldspace's +0x4c, `00586320`). The damage taken.
+///
+/// Translated from 008a62b0 (decompiled, FalloutNV.exe 1.4.0.525).
 pub fn land(order: &LoadOrder, state: &mut GameState, who: FormId, fall: f32) -> f64 {
     let damage = fall_damage(order, fall);
     if damage <= 0.0 || flies(order, who) {
         return 0.0;
+    }
+    if who != PLAYER_REF {
+        let person = base_of(order, who)
+            .and_then(|b| order.get(b))
+            .is_some_and(|r| r.entry.header.kind.as_bytes() == b"NPC_");
+        let world = state.place(order, who).map(|(space, ..)| space);
+        let spared_here = world
+            .and_then(|w| order.get(w))
+            .filter(|r| r.entry.header.kind.as_bytes() == b"WRLD")
+            .and_then(|r| r.record().ok())
+            .and_then(|r| r.get(esm::sig::DATA).and_then(|d| d.data.first().copied()))
+            .is_some_and(|f| f & 0x40 != 0);
+        if (person && spared_here) || state.teammates.contains(&who) {
+            return 0.0;
+        }
     }
     hurt(order, state, who, damage, who);
     // Fall damage goes to the damage virtual (`0089d6f0`) directly, not
