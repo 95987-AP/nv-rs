@@ -22,6 +22,7 @@ mod movie_cmd;
 mod music_cmd;
 mod music_place_cmd;
 mod nif_cmd;
+mod nvse_cmd;
 mod particles_cmd;
 mod play_cmd;
 mod records;
@@ -254,6 +255,9 @@ COMMANDS FOR DATA FOLDERS ONLY:
     coverage files        every file in every archive and loose, by kind;
                           every NIF block type and whether nv-rs decodes it;
                           texture and sound formats; menu files (Markdown)
+    coverage nvse         the script extender (xNVSE) functions and NVSE
+                          plugin opcodes the scripts call, against what
+                          nv-rs runs (Markdown; also for a single plugin)
 
 COMMANDS FOR ARCHIVES:
     info                  format, flags and what the archive holds

@@ -31,6 +31,10 @@ pub struct PluginHeader {
     pub description: Option<String>,
     /// Master files this plugin depends on, in load order.
     pub masters: Vec<String>,
+    /// The size of each master when this plugin was saved (the `DATA`
+    /// after its `MAST`), if given. The game warns when a master's size
+    /// differs (`00471af0`, `sGeneralMasterMismatchWarning`).
+    pub master_sizes: Vec<Option<u64>>,
     /// Whether the header's master flag is set (normally true for .esm files).
     pub is_master: bool,
 }
@@ -51,7 +55,15 @@ impl PluginHeader {
                 }
                 k if k == sig::CNAM => header.author = Some(sub.zstring()),
                 k if k == sig::SNAM => header.description = Some(sub.zstring()),
-                k if k == sig::MAST => header.masters.push(sub.zstring()),
+                k if k == sig::MAST => {
+                    header.masters.push(sub.zstring());
+                    header.master_sizes.push(None);
+                }
+                k if k == sig::DATA && d.len() >= 8 => {
+                    if let Some(last) = header.master_sizes.last_mut() {
+                        *last = Some(u64::from_le_bytes(d[..8].try_into().unwrap()));
+                    }
+                }
                 _ => {}
             }
         }
@@ -122,25 +134,7 @@ impl Plugin {
 
     /// Indexes a plugin already in memory.
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
-        let mut found = [0u8; 4];
-        let n = bytes.len().min(4);
-        found[..n].copy_from_slice(&bytes[..n]);
-        if FourCC(found) != sig::TES4 {
-            return Err(Error::NotAPlugin {
-                found: FourCC(found),
-            });
-        }
-
-        let (header_record, header, body_start) = {
-            let mut cur = Cursor::new(&bytes, 0);
-            let header_record = RecordHeader::read(&mut cur)?;
-            let raw = cur.take(header_record.data_size as usize, "TES4 header data")?;
-            let data = decompress_record(&header_record, raw)?;
-            let subrecords = parse_subrecords(&data, RECORD_HEADER_LEN)
-                .map_err(|e| in_record(&header_record, e))?;
-            let header = PluginHeader::from_subrecords(&subrecords, header_record.flags);
-            (header_record, header, cur.offset())
-        };
+        let (header_record, header, body_start) = read_tes4(&bytes)?;
 
         let mut walk = Walk::default();
         let mut pos = body_start;
@@ -314,6 +308,43 @@ impl Plugin {
         };
         parse_subrecords(data, base).map_err(|e| in_record(&entry.header, e))
     }
+}
+
+/// The `TES4` header record at the start of a plugin's bytes: its record
+/// header, its fields, and where the records after it start.
+fn read_tes4(bytes: &[u8]) -> Result<(RecordHeader, PluginHeader, usize)> {
+    let mut found = [0u8; 4];
+    let n = bytes.len().min(4);
+    found[..n].copy_from_slice(&bytes[..n]);
+    if FourCC(found) != sig::TES4 {
+        return Err(Error::NotAPlugin {
+            found: FourCC(found),
+        });
+    }
+    let mut cur = Cursor::new(bytes, 0);
+    let header_record = RecordHeader::read(&mut cur)?;
+    let raw = cur.take(header_record.data_size as usize, "TES4 header data")?;
+    let data = decompress_record(&header_record, raw)?;
+    let subrecords =
+        parse_subrecords(&data, RECORD_HEADER_LEN).map_err(|e| in_record(&header_record, e))?;
+    let header = PluginHeader::from_subrecords(&subrecords, header_record.flags);
+    Ok((header_record, header, cur.offset()))
+}
+
+/// Reads only a plugin file's header (master flag, masters), the way the
+/// game reads every plugin in `Data` to order them before loading any.
+pub fn read_header(path: impl AsRef<Path>) -> Result<PluginHeader> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut bytes = vec![0u8; RECORD_HEADER_LEN];
+    file.read_exact(&mut bytes)?;
+    let size = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+    if &bytes[..4] == sig::TES4.as_bytes() {
+        let mut data = vec![0u8; size];
+        file.read_exact(&mut data)?;
+        bytes.extend(data);
+    }
+    Ok(read_tes4(&bytes)?.1)
 }
 
 fn in_record(header: &RecordHeader, source: Error) -> Error {

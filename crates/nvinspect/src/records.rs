@@ -120,6 +120,8 @@ enum Command {
     /// Data folder only: what the game has against what nv-rs covers
     /// (`records` or `files`).
     Coverage(String),
+    /// `coverage nvse`: the script extender functions the scripts call.
+    NvseCoverage,
 }
 
 impl Command {
@@ -197,6 +199,9 @@ fn parse_command(command: &str, rest: &[String]) -> Result<Command, CliError> {
         }
         "coverage" => {
             expect_args(command, rest, 1, 0)?;
+            if rest[0] == "nvse" {
+                return Ok(Command::NvseCoverage);
+            }
             (Command::Coverage(rest[0].clone()), 1)
         }
         "cells" => (Command::Cells, 0),
@@ -645,6 +650,7 @@ fn execute(
         Command::Functions => {
             crate::scripts_cmd::functions(out, order, options.limit.unwrap_or(60))
         }
+        Command::NvseCoverage => crate::nvse_cmd::nvse(out, order),
         Command::Source(target) => {
             let rr = find_record(order, &target)?;
             crate::scripts_cmd::source(out, &rr.record()?)

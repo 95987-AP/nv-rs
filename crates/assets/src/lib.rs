@@ -1,15 +1,15 @@
 //! Finding game files the way Fallout: New Vegas does.
 //!
 //! Files come from two places: loose files under the `Data` folder, and
-//! the BSA archives the game loads. The game loads the archives listed in
-//! its settings first, then, for each active plugin in load order, any
-//! archive named after that plugin (`DeadMoney - Main.bsa` for
-//! `DeadMoney.esm`). A file in a later archive replaces the same path in an
-//! earlier one, and loose files replace archived ones.
-//!
-//! (The unmodified game only lets a loose file win if it's newer than the
-//! archive; every common mod setup turns that check off, so loose files
-//! always win here.)
+//! the BSA archives the game loads: the ones its settings list
+//! (`SArchiveList`), then `Update.bsa`, then for each active plugin in load
+//! order the archives whose names start with the plugin's
+//! (`DeadMoney - Main.bsa` for `DeadMoney.esm`). Which archive's copy of a
+//! file wins follows the game's archive list ([`archive_priority`]: DLC and
+//! mod archives before the base game's, the first-loaded mod archive
+//! first), and with `bInvalidateOlderFiles` on (the exe's default) a loose
+//! file beats every archived copy. docs/MODS.md has the rules and the
+//! addresses they were traced from.
 //!
 //! ```no_run
 //! let plugins = vec!["FalloutNV.esm".to_string(), "DeadMoney.esm".to_string()];
@@ -281,10 +281,165 @@ pub fn default_ini_candidates(data_dir: &Path) -> Vec<PathBuf> {
     candidates
 }
 
+/// The game's `[Archive]` settings that decide which archives load and
+/// whether loose files beat archived ones. Read by `00876d20`: `bUseArchives`
+/// and `SArchiveList` go to `ArchiveManager::Init` (`00af43a0`),
+/// `bInvalidateOlderFiles` and `SInvalidationFile` to
+/// `ArchiveManager::SetInvalidation` (`00af4490`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveSettings {
+    /// `bUseArchives` (the exe's default 1): off, no archive is opened.
+    pub use_archives: bool,
+    /// `SArchiveList`: the archives opened first, in order.
+    pub list: Vec<String>,
+    /// `bInvalidateOlderFiles` (the exe's default 1): a loose file beats
+    /// the archived copy of the same path, whatever their dates.
+    pub invalidate_older_files: bool,
+    /// `SInvalidationFile` (the exe's default `ArchiveInvalidation.txt`):
+    /// a list of archived files and folders to drop when an archive opens.
+    pub invalidation_file: String,
+}
+
+impl Default for ArchiveSettings {
+    /// The exe's defaults, with the shipped `Fallout_default.ini`'s list.
+    fn default() -> Self {
+        Self {
+            use_archives: true,
+            list: DEFAULT_ARCHIVES.iter().map(|s| s.to_string()).collect(),
+            invalidate_older_files: true,
+            invalidation_file: "ArchiveInvalidation.txt".into(),
+        }
+    }
+}
+
+impl ArchiveSettings {
+    /// The settings from the game's INI files (the exe's defaults where a
+    /// file doesn't say), with an archive list chosen by
+    /// [`archive_list_from`].
+    pub fn from_ini(ini: &IniSettings, list: Vec<String>) -> Self {
+        let flag = |key: &str, default: bool| {
+            ini.get("Archive", key)
+                .and_then(|v| v.trim().parse::<i64>().ok())
+                .map_or(default, |v| v != 0)
+        };
+        let defaults = Self::default();
+        Self {
+            use_archives: flag("bUseArchives", defaults.use_archives),
+            list,
+            invalidate_older_files: flag("bInvalidateOlderFiles", defaults.invalidate_older_files),
+            invalidation_file: ini
+                .get("Archive", "SInvalidationFile")
+                .map_or(defaults.invalidation_file, |v| v.trim().to_string()),
+        }
+    }
+}
+
+/// What an archive invalidation file (`ArchiveInvalidation.txt`) lists.
+/// Read by `ArchiveManager::LoadInvalidationFile` (`00af5ab0`): lines end
+/// at a carriage return (the character after it, the line feed, is
+/// skipped); a line without a backslash names a file (its name only), a
+/// line with one names the folder it's in (a leading backslash dropped).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Invalidation {
+    /// File names (`crate.dds`), lower case.
+    pub files: std::collections::BTreeSet<String>,
+    /// Folders (`textures\clutter`), lower case.
+    pub folders: std::collections::BTreeSet<String>,
+}
+
+impl Invalidation {
+    pub fn parse(bytes: &[u8]) -> Self {
+        let mut out = Self::default();
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let end = rest.iter().position(|&b| b == b'\r').unwrap_or(rest.len());
+            let line = String::from_utf8_lossy(&rest[..end]).into_owned();
+            // The line, its carriage return and the character after it.
+            rest = rest.get(end + 2..).unwrap_or(&[]);
+            if line.is_empty() {
+                continue;
+            }
+            // `_splitpath`: both slashes separate folders.
+            let split = |l: &str| match l.rfind(['\\', '/']) {
+                Some(i) => (l[..i].to_string(), l[i + 1..].to_string()),
+                None => (String::new(), l.to_string()),
+            };
+            if line.contains('\\') {
+                let line = line.strip_prefix('\\').unwrap_or(&line);
+                let (folder, _) = split(line);
+                let folder = if folder.is_empty() {
+                    ".".into()
+                } else {
+                    folder
+                };
+                out.folders
+                    .insert(folder.replace('/', "\\").to_ascii_lowercase());
+            } else {
+                out.files.insert(split(&line).1.to_ascii_lowercase());
+            }
+        }
+        out
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty() && self.folders.is_empty()
+    }
+
+    /// Whether an archived file is dropped when its archive opens
+    /// (`00afad00`): its folder is listed, or its name is and the folder
+    /// exists loose under `Data`.
+    pub fn drops(&self, folder: &str, name: &str, folder_on_disk: impl Fn(&str) -> bool) -> bool {
+        let folder = folder.replace('/', "\\").to_ascii_lowercase();
+        self.folders.contains(&folder)
+            || (self.files.contains(&name.to_ascii_lowercase()) && folder_on_disk(&folder))
+    }
+}
+
+/// Where in the archive manager's list a new archive goes, by its name:
+/// translated from `ArchiveManager::OpenArchive` (`00af4be0`, decompiled,
+/// FalloutNV.exe 1.4.0.525). Names containing (case matters) `Fallo` go to
+/// the end; the others (rank by the first of `DeadM` 1, `Hones` 2, `Lones`
+/// 3, `OldWo` 4, `Updat` 5 they contain, anything else 6, "a user created
+/// or misnamed BSA") go before the first archive already listed whose name
+/// has `Fallo` or `DeadM`, or `Hones` when the new rank is over 1, `Lones`
+/// over 2, `OldWo` or `Updat` over 3; at the front if none. Lookups walk
+/// the list from the front, so the first archive holding a file wins.
+/// Returns the list (indexes into `names`) after adding each in turn.
+pub fn archive_priority(names: &[&str]) -> Vec<usize> {
+    let rank = |n: &str| {
+        ["Fallo", "DeadM", "Hones", "Lones", "OldWo", "Updat"]
+            .iter()
+            .position(|m| n.contains(m))
+            .unwrap_or(6)
+    };
+    let mut list: Vec<usize> = Vec::with_capacity(names.len());
+    for (i, name) in names.iter().enumerate() {
+        let r = rank(name);
+        if r == 0 {
+            list.push(i);
+            continue;
+        }
+        let before = list.iter().position(|&j| {
+            let n = names[j];
+            n.contains("Fallo")
+                || n.contains("DeadM")
+                || (n.contains("Hones") && r > 1)
+                || (n.contains("Lones") && r > 2)
+                || (n.contains("OldWo") && r > 3)
+                || (n.contains("Updat") && r > 3)
+        });
+        list.insert(before.unwrap_or(0), i);
+    }
+    list
+}
+
 /// Every file the game can see, with overrides resolved.
 pub struct Assets {
     data_dir: PathBuf,
+    /// Loaded archives in the order they were opened.
     archives: Vec<LoadedArchive>,
+    /// Indexes into `archives`, highest priority first.
+    priority: Vec<usize>,
     unused_archives: Vec<String>,
     /// Archives in the folder that aren't loaded, kept open so missing
     /// files can be traced to them.
@@ -293,6 +448,11 @@ pub struct Assets {
     loose: HashMap<String, PathBuf>,
     /// Normalized path -> (archive index, file index) of the winning copy.
     archived: HashMap<String, (usize, usize)>,
+    /// Archived copies dropped by the invalidation file: (archive, file).
+    dropped: std::collections::HashSet<(usize, usize)>,
+    /// Loose files beat archived ones (`bInvalidateOlderFiles`).
+    loose_first: bool,
+    warnings: Vec<String>,
 }
 
 fn stem_of(file_name: &str) -> &str {
@@ -306,32 +466,58 @@ impl Assets {
     /// `plugins` are the active plugin file names in load order; they decide
     /// which extra archives are loaded.
     pub fn open(data_dir: impl AsRef<Path>, plugins: &[String]) -> Result<Self> {
-        let list: Vec<String> = DEFAULT_ARCHIVES.iter().map(|s| s.to_string()).collect();
-        Self::open_with(data_dir, plugins, &list)
+        Self::open_with_settings(data_dir, plugins, &ArchiveSettings::default())
     }
 
     /// Opens a `Data` folder with an explicit archive list (see
-    /// [`archive_list_from`]).
+    /// [`archive_list_from`]) and the exe's other defaults.
     pub fn open_with(
         data_dir: impl AsRef<Path>,
         plugins: &[String],
         archive_list: &[String],
+    ) -> Result<Self> {
+        let settings = ArchiveSettings {
+            list: archive_list.to_vec(),
+            ..ArchiveSettings::default()
+        };
+        Self::open_with_settings(data_dir, plugins, &settings)
+    }
+
+    /// Opens a `Data` folder the way the game does with these settings.
+    ///
+    /// Archives open in this order: `SArchiveList`'s
+    /// (`ArchiveManager::OpenMasterArchives` `00af4550`), then `Update.bsa`
+    /// (`TESDataHandler::BuildFileList` `004624b0`), then for each plugin in
+    /// load order every non-empty `Data\<plugin name without extension>*.bsa`
+    /// not already open (`00463070`: `DeadMoney - Main.bsa` for
+    /// `DeadMoney.esm`, but also `ModAExtra.bsa` for `ModA.esp`). An archive
+    /// that can't be read is left out with a warning, as the game leaves it
+    /// out. Which copy of a file wins: [`archive_priority`], and loose files
+    /// first when `bInvalidateOlderFiles` is on.
+    pub fn open_with_settings(
+        data_dir: impl AsRef<Path>,
+        plugins: &[String],
+        settings: &ArchiveSettings,
     ) -> Result<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();
         let io_error = |source| Error::Io {
             path: data_dir.clone(),
             source,
         };
-        let mut bsa_files: Vec<String> = std::fs::read_dir(&data_dir)
+        // FindFirstFile's order on NTFS: by name, upper-cased.
+        let mut bsa_files: Vec<(String, u64)> = std::fs::read_dir(&data_dir)
             .map_err(io_error)?
             .flatten()
             .filter(|e| e.path().is_file())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n.to_ascii_lowercase().ends_with(".bsa"))
+            .map(|e| {
+                let size = e.metadata().map_or(0, |m| m.len());
+                (e.file_name().to_string_lossy().into_owned(), size)
+            })
+            .filter(|(n, _)| n.to_ascii_lowercase().ends_with(".bsa"))
             .collect();
-        bsa_files.sort_by_key(|n| n.to_ascii_lowercase());
+        bsa_files.sort_by_key(|(n, _)| n.to_ascii_uppercase());
 
-        // Pick archives in load order.
+        // Pick archives in the order the game opens them.
         let mut chosen: Vec<(String, ArchiveReason)> = Vec::new();
         let take =
             |name: &str, chosen: &mut Vec<(String, ArchiveReason)>, reason: ArchiveReason| {
@@ -340,30 +526,33 @@ impl Assets {
                     chosen.push((name.to_string(), reason));
                 }
             };
-        for wanted in archive_list {
-            if let Some(found) = bsa_files.iter().find(|n| n.eq_ignore_ascii_case(wanted)) {
-                take(found, &mut chosen, ArchiveReason::Default);
+        if settings.use_archives {
+            for wanted in &settings.list {
+                if let Some((found, _)) = bsa_files
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(wanted))
+                {
+                    take(found, &mut chosen, ArchiveReason::Default);
+                }
             }
-        }
-        if let Some(found) = bsa_files
-            .iter()
-            .find(|n| n.eq_ignore_ascii_case(PATCH_ARCHIVE))
-        {
-            take(found, &mut chosen, ArchiveReason::Patch);
-        }
-        for plugin in plugins {
-            let stem = stem_of(plugin).to_ascii_lowercase();
-            for name in &bsa_files {
-                let lower = name.to_ascii_lowercase();
-                let own =
-                    lower == format!("{stem}.bsa") || lower.starts_with(&format!("{stem} - "));
-                if own {
-                    take(name, &mut chosen, ArchiveReason::Plugin(plugin.clone()));
+            if let Some((found, _)) = bsa_files
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(PATCH_ARCHIVE))
+            {
+                take(found, &mut chosen, ArchiveReason::Patch);
+            }
+            for plugin in plugins {
+                let stem = stem_of(plugin).to_ascii_lowercase();
+                for (name, size) in &bsa_files {
+                    if *size > 0 && name.to_ascii_lowercase().starts_with(&stem) {
+                        take(name, &mut chosen, ArchiveReason::Plugin(plugin.clone()));
+                    }
                 }
             }
         }
         let unused_archives: Vec<String> = bsa_files
             .iter()
+            .map(|(n, _)| n)
             .filter(|n| !chosen.iter().any(|(c, _)| c == *n))
             .cloned()
             .collect();
@@ -380,45 +569,104 @@ impl Assets {
             })
             .collect();
 
+        let mut warnings = Vec::new();
         let mut archives = Vec::with_capacity(chosen.len());
         for (name, reason) in chosen {
-            let archive =
-                bsa::Archive::open(data_dir.join(&name)).map_err(|source| Error::Archive {
-                    name: name.clone(),
-                    source,
-                })?;
-            archives.push(LoadedArchive {
-                name,
-                reason,
-                archive,
-            });
-        }
-
-        let mut archived = HashMap::new();
-        for (ai, loaded) in archives.iter().enumerate() {
-            for (fi, file) in loaded.archive.files().iter().enumerate() {
-                archived.insert(file.path.clone(), (ai, fi));
+            match bsa::Archive::open(data_dir.join(&name)) {
+                Ok(archive) => archives.push(LoadedArchive {
+                    name,
+                    reason,
+                    archive,
+                }),
+                Err(e) => {
+                    warnings.push(format!("{name} couldn't be read, so it isn't loaded: {e}"))
+                }
             }
         }
+        let names: Vec<&str> = archives.iter().map(|a| a.name.as_str()).collect();
+        let priority = archive_priority(&names);
 
         let mut loose = HashMap::new();
         scan_loose(&data_dir, "", 0, &mut loose)?;
 
+        // The invalidation file, found as any file is: in the game's
+        // folder, then under Data.
+        let invalidation =
+            if settings.invalidate_older_files && !settings.invalidation_file.is_empty() {
+                let name = &settings.invalidation_file;
+                data_dir
+                    .parent()
+                    .map(|game| game.join(name))
+                    .into_iter()
+                    .chain([data_dir.join(name)])
+                    .find_map(|p| std::fs::read(p).ok())
+                    .map(|b| Invalidation::parse(&b))
+                    .unwrap_or_default()
+            } else {
+                Invalidation::default()
+            };
+        let mut dropped = std::collections::HashSet::new();
+        if !invalidation.is_empty() {
+            for (ai, loaded) in archives.iter().enumerate() {
+                let named = bsa::archive_flags::DIRECTORY_NAMES | bsa::archive_flags::FILE_NAMES;
+                if loaded.archive.header().archive_flags & named != named {
+                    // The game compares loose files' dates with the
+                    // archive's instead (Archive::InvalidateOlderFilesByPath
+                    // 00b01590); archives without names aren't read here.
+                    continue;
+                }
+                for (fi, file) in loaded.archive.files().iter().enumerate() {
+                    let folder = &loaded.archive.folders()[file.folder].name;
+                    if invalidation.drops(folder, &file.name, |f| {
+                        data_dir.join(f.replace('\\', "/")).is_dir()
+                    }) {
+                        dropped.insert((ai, fi));
+                    }
+                }
+            }
+        }
+
+        let mut archived = HashMap::new();
+        for &ai in priority.iter().rev() {
+            for (fi, file) in archives[ai].archive.files().iter().enumerate() {
+                if !dropped.contains(&(ai, fi)) {
+                    archived.insert(file.path.clone(), (ai, fi));
+                }
+            }
+        }
+
         Ok(Self {
             data_dir,
             archives,
+            priority,
             unused_archives,
             inactive,
             loose,
             archived,
+            dropped,
+            loose_first: settings.invalidate_older_files,
+            warnings,
         })
+    }
+
+    /// Problems that didn't stop the folder opening (archives that
+    /// couldn't be read).
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// Loaded archives, highest priority (the one a shared file comes
+    /// from) first.
+    pub fn by_priority(&self) -> impl Iterator<Item = &LoadedArchive> + '_ {
+        self.priority.iter().map(|&i| &self.archives[i])
     }
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
     }
 
-    /// Loaded archives, lowest priority first.
+    /// Loaded archives in the order they were opened (see
+    /// [`Assets::by_priority`] for which one wins).
     pub fn archives(&self) -> &[LoadedArchive] {
         &self.archives
     }
@@ -466,15 +714,24 @@ impl Assets {
         }
     }
 
-    /// Where the game would load a file from, if anywhere.
+    /// Where the game would load a file from, if anywhere. Translated from
+    /// the file finder (`00afe220`, decompiled, FalloutNV.exe 1.4.0.525):
+    /// the archives are asked first (`ArchiveManager::GetArchiveForFile`
+    /// `00af6160`, the first archive by [`archive_priority`]), the loose
+    /// file only if none has it; but with `bInvalidateOlderFiles` on, an
+    /// archived entry whose path exists loose under `Data` is dropped the
+    /// first time it's looked up (`Archive::CheckInvalidateFile` `00afb190`),
+    /// so the loose file wins whatever its date.
     pub fn locate(&self, path: &str) -> Option<Source<'_>> {
         let key = normalize_path(path);
-        if let Some(p) = self.loose.get(&key) {
-            return Some(Source::Loose(p));
+        let loose = self.loose.get(&key).map(|p| Source::Loose(p));
+        if self.loose_first && loose.is_some() {
+            return loose;
         }
         self.archived
             .get(&key)
             .map(|&(ai, fi)| self.archived_source(ai, fi))
+            .or(loose)
     }
 
     pub fn contains(&self, path: &str) -> bool {
@@ -487,21 +744,33 @@ impl Assets {
         self.locate(path).map(|s| s.read()).transpose()
     }
 
-    /// Every copy of a file, highest priority (the one used) first.
+    /// Every copy of a file the game could use, highest priority (the
+    /// one used) first. Copies the invalidation file dropped aren't listed.
     pub fn versions(&self, path: &str) -> Vec<Source<'_>> {
         let key = normalize_path(path);
         let mut out = Vec::new();
-        if let Some(p) = self.loose.get(&key) {
-            out.push(Source::Loose(p));
-        }
-        for loaded in self.archives.iter().rev() {
+        for &ai in &self.priority {
+            let loaded = &self.archives[ai];
             if let Some(entry) = loaded.archive.find(&key) {
+                let fi = loaded
+                    .archive
+                    .files()
+                    .iter()
+                    .position(|f| std::ptr::eq(f, entry))
+                    .unwrap_or(usize::MAX);
+                if self.dropped.contains(&(ai, fi)) {
+                    continue;
+                }
                 out.push(Source::Archive {
                     name: &loaded.name,
                     archive: &loaded.archive,
                     entry,
                 });
             }
+        }
+        if let Some(p) = self.loose.get(&key) {
+            let at = if self.loose_first { 0 } else { out.len() };
+            out.insert(at, Source::Loose(p));
         }
         out
     }

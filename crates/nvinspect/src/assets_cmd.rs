@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use assets::{
     archive_list_from, default_ini_candidates, mesh_path, normalize_path, texture_path,
-    ArchiveList, ArchiveReason, Assets, Source,
+    ArchiveList, ArchiveReason, ArchiveSettings, Assets, Source,
 };
 use esm::{FormId, FourCC, LoadOrder};
 use nif::Nif;
@@ -57,8 +57,15 @@ pub fn open(
         None => archive_list_from(&default_ini_candidates(data_dir)),
     };
     let plugins: Vec<String> = order.plugins().iter().map(|p| p.name.clone()).collect();
-    let assets = Assets::open_with(data_dir, &plugins, &list.names)
+    let mut files = assets::default_settings_files(data_dir);
+    files.extend(options.ini.iter().cloned());
+    let settings =
+        ArchiveSettings::from_ini(&assets::IniSettings::load(&files), list.names.clone());
+    let assets = Assets::open_with_settings(data_dir, &plugins, &settings)
         .map_err(|e| CliError::NotFound(e.to_string()))?;
+    for warning in assets.warnings() {
+        eprintln!("warning: {warning}");
+    }
     Ok((assets, list))
 }
 
@@ -339,14 +346,17 @@ pub fn check(
 ) -> Result<(), CliError> {
     let show = options.limit.unwrap_or(20);
     writeln!(out, "Archive list from: {}", list.source)?;
-    writeln!(out, "Archives the game loads, in order (later ones win):")?;
+    writeln!(
+        out,
+        "Archives the game loads, the one whose copy of a file wins first:"
+    )?;
     let width = assets
         .archives()
         .iter()
         .map(|a| a.name.len())
         .max()
         .unwrap_or(0);
-    for loaded in assets.archives() {
+    for loaded in assets.by_priority() {
         let why = match &loaded.reason {
             ArchiveReason::Default => String::new(),
             ArchiveReason::Patch => "  (the game's patch archive)".to_string(),
