@@ -120,7 +120,10 @@ stereo panning, `FireWeapon` objects.
 **B6. Bullet impacts: decals, particles and sounds.** Shots hitting the
 world or bodies need the game's impact data set (IPDS/IPCT) effects:
 decals, particles and sounds by material. `hiteffects` logs the choice
-already; make it render and play.
+already; make it render and play. Decals, blood spatter and impact sounds done on
+`claude/b6-impacts` (docs/WEAPON_EFFECTS.md, Impacts); left: the effect
+models draw but aren't visible (billboard mode 1 untraced), decals on
+people, parallax.
 
 **B7. Player damage feedback.** Missing: blood on the player, the
 hit/damage screen effect, limb crippling with its effects and crippled
@@ -215,11 +218,11 @@ untraced guess): Ringo offers two extra replies. Trace or gate it.
 
 ### In progress
 
-- B6 bullet impacts: branch `claude/b6-impacts`.
+- Nothing; every overnight branch is merged.
 
 Landed on the integration branch 2026-10-07: death into ragdoll, one
 radio state and the 2 key, Chazm's PRs #11 and #12 (docs/CONTRIB_CHAZM.md),
-B3, B4, B5, B10, B11, B12, B13, B16.
+B3, B4, B5, B6, B10, B11, B12, B13, B16.
 
 Follow-ups found: creatures without a ragdoll tip onto their side (a
 stand-in, `ai::fallen_transform`, from the original baseline) instead of
