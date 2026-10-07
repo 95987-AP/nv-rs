@@ -842,6 +842,7 @@ pub fn damage_item(
             title: None,
             text,
             buttons: Vec::new(),
+            icon: None,
         });
         if let Some(sound) = order.form_by_editor_id("WPNBreak") {
             state.events.push(Event::Sound(sound));
@@ -865,6 +866,7 @@ fn break_weapon(order: &LoadOrder, state: &mut GameState, holder: FormId, item: 
             title: None,
             text,
             buttons: Vec::new(),
+            icon: None,
         });
         if let Some(sound) = order.form_by_editor_id("WPNBreak") {
             state.events.push(Event::Sound(sound));

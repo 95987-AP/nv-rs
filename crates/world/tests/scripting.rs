@@ -80,6 +80,7 @@ fn a_greeting_and_the_quest_script_carry_the_quest_through() {
                 title: Some("Note".into()),
                 text: "Hello there.".into(),
                 buttons: vec![],
+                icon: None,
             },
         ]
     );
@@ -1322,6 +1323,20 @@ fn reputation_and_karma_move_as_the_game_moves_them() {
         })
         .collect();
     assert_eq!(texts, ["Testville\nFame Gained!", "Accepted"]);
+    // Fame gained has the very happy Vault Boy (`sRepPositiveGainIcon`);
+    // the new title none of its own here.
+    let icons: Vec<Option<String>> = state
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Message { icon, .. } => Some(icon.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        icons,
+        [Some(world::message_icon::VERY_HAPPY.to_string()), None]
+    );
     // Infamy to the top (12 + 12 = 24, clamped at 20): level 3 against fame
     // 1, "Merciful Thug", on the bad axis 3.
     run(
@@ -1827,6 +1842,7 @@ fn message_boxes_ask_and_the_character_is_made() {
             title: Some("Choose".into()),
             text: "You have 5 caps (50%).".into(),
             buttons: vec![(0, "First".into()), (2, "Third".into())],
+            icon: None,
         })
     );
     // Nothing pressed yet: -1. Pressed: given once.

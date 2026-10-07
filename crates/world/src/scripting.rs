@@ -658,6 +658,8 @@ impl GameState {
                         title: None,
                         text,
                         buttons: Vec::new(),
+                        icon: crate::message_icon::for_setting("sCantEquipBrokenItem")
+                            .map(str::to_string),
                     });
                 }
                 return;
@@ -1108,6 +1110,9 @@ pub enum Event {
         title: Option<String>,
         text: String,
         buttons: Vec<(usize, String)>,
+        /// The picture beside a corner message (`world::message_icon`;
+        /// `None`: the neutral Vault Boy).
+        icon: Option<String>,
     },
     /// Someone talks: the speaker, who they talk to, and the topic
     /// (`None`: their greeting). `SayTo` only has them say a line
@@ -3592,10 +3597,14 @@ impl<'a> Runner<'a> {
                 buttons.push((0, "OK".to_string()));
             }
         }
+        // A corner message shows the message's own picture (`005b4630`:
+        // its icon's path to `QueueUIMessage`, type 0).
+        let icon = crate::message_icon::of_message(self.order, id);
         self.state.events.push(Event::Message {
             title,
             text,
             buttons,
+            icon,
         });
     }
 
@@ -3776,6 +3785,7 @@ impl<'a> Runner<'a> {
                         title: None,
                         text,
                         buttons: Vec::new(),
+                        icon: None,
                     });
                 } else {
                     events.push(Event::Caravan {

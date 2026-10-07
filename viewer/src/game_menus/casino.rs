@@ -55,11 +55,23 @@ pub fn menu_mode(game: Game, created: &Option<Result<crate::menus::Menu, String>
 
 /// The corner message closing a game leaves (`world::casino::settle`):
 /// chips taken, or given (with the ban at the limit).
-pub fn settled_message(settled: Settled) -> Option<String> {
+pub fn settled_message(settled: Settled) -> Option<crate::hud::HudMessage> {
+    let icon = settled.icon();
     match settled {
-        Settled::Removed { message, .. } | Settled::Added { message, .. } => Some(message),
+        Settled::Removed { message, .. } | Settled::Added { message, .. } => {
+            Some(crate::hud::HudMessage::with_icon(message, icon))
+        }
         Settled::Nothing => None,
     }
+}
+
+/// "Out of chips" (`sGamblingBrokeText`) with the refusals' surprised
+/// Vault Boy.
+pub fn broke_message(order: &LoadOrder, game: Game) -> crate::hud::HudMessage {
+    crate::hud::HudMessage::with_icon(
+        world::casino::refusal_text(order, game, world::casino::Refusal::Broke),
+        Some(world::casino::REFUSAL_ICON),
+    )
 }
 
 #[cfg(test)]
@@ -143,5 +155,27 @@ mod tests {
             0.0
         )
         .is_none());
+    }
+
+    /// The settling messages carry their pictures to the HUD's corner.
+    #[test]
+    fn settled_messages_have_their_vault_boys() {
+        let lost = settled_message(Settled::Removed {
+            count: 2,
+            message: "2 Chip(s) removed".into(),
+        })
+        .unwrap();
+        assert_eq!(lost.icon.as_deref(), Some(world::message_icon::SAD));
+        let banned = settled_message(Settled::Added {
+            count: 2,
+            message: "banned".into(),
+            banned: true,
+        })
+        .unwrap();
+        assert_eq!(
+            banned.icon.as_deref(),
+            Some(world::message_icon::VERY_HAPPY)
+        );
+        assert!(settled_message(Settled::Nothing).is_none());
     }
 }

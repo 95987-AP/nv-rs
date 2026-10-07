@@ -225,8 +225,10 @@ S bets the most, R leaves: the chips are settled with a corner message.
 `000A5722` is one of its blackjack tables and `000A58D3` a roulette table.
 For roulette, `--menu-keys` takes `mDX/DY` to move the mouse (the cursor).
 
+The corner messages carry the game's pictures ([HUD_MESSAGES.md](HUD_MESSAGES.md)):
+refusals surprised, chips lost sad, chips won the gift box, the ban very
+happy.
+
 ## Not done
 
 - The roulette cursor by the pad's left stick.
-- The corner messages' own Vault Boy icons (the viewer's HUD messages
-  have one icon for all).

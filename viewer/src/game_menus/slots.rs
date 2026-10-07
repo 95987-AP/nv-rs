@@ -195,7 +195,7 @@ impl SlotsScreen {
         state: &mut GameState,
         now: f64,
         sounds: &mut Vec<FormId>,
-        messages: &mut Vec<String>,
+        messages: &mut Vec<crate::hud::HudMessage>,
         mut lock: Option<&mut world::casino::AntiCheat>,
     ) {
         for e in fx {
@@ -227,10 +227,9 @@ impl SlotsScreen {
                 }
                 Effect::Data(d) => *world::casino::data_mut(state, self.casino.form) = d,
                 Effect::Broke => {
-                    messages.push(world::casino::refusal_text(
+                    messages.push(super::casino::broke_message(
                         order,
                         world::casino::Game::Slots,
-                        world::casino::Refusal::Broke,
                     ));
                     sounds.extend(order.form_by_editor_id("UIPopUpMessageGeneral"));
                 }
@@ -282,7 +281,7 @@ pub fn after(
     state: &mut GameState,
     lock: &mut world::casino::AntiCheat,
     now_ms: f64,
-) -> (Vec<FormId>, Vec<String>) {
+) -> (Vec<FormId>, Vec<crate::hud::HudMessage>) {
     let order = &game.order;
     let mut sounds = Vec::new();
     let mut messages = Vec::new();

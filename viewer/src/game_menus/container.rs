@@ -223,6 +223,7 @@ pub fn after(
                             title: None,
                             text,
                             buttons: Vec::new(),
+                            icon: None,
                         });
                         say_topic(order, state, reference, "FollowersOverburdened");
                         continue;

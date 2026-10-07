@@ -1019,9 +1019,11 @@ pub(crate) fn run_open_menus(
     sounds
         .0
         .extend(barter::after(screen, &game.0, &mut state.0));
-    hud_messages
-        .queue
-        .extend(recipe::after(screen, &game.0, &mut state.0));
+    hud_messages.queue.extend(
+        recipe::after(screen, &game.0, &mut state.0)
+            .into_iter()
+            .map(Into::into),
+    );
     sounds
         .0
         .extend(repair::after(screen, &game.0, &mut state.0));
@@ -1061,7 +1063,7 @@ pub(crate) fn run_open_menus(
     ] {
         sounds.0.extend(played);
         for m in said {
-            println!("{m}");
+            println!("{}", m.text);
             hud_messages.queue.push(m);
         }
     }
@@ -1094,7 +1096,7 @@ pub(crate) fn run_open_menus(
         now * 1000.0,
     ) {
         println!("{n}");
-        hud_messages.queue.push(n);
+        hud_messages.queue.push(n.into());
     }
     let Screen {
         ui,

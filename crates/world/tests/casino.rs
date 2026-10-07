@@ -137,6 +137,8 @@ fn settling() {
             message: "20 Test Chip(s) removed".into()
         }
     );
+    // Lost chips: the sad Vault Boy (`00734db0`, `007bd2a0`, `007c2c70`).
+    assert_eq!(s.icon(), Some(world::message_icon::SAD));
     assert_eq!(state.item_count(&order, PLAYER_REF, FormId(CHIP)), 30);
     let s = casino::settle(&order, &mut state, &c, 45, false);
     assert_eq!(
@@ -147,6 +149,8 @@ fn settling() {
             banned: false
         }
     );
+    // The usual "added" notice's gift box (`004821a0`).
+    assert_eq!(s.icon(), Some(world::message_icon::GIFT_BOX));
     // One: the name alone (`"%s %s"`).
     let s = casino::settle(&order, &mut state, &c, 46, false);
     assert!(matches!(s, Settled::Added { message, .. } if message == "Test Chip added"));
@@ -162,6 +166,9 @@ fn settling() {
             banned: true
         }
     );
+    // Banned: the very happy one.
+    assert_eq!(s.icon(), Some(world::message_icon::VERY_HAPPY));
+    assert_eq!(Settled::Nothing.icon(), None);
     assert!(state.running.contains(&FormId(QUEST)));
     // The earnings line pads only a one-character number.
     assert_eq!(

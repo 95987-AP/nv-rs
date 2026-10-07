@@ -1106,9 +1106,10 @@ pub fn player_attack(
             let words = world::scripting::game_setting_text(order, setting)
                 .unwrap_or_else(|| exe.to_string());
             let name = world::script_functions::full_name(order, state, target).unwrap_or_default();
-            messages
-                .with_icon
-                .push((format!("{words} {name}"), CRITICAL_ICON.to_string()));
+            messages.queue.push(crate::hud::HudMessage::with_icon(
+                format!("{words} {name}"),
+                Some(CRITICAL_ICON),
+            ));
         }
         let Some(hit) = hit else {
             // An object (a scripted bottle): its impact where the shot

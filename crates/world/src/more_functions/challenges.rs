@@ -199,6 +199,7 @@ fn notice(state: &mut GameState, c: &Challenge, count: i32) {
         title: None,
         text: format!("{}   {}\\{}\n{}", c.name, count, c.threshold, c.description),
         buttons: Vec::new(),
+        icon: None,
     });
 }
 

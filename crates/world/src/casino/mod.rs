@@ -454,6 +454,25 @@ pub enum Settled {
     },
 }
 
+impl Settled {
+    /// The picture beside its corner message (`QueueUIMessage`'s): the sad
+    /// Vault Boy for chips taken, the very happy one with the ban, else
+    /// the gift box of the game's usual "added" notice (`004821a0`,
+    /// `0101c140`).
+    pub fn icon(&self) -> Option<&'static str> {
+        match self {
+            Settled::Nothing => None,
+            Settled::Removed { .. } => Some(crate::message_icon::SAD),
+            Settled::Added { banned: true, .. } => Some(crate::message_icon::VERY_HAPPY),
+            Settled::Added { .. } => Some(crate::message_icon::GIFT_BOX),
+        }
+    }
+}
+
+/// A refusal's picture: the surprised Vault Boy (every casino refusal and
+/// "out of chips", with `UIPopUpMessageGeneral`).
+pub const REFUSAL_ICON: &str = crate::message_icon::SURPRISED;
+
 /// Closing a game (the closing state of each `DoIdle`: blackjack
 /// `007350f6`, roulette `007bd65b`, slots ≈`007c2f2f`): the difference
 /// between the menu's chips and the player's taken or given (`RemoveItem`,

@@ -274,10 +274,12 @@ pub fn door_opens(
         }
         Some(Locked::Says(why)) => {
             println!("{why}");
+            // A key needed or too little skill: the padlock (`005180b0`).
             state.events.push(Event::Message {
                 title: None,
                 text: why,
                 buttons: Vec::new(),
+                icon: Some(world::message_icon::PADLOCK.to_string()),
             });
             return false;
         }
@@ -1082,12 +1084,12 @@ pub fn run_scripts(
     let now = time.elapsed_secs();
     // What the game announces goes to the HUD's message corner while it's
     // drawn, else to the notice panel.
-    let mut announce = |n: String, notices: &mut Notices| {
-        println!("{n}");
+    let mut announce = |n: crate::hud::HudMessage, notices: &mut Notices| {
+        println!("{}", n.text);
         if hud_messages.on {
             hud_messages.queue.push(n);
         } else {
-            notices.0.push((n, now));
+            notices.0.push((n.text, now));
         }
     };
     // Tab, I and J open the Pip-Boy (`pipboy`).
@@ -1304,7 +1306,7 @@ pub fn run_scripts(
                 .chain(&dropped)
                 .find(|o| o.reference == r);
             match object.and_then(|o| use_object(order, &scripts.0, state, o)) {
-                Some(Used::Notice(n)) => announce(n, &mut notices),
+                Some(Used::Notice(n)) => announce(n.into(), &mut notices),
                 Some(Used::Container(c, name)) => {
                     waiting.push(crate::menus::Menu::Container(c, name));
                 }
@@ -1316,7 +1318,7 @@ pub fn run_scripts(
                             if let Some(s) = order.form_by_editor_id(crate::lockpick::POPUP_SOUND) {
                                 sound_requests.0.push(s);
                             }
-                            announce(why, &mut notices);
+                            announce(why.into(), &mut notices);
                         }
                     }
                 }
@@ -1381,12 +1383,15 @@ pub fn run_scripts(
                 .and_then(|r| r.full_name().or_else(|| r.editor_id()))
                 .unwrap_or_else(|| id.to_string())
         };
+        // The picture beside a corner message.
+        let mut notice_icon = None;
         let notice = match event {
             // A message box waits for an answer.
             Event::Message {
                 title,
                 text,
                 buttons,
+                ..
             } if !buttons.is_empty() => {
                 waiting.push(crate::menus::Menu::Message {
                     title,
@@ -1395,10 +1400,15 @@ pub fn run_scripts(
                 });
                 None
             }
-            Event::Message { title, text, .. } => Some(fill_keys(&match title {
-                Some(t) => format!("{t}\n{text}"),
-                None => text,
-            })),
+            Event::Message {
+                title, text, icon, ..
+            } => {
+                notice_icon = icon;
+                Some(fill_keys(&match title {
+                    Some(t) => format!("{t}\n{text}"),
+                    None => text,
+                }))
+            }
             Event::CharacterMenu(m) => {
                 waiting.push(crate::menus::Menu::Character(m));
                 None
@@ -1453,6 +1463,7 @@ pub fn run_scripts(
                         if let Some(s) = order.form_by_editor_id(crate::lockpick::POPUP_SOUND) {
                             sound_requests.0.push(s);
                         }
+                        notice_icon = Some(world::casino::REFUSAL_ICON.to_string());
                         Some(why)
                     }
                     None => {
@@ -1795,7 +1806,13 @@ pub fn run_scripts(
             }
         };
         if let Some(n) = notice {
-            announce(n, &mut notices);
+            announce(
+                crate::hud::HudMessage {
+                    text: n,
+                    icon: notice_icon,
+                },
+                &mut notices,
+            );
         }
     }
     // Script execution has already mutated GameState. Dispatch every pending

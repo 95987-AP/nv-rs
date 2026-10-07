@@ -134,6 +134,7 @@ pub fn discover(
                 title: None,
                 text: format!("{text}\n{}", m.name),
                 buttons: Vec::new(),
+                icon: None,
             });
             crate::experience::reward_setting(order, state, "iXPRewardDiscoverMapMarker");
         }

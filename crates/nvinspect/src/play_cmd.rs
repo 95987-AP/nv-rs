@@ -1118,6 +1118,7 @@ pub fn play(
                 title,
                 text,
                 buttons,
+                ..
             } => format!(
                 "message: {}{}{}",
                 title.as_ref().map(|t| format!("{t}: ")).unwrap_or_default(),

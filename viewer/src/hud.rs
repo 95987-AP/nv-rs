@@ -77,9 +77,30 @@ pub struct ShowHud(pub bool);
 #[derive(Resource, Default)]
 pub struct HudMessages {
     pub on: bool,
-    pub queue: Vec<String>,
-    /// Messages with their own icon (text, icon path).
-    pub with_icon: Vec<(String, String)>,
+    pub queue: Vec<HudMessage>,
+}
+
+/// A corner message: its text and picture (`world::message_icon`; `None`
+/// the neutral Vault Boy, `QueueUIMessage`'s type 0).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HudMessage {
+    pub text: String,
+    pub icon: Option<String>,
+}
+
+impl HudMessage {
+    pub fn with_icon(text: impl Into<String>, icon: Option<&str>) -> HudMessage {
+        HudMessage {
+            text: text.into(),
+            icon: icon.map(str::to_string),
+        }
+    }
+}
+
+impl From<String> for HudMessage {
+    fn from(text: String) -> HudMessage {
+        HudMessage { text, icon: None }
+    }
 }
 
 pub struct HudPlugin;
@@ -996,7 +1017,7 @@ fn update_hud(
         b.ui.setting_text("sStatsXP").unwrap_or_else(|| "XP".into())
     );
     let level_up = b.ui.setting_text("sLevelUp");
-    for text in messages.queue.drain(..) {
+    for HudMessage { text, icon } in messages.queue.drain(..) {
         if let Some(n) = text
             .strip_prefix(&xp_gain)
             .and_then(|n| n.trim().parse::<f64>().ok())
@@ -1004,12 +1025,8 @@ fn update_hud(
             b.hud.add_experience(n as i32);
         } else if level_up.as_deref() != Some(text.as_str()) {
             b.hud
-                .queue_message(&mut b.ui, &text, None, ui::hud::MESSAGE_SECONDS);
+                .queue_message(&mut b.ui, &text, icon.as_deref(), ui::hud::MESSAGE_SECONDS);
         }
-    }
-    for (text, icon) in messages.with_icon.drain(..) {
-        b.hud
-            .queue_message(&mut b.ui, &text, Some(&icon), ui::hud::MESSAGE_SECONDS);
     }
     let input = from.input(b.opacity);
     // Restore each prior mask before this frame writes tile visibility, then

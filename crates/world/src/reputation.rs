@@ -181,18 +181,23 @@ pub fn change(order: &LoadOrder, state: &mut GameState, rep: FormId, kind: u8, b
     let before = levels(order, state, rep);
     let now = (get(state, rep, kind) + by).clamp(0.0, max);
     set_raw(state, rep, kind, now);
-    let words = match (kind == FAME, by >= 0.0) {
-        (true, true) => ("sRepPositiveGain", "Fame Gained!"),
-        (false, true) => ("sRepNegativeGain", "Infamy Gained!"),
-        (true, false) => ("sRepPositiveLoss", "Fame Reduced"),
-        (false, false) => ("sRepNegativeLoss", "Infamy Reduced"),
+    // With the picture its `…Icon` setting names (`00615730`, `00615a00`,
+    // `00615c90`, `00615fa0`; the exe's defaults).
+    use crate::message_icon::{SAD, VERY_HAPPY};
+    let (words, icon) = match (kind == FAME, by >= 0.0) {
+        (true, true) => (("sRepPositiveGain", "Fame Gained!"), VERY_HAPPY),
+        (false, true) => (("sRepNegativeGain", "Infamy Gained!"), SAD),
+        (true, false) => (("sRepPositiveLoss", "Fame Reduced"), SAD),
+        (false, false) => (("sRepNegativeLoss", "Infamy Reduced"), VERY_HAPPY),
     };
+    let icon = crate::message_icon::from_setting(order, &format!("{}Icon", words.0), icon);
     let name = reputation_name(order, rep);
     let text = game_setting_text(order, words.0).unwrap_or_else(|| words.1.into());
     state.events.push(Event::Message {
         title: None,
         text: format!("{name}\n{text}"),
         buttons: Vec::new(),
+        icon: Some(icon),
     });
     let after = levels(order, state, rep);
     if after != before {
@@ -201,6 +206,7 @@ pub fn change(order: &LoadOrder, state: &mut GameState, rep: FormId, kind: u8, b
             title: Some(name),
             text: title,
             buttons: Vec::new(),
+            icon: None,
         });
     }
 }
@@ -270,19 +276,27 @@ pub fn reward_karma(order: &LoadOrder, state: &mut GameState, amount: i32) {
         a = max - k;
     }
     let major = s("iKarmaChangeThreshold", 250.0);
-    let (name, fallback) = if a < -major {
-        ("sKarmaMajorLost", "You've lost Karma!")
+    // With the picture its `…Image` setting names (`0094fd30`; the exe's
+    // defaults).
+    use crate::message_icon::{IN_PAIN, NEUTRAL, SAD, VERY_HAPPY};
+    let (name, fallback, icon) = if a < -major {
+        ("sKarmaMajorLost", "You've lost Karma!", IN_PAIN)
     } else if a < 0 {
-        ("sKarmaMinorLost", "You've lost Karma!")
+        ("sKarmaMinorLost", "You've lost Karma!", SAD)
     } else if a < major {
-        ("sKarmaMinorGained", "You've gained Karma!")
+        ("sKarmaMinorGained", "You've gained Karma!", NEUTRAL)
     } else {
-        ("sKarmaMajorGained", "You've gained Karma!")
+        ("sKarmaMajorGained", "You've gained Karma!", VERY_HAPPY)
     };
     state.events.push(Event::Message {
         title: None,
         text: game_setting_text(order, name).unwrap_or_else(|| fallback.into()),
         buttons: Vec::new(),
+        icon: Some(crate::message_icon::from_setting(
+            order,
+            &format!("{name}Image"),
+            icon,
+        )),
     });
     if (a > 0 && k >= max) || (a < 0 && k <= min) {
         return;

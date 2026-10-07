@@ -1367,7 +1367,7 @@ fn pipboy_keys(
         }
         println!("{text}");
         if messages.on {
-            messages.queue.push(text);
+            messages.queue.push(text.into());
         }
     };
     for action in actions {

@@ -70,6 +70,7 @@ pub mod look_ik;
 pub mod magic;
 pub mod map;
 pub mod melee;
+pub mod message_icon;
 pub mod modifier;
 pub mod more_functions;
 pub mod movement;

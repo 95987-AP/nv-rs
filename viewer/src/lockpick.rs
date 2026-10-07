@@ -300,12 +300,14 @@ fn sound(order: &esm::LoadOrder, state: &mut GameState, name: &str) {
     }
 }
 
-/// A message in the HUD's corner.
-fn message(state: &mut GameState, text: String) {
+/// A message in the HUD's corner, with its picture (`None` the neutral
+/// Vault Boy).
+fn message(state: &mut GameState, text: String, icon: Option<&str>) {
     state.events.push(Event::Message {
         title: None,
         text,
         buttons: Vec::new(),
+        icon: icon.map(str::to_string),
     });
 }
 
@@ -467,7 +469,7 @@ pub fn pick_locks(
                     Some(crate::scripts::Locked::Pick) => lockpicking.request = Some(r),
                     Some(crate::scripts::Locked::Says(why)) => {
                         println!("{why}");
-                        message(state, why);
+                        message(state, why, Some(world::message_icon::PADLOCK));
                     }
                 },
                 None => println!("--lockpick: there's no {name}."),
@@ -504,7 +506,8 @@ pub fn pick_locks(
             }
             Err(why) => {
                 println!("{why}");
-                message(state, why);
+                // The skill refusal's padlock (`0078db00`).
+                message(state, why, Some(world::lockpick::PADLOCK_ICON));
                 return;
             }
         }
@@ -568,12 +571,13 @@ pub fn pick_locks(
             Effect::Message {
                 setting,
                 default,
-                icon: _,
+                icon,
                 sound: s,
             } => {
                 message(
                     state,
                     world::lockpick::message_text(order, setting, default),
+                    Some(icon),
                 );
                 if let Some(s) = s {
                     sound(order, state, s);

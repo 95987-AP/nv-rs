@@ -167,22 +167,26 @@ pub fn changed(order: &LoadOrder, state: &mut GameState, who: FormId, av: u16, o
     }
     let [up, down, well] = texts(av);
     let (name, exe) = if new - old > 0.0 { up } else { down };
-    super::notice(state, super::text(order, name, exe));
-    let second = match after {
+    let icon = crate::message_icon::for_setting;
+    super::notice_with(state, super::text(order, name, exe), icon(name));
+    let (second, second_icon) = match after {
         Some(a) => {
             let spell = order
                 .get(a.spell)
                 .and_then(|r| r.record().ok())
                 .and_then(|r| r.full_name())
                 .unwrap_or_default();
-            format!(
-                "{} {spell}",
-                super::text(order, "sRadiationSick", "You are now sick with")
+            (
+                format!(
+                    "{} {spell}",
+                    super::text(order, "sRadiationSick", "You are now sick with")
+                ),
+                icon("sRadiationSick"),
             )
         }
-        None => super::text(order, well.0, well.1),
+        None => (super::text(order, well.0, well.1), icon(well.0)),
     };
-    super::notice(state, second);
+    super::notice_with(state, second, second_icon);
 }
 
 /// A value now (rads and the needs are what they've been raised by).

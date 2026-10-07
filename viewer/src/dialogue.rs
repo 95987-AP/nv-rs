@@ -824,6 +824,7 @@ pub fn talk(
                 title: None,
                 text: why,
                 buttons: Vec::new(),
+                icon: None,
             });
             return;
         }
