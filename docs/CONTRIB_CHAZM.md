@@ -74,3 +74,24 @@ test's only finding in the worktree is the worktree's own `.git` file).
 - `RemoveMe` doesn't tell an equipped instance apart (`004bfda0`).
 - Dead Money: `ShowRecipeMenu`'s guess gate in
   [CONTRIB_PLAYCON.md](CONTRIB_PLAYCON.md) no longer applies.
+
+## Checks (2026-10-07)
+
+- Root: `cargo test --workspace` (1392 passed), clippy and fmt clean.
+  Viewer: `cargo test` (142 passed), clippy and fmt clean, release build.
+- Live, release viewer on the official data: GSDocMitchellHouse loads and
+  plays; `--open-menu hacking:GSSchoolTerminal01Ref` (20 words of 7
+  letters, the intro typing); `--open-menu terminal:GSSchoolTerminal01Ref`
+  (the Server 6 SoftLock screen, "> Disengage Lock"); `--new-game
+  --movies` plays `FNVIntro.bik` (1280x720, 8692 frames, letterboxed).
+- `scripts/acceptance.ps1`: doc, vcg02 and vms16 pass (first run).
+- Only by tests: crafting, repair, weapon mods, companions, Caravan and
+  casinos on screen; the 3D menus' lighting outdoors; an outdoor-to-indoor
+  door with the shared light.
+
+## Follow-ups for Chazm
+
+- The casino menus (`Event::Casino`): shown, not just printed.
+- Mouse for the Repair and Mod screens.
+- `RemoveMe` on an equipped instance (`004bfda0`).
+- Crafting: the item card (`00728da0`) and the tutorial help.
