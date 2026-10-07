@@ -70,12 +70,31 @@ pub struct LoadedPlugin {
 }
 
 impl LoadedPlugin {
-    /// Converts a form ID as stored in this plugin to its load-order form ID.
-    /// Indexes past the end of the master list refer to the plugin itself,
-    /// matching the game's behaviour.
+    /// Converts a form ID stored in this plugin's data (a reference to
+    /// another form) to its load-order form ID. Translated from the
+    /// game's form ID adjustment (`00485d50`, decompiled, FalloutNV.exe
+    /// 1.4.0.525): the top byte indexes the master list, and one at or
+    /// past its end means the plugin itself (`TESFile::GetIndexFile`
+    /// `00471a10` finds no master); the engine's own forms, IDs 1 to
+    /// 0x7FF (`TESForm::IsDefaultForm` `00484b40`), are kept as they are.
     pub fn to_global(&self, local: FormId) -> FormId {
+        if is_default_form(local) {
+            return local;
+        }
         let i = usize::from(local.mod_index()).min(self.index_map.len() - 1);
         FormId((u32::from(self.index_map[i]) << 24) | local.object_id())
+    }
+
+    /// Converts the form ID in one of this plugin's record headers to its
+    /// load-order form ID: as [`LoadedPlugin::to_global`], except that a
+    /// record whose object ID is 1 to 0x7FF (an engine form a plugin
+    /// changes) is the base game's whatever its top byte
+    /// (`TESFile::ReadFormHeader` `00472bc0`).
+    pub fn record_id(&self, local: FormId) -> FormId {
+        if is_default_form(FormId(local.object_id())) {
+            return FormId(local.object_id());
+        }
+        self.to_global(local)
     }
 }
 
@@ -173,14 +192,17 @@ impl LoadOrder {
         Ok(Self::build(vec![loaded], slot_names, Vec::new(), true))
     }
 
-    /// Combines plugins already in load order. Every plugin's masters must
-    /// appear earlier in the list.
+    /// Combines plugins already in load order. A plugin's masters are
+    /// found by name anywhere in the list, as the game finds them
+    /// (`TESFile` master list, `00471870`): one that loads after the plugin
+    /// still works, with a warning.
     pub fn from_plugins(list: Vec<(String, Option<PathBuf>, Plugin)>) -> Result<Self> {
         if list.len() > MAX_PLUGINS {
             return Err(Error::TooManyPlugins { count: list.len() });
         }
+        let slot_names: Vec<String> = list.iter().map(|(name, ..)| name.clone()).collect();
+        let mut warnings = Vec::new();
         let mut loaded = Vec::with_capacity(list.len());
-        let mut slot_names: Vec<String> = Vec::with_capacity(list.len());
         for (i, (name, path, plugin)) in list.into_iter().enumerate() {
             let mut index_map = Vec::with_capacity(plugin.header().masters.len() + 1);
             for master in &plugin.header().masters {
@@ -191,10 +213,15 @@ impl LoadOrder {
                         plugin: name.clone(),
                         master: master.clone(),
                     })?;
+                if position > i {
+                    warnings.push(format!(
+                        "{name} loads before its master {master}, so {master}'s versions of \
+                         records they share win"
+                    ));
+                }
                 index_map.push(position as u8);
             }
             index_map.push(i as u8);
-            slot_names.push(name.clone());
             let decoded = (0..plugin.records().len())
                 .map(|_| std::sync::OnceLock::new())
                 .collect();
@@ -207,63 +234,27 @@ impl LoadOrder {
                 index_map,
             });
         }
-        Ok(Self::build(loaded, slot_names, Vec::new(), false))
+        warnings.extend(master_size_warnings(&loaded));
+        Ok(Self::build(loaded, slot_names, warnings, false))
     }
 
-    /// Loads the active plugins from a game's `Data` folder, ordered the way
-    /// New Vegas orders them: FalloutNV.esm first, then files with the
-    /// master flag, then the rest, each group by file modification time.
+    /// Loads the active plugins from a game's `Data` folder in the game's
+    /// order (see [`game_load_order`]).
     pub fn from_data_dir(data_dir: impl AsRef<Path>, active: &ActivePlugins) -> Result<Self> {
         let dir = data_dir.as_ref();
-        let files = plugin_files_in(dir)?;
-        let find = |wanted: &str| {
-            files
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
-        };
-
-        let main = find(MAIN_MASTER).ok_or_else(|| {
-            Error::DataDir(format!("there is no {MAIN_MASTER} in {}", dir.display()))
-        })?;
-        let mut chosen = vec![main.clone()];
-        let mut warnings = Vec::new();
-        let wanted: Vec<String> = match active {
-            ActivePlugins::OfficialOnly => {
-                OFFICIAL_FILES[1..].iter().map(|s| s.to_string()).collect()
-            }
-            ActivePlugins::List(names) => names.clone(),
-        };
-        for name in wanted {
-            if chosen.iter().any(|(n, _)| n.eq_ignore_ascii_case(&name)) {
-                continue;
-            }
-            match find(&name) {
-                Some(file) => chosen.push(file.clone()),
-                None if matches!(active, ActivePlugins::List(_)) => warnings.push(format!(
-                    "{name} is listed as active but isn't in the Data folder, so it was skipped"
-                )),
-                None => {}
-            }
-        }
-
-        let mut loaded = Vec::with_capacity(chosen.len());
-        for (name, path) in chosen {
+        let (names, mut warnings) = game_load_order(dir, active)?;
+        let mut loaded = Vec::with_capacity(names.len());
+        for name in names {
+            let path = dir.join(&name);
             let plugin = Plugin::open(&path).map_err(|source| Error::InPlugin {
                 name: name.clone(),
                 source: Box::new(source),
             })?;
-            let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-            loaded.push((name, path, plugin, modified));
+            loaded.push((name, Some(path), plugin));
         }
-        loaded.sort_by_cached_key(|(name, _, plugin, modified)| sort_key(name, plugin, *modified));
-
-        let mut order = Self::from_plugins(
-            loaded
-                .into_iter()
-                .map(|(name, path, plugin, _)| (name, Some(path), plugin))
-                .collect(),
-        )?;
-        order.warnings.extend(warnings);
+        let mut order = Self::from_plugins(loaded)?;
+        warnings.append(&mut order.warnings);
+        order.warnings = warnings;
         Ok(order)
     }
 
@@ -278,7 +269,7 @@ impl LoadOrder {
         let mut history: HashMap<FormId, Vec<Slot>> = HashMap::new();
         for (pi, p) in plugins.iter().enumerate() {
             for (ri, entry) in p.plugin.records().iter().enumerate() {
-                let id = p.to_global(entry.header.form_id);
+                let id = p.record_id(entry.header.form_id);
                 let slot = (pi as u16, ri as u32);
                 if let Some(previous) = winners.insert(id, slot) {
                     history
@@ -369,7 +360,7 @@ impl LoadOrder {
                 .iter()
                 .filter_map(move |&ri| {
                     let entry = &p.plugin.records()[ri];
-                    let id = p.to_global(entry.header.form_id);
+                    let id = p.record_id(entry.header.form_id);
                     let slot = (pi as u16, ri as u32);
                     self.is_winner(id, slot).then(|| self.at(slot, id))
                 })
@@ -401,7 +392,7 @@ impl LoadOrder {
             .plugin
             .records()
             .iter()
-            .filter(|e| p.to_global(e.header.form_id).mod_index() == p.load_index)
+            .filter(|e| p.record_id(e.header.form_id).mod_index() == p.load_index)
             .count();
         (new, p.plugin.records().len() - new)
     }
@@ -437,7 +428,7 @@ impl LoadOrder {
             .filter_map(|&slot| {
                 let (pi, ri) = slot;
                 let p = &self.plugins[usize::from(pi)];
-                let id = p.to_global(p.plugin.records()[ri as usize].header.form_id);
+                let id = p.record_id(p.plugin.records()[ri as usize].header.form_id);
                 self.is_winner(id, slot).then(|| self.at(slot, id))
             })
             .collect()
@@ -491,7 +482,7 @@ impl LoadOrder {
             .filter_map(|&slot| {
                 let (pi, ri) = slot;
                 let p = &self.plugins[usize::from(pi)];
-                let id = p.to_global(p.plugin.records()[ri as usize].header.form_id);
+                let id = p.record_id(p.plugin.records()[ri as usize].header.form_id);
                 self.is_winner(id, slot).then(|| self.at(slot, id))
             })
             .collect()
@@ -519,7 +510,7 @@ impl LoadOrder {
             let mut index = HashMap::new();
             for (pi, p) in self.plugins.iter().enumerate() {
                 for (ri, entry) in p.plugin.records().iter().enumerate() {
-                    let id = p.to_global(entry.header.form_id);
+                    let id = p.record_id(entry.header.form_id);
                     if !self.is_winner(id, (pi as u16, ri as u32)) {
                         continue;
                     }
@@ -547,7 +538,7 @@ impl LoadOrder {
             };
             for ri in indices {
                 let entry = &p.plugin.records()[ri];
-                let id = p.to_global(entry.header.form_id);
+                let id = p.record_id(entry.header.form_id);
                 let slot = (pi as u16, ri as u32);
                 if !self.is_winner(id, slot) {
                     continue;
@@ -563,45 +554,215 @@ impl LoadOrder {
     }
 }
 
-fn sort_key(
-    name: &str,
-    plugin: &Plugin,
-    modified: Option<SystemTime>,
-) -> (bool, bool, Option<SystemTime>, String) {
-    (
-        !name.eq_ignore_ascii_case(MAIN_MASTER),
-        !plugin.header().is_master,
-        modified,
-        name.to_ascii_lowercase(),
-    )
+/// IDs 1 to 0x7FF belong to forms the engine makes itself (the player,
+/// default objects); `TESForm::IsDefaultForm` (`00484b40`).
+fn is_default_form(id: FormId) -> bool {
+    (1..=0x7FF).contains(&id.0)
 }
 
-/// `.esm` and `.esp` files in a folder, sorted by name.
-fn plugin_files_in(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
+/// A plugin file in the Data folder, as the game lists it before loading.
+struct ListedFile {
+    name: String,
+    master: bool,
+    modified: Option<SystemTime>,
+    masters: Vec<String>,
+    active: bool,
+}
+
+/// The plugins the game loads from a Data folder, in its load order, with
+/// warnings. Translated from `TESDataHandler::BuildFileList` (`004624b0`),
+/// `Main::InitTES` (`0086cf20`) and the start of the data handler's
+/// `LoadFiles` (`00463070`) (decompiled, FalloutNV.exe 1.4.0.525):
+///
+/// 1. Every non-empty `*.esm`, then every `*.esp` (each in the folder's
+///    name order) is put in a list: files with the master flag before the
+///    others, each group by modification time, oldest first; a file with
+///    the same time as one already listed goes before it. FalloutNV.esm
+///    has no special place.
+/// 2. Each master-flagged file's masters that come after it are moved to
+///    just before it (and the moved file is checked in turn).
+/// 3. Active: FalloutNV.esm (`[General] sTestFile1`), the names in
+///    `plugins.txt` (`Main::LoadPluginsFromFile` `00872430`; its order
+///    doesn't count), and every plugin with a `<name>.nam` file beside it
+///    (how the DLC switch themselves on). [`ActivePlugins::OfficialOnly`]
+///    takes FalloutNV.esm and the official files instead of the last two.
+/// 4. In list order, each active file's masters are made active; one
+///    missing from the folder stops the loading ("Unable to find
+///    masterfile").
+/// 5. The load order is the active files in list order.
+pub fn game_load_order(dir: &Path, active: &ActivePlugins) -> Result<(Vec<String>, Vec<String>)> {
     let entries = std::fs::read_dir(dir)
         .map_err(|e| Error::DataDir(format!("could not read the folder {}: {e}", dir.display())))?;
-    let mut files = Vec::new();
+    let mut esm = Vec::new();
+    let mut esp = Vec::new();
+    let mut nam = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let lower = name.to_ascii_lowercase();
-        if (lower.ends_with(".esm") || lower.ends_with(".esp")) && entry.path().is_file() {
-            files.push((name, entry.path()));
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        if lower.ends_with(".nam") {
+            nam.push(lower[..lower.len() - 4].to_string());
+        }
+        if meta.len() == 0 {
+            continue;
+        }
+        let modified = meta.modified().ok();
+        if lower.ends_with(".esm") {
+            esm.push((name, modified));
+        } else if lower.ends_with(".esp") {
+            esp.push((name, modified));
         }
     }
-    files.sort_by_key(|(name, _)| name.to_ascii_lowercase());
-    Ok(files)
+    // FindFirstFile's order on NTFS: by name, upper-cased.
+    esm.sort_by_key(|(n, _)| n.to_ascii_uppercase());
+    esp.sort_by_key(|(n, _)| n.to_ascii_uppercase());
+
+    let mut list: Vec<ListedFile> = Vec::new();
+    for (name, modified) in esm.into_iter().chain(esp) {
+        // A header that can't be read lists the file as a plain plugin; it
+        // fails properly if it's loaded.
+        let header = crate::plugin::read_header(dir.join(&name)).unwrap_or_default();
+        let file = ListedFile {
+            name,
+            master: header.is_master,
+            modified,
+            masters: header.masters,
+            active: false,
+        };
+        let at = list.iter().position(|e| {
+            if e.master == file.master {
+                e.modified >= file.modified
+            } else {
+                file.master
+            }
+        });
+        list.insert(at.unwrap_or(list.len()), file);
+    }
+
+    // Masters of master files moved before them.
+    let mut i = 0;
+    while i < list.len() {
+        let mut moved = false;
+        if list[i].master {
+            for master in list[i].masters.clone() {
+                let later = (i..list.len()).find(|&j| list[j].name.eq_ignore_ascii_case(&master));
+                if let Some(j) = later.filter(|&j| j != i) {
+                    let m = list.remove(j);
+                    list.insert(i, m);
+                    moved = true;
+                }
+            }
+        }
+        if !moved {
+            i += 1;
+        }
+    }
+
+    let find = |list: &[ListedFile], wanted: &str| {
+        list.iter()
+            .position(|e| e.name.eq_ignore_ascii_case(wanted))
+    };
+    let main = find(&list, MAIN_MASTER)
+        .ok_or_else(|| Error::DataDir(format!("there is no {MAIN_MASTER} in {}", dir.display())))?;
+    list[main].active = true;
+    let mut warnings = Vec::new();
+    match active {
+        ActivePlugins::OfficialOnly => {
+            for name in &OFFICIAL_FILES[1..] {
+                if let Some(i) = find(&list, name) {
+                    list[i].active = true;
+                }
+            }
+        }
+        ActivePlugins::List(names) => {
+            for name in names {
+                match find(&list, name) {
+                    Some(i) => list[i].active = true,
+                    None => warnings.push(format!(
+                        "{name} is listed as active but isn't in the Data folder (or is empty), so it was skipped"
+                    )),
+                }
+            }
+            for file in &mut list {
+                let stem = file.name[..file.name.len() - 4].to_ascii_lowercase();
+                if nam.contains(&stem) {
+                    file.active = true;
+                }
+            }
+        }
+    }
+    for i in 0..list.len() {
+        if !list[i].active {
+            continue;
+        }
+        for master in list[i].masters.clone() {
+            match find(&list, &master) {
+                Some(m) => list[m].active = true,
+                None => {
+                    return Err(Error::MissingMaster {
+                        plugin: list[i].name.clone(),
+                        master,
+                    })
+                }
+            }
+        }
+    }
+    let names = list
+        .into_iter()
+        .filter(|e| e.active)
+        .map(|e| e.name)
+        .collect();
+    Ok((names, warnings))
 }
 
-/// Parses a `plugins.txt` active-plugin list: one file name per line, with
-/// blank lines and `#` comments ignored. A leading `*` (used by later games
-/// to mark active entries) is tolerated.
+/// The game's warning for a plugin whose master has changed size since the
+/// plugin was saved (`00471af0`, checked for plugins without the master
+/// flag: "One of the files that "%s" is dependent on has changed since the
+/// last save.").
+fn master_size_warnings(plugins: &[LoadedPlugin]) -> Vec<String> {
+    let mut out = Vec::new();
+    for p in plugins {
+        let header = p.plugin.header();
+        if header.is_master {
+            continue;
+        }
+        for (master, size) in header.masters.iter().zip(&header.master_sizes) {
+            let Some(size) = size else { continue };
+            let actual = plugins
+                .iter()
+                .find(|m| m.name.eq_ignore_ascii_case(master))
+                .map(|m| m.plugin.file_size() as u64);
+            if actual != Some(*size) {
+                out.push(format!(
+                    "one of the files that {} is dependent on has changed since the last save: \
+                     {master} is {} bytes, it was saved against {size}",
+                    p.name,
+                    actual.map_or("missing".into(), |a| a.to_string())
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Parses a `plugins.txt` active-plugin list as the game reads it
+/// (`Main::LoadPluginsFromFile` `00872430`): line by line (a carriage
+/// return before the line feed dropped, as a text-mode read drops it),
+/// skipping lines that start with `#` and lines of one character or none
+/// counting the line feed; the line feed is cut off and nothing else, so a
+/// name with spaces around it doesn't match a file.
 pub fn parse_plugins_txt(bytes: &[u8]) -> Vec<String> {
     text::decode_cp1252(bytes)
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(|line| line.trim_start_matches('*').trim().to_string())
-        .filter(|name| !name.is_empty())
+        .split_inclusive('\n')
+        .map(|line| match line.strip_suffix("\r\n") {
+            Some(rest) => format!("{rest}\n"),
+            None => line.to_string(),
+        })
+        .filter(|line| !line.starts_with('#') && line.chars().count() > 1)
+        .map(|line| line.strip_suffix('\n').unwrap_or(&line).to_string())
         .collect()
 }
 

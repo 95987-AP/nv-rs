@@ -9,3 +9,6 @@ rust-version.workspace = true
 # No external dependencies: zlib decompression for compressed records is
 # implemented in src/inflate.rs.
 [dependencies]
+
+[dev-dependencies]
+testdata = { path = "../testdata" }

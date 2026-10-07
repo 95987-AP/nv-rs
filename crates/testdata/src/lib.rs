@@ -16,6 +16,7 @@ pub mod impacts;
 pub mod living;
 pub mod lod;
 pub mod long_paths;
+pub mod mods;
 pub mod more;
 pub mod music;
 pub mod packages;
