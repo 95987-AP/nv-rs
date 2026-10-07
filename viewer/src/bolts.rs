@@ -262,8 +262,8 @@ fn strike(
 
 /// A corpse whose critical stage culls its 3D (the goo's and the
 /// disintegration's end, `008a1a70`, `world::more_functions::body_gone`)
-/// stops being drawn; the pile left in its place isn't drawn yet (placed
-/// references aren't).
+/// stops being drawn (the pile `AttachAshPile` leaves is drawn as any
+/// reference a script makes).
 pub fn hide_culled_bodies(
     dialogue: Res<DialogueState>,
     mut walkers: Query<(&Walker, &mut Visibility)>,

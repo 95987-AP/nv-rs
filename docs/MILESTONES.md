@@ -596,6 +596,16 @@ hit's push only after a hit; the dead go limp with the AI held still
 
 B12 (`claude/b12-doc-dialogue`): Doc's door conversation no longer restarts forever: a dialogue package that has talked is finished (`005fa330` saves it at DONE, `008b1070`/`00913250` restore it, `0090a1a0` keeps the same package), the menu opens an update after `InitiateDialogue`, AI holds still under message boxes, and an own-delay quest's first run is traced (`005ac1e0`). Verified live: hardcore box, no new conversation, VCG01 completes, Doc sandboxes; not compared with the original ([DIALOGUE.md](DIALOGUE.md)). **Next action:** watch the farewell in the original game.
 
+M4 weapon class batch `claude/energy-weapons` (2026-10-07): energy
+weapons. Traced and implemented: critical effects (laser disintegration,
+plasma goo: cast on a killing critical, kept on the dead, ash/goo piles
+standing for the corpse, critical stages, the Disintegrations statistic),
+the weapons' resist type (Energy Resistance) after the armour floor,
+automatic weapons' critical chance ÷ fire rate, beams striking at once
+and plasma bolts flying at their speed (player and NPCs). Generated-data
+tests; live check in Doc Mitchell's house; not compared with the
+original. Evidence, gaps and next action: [ENERGY_WEAPONS.md](ENERGY_WEAPONS.md).
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,
