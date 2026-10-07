@@ -231,6 +231,31 @@ fn voice_files_keep_whole_names_up_to_25_letters() {
     );
 }
 
+/// B11: Doc Mitchell's psych test answers and his Pip-Boy line played no
+/// voice (the line text showed, silent). Their quest `VCG01` is short, so
+/// the game (`006172c0`) keeps it whole and cuts the topic to the rest of
+/// the 25 letters: `vcg01_vcg01docmitchelltopi_0010556b_1.ogg` in
+/// `Fallout - Voices1.bsa`, not the 10 + 15 cut (`vcg01docmitchel`).
+#[test]
+fn a_short_quest_leaves_the_topic_the_rest_of_25_letters() {
+    use world::dialogue::voice_name_parts;
+    assert_eq!(
+        voice_name_parts("VCG01", "VCG01DocMitchellTopic075"),
+        ("vcg01".into(), "vcg01docmitchelltopi".into())
+    );
+    // A 10-letter quest still keeps all of it (0xb is the bound), the
+    // topic 15.
+    assert_eq!(
+        voice_name_parts("ABCDEFGHIJ", "VCG01DocMitchellTopic075"),
+        ("abcdefghij".into(), "vcg01docmitchel".into())
+    );
+    // 11 letters: cut to 10, the topic to 15.
+    assert_eq!(
+        voice_name_parts("ABCDEFGHIJK", "VCG01DocMitchellTopic075"),
+        ("abcdefghij".into(), "vcg01docmitchel".into())
+    );
+}
+
 #[test]
 fn hurt_lines_and_screen_blood_follow_the_games_settings() {
     let (_data, order) = world("impacts-voice");

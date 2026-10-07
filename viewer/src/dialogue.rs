@@ -242,13 +242,18 @@ fn play_voice(
     let response = talk.info.responses.get(talk.response)?;
     let voice = talk.speaker.voice?;
     let path = dialogue::voice_path(&game.order, &talk.info, response, voice)?;
-    let bytes = game.assets.read(&path).ok()??;
+    let Some(bytes) = game.assets.read(&path).ok().flatten() else {
+        println!("  no voice file {path}");
+        return None;
+    };
 
     let source = crate::sounds::voice_handle(&path, &bytes, audio)?;
     // With a lip sync file beside it, the voice waits out its lead-in and
     // the speaker's face says it (`faces`).
     let (settings, voice) = crate::faces::voice_playback(game, &path, talk.speaker.reference);
-    Some(commands.spawn((AudioPlayer(source), settings, voice)).id())
+    let entity = commands.spawn((AudioPlayer(source), settings, voice)).id();
+    println!("  voice started: {path} ({entity})");
+    Some(entity)
 }
 
 /// How long a response stays up without a voice file:
@@ -443,6 +448,12 @@ pub fn talk(
             // no voice file, after `fDialogSpeechDelaySeconds`); a click or
             // Space moves on, the voice cut half a second later.
             let voice_done = talk.voice.is_none_or(|v| voices.get(v).is_err());
+            if skip {
+                println!(
+                    "  line skipped ({}, response {})",
+                    talk.info.form_id, talk.response
+                );
+            }
             if skip && talk.voice.is_some() && talk.skipped_at.is_none() {
                 talk.skipped_at = Some(now);
             }
@@ -464,9 +475,12 @@ pub fn talk(
             if done {
                 if let Some(v) = talk.voice.take() {
                     if let Ok(mut e) = commands.get_entity(v) {
+                        println!("  voice stopped: {v}");
                         e.despawn();
                         // Skipped: the face stops saying it too.
                         crate::faces::cut_short(&mut commands, talk.speaker.reference);
+                    } else {
+                        println!("  voice ended: {v}");
                     }
                 }
                 talk.skipped_at = None;
