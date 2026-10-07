@@ -116,7 +116,9 @@ logging on and `V21MartinaTerminalREF` (Vault 21, cell `0010FDEB`) on its
 screen, on the model in front of the room with the world beside it; the
 hacking game there (`NV_HACKING_SEED=7`, `--menu-pointer 745,508`: the
 word SPOTTED under the pointer highlighted, ">SPOTTED" on the entry
-line); the power button (`--menu-pointer 1265,985 --menu-click 4`): the
+line), and the password (TESTING, `--menu-pointer 1100,718
+--menu-click 5,8,9`) handing over to the terminal's logon with the model
+staying up; the power button (`--menu-pointer 1265,985 --menu-click 4`): the
 terminal gone at once; leaving (`--menu-keys 4:tab`): the model a second
 into its 2 s fade out.
 
