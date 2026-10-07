@@ -439,6 +439,11 @@ fn report_hit(
         weapon,
         point: at,
         havok: None,
+        normal: None,
+        triangle: None,
+        direction: [0.0; 3],
+        on_body: false,
+        part: None,
         damage,
         killed: state.dead.contains(&target),
     });
@@ -1480,6 +1485,11 @@ pub(crate) fn resolve_shots(
                 weapon: Some(w.form_id),
                 point: [0, 1, 2].map(|k| origin[k] + dir[k] * d),
                 havok: None,
+                normal: None,
+                triangle: None,
+                direction: dir,
+                on_body: true,
+                part,
                 damage: hit.dealt,
                 killed: state.dead.contains(&victim),
             });

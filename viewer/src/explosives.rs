@@ -561,6 +561,11 @@ fn explode(
             weapon: weapon.map(|w| w.form_id),
             point: position,
             havok: None,
+            normal: None,
+            triangle: None,
+            direction: [0.0; 3],
+            on_body: false,
+            part: None,
             damage: hit.dealt,
             killed,
         });

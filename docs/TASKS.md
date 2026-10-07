@@ -2,7 +2,7 @@
 
 Two lists. **Major systems** are open to contributors: each is a GitHub
 issue on `slaterain/nv-rs` titled `[task] <name>`, and you claim it on the
-issue before starting (see [CONTRIBUTING.md](CONTRIBUTING.md), "Claiming
+issue before starting (see [CONTRIBUTING.md](../CONTRIBUTING.md), "Claiming
 a task"). The **maintainer's list** (playtest bugs and polish in the
 systems the maintainer owns) is not open for claiming; report new bugs as
 issues instead.
@@ -100,10 +100,10 @@ on B1 for the solver, but the spring itself can land first.
 pick"); left: drawn-triangle picking, placeable water, comparison with the
 game.
 
-**B4. NPCs fall through or sink into the ground.** NPCs phase into the
-terrain or fall through it. Trace the character controller's support
-(`bhkCharacterController`, the step and fall states, which layers it
-stands on) and fix NPCs (and check the player).
+**B4. NPCs fall through or sink into the ground.** Done on
+`claude/b4-npc-ground` (docs/PHYSICS.md, "People on the ground"):
+`MobileObject::Move`'s land and far-from-camera rules; left: a ragdoll
+sunk into the land (B1's solver), comparison with the game.
 
 ### Combat effects and damage
 
@@ -120,7 +120,10 @@ stereo panning, `FireWeapon` objects.
 **B6. Bullet impacts: decals, particles and sounds.** Shots hitting the
 world or bodies need the game's impact data set (IPDS/IPCT) effects:
 decals, particles and sounds by material. `hiteffects` logs the choice
-already; make it render and play.
+already; make it render and play. Decals, blood spatter and impact sounds done on
+`claude/b6-impacts` (docs/WEAPON_EFFECTS.md, Impacts); left: the effect
+models draw but aren't visible (billboard mode 1 untraced), decals on
+people, parallax.
 
 **B7. Player damage feedback.** Missing: blood on the player, the
 hit/damage screen effect, limb crippling with its effects and crippled
@@ -180,6 +183,11 @@ Build the real menu.
 
 **B16. Local map.** Too zoomed in, and panning/looking around doesn't
 work like the game. Trace the local map's scale, zoom steps and drag.
+Done on `claude/b16-local-map` (2026-10-07, [PIPBOY.md](PIPBOY.md)): the
+drag no longer runs the map off to its limits, the map is centred again
+when the tab is shown, the pad's sticks pan and zoom. The scale (0.9 at the
+start, 1.1 a wheel step, 0.1 .. 0.9) matches the exe's code; if it still
+feels too close next to the original, compare screenshots of the same place.
 
 **B17. White ball flashing outdoors.** A white sphere sometimes flashes
 outdoors. Find which object or effect it is (likely an untextured
@@ -210,16 +218,32 @@ untraced guess): Ringo offers two extra replies. Trace or gate it.
 
 ### In progress
 
-- B4 NPCs and the ground: branch `claude/b4-npc-ground`.
-- B6 bullet impacts: branch `claude/b6-impacts`.
-- B16 local map: branch `claude/b16-local-map`.
+- Nothing; every overnight branch is merged.
 
-Landed on the integration branch 2026-10-07: death into ragdoll, one
+Landed (in `main` since 2026-10-07): death into ragdoll, one
 radio state and the 2 key, Chazm's PRs #11 and #12 (docs/CONTRIB_CHAZM.md),
-B3, B5, B10, B11, B12, B13.
+B3, B4, B5, B6, B10, B11, B12, B13, B16.
 
 Follow-ups found: creatures without a ragdoll tip onto their side (a
 stand-in, `ai::fallen_transform`, from the original baseline) instead of
 playing `Death`; ragdolls don't come to rest (B1); receivers (NPC radios)
 play without distance falloff; thrown weapons play `SNAM`, which the game
 doesn't.
+
+### Work in forks (checked 2026-10-07)
+
+Most forks only hold copies of the maintainer's `claude/*` branches,
+which are all in `main` now. Work found that isn't in `main`:
+
+- `abusager13`: `codex/macos-metal-support`, a native macOS / Metal port
+  (2 commits). Welcome as a pull request against `main` once rebased;
+  claim it on GitHub first.
+- `Playcon`: `rebase/*` (INFC links, line of sight, radio functions,
+  `--use`). Already in `main`: the first and last unchanged, the other
+  two through the Dead Money merge (radio since unified with the Pip-Boy's).
+  Nothing left to merge; check against `main` before reopening.
+- `suzeclaw-coder`: one commit on `main` (view bob and recoil springs,
+  landing dip, heartbeat vignette, flanking "anti-conga" steering, a
+  procedural audio synthesizer for tests). These aren't traced from the
+  game, so they can't be merged as they are; anything traced from them is
+  welcome as its own pull request.

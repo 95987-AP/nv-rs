@@ -35,6 +35,7 @@ mod grade;
 mod grass;
 mod hiteffects;
 mod hud;
+mod impact_fx;
 mod lighting;
 mod local_map;
 mod lockpick;
@@ -422,6 +423,7 @@ fn main() {
             local_map::LocalMapPlugin,
         ))
         .add_plugins(hiteffects::HitEffectsPlugin)
+        .add_plugins(impact_fx::ImpactFxPlugin)
         .add_plugins(weapon_fx::WeaponEffectsPlugin)
         .add_plugins(explosives::ExplosivesPlugin)
         .add_plugins(bolts::BoltsPlugin)
@@ -551,6 +553,7 @@ fn main() {
                     ai::move_actors,
                     // People's shots fly once everyone has moved.
                     fighting::resolve_shots.after(ai::move_actors),
+                    ai::ground_log.after(ai::move_actors),
                     scripts::save_and_load,
                     report::report_key,
                     sounds::play_sounds,
@@ -1237,6 +1240,7 @@ fn take_screenshot(
     // the game's.
     mut help: Query<&mut Visibility, KeptOutOfPictures>,
     flash: Res<weapon_fx::WeaponEffects>,
+    impacts: Res<impact_fx::ImpactFx>,
 ) {
     let Some(path) = request.path.clone() else {
         return;
@@ -1261,6 +1265,11 @@ fn take_screenshot(
         if flash.shown != Some(want) {
             return;
         }
+    }
+    // `NV_SHOT_ON_IMPACT=1`: it waits for an impact's effect model on
+    // screen (`impact_fx`).
+    if std::env::var("NV_SHOT_ON_IMPACT").is_ok() && !impacts.shown {
+        return;
     }
     request.taken = true;
     println!("Saving the view to {}", path.display());
@@ -1910,6 +1919,10 @@ impl Spawner<'_, '_> {
                 scripts::PlacedRef(draw.reference),
                 swaps::PieceName(scene.meshes[draw.mesh].shape_name.clone()),
             ));
+            // What the game puts world decals on (`impact_fx`).
+            if scene.meshes[draw.mesh].strips && !scene.meshes[draw.mesh].material.decal {
+                piece.insert(impact_fx::DecalReceiver);
+            }
             // A glow that follows a region's weather (`emittance`).
             if let Some(link) = scene.meshes[draw.mesh].material.emittance {
                 piece.insert(emittance::Glow(link));
@@ -1974,6 +1987,7 @@ impl Spawner<'_, '_> {
                         MeshMaterial3d(material),
                         Transform::IDENTITY,
                         SceneEntity,
+                        impact_fx::LandReceiver,
                     ))
                     .id(),
             );
@@ -3428,6 +3442,7 @@ mod tests {
             billboard: None,
             local_map: false,
             actor_part: None,
+            strips: false,
         }
     }
 

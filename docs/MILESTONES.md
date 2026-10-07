@@ -34,19 +34,19 @@ reading do not establish them.
 ## Active work: M1
 
 Next session: start with [HANDOFF.md](HANDOFF.md). Open tasks:
-[TASKS.md](TASKS.md); contributor rules: [CONTRIBUTING.md](CONTRIBUTING.md).
+[TASKS.md](TASKS.md); contributor rules: [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 Overnight 2026-10-06 → 07 (integration branch, play builds 12 onward):
 radio unification and the 2 key, death into ragdoll, Chazm's PRs #11 and
 #12 ([CONTRIB_CHAZM.md](CONTRIB_CHAZM.md)), and maintainer's-list fixes
-B3, B5, B10, B11, B12, B13. Each was traced in FalloutNV.exe, checked live
+B3, B4, B5, B6, B10, B11, B12, B13, B16. Each was traced in FalloutNV.exe, checked live
 in the release viewer (what was and wasn't is in each topic page) and
 passed all three acceptance routes after merging. None has been compared
 side by side with the original game. The twelve major systems are open
 as GitHub issues #13–#24. A shared read-only Ghidra server now serves
 agents' queries ([RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md)).
-**Next action:** finish B4, B6 and B16 (branches in TASKS.md), then play
-build 19+ in the play copy and file F12 reports.
+**Next action:** play the latest build in the play copy and file F12
+reports; then B14 (opening) and B1/B2 (physics), split into sub-PRs.
 
 Overnight batches, 2026-10-06 (local session; integration branch
 `claude/overnight-integration`, not merged into `main`; each batch also has
@@ -71,6 +71,12 @@ original game**.
   audio does), muzzle flashes on the player's (both views) and people's
   guns, melee swing-miss sounds; traced, unit-tested, seen live; not
   compared with the original ([WEAPON_EFFECTS.md](WEAPON_EFFECTS.md)).
+- B6 (`claude/b6-impacts`, 2026-10-07): impacts: world decals clipped onto
+  struck `NiTriStrips` pieces and the land (lifetime, fade, limits), blood
+  spatter decals, impact effect models with their own controllers, impact
+  sounds placed and attenuated; traced, unit-tested; decals seen live,
+  effect models placed but too faint to see in screenshots
+  ([WEAPON_EFFECTS.md](WEAPON_EFFECTS.md)).
 - M11 (2026-10-07, `claude/factions-crime`): reputation clamps, notices and
   the title box, karma for owned terminals and notes, assault/murder
   making the victim's factions enemies, hacking alarms, and the faction
@@ -371,6 +377,15 @@ game does (`00763ff0`/`007640a0`, menu fades `00a1d910`/`00a1db20`);
 unit-tested and verified live with Chet; details and gaps in
 [DIALOGUE.md](DIALOGUE.md).
 
+B16 local map, 2026-10-07 (`claude/b16-local-map`): the Pip-Boy local map's
+scale, zoom limits and steps re-traced and found as implemented (see
+[PIPBOY.md](PIPBOY.md)); fixed the map running off to its limits after any
+drag (the drag's movement was added on every refresh, not once), a drag
+flung off when the pointer left the Pip-Boy's screen, the map not centred
+again when DATA / the tab is shown or the pictures finish, and added the
+pad's sticks (zoom, pan); unit-tested, verified live with the mouse; not
+compared with the original.
+
 ## M2 blocker batch: gunfight packages
 
 `claude/m2-packages` (2026-10-06): flee, guard, procedure lists, package
@@ -651,6 +666,8 @@ pick's fuzzy cases with the original game.
 B10 (`claude/b10-greetings`): greetings traced (`008eeec0`, `008bc3d0`): one GREET line to the player at a time, a 30 s player-wide `fHelloCooldownTime` after any greeting (`008bc520`/`008bc560`, player update `00944179`), the greeter's 20 s counted from the line's end, the package's hello/chatter flags; activating someone whose greeting is a one-response Goodbye line only says it (`005fa330`), and saying stops the speech in progress (`00934250`). Verified live: settler says a line without the menu, Easy Pete opens it, greetings 30+ s apart; not compared with the original ([DIALOGUE.md](DIALOGUE.md)). **Next action:** record a Goodsprings walk in the original and count greetings.
 
 B11 (`claude/b11-voice-skip`): lines after a skip were silent because the voice file name was wrong for short quest names with long topics (Doc's psych test, his Pip-Boy line), not because of the skip: the name rule is now translated from `006172c0` (a quest under 11 bytes keeps whole, the topic gets the rest of 25). Verified live: every response of Doc's psych test and farewell plays its voice with every line skipped; not compared with the original ([DIALOGUE.md](DIALOGUE.md)). **Next action:** check all voice file names against the voice archives.
+
+B4 (`claude/b4-npc-ground`, 2026-10-07): people back from a walk out of sight (Ringo in the gunfight, 64-75 under the land) had no controller and walked under the ground for good; `MobileObject::Move`'s two rules are now followed (`0092f260`: outdoors, feet more than 30 under the land are put on it, the player's too; further than `fCharControllerWarpDistSqr` (2449.5) from the camera people walk on the navmesh's height without their controller). Verified live (gunfight, Back in the Saddle, the player started under the land); not compared with the original ([PHYSICS.md](PHYSICS.md)). **Next action:** a ragdoll seen sunk to the waist after the gunfight (B1's solver).
 
 ## M4: PR #12 review and streaming hitches (`claude/perf-streaming`, 2026-10-07)
 

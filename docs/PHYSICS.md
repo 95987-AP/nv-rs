@@ -270,6 +270,98 @@ her standing (`still2.log`). Walking, unfrozen (`still1`, `dbg3`) she
 falls as before. Neither comes to rest within 10 s (this solver's
 jitter, below).
 
+## People on the ground (B4, `claude/b4-npc-ground`, 2026-10-07)
+
+Playtest: people phase into the terrain or fall through it. Private
+outputs (decompiles, logs, screenshots, `ground.ps1`):
+`%USERPROFILE%\nv-re\work\b4`.
+
+### What was wrong (found live, `NV_GROUND_LOG=1`)
+
+The viewer logs everyone on screen once a second with `NV_GROUND_LOG=1`
+(`ai::ground_log`: feet against the collision under them, cast from 600
+above, and the land's `LAND` height, with the controller's state).
+
+- **Ghost Town Gunfight** (run1, the acceptance command, `--wait 200`):
+  Ringo (00104C7D) comes into view from his walk out of sight
+  (`move_offstage` walks straight between rough positions) 64 under the
+  land at (−73298, 3829). With no collision within 256 + 64 below him the
+  viewer gave him no controller (its loading bridge) and he walked in place
+  under the ground for the whole run (−64 to −76). Moving the player to him
+  (`player.MoveTo RingoRef`) put the camera under the terrain
+  (`ringo-base\shot.png`).
+- **Back in the Saddle** (run2): Sunny, back from out of sight beside a
+  tree, sank 29 under the land with a controller (pushed down out of the
+  tree's collision) and kept losing and remaking it.
+- Everyone else walked with their feet 2.8 above the land (its 3.5 shell
+  less the hull's 0.7 lift) or on statics.
+
+### How the game keeps them up
+
+`MobileObject::Move` (its message "AI: MobileObject::Move called on '%s'
+(%08X) with invalid angle."; `0092f260`), every actor's move, the
+player's too, has two rules around the character controller
+(`world::ground`):
+
+| What | Where | Rule |
+| --- | --- | --- |
+| Far from the camera | `0092f849`…`0092fc6e`; `fCharControllerWarpDistSqr:HAVOK` (setting `01267bd4`, exe default 6,000,000 at `010c4b18`, in no INI); camera = world scene graph `011deb7c` +0xac, world translation +0x8c (`00524c90`) | not the player, not an immobile creature (vfunc +0x4b4, `0087d750` → `005f0c80`: `CREA` with `ACBS` 0x800000), not knocked down/dead/dying/unconscious; squared distance > the setting: the move (turned by the heading) is added to the position and z set to the navmesh's height there (`006d97b0` → `006d9830`: the location resolved to a triangle, `006dd6f0`, its height `00697980`, within ±180); sitting keeps z; no triangle → the controller as usual. `SetPosition` (vfunc +0x2a8, `00931620`) moves the controller there too |
+| Under the land | `0093012a`…`00930186` | after the controller's move (controller flag 0x800 clear), outdoors only (TES +0x34 none): the land's height under them (`004572e0` → `0053b550`/`0053f1e0`, a loaded cell's `LAND`; −2048 when none) more than 30 (double `0101db88`) above the feet: put on it |
+| Warped back | `009300c7`…`00930126` | controller more than 8192 (²: `0108a7a0`) from the reference: the reference's position is kept (not needed here: the viewer has one position) |
+
+`fCheckPositionFallDistance` (`00f63a80`) has no reader.
+
+Havok's land for the controller is the heightfield's triangle collection
+(`00cb0820` → `00d248a0`, `00d26700`, `00d26b50`): radius 0.5 Havok, no
+triangle extrusion (zeroed at `00d26700`), no welding; nothing in the shape
+pushes something under it back up: the 30-unit rule does.
+
+### Implemented, tested
+
+- `world::ground`: `moves_without_controller`, `navmesh_height`,
+  `kept_above_land`, `immobile`, the constants; tests (the 2449.5 edge, the
+  exceptions, 30 exactly, the navmesh window).
+- `NavMesh::find_triangle` looks only at the triangles indexed over the
+  point's square (same order, so the same triangle: a generated test
+  against the full scan, 4000 points over 400 overlapping triangles).
+- Viewer `ai::move_body`: the far rule first (`far_move`), the land rule
+  after the controller and on the no-controller bridge; `walk::walk`: the
+  land rule for the player (`CellNav::land_height`, the attached squares'
+  land of the player's worldspace). Tests: someone 64 under the land is put
+  on it and given a controller; a controller 29/31 under the land stays/is
+  lifted; far from the camera people walk through a wall on the navmesh's
+  height, near it the controller stops them.
+
+### Verified live (release viewer, installed data; nothing compared)
+
+- Gunfight (run4, `--wait 330`): XP +50; Ringo comes in on the ground
+  (+0.2 to +5) and walks up to the player (`run4\end.png`); before
+  (run1) −64 to −76 for 200 s. `ringo-fix\shot.png`: Ringo and Sunny
+  walking on the ground where the old build showed the terrain from
+  below.
+- Gangers coming down the road (`gangers-fix`, `--at -67000,1300,8400,163`,
+  24 s): on the road, feet +0.3 to +2.9 (`shot.png`).
+- Back in the Saddle (run3): completed, XP +50; Sunny's walk back from
+  out of sight at the tree is on the navmesh (far from the camera),
+  within −14 to +11 of the land; no one with a controller under the land.
+- The player started 54 under the land (`--at -67845,3000,8330,180`):
+  the old build stayed under the terrain for 8 s (`player-base\shot2.png`),
+  now on it (`player-fix\shot2.png`).
+
+### Not done / seen
+
+- People far from the camera stand at the navmesh's height, which lies up
+  to 21 under the land in places (00157B39); as the game does by this rule,
+  not compared.
+- A dead ganger's ragdoll lay sunk to the waist after the gunfight
+  (`run4\end.png`): ragdoll capsules meet triangles from either side
+  (`physics::ragdoll`, this solver's, B1); not changed here.
+- The viewer's bridge (no controller until collision is within 320 below)
+  stays; the far rule's controller warp conditions (flags 0x2000000,
+  0x4000000, 1) and in-air reset (`008e2680`) aren't followed (the
+  controller is put at the new position always); `fCharControllerWarpDistSqr`
+  isn't read from INI files.
+
 ## Not compared / gaps
 
 - Nothing compared with the original game: how far bottles fly, how they

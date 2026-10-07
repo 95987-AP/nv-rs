@@ -117,6 +117,10 @@ pub struct DataMenu {
     local_cursor: Option<TileId>,
     local_markers: Vec<TileId>,
     filled_local: Option<super::LocalMapLine>,
+    /// The local map is to be centred on the player again and zoomed
+    /// within its limits (`0079d410` run: the tab shown, or the pictures
+    /// all drawn).
+    recentre: bool,
     /// The door marker under the highlight box.
     local_marker: Option<TileId>,
 }
@@ -203,14 +207,27 @@ impl DataMenu {
             local_cursor: by_id(ui, menu, 3),
             local_markers: Vec::new(),
             filled_local: None,
+            recentre: false,
             local_marker: None,
         };
         d.set_tab(ui, 1);
         Ok(d)
     }
 
+    /// DATA put up (`0079af30`, the menu starting a tab: the Local Map's
+    /// case runs `0079d410`, which centres the map on the player again).
+    pub fn shown(&mut self) {
+        if self.tab == 0 {
+            self.recentre = true;
+        }
+    }
+
     fn set_tab(&mut self, ui: &mut Ui, tab: usize) {
         self.tab = tab.min(4);
+        // `0079af30` case 0x20.
+        if self.tab == 0 {
+            self.recentre = true;
+        }
         if let Some(tl) = self.tabline {
             tabline::set_current(ui, tl, self.tab);
         }
@@ -236,7 +253,7 @@ impl DataMenu {
             ui.set_string(tile, t::STRING, &input.date_time);
         }
         let mut changed = false;
-        if self.filled_local != input.local_map {
+        if self.filled_local != input.local_map || (self.recentre && input.local_map.is_some()) {
             self.fill_local_map(ui, input);
             self.filled_local = input.local_map.clone();
         }
@@ -308,7 +325,12 @@ impl DataMenu {
             }
             return;
         };
-        let new_map = !self.filled_local.as_ref().is_some_and(|m| m.key == map.key);
+        // `0079d410` also runs when the last picture is drawn (`0079ffb0`).
+        let completed = map.done && self.filled_local.as_ref().is_some_and(|m| !m.done);
+        let new_map = self.recentre
+            || completed
+            || !self.filled_local.as_ref().is_some_and(|m| m.key == map.key);
+        self.recentre = false;
         let side = map.tile_px * map.grids as f32;
         ui.set_number(image, t::FILEWIDTH, side);
         ui.set_number(image, t::FILEHEIGHT, side);
@@ -381,8 +403,11 @@ impl DataMenu {
             if let Some((at, _)) = map.player {
                 let w = ui.number(image, t::WIDTH);
                 let h = ui.number(image, t::HEIGHT);
-                ui.set_base(image, t::X, 427.5 - at[0] * w);
-                ui.set_base(image, t::Y, 250.0 - at[1] * h);
+                // (Less the last drag's movement, which the file adds.)
+                let dx = ui.number(image, crate::menu::drag::DELTA_X);
+                let dy = ui.number(image, crate::menu::drag::DELTA_Y);
+                ui.set_base(image, t::X, 427.5 - at[0] * w - dx);
+                ui.set_base(image, t::Y, 250.0 - at[1] * h - dy);
                 ui.refresh();
             }
         }
@@ -583,8 +608,11 @@ impl DataMenu {
         };
         let w = ui.number(world, t::WIDTH);
         let h = ui.number(world, t::HEIGHT);
-        ui.set_base(world, t::X, 427.5 - at[0] * w);
-        ui.set_base(world, t::Y, 250.0 - at[1] * h);
+        // (Less the last drag's movement, which the file adds.)
+        let dx = ui.number(world, crate::menu::drag::DELTA_X);
+        let dy = ui.number(world, crate::menu::drag::DELTA_Y);
+        ui.set_base(world, t::X, 427.5 - at[0] * w - dx);
+        ui.set_base(world, t::Y, 250.0 - at[1] * h - dy);
     }
 
     /// Zooms the world map in or out by `factor` about the point at the
@@ -673,6 +701,56 @@ impl DataMenu {
             return Vec::new();
         }
         self.zoom(ui, delta / 120 > 0, WHEEL_ZOOM)
+    }
+
+    /// The pad's sticks on the map tabs, every frame (`00799790`; the
+    /// values are the 360 pad's, -32767 .. 32767, `00a23390`): the left
+    /// stick's up and down (axis 8, past 7849) zoom by up to 1.075 a frame
+    /// (`0079c5a0(0 < v, |v| / 32767 × 0.075 + 1)`); the right stick (axes
+    /// 9 and 10, past 8689 each) pans: `dragstartx` / `y` 1 (-1 when it's
+    /// at rest) and `dragdeltax` = -x × 20 / 32767, `dragdeltay` = y × 20 /
+    /// 32767 a frame, which the map's `x` and `y` add.
+    // Translated from 00799790 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn sticks(&mut self, ui: &mut Ui, left_y: i32, right: [i32; 2]) -> Vec<Action> {
+        const ZOOM_DEAD: i32 = 7849;
+        const PAN_DEAD: i32 = 8689;
+        let mut out = Vec::new();
+        if self.tab > 1 {
+            return out;
+        }
+        if left_y.abs() >= ZOOM_DEAD {
+            let amount = (left_y as f32 / 32767.0).abs() * 0.075 + 1.0;
+            out.extend(self.zoom(ui, left_y > 0, amount));
+        }
+        let [x, y] = right.map(|v| if v.abs() < PAN_DEAD { 0 } else { v });
+        let picture = if self.tab == 0 {
+            self.local
+                .filter(|_| self.filled_local.as_ref().is_some_and(|m| m.done))
+        } else {
+            self.world
+        };
+        let Some(picture) = picture.filter(|&p| ui.number(p, t::VISIBLE) != 0.0) else {
+            return out;
+        };
+        if x == 0 && y == 0 {
+            ui.set_number(picture, crate::menu::drag::START_X, -1.0);
+            ui.set_number(picture, crate::menu::drag::START_Y, -1.0);
+        } else {
+            ui.set_number(picture, crate::menu::drag::START_X, 1.0);
+            ui.set_number(picture, crate::menu::drag::START_Y, 1.0);
+            ui.set_number(
+                picture,
+                crate::menu::drag::DELTA_X,
+                x as f32 * -20.0 / 32767.0,
+            );
+            ui.set_number(
+                picture,
+                crate::menu::drag::DELTA_Y,
+                y as f32 * 20.0 / 32767.0,
+            );
+        }
+        ui.refresh();
+        out
     }
 
     /// The quests (`MM_ListMarkerTemplate`: the active one's square filled,
@@ -1440,6 +1518,92 @@ mod tests {
         // Not on the quests' tab.
         d.show_tab(&mut ui, 2, &input());
         assert!(d.wheel(&mut ui, 120).is_empty());
+    }
+
+    /// The local map (`0079d410`, `0079c5a0`, `00799790`): opened it is
+    /// zoomed within `fLocalMapMinZoom` .. `MaxZoom` (the file's 1 gives
+    /// 0.9) and centred on the player; the pad's right stick pans it by
+    /// 20 a frame at most, once for each frame, the left stick zooms it;
+    /// the tab shown again centres it again.
+    #[test]
+    fn the_local_map_opens_centred_and_zooms_and_pans_with_the_pad() {
+        const LOCAL_MENU: &str = r#"<menu name="MapMenu"><locus>&true;</locus>
+          <hotrect name="clip"><y>50</y><width>855</width><height>500</height><locus>&true;</locus>
+            <hotrect name="local"><id>2</id><draggable>&true;</draggable><locus>&true;</locus>
+              <_Magnification>1</_Magnification>
+              <width><copy src="me()" trait="filewidth"/><mul src="me()" trait="_Magnification"/></width>
+              <height><copy src="me()" trait="fileheight"/><mul src="me()" trait="_Magnification"/></height>
+              <x><add src="me()" trait="dragdeltax"/>
+                <max><copy>427.5</copy><sub src="me()" trait="width"/></max><min>427.5</min></x>
+              <y><add src="me()" trait="dragdeltay"/>
+                <max><copy>250</copy><sub src="me()" trait="height"/></max><min>250</min></y>
+            </hotrect>
+          </hotrect>
+          <template name="MapMarkerTemplate"><image name="marker"><user0>1</user0></image></template>
+          <template name="LocalMapQuestMarkerTemplate"><image name="marker"></image></template>
+        </menu>"#;
+        let mut ui = crate::pipboy::tests::ui();
+        let mut read =
+            |p: &str| (p == crate::pipboy::DATA_FILE).then(|| LOCAL_MENU.as_bytes().to_vec());
+        let mut d = DataMenu::load(&mut ui, &mut read).unwrap();
+        let mut input = input();
+        input.local_map = Some(crate::pipboy::LocalMapLine {
+            key: 1,
+            grids: 5,
+            tile_px: 1024.0,
+            done: true,
+            player: Some(([0.5, 0.5], 0.0)),
+            ..Default::default()
+        });
+        d.show_tab(&mut ui, 0, &input);
+        d.fill(&mut ui, &input);
+        let local = by_id(&ui, d.menu, 2).unwrap();
+        let mag = ui.names.lookup("_Magnification").unwrap();
+        assert!((ui.number(local, mag) - 0.9).abs() < 1e-6);
+        assert!((ui.number(local, t::WIDTH) - 4608.0).abs() < 1e-2);
+        let centre = 427.5 - 0.5 * 4608.0;
+        assert!((ui.number(local, t::X) - centre).abs() < 1e-2);
+        // The right stick all the way right: the map moves 20 left a frame,
+        // once however often it is read.
+        d.sticks(&mut ui, 0, [32767, 0]);
+        assert!((ui.number(local, t::X) - (centre - 20.0)).abs() < 1e-2);
+        ui.refresh();
+        ui.refresh();
+        assert!((ui.number(local, t::X) - (centre - 20.0)).abs() < 1e-2);
+        d.sticks(&mut ui, 0, [32767, 0]);
+        assert!((ui.number(local, t::X) - (centre - 40.0)).abs() < 1e-2);
+        // Up moves it down; half over the dead zone is a part of 20.
+        d.sticks(&mut ui, 0, [0, 32767]);
+        assert!((ui.number(local, t::Y) - (250.0 - 0.5 * 4608.0 + 20.0)).abs() < 1e-2);
+        // At rest or in the dead zone it stays.
+        let (x, y) = (ui.number(local, t::X), ui.number(local, t::Y));
+        d.sticks(&mut ui, 0, [8000, -8000]);
+        d.sticks(&mut ui, 0, [0, 0]);
+        assert_eq!((ui.number(local, t::X), ui.number(local, t::Y)), (x, y));
+        // The left stick zooms: up in (by up to 1.075, clamped to 0.9, so
+        // nothing), down out by 1.075; its dead zone does nothing.
+        assert!(d.sticks(&mut ui, 32767, [0, 0]).is_empty());
+        assert!((ui.number(local, mag) - 0.9).abs() < 1e-6);
+        assert!(d.sticks(&mut ui, -7000, [0, 0]).is_empty());
+        let out = d.sticks(&mut ui, -32767, [0, 0]);
+        assert_eq!(out[0], Action::Sound("UIPipBoyScroll".into()));
+        assert!((ui.number(local, mag) - 0.9 / 1.075).abs() < 1e-5);
+        // Zoomed right out, no further than 0.1.
+        for _ in 0..100 {
+            d.sticks(&mut ui, -32767, [0, 0]);
+        }
+        assert!((ui.number(local, mag) - 0.1).abs() < 1e-6);
+        // Another tab and back centres it on the player again.
+        d.show_tab(&mut ui, 2, &input);
+        d.show_tab(&mut ui, 0, &input);
+        d.fill(&mut ui, &input);
+        let width = ui.number(local, t::WIDTH);
+        assert!((ui.number(local, t::X) - (427.5 - 0.5 * width)).abs() < 1e-2);
+        // The wheel: out by 1.1, in again (not past 0.9).
+        d.wheel(&mut ui, -120);
+        assert!((ui.number(local, mag) - 0.1).abs() < 1e-6);
+        d.wheel(&mut ui, 120);
+        assert!((ui.number(local, mag) - 0.11).abs() < 1e-5);
     }
 
     #[test]

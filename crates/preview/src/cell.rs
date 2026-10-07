@@ -43,6 +43,9 @@ const DECAL_FLAGS: u32 = 0x0400_0000 | 0x0800_0000;
 /// Shader flag: the glow takes its color from outside the model (the placed
 /// object's Emittance setting).
 const EXTERNAL_EMITTANCE: u32 = 0x2000_0000;
+/// Shader flag 0x40: what later games call "use falloff" (a guess for
+/// these files: see the falloff in `Loader::mesh`).
+const USE_FALLOFF: u32 = 0x0000_0040;
 /// Shader flag: vertex alpha is used.
 const VERTEX_ALPHA: u32 = 0x0000_0008;
 /// Shader flag: the surface gets the specular pass.
@@ -215,6 +218,10 @@ pub struct ModelMesh {
     /// the piece comes from, so a part can be rebuilt on its own (the
     /// game's biped slots, `BipedAnim::LoadBipedParts`, Xbox PDB).
     pub actor_part: Option<u16>,
+    /// The file stores it as triangle strips (`NiTriStrips`): the only
+    /// geometry the game puts world decals on (`004a1a70`, `0068b4c0` take
+    /// the `NiTriStrips` type at `011f4a20`; `0068d230` walks the strip).
+    pub strips: bool,
 }
 
 /// A piece that turns toward the camera with the `NiBillboardNode` above
@@ -278,8 +285,22 @@ impl Billboard {
     /// directions are given (game axes), with the object placed by
     /// `placement` (model to world).
     pub fn facing(&self, placement: &Transform, eye: Vec3, axes: [Vec3; 3]) -> Transform {
-        let parent = placement.then_child(&self.above);
-        let node_world = parent.then_child(&self.node);
+        self.facing_posed((&self.above, &self.node, &self.below), placement, eye, axes)
+    }
+
+    /// [`Self::facing`] with the nodes posed by an animation (`above`, the
+    /// billboard node's own and `below` as it has them now): the move from
+    /// the loaded vertices to the turned, posed piece. The billboard keeps
+    /// its posed node's position and size, its rotation replaced.
+    pub fn facing_posed(
+        &self,
+        (above, node, below): (&Transform, &Transform, &Transform),
+        placement: &Transform,
+        eye: Vec3,
+        axes: [Vec3; 3],
+    ) -> Transform {
+        let parent = placement.then_child(above);
+        let node_world = parent.then_child(node);
         let [right, up, back] = match self.kind {
             BillboardKind::FaceCamera => axes,
             BillboardKind::FaceCentre => {
@@ -299,13 +320,13 @@ impl Billboard {
         let parent_inverse = parent.inverse();
         let local = Transform {
             rotation: nif::math::mat_mul(&parent_inverse.rotation, &world_rotation),
-            translation: self.node.translation,
-            scale: self.node.scale,
+            translation: node.translation,
+            scale: node.scale,
         };
         let rest = self.above.then_child(&self.node).then_child(&self.below);
-        self.above
+        above
             .then_child(&local)
-            .then_child(&self.below)
+            .then_child(below)
             .then_child(&rest.inverse())
     }
 }
@@ -737,7 +758,11 @@ impl Loader<'_> {
         let mut particle_systems = Vec::new();
         let mut particle_sequences = Vec::new();
         let mut bsx_flags = 0;
+        let mut strip_blocks = std::collections::HashSet::new();
         let scene = match nif::Nif::parse(bytes).and_then(|nif| {
+            strip_blocks = (0..nif.blocks().len())
+                .filter(|&i| nif.block_type(i) == "NiTriStrips")
+                .collect();
             sequences = nif.sequences().unwrap_or_default();
             bsx_flags = nif.bsx_flags().unwrap_or(0);
             // Particle systems that can't be read leave the model without
@@ -779,6 +804,7 @@ impl Loader<'_> {
         let mut meshes = Vec::with_capacity(scene.meshes.len());
         for source in &scene.meshes {
             if let Some(mut mesh) = self.mesh(source) {
+                mesh.strips = strip_blocks.contains(&source.block);
                 if sequences.iter().any(|s| touches(&source.nodes, s)) {
                     mesh.nodes = source.nodes.clone();
                     mesh.sequences = sequences.clone();
@@ -895,22 +921,35 @@ impl Loader<'_> {
             .and_then(|t| self.texture(t));
         let alpha = alpha_of(mesh);
         let additive = matches!(alpha.blend, Some((_, BlendFactor::One)));
-        let falloff = mesh.shader.as_ref().and_then(|s| s.falloff).map(|f| {
-            // Stored as cosines; tolerate files that store degrees.
-            let cos = |v: f32| {
-                if v.abs() > 1.0 {
-                    v.to_radians().cos()
-                } else {
-                    v
+        // [G] With `NV_GUESSES=1`, only shaders with flag 0x40 fade by
+        // angle (the bit later games name "use falloff"; the game's impact
+        // models, flags 0x82080008, store a falloff of all zeros, which
+        // would hide them). Which no-lighting technique the exe picks isn't
+        // traced.
+        let falloff_flag = |s: &nif::ShaderProperty| {
+            !world::guesses::enabled() || s.shader_flags & USE_FALLOFF != 0
+        };
+        let falloff = mesh
+            .shader
+            .as_ref()
+            .filter(|s| falloff_flag(s))
+            .and_then(|s| s.falloff)
+            .map(|f| {
+                // Stored as cosines; tolerate files that store degrees.
+                let cos = |v: f32| {
+                    if v.abs() > 1.0 {
+                        v.to_radians().cos()
+                    } else {
+                        v
+                    }
+                };
+                Falloff {
+                    start_cos: cos(f.start_angle),
+                    stop_cos: cos(f.stop_angle),
+                    start_opacity: f.start_opacity,
+                    stop_opacity: f.stop_opacity,
                 }
-            };
-            Falloff {
-                start_cos: cos(f.start_angle),
-                stop_cos: cos(f.stop_angle),
-                start_opacity: f.start_opacity,
-                stop_opacity: f.stop_opacity,
-            }
-        });
+            });
         let directions = |v: &[Vec3]| -> Vec<Vec3> {
             v.iter()
                 .map(|&d| mesh.transform.apply_direction(d))
@@ -1003,6 +1042,7 @@ impl Loader<'_> {
             shading,
             hair_tint: None,
             actor_part: None,
+            strips: false,
         })
     }
 

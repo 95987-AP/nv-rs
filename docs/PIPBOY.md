@@ -114,6 +114,8 @@ the Pip-Boy's pointer on a pixel and click there.
 | Local map: 5 × 5 tiles of 4096 units (interiors: offset 2048 and turned by the `NorthMarker`), each a 128 × 128 picture from above (outdoors the land's top + 20000, indoors the bound's top + 40000, half-size 2176, outdoors 32 lower), colour the view-space normal × 0.5 + 0.5 (`SLS2084.vso`/`SLS2087.pso`), cleared black; one picture a frame; tiles drawn as 17 × 17 meshes, vertex alpha = seen count / 4, picture × Pip-Boy colour | `0054e830`, `0054ee80`, `0054f500`, `0079ffb0`, `00556870` |
 | Fog of war: 16 × 16 points a cell (256 apart), set within `fSeenDataUpdateRadius` (1024) of the player, fully-seen at 248 points; saved (`seen` lines) | `00555c20`, `00556ef0` |
 | Local map markers: doors (`icon_local_door.dds`, alpha the fog's, name where they lead: cell name, else worldspace), quest targets and the custom marker (`LocalMapQuestMarkerTemplate`), the arrow at −heading − 0.3 − north; zoom `fLocalMapMinZoom` 0.1 .. `MaxZoom` 0.9, marker sizes 20..75 / 40..75 / 40..70 | `0079d410`, `0079dbb0`, `0079e0a0`, `0079c5a0` |
+| Local map scale, re-traced for B16 (found as implemented): a tile is 1024 menu units a cell (2048 indoors) × `_Magnification`, the picture's `filewidth` = that × `uGridsToLoad` (5) (`0079ffb0`: `0x400 (+0x400 indoors)`, `0xfcd`), the 3D tiles scaled by the same magnification (`0079c5a0`), so the 855 × 500 window shows 855 ÷ (1024 × 0.9) ≈ 0.93 cells outdoors, 0.46 indoors at the start; the start is the file's `_Magnification` 1 clamped to 0.9 (`0079c5a0(1, 1.0)` from `0079d410`; `fLocalMapMaxZoom` `0x3f666666` at `011d2f64`, `MinZoom` `0x3dcccccd` at `011d4c60`, neither in the ESMs), `min(max)` as `0040ebd0` / `00404010`; steps: wheel ×1.1 a call (`0079c530`), Page Up / Down (bumpers) ×1.2 (`00799790` cases 0xf / 0x10), the pad's left stick up / down (axis 8, dead zone 7849) × up to 1.075 a frame; pan: the mouse drags the map (`x` adds `dragdeltax`, kept between the window's middle and the map's far edge by the file), the pad's right stick (axes 9 / 10, dead zone 8689) sets `dragdeltax` = −x × 20 / 32767, `dragdeltay` = y × 20 / 32767 a frame; centred on the player (`0079dbb0`: window ÷ 2 − width × the player's place) whenever `0079d410` runs: the tab shown (`0079af30` case 0x20, so DATA put up or the tab chosen again) and the last picture drawn (`0079ffb0`); zoom keeps the window's middle (`0079c5a0`) | `0079c5a0`, `0079c530`, `00799790`, `0079d410`, `0079dbb0`, `0079ffb0`, `0079af30`; `ui::pipboy::data` (`zoom`, `sticks`, `shown`), `ui::tile` |
+| A drag's movement is added to the map once: the game works `x` out when `dragdeltax` is set (`00a012d0`), not on every refresh; here a trait that adds `dragdeltax` / `dragdeltay` is worked out again only when a source is set or changes (before, every refresh added the last drag's movement again and the map ran off to its limits) | `00a012d0`, `0070c4a0` (the drag's frame code); `ui::tile::Ui::value` |
 
 Labelled guesses: the menus' camera covering 1280 × 960 units over the
 4:3 rectangle (so menu point = u × 1280, v × 960); the marker distance
@@ -130,7 +132,12 @@ not flagged hidden (0x00800000) with a bound of 50 or more), faces turned
 away left out (the pass's cull mode isn't traced), the normal per vertex,
 the map tile's own square not drawn under the pictures, outdoors the
 camera's height from the square's highest vertex, the pictures made again
-when the place changes. Radio: the ranges are straight-line (no path
+when the place changes; a map dragged with the pointer off the Pip-Boy's
+screen stays where the pointer last was on it (the game's drag delta is
+the change of two counts at `+0x60` / `+0x64` of the input object, whose
+start and scale in `0070c4a0` aren't traced; here the pointer's change in
+menu units); the pad's sticks are written from the code and unit-tested
+only (no pad to try). Radio: the ranges are straight-line (no path
 finding); script functions take the last frame's audio clock as now; a
 receiver's sound is taken to end with the station's line (its length the
 song's own file, not the mono one); receivers' loudness as the Pip-Boy's

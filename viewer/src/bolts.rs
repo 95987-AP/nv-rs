@@ -254,6 +254,11 @@ fn strike(
         weapon: Some(bolt.pellet.form_id),
         point: [0, 1, 2].map(|k| from[k] + dir[k] * d),
         havok: None,
+        normal: None,
+        triangle: None,
+        direction: dir,
+        on_body: true,
+        part,
         damage: hit.dealt,
         killed: state.dead.contains(&victim),
     });

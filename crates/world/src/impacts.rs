@@ -30,10 +30,10 @@
 //! `0088e8d0`, the hurt line from `0089a760`; on death `0089d900`. **A hit
 //! on the world** ([`surface_impact`]): `009c20e0`.
 //!
-//! The viewer plays the sounds, lines and the player's hit modifier; the
-//! effect models, decals and screen blood these rules choose aren't drawn
-//! yet (they need the game's controllers, billboards, particles and decal
-//! system run as it runs them).
+//! The viewer plays the sounds, lines and the player's hit modifier, and
+//! draws the effect models (`cellview::impacts`) and world decals
+//! ([`crate::decals`]) these rules choose; decals on skin and screen blood
+//! aren't drawn.
 
 use esm::{FormId, FourCC, LoadOrder, Record, RecordRef};
 

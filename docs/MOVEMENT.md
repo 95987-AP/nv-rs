@@ -109,6 +109,18 @@ Unresolved, labelled in code:
 - Camera follow: the camera still sits at `cellview::EYE_HEIGHT` above the
   feet; the game's first-person camera node was not traced in this batch.
 
+## Kept on the land (`0092f260`)
+
+`MobileObject::Move` (`0092f260`) runs for the player too: after the
+controller's move, outdoors, feet more than 30 under the land's height
+(`LAND`, `004572e0`) are put on it (`world::ground::kept_above_land`;
+`walk::walk`). Its other rule, moving people further than
+`fCharControllerWarpDistSqr` from the camera without their controller,
+never applies to the player. Details and the live runs: PHYSICS.md,
+"People on the ground (B4)". Implemented, tested (`world::ground`),
+verified live (the player started 54 under the land is put on it); not
+compared.
+
 ## Settings
 
 | Setting | Exe | Data | Read by |

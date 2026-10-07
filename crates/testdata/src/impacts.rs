@@ -123,6 +123,64 @@ pub fn animated_effect_nif(times: &[(f32, f32)]) -> Vec<u8> {
     b.build()
 }
 
+/// An effect model animated by its own controllers, as the game's impact
+/// models are: the root node grows from scale 1 at 0 s to 3 at 0.3 s
+/// (`NiTransformController` → `NiTransformInterpolator` →
+/// `NiTransformData`, clamped), and its shape `Quad`'s material fades from
+/// alpha 1 at 0.05 s to 0 at 0.25 s (`NiAlphaController` →
+/// `NiFloatInterpolator` → `NiFloatData`).
+pub fn controlled_effect_nif() -> Vec<u8> {
+    let mut b = NifBuilder::default();
+    let mut root = b.av("Root", &[]);
+    root[8..12].copy_from_slice(&2i32.to_le_bytes());
+    root.extend(1u32.to_le_bytes());
+    root.extend(1i32.to_le_bytes());
+    root.extend(0u32.to_le_bytes());
+    let mut shape = b.av("Quad", &[5]);
+    shape.extend((-1i32).to_le_bytes());
+    shape.extend((-1i32).to_le_bytes());
+    shape.extend(0u32.to_le_bytes());
+    shape.extend((-1i32).to_le_bytes());
+    shape.push(0);
+    // Clamped (cycle type 2) and active.
+    let controller = |(start, stop): (f32, f32), target: i32, interpolator: i32| {
+        let mut c = (-1i32).to_le_bytes().to_vec();
+        c.extend(0x000Cu16.to_le_bytes());
+        c.extend(f32s(&[1.0, 0.0, start, stop]));
+        c.extend(target.to_le_bytes());
+        c.extend(interpolator.to_le_bytes());
+        c
+    };
+    let mut interpolator = f32s(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+    interpolator.extend(4i32.to_le_bytes());
+    // No rotation or translation keys; two linear scale keys.
+    let mut transform = 0u32.to_le_bytes().to_vec();
+    transform.extend(0u32.to_le_bytes());
+    transform.extend(2u32.to_le_bytes());
+    transform.extend(1u32.to_le_bytes());
+    transform.extend(f32s(&[0.0, 1.0, 0.3, 3.0]));
+    let mut material = b.net("");
+    material[8..12].copy_from_slice(&6i32.to_le_bytes());
+    material.extend(f32s(&[1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 10.0, 1.0, 1.0]));
+    let mut float = f32s(&[1.0]);
+    float.extend(8i32.to_le_bytes());
+    let mut keys = 2u32.to_le_bytes().to_vec();
+    keys.extend(1u32.to_le_bytes());
+    keys.extend(f32s(&[0.05, 1.0, 0.25, 0.0]));
+    b.blocks = vec![
+        ("BSFadeNode".into(), root),
+        ("NiTriShape".into(), shape),
+        ("NiTransformController".into(), controller((0.0, 0.3), 0, 3)),
+        ("NiTransformInterpolator".into(), interpolator),
+        ("NiTransformData".into(), transform),
+        ("NiMaterialProperty".into(), material),
+        ("NiAlphaController".into(), controller((0.05, 0.25), 5, 7)),
+        ("NiFloatInterpolator".into(), float),
+        ("NiFloatData".into(), keys),
+    ];
+    b.build()
+}
+
 /// The [`ids`] world in a temporary Data folder, with `FalloutNV.esm`'s
 /// values for `fCombatSpeakHitChance` and `fCombatSpeakHitThreshold`
 /// (0.01 each).
