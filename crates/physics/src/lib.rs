@@ -1167,13 +1167,7 @@ impl Character {
         (feet, None)
     }
 
-    /// The face the capsule overlaps most, turned toward it, if any.
-    fn touching(&self, collider: &Collider, shape: &CharacterShape) -> Option<Support> {
-        let candidates = self.touch_candidates(collider, shape);
-        self.touching_among(collider, shape, &candidates)
-    }
-
-    /// The triangles [`Character::touching`] looks at.
+    /// The triangles near enough for [`Character::touching_among`] to look at.
     fn touch_candidates(&self, collider: &Collider, shape: &CharacterShape) -> Vec<u32> {
         let r = shape.radius;
         let lo = [
@@ -1189,7 +1183,8 @@ impl Character {
         collider.near(lo, hi)
     }
 
-    /// [`Character::touching`] among `candidates` (in their order).
+    /// The face the capsule overlaps most among `candidates` (in their
+    /// order), turned toward it, if any.
     fn touching_among(
         &self,
         collider: &Collider,
