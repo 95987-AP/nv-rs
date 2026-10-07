@@ -213,6 +213,105 @@ pub fn next_depth(ui: &mut Ui, open: &[TileId]) -> f32 {
     top + 2.0
 }
 
+/// A menu's showing state (the menu object's `+0x24`): 1 shown, 2 fading
+/// out, 4 faded out (hidden but still open), 8 fading in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Showing {
+    #[default]
+    Shown,
+    FadingOut,
+    Hidden,
+    FadingIn,
+}
+
+/// A menu fading out of sight and back, as the interface manager does it:
+/// the fade is put on the manager's list with its length (`00706f50` →
+/// `007164c0`), its time counted each frame up to the length (`00716320`),
+/// and the menu drawn at that fraction (`00711ea0`: the whole tree's alpha
+/// times it, through `00712450`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Fade {
+    pub showing: Showing,
+    elapsed: f32,
+    seconds: f32,
+}
+
+/// `menufade`, or `explorefade` when that is 0 (`00a1d910`, `00a1db20`).
+fn fade_seconds(ui: &mut Ui, menu: TileId) -> f32 {
+    let seconds = ui.number(menu, t::MENUFADE);
+    if seconds == 0.0 {
+        ui.number(menu, t::EXPLOREFADE)
+    } else {
+        seconds
+    }
+}
+
+impl Fade {
+    /// Fades the menu out (`00a1d910`) when it is shown (`visible`): state
+    /// 2 over `menufade` (else `explorefade`) seconds. Without trait 6002
+    /// ([`LEAVE_STACK`]) the menu stays open, hidden, once faded.
+    pub fn fade_out(&mut self, ui: &mut Ui, menu: TileId) {
+        if ui.number(menu, t::VISIBLE) == 0.0 {
+            return;
+        }
+        self.seconds = fade_seconds(ui, menu);
+        self.elapsed = 0.0;
+        self.showing = Showing::FadingOut;
+    }
+
+    /// Fades the menu in (`00a1db20`): state 8 over `menufade` (else
+    /// `explorefade`) seconds.
+    pub fn fade_in(&mut self, ui: &mut Ui, menu: TileId) {
+        self.seconds = fade_seconds(ui, menu);
+        self.elapsed = 0.0;
+        self.showing = Showing::FadingIn;
+    }
+
+    /// One frame (`00716320`, `00711ea0`): the time counted, `visible` set
+    /// (on while fading, off once faded out, on once faded in), and the
+    /// menu's alpha returned (1 − the fraction fading out, the fraction
+    /// fading in, 0 hidden, 1 shown).
+    pub fn frame(&mut self, ui: &mut Ui, menu: TileId, dt: f32) -> f32 {
+        let fading = matches!(self.showing, Showing::FadingOut | Showing::FadingIn);
+        if fading {
+            self.elapsed += dt;
+            let done = self.fraction() >= 1.0;
+            match (self.showing, done) {
+                (Showing::FadingOut, true) => {
+                    self.showing = Showing::Hidden;
+                    ui.set_number(menu, t::VISIBLE, 0.0);
+                }
+                (Showing::FadingIn, true) => self.showing = Showing::Shown,
+                _ => {}
+            }
+            if self.showing != Showing::Hidden {
+                ui.set_number(menu, t::VISIBLE, 1.0);
+            }
+        }
+        self.alpha()
+    }
+
+    /// How far the fade has got, 0 to 1 (`00716320`: time ÷ length,
+    /// clamped; a fade of no length is over at once).
+    fn fraction(&self) -> f32 {
+        if self.seconds <= 0.0 {
+            1.0
+        } else {
+            (self.elapsed / self.seconds).clamp(0.0, 1.0)
+        }
+    }
+
+    /// The menu's alpha now.
+    pub fn alpha(&self) -> f32 {
+        match self.showing {
+            Showing::Shown => 1.0,
+            Showing::Hidden => 0.0,
+            Showing::FadingOut => 1.0 - self.fraction(),
+            Showing::FadingIn => self.fraction(),
+        }
+    }
+}
+
 /// Whether a tile is shown and on screen: its own `visible` and its
 /// ancestors' (`00a040a0`).
 fn shown(ui: &mut Ui, tile: TileId) -> bool {
@@ -857,6 +956,35 @@ mod tests {
             i.effects.last(),
             Some(&Effect::Sound("UIMenuCancel".into()))
         );
+    }
+
+    /// `00a1d910`/`00a1db20`: fades last `menufade` seconds, `explorefade`
+    /// when that is 0; a hidden menu isn't faded out again; `00711ea0`:
+    /// visible while fading, off once faded out, on once faded in.
+    #[test]
+    fn menus_fade_out_and_in() {
+        let mut ui = test_support::ui();
+        let mut code = Recorder::default();
+        let xml = "<menu name=\"M\"><class>&MessageMenu;</class><menufade>0</menufade><explorefade>0.5</explorefade></menu>";
+        let menu = test_support::load(&mut ui, xml, &mut code);
+        let mut fade = Fade::default();
+        // Hidden (menus start so): nothing to fade.
+        fade.fade_out(&mut ui, menu);
+        assert_eq!(fade.showing, Showing::Shown);
+        ui.set_number(menu, t::VISIBLE, 1.0);
+        fade.fade_out(&mut ui, menu);
+        assert_eq!(fade.showing, Showing::FadingOut);
+        assert_eq!(fade.frame(&mut ui, menu, 0.25), 0.5);
+        assert_eq!(ui.number(menu, t::VISIBLE), 1.0);
+        assert_eq!(fade.frame(&mut ui, menu, 0.25), 0.0);
+        assert_eq!(fade.showing, Showing::Hidden);
+        assert_eq!(ui.number(menu, t::VISIBLE), 0.0);
+        assert_eq!(fade.frame(&mut ui, menu, 1.0), 0.0);
+        fade.fade_in(&mut ui, menu);
+        assert_eq!(fade.frame(&mut ui, menu, 0.125), 0.25);
+        assert_eq!(ui.number(menu, t::VISIBLE), 1.0);
+        assert_eq!(fade.frame(&mut ui, menu, 1.0), 1.0);
+        assert_eq!(fade.showing, Showing::Shown);
     }
 
     /// `0070c4a0`: pressing on a `draggable` tile drags it: `dragx`/`dragy`

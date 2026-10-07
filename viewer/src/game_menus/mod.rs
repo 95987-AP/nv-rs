@@ -141,6 +141,15 @@ impl OpenMenu {
         }
     }
 
+    /// A service menu: one whose making hides the conversation
+    /// (`00763ff0`: the barter menu `0072d250`, the recipe menu
+    /// `00726ff0`) and whose closing brings it back (`007640a0`: `0072d6d0`,
+    /// `00727430`). (A companion's trade, the repair menu and the face menu
+    /// do too; they aren't shown here. Containers in mode 1 don't.)
+    fn is_service(&self) -> bool {
+        matches!(self, OpenMenu::Barter(_) | OpenMenu::Recipe(_))
+    }
+
     fn closed(&self) -> bool {
         match self {
             OpenMenu::Message(m) => m.closed,
@@ -489,6 +498,7 @@ fn open_menus(
     };
     queue.game_ready = true;
     while let Some(request) = queue.take_next(takes) {
+        let before = screen.open.len();
         if message::takes(&request) {
             message::open(screen, &game.0, request);
         } else if vigor::takes(&request) {
@@ -527,6 +537,10 @@ fn open_menus(
             sounds
                 .0
                 .extend(container::open(screen, &game.0, &mut state.0, request));
+        }
+        // A service menu made: the conversation fades out under it.
+        if screen.open.len() > before && screen.open.last().is_some_and(OpenMenu::is_service) {
+            dialog::service_opened(screen);
         }
         player.ready = false;
     }
@@ -792,26 +806,25 @@ pub(crate) fn run_open_menus(
         .extend(chargen::after(screen, &game.0, &mut state.0));
     textedit::after(screen, &mut state.0);
     asks::after(screen, &mut asks);
-    let Screen {
-        ui,
-        interface,
-        open,
-        ..
-    } = screen;
-    // Closed menus leave the screen.
+    // Closed menus leave the screen; a service menu closing brings the
+    // conversation back (`007640a0`).
     let mut i = 0;
-    while i < open.len() {
-        if open[i].closed() {
-            let m = open.remove(i);
-            ui.detach(m.tile());
-            if open.is_empty() {
-                interface.over = None;
-                interface.focus = None;
+    while i < screen.open.len() {
+        if screen.open[i].closed() {
+            let m = screen.open.remove(i);
+            screen.ui.detach(m.tile());
+            if screen.open.is_empty() {
+                screen.interface.over = None;
+                screen.interface.focus = None;
+            }
+            if m.is_service() {
+                dialog::service_closed(screen);
             }
         } else {
             i += 1;
         }
     }
+    let open = &screen.open;
     queue.game_open = !open.is_empty();
     // (A box over the Pip-Boy closing leaves the Pip-Boy up.)
     if open.is_empty() && conversation.0.is_none() && !queue.pipboy {
@@ -929,6 +942,15 @@ fn draw_menus(
         return;
     };
     let tiles = screen.menu_tiles();
+    // Each menu's fade alpha (the conversation's under a service menu).
+    let alphas: Vec<f32> = screen
+        .open
+        .iter()
+        .map(|m| match m {
+            OpenMenu::Dialog(d) => d.fade.alpha(),
+            _ => 1.0,
+        })
+        .collect();
     let mut items: Vec<DrawItem> = Vec::new();
     // The fade to black moves every frame (`007011d0`) and is drawn under
     // the menus while it lasts.
@@ -954,9 +976,10 @@ fn draw_menus(
                 items.extend(ui::draw_list(&mut screen.ui, fader, &mut files, &|_| None));
             }
         }
-        for &menu in &tiles {
+        for (&menu, &alpha) in tiles.iter().zip(&alphas) {
             let first = items.len();
-            items.extend(ui::draw_list(&mut screen.ui, menu, &mut files, &|_| None));
+            let drawn = ui::draw_list(&mut screen.ui, menu, &mut files, &|_| None);
+            items.extend(ui::draw::faded(&mut screen.ui, drawn, alpha));
             // A start menu's `nif` tile (the pause background).
             start::background_draws(
                 &mut screen.ui,

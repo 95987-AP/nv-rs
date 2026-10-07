@@ -116,6 +116,45 @@ pub fn discard(screen: &mut Screen) -> bool {
     discarded
 }
 
+/// A service menu (barter, recipes) has just been put over the menus
+/// (`00763ff0`, from its `Create`): the conversation's menu, if one is
+/// open and not ending, fades out and waits under it.
+pub fn service_opened(screen: &mut Screen) {
+    let Screen { ui, open, .. } = screen;
+    for m in open.iter_mut() {
+        if let OpenMenu::Dialog(d) = m {
+            if d.service_opened(ui) {
+                println!("Dialogue menu: hidden under a service menu.");
+            }
+        }
+    }
+}
+
+/// The service menu closed (`007640a0`): the conversation's menu fades
+/// back in.
+pub fn service_closed(screen: &mut Screen) {
+    let Screen { ui, open, .. } = screen;
+    for m in open.iter_mut() {
+        if let OpenMenu::Dialog(d) = m {
+            if d.in_service {
+                d.service_closed(ui);
+                println!("Dialogue menu: back from the service menu.");
+            }
+        }
+    }
+}
+
+/// Whether the conversation's menu is hidden under a service menu (nothing
+/// can be chosen in it meanwhile).
+pub fn hidden(screen: &mut Screen) -> bool {
+    menu(screen).is_some_and(|d| d.hidden())
+}
+
+/// Whether a service menu cut the line being said short (once).
+pub fn take_cut_line(screen: &mut Screen) -> bool {
+    menu(screen).is_some_and(|d| std::mem::take(&mut d.cut_line))
+}
+
 /// What the player did since last asked.
 pub fn take_answer(screen: &mut Screen) -> Option<Answer> {
     menu(screen).and_then(|d| d.answer.take())
@@ -138,6 +177,10 @@ pub fn update(screen: &mut Screen, order: &esm::LoadOrder, dt: f32) {
                 );
             }
             d.update(ui, dt, zoom_in, zoom_out);
+            // Its fade under a service menu and back (the interface
+            // manager's, `00716320`, `00711ea0`).
+            let tile = d.menu;
+            d.fade.frame(ui, tile, dt);
         }
     }
 }
