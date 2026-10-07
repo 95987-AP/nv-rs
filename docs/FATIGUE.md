@@ -175,8 +175,8 @@ VFreeformGoodsprings.
 
 ## Live checks
 
-Release viewer, `GSProspectorSaloonInterior` (2026-10-07; scene script
-kept privately, screenshots in `%USERPROFILE%\nv-re\shots\w5\`):
+Release viewer, `GSProspectorSaloonInterior` (2026-10-07; the scene script
+and screenshots kept privately):
 
 ```powershell
 viewer\target\release\nv-viewer.exe "<Data>" GSProspectorSaloonInterior `

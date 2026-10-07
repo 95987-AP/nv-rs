@@ -498,25 +498,13 @@ view` outside, standing on the player's spot).
 
 ## Not done
 
-- The companion choosing what to wear after trading (`00606540`: their
-  outfit and best gear worked out again); a thing given stays unworn.
-  What they are made to wear (`EquipItem`) or lose (trading it away) is
-  drawn: [NPC_GEAR.md](NPC_GEAR.md).
-- The line on the container menu's own subtitle (`CM_Subtitle`); the line
-  is said as a `SayTo` would say it.
-- The wheel's Back Up (`008a7760`: default package 0x27 put on them); it
-  only closes the wheel.
-- Choosing a wheel slice with the pad's stick (`00755480`, `00755c50`).
-- The wheel picks the topic's line once for both saying it and running its
-  scripts; the game picks it twice (`0061a720` in `007573d0` and again in
-  `007575b0`), which differs only for a line said once.
-- The viewer draws people in their record's clothes
-  (`world::placement_of`): what a companion puts on after trading is in
-  the state but not shown on them.
 - `InitDefaultWorn`'s other callers (packages, resets: 16 of them), and
   `GetBestWeapon`'s explosive-planting check (process +0x444).
-- The viewer draws people with their record's weapon: the one picked is
-  in the state (redrawing NPCs' gear is another branch's).
+- The armour and weapon picked are drawn on them ([NPC_GEAR.md](NPC_GEAR.md),
+  people redrawn when what they wear or hold changes), but when a worn
+  piece is taken away the redraw falls back to the record's clothes, not
+  to the best the companion carries (`world::outfit` doesn't yet re-pick
+  through `InitDefaultWorn`).
 - The navmesh spot behind the player that those coming along are put on
   (`006e7e70`); here they're put on the player's own spot, as the game does
   when it finds none.

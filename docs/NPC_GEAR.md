@@ -105,8 +105,9 @@ weapon it looked at (`ActorRig::held_weapon`), and new actors get the
 
 - Picking again after a worn item is taken away: the start's pieces come
   back if still carried; the game's `InitDefaultWorn` picks the best armour
-  per slot from the whole inventory (`GetBestArmor`; ported on
-  `claude/companions-2`, not on this base). The start's own choice is the
+  per slot from the whole inventory (`GetBestArmor`, ported for the
+  companions, [COMPANIONS.md](COMPANIONS.md); not used here yet). The
+  start's own choice is the
   look's first-per-slot rule, not `GetBestArmor`.
 - A person whose inventory comes from their template: taking the
   template's clothes away isn't seen (`GameState::stock` copies only the

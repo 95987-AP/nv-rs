@@ -11,8 +11,8 @@ The generator is `crates/nvinspect/src/quest_coverage.rs`. Two small tables in `
 **436 quests**: 0 PLAYED, 7 PARTIAL, 402 NOT PLAYED, 27 NEVER STARTED.
 
 - Running from a new game (start game enabled): 281.
-- Script functions the quests' scripts call: 290; carried out by nv-rs: 270 (20 not). Functions only their conditions ask that nv-rs doesn't carry out: 3.
-- Quests with nothing listed against them (no missing function, condition or system): 388 of 436. That says nothing about how well the functions they use work: see the played status.
+- Script functions the quests' scripts call: 290; carried out by nv-rs: 272 (18 not). Functions only their conditions ask that nv-rs doesn't carry out: 1.
+- Quests with nothing listed against them (no missing function, condition or system): 408 of 436. That says nothing about how well the functions they use work: see the played status.
 - Quests whose scripts all parse (so nv-rs can run them): 435 of 436.
 - Console commands in the quests' compiled scripts: none (every statement is a keyword or a script function).
 
@@ -40,7 +40,6 @@ Kept by hand (`quest_played::SYSTEM_GAPS`): a system and the functions that need
 
 | System | Functions (records) | Quests | Some of them | Why, and the evidence |
 | --- | --- | --- | --- | --- |
-| casino games | `ShowSlotMachineMenu`, `ShowSlotMachineMenuParams`, `ShowBlackJackMenu`, `ShowBlackJackMenuParams`, `ShowRouletteMenu`, `ShowRouletteMenuParams` (CSNO) | 5 | `vCasinoCompsAtomicWrangler`, `vCasinoCompsGomorrah`, `vCasinoCompsTheTops`, `VCasinoCompsUltraLuxe`, `vCasinoCompsVikkiAndVance` | the games' rules are in `world::casino` but their screens aren't shown: the viewer only prints the script's request (`Event::Casino`) (viewer/src/scripts.rs, docs/CASINO.md, docs/CONTRIB_CHAZM.md) |
 | face editor | `ShowRaceMenu` | 2 | `VCG01`, `VCG04` | the race and face menu isn't built: it accepts itself and the face is kept (docs/TASKS.md B15, viewer/src/scripts.rs) |
 
 ### Script functions nv-rs doesn't carry out
@@ -49,15 +48,12 @@ By how many quests' scripts call them, then how many quests' conditions only ask
 
 | Function | Called by | Asked by conditions of | Some of them |
 | --- | --- | --- | --- |
-| `ForceFlee` | 9 | 0 | `VFreeformNellis`, `VHDKimballSpeech`, `VMQ03a`, `VMQ03b`, `VMQ05`, `VMQHouse6` +3 more |
-| `GetGroupMemberCount` | 0 | 9 | `GenericAdultCombat`, `GenericRobot`, `VDialogueBrotherhoodOfSteelFaction`, `vDialogueKings`, `vDialogueNCRMilitaryCombat`, `vDialogueSuperMutant` +3 more |
 | `AutoDisplayObjectives` | 4 | 0 | `CGTutorial`, `VCG01`, `VCG04`, `VMQ01` |
 | `GetAnimAction` | 4 | 0 | `LilysPsychoticBreaks`, `vDialogueLily`, `VMS41`, `VNPCFollowers` |
 | `IsPlayerMovingIntoNewSpace` | 4 | 0 | `VEuclidQuest`, `VMQ03a`, `VMS03`, `VMS49` |
 | `UseWeapon` | 4 | 0 | `vDialogueGomorrah`, `VMS03`, `VMS21`, `VMS49` |
 | `DetonatePlacedExplosives` | 3 | 0 | `RadioNewVegas`, `vHDBattleController`, `VMQ03b` |
 | `SetLevel` | 3 | 0 | `PressDemoQuest`, `VCG04`, `VNPCFollowers` |
-| `GetGroupTargetCount` | 0 | 2 | `Generic`, `VFreeformGoodsprings` |
 | `Rotate` | 2 | 0 | `VDialogueCraigBoone`, `VFreeformMcCarran2` |
 | `ShowBarberMenu` | 2 | 0 | `HD00RobotsDialog`, `VFreeformFreeside` |
 | `AgeRace` | 1 | 0 | `VCG00` |
@@ -70,7 +66,6 @@ By how many quests' scripts call them, then how many quests' conditions only ask
 | `SetPCCanUsePowerArmor` | 1 | 0 | `Generic` |
 | `SetScreenSplatterFade` | 1 | 0 | `VCG00` |
 | `ShowAllMapMarkers` | 1 | 0 | `Generic` |
-| `ShowTutorialMenu` | 1 | 0 | `CGTutorial` |
 | `TriggerScreenSplatter` | 1 | 0 | `VCG00` |
 
 Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` lists why): `VFreeformMcCarran`.
@@ -81,7 +76,7 @@ Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` list
 
 | Quest | Form ID | Stages | Objectives | Flags | Starts | Scripts | Systems missing | Missing functions | Can't run | Moves the player to | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `CGTutorial` | 00059C85 | 28 | 0 | start game enabled, 0x10 | new game; stages set by `CG01TeddyBear01SCRIPT (on MISC CG01ToyCar +3)`, `CG01ToyBoxTriggerSCRIPT`, `CG02TargetSCRIPT`, `CGTutorialSCRIPT` +9 more | 43 |  | `ShowTutorialMenu`, `AutoDisplayObjectives` |  |  | Seen in passing during the VCG02 runs: its stages moved with Sunny's lessons and its V.A.T.S. hint kept repeating while it stayed at stage 70 (the data's own timer [G]). Not watched on purpose. (Evidence: docs/GOODSPRINGS_ROUTE.md (blockers left, item 5).) |
+| `CGTutorial` | 00059C85 | 28 | 0 | start game enabled, 0x10 | new game; stages set by `CG01TeddyBear01SCRIPT (on MISC CG01ToyCar +3)`, `CG01ToyBoxTriggerSCRIPT`, `CG02TargetSCRIPT`, `CGTutorialSCRIPT` +9 more | 43 |  | `AutoDisplayObjectives` |  |  | Seen in passing during the VCG02 runs: its stages moved with Sunny's lessons and its V.A.T.S. hint kept repeating while it stayed at stage 70 (the data's own timer [G]). Not watched on purpose. (Evidence: docs/GOODSPRINGS_ROUTE.md (blockers left, item 5).) |
 | `VCG01` | 00104C1C | 38 | 4 | start game enabled, 0x10 | new game; stages set by `GSDocMitchellExitTriggerScript (on ACTI GSDocMitchellExitTrigger)`, `VCG00 stage 100`, `VCG01VigorTesterSCRIPT (on ACTI VCG01VigorTester)`, `VCG01VigorTesterTriggerSCRIPT (on ACTI VCG01VigorTesterTrigger)` +1 more | 183 | face editor | `AutoDisplayObjectives` |  |  | Doc Mitchell's opening. Played by its own scripts and dialogue from a new game to stage 55 (Doc asks for the vigor tester; the face menu accepts itself); from a stage 55 save, the tester trigger, stage 60 and the SPECIAL menu; from `--stage VCG01 110`, Doc walking to his door and talking (acceptance route `doc`); the farewell's follow-up chain to the open door was walked on the real data by a throwaway program. Not played in one run end to end: the face editor, the name entry to the door, the questionnaire on the couch. (Evidence: docs/OPENING.md, docs/PLAYTESTING.md, docs/DIALOGUE.md, scripts/acceptance.ps1 route doc.) |
 | `VCG00` | 00102037 | 38 | 0 | repeated topics | stages set by `PACK VCG00BennyTravelToPlayer`, `PACK VCG00JessupMoveTowardPlayer` | 73 |  | `AgeRace`, `TriggerScreenSplatter`, `SetScreenSplatterFade` |  | `GSDocMitchellHouse` | The opening. Nothing in the scripts or the exe's data was found to start it (the two packages that set its stages belong to its own scene); the viewer's `--new-game` sets its stage 0, whose script asks for the intro movie and moves on to Doc Mitchell's quest. The movie plays (`--new-game --movies`: `FNVIntro.bik`, seen in the maintainer's merge check). [C] How the original starts it. (Evidence: docs/OPENING.md (observed baseline), docs/MOVIES.md, docs/CONTRIB_CHAZM.md, docs/CLAUDE_REFERENCE.md.) |
 | `VCG02` | 0010A214 | 10 | 9 |  | started by `VFreeformGoodsprings dialogue`; stages set by `GSSunnySmilesScript (on NPC_ GSSunnySmiles)`, `GSTrudyScript (on NPC_ GSTrudy)`, `PACK VCG02SunnySneakCloserToWell`, `PACK VCG02SunnyTravelToWell1` +3 more | 48 |  |  |  |  | Completed once (XP, caps, VCG03 started) with the start, the bottle hits, the gecko kills at the first and third wells, the player's following and the reward request as console lines; Sunny's walks, the patrol trigger, her barks and the stage 30/40 package end actions ran by themselves. Blocker: talking to Sunny can't start it (her greeting comes from this quest, not from VFreeformGoodsprings) [C]. (Evidence: docs/GOODSPRINGS_ROUTE.md, scripts/acceptance.ps1 route vcg02.) |
@@ -93,29 +88,6 @@ Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` list
 
 | Quest | Form ID | Stages | Objectives | Flags | Starts | Scripts | Systems missing | Missing functions | Can't run | Moves the player to | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `VFreeformNellis` | 000FED44 | 0 | 0 | start game enabled, 0x10 | new game | 221 |  | `ForceFlee` |  |  |  |
-| `VHDKimballSpeech` | 00130C78 | 0 | 0 | repeated topics | started by `VDialogueMrHouse dialogue`, `VFreeformHooverDam dialogue`, `VHDAssassinationConsoleScript`, `VHDAssassinationDialog dialogue` +3 more | 41 |  | `ForceFlee` |  | `HooverDamIntOliverArea` |  |
-| `VMQ03a` | 00131F08 | 6 | 8 |  | started by `VDialogueMrHouse dialogue`, `VFreeformHooverDam dialogue`, `VHDAssassinationConsoleScript`, `VMQTops dialogue`; stages set by `ElDoradoReactorSCRIPT (on TERM ElDoradoWallTerminal)`, `VHDAssassinationDialog dialogue`, `VHDCaptainGrahamSCRIPT (on NPC_ VHDCaptainGraham)`, `VHDColonelMooreSCRIPT (on NPC_ VHDColonelMoore)` +3 more | 81 |  | `ForceFlee`, `IsPlayerMovingIntoNewSpace` |  | `HooverDamIntOliverArea`, `WastelandNV` |  |
-| `VMQ03b` | 00131F09 | 7 | 3 |  | started by `VDialogueCaesar dialogue`, `VFreeformTheFort dialogue`, `VHDAssassinationConsoleScript`; stages set by `VHDAssassinationDialog dialogue`, `VHDCatoHostiliusSCRIPT (on NPC_ VHDCatoHostilius)`, `VHDKimballSpeechSCRIPT (on QUST VHDKimballSpeech)`, `VHDKimballVertibirdScript (on ACTI VHDVertibirdKimballEncount01)` +1 more | 36 |  | `ForceFlee`, `DetonatePlacedExplosives` |  |  |  |
-| `VMQ05` | 00136166 | 9 | 18 | start game enabled, 0x10 | new game; stages set by `VFreeformHooverDam dialogue`, `VHDCaptainGrahamSCRIPT (on NPC_ VHDCaptainGraham)`, `VHDColonelMooreSCRIPT (on NPC_ VHDColonelMoore)`, `VHDKimballSpeechSCRIPT (on QUST VHDKimballSpeech)` +3 more | 68 |  | `ForceFlee` |  | `HooverDamIntOliverArea` |  |
-| `VMQHouse6` | 0014788A | 6 | 4 |  | stages set by `Lucky38SecuritronSCRIPT (on CREA VL38SecuritronMk2 +5)`, `Lucky38VictorElevatorScript (on CREA Lucky38VictorElevator)`, `Lucky38VictorEntranceSCRIPT (on CREA Lucky38VictorEntrance)`, `TERM Lucky38ControlTerminalWarning` +3 more | 24 |  | `ForceFlee` |  | `HooverDamIntOliverArea`, `Lucky38BasementFloorB2`, `Lucky38CasinoFloor01`, `Lucky38SuiteFloor22` +1 more |  |
-| `VMQNCRFail` | 00167F0E | 2 | 6 | start game enabled, 0x10 | new game | 10 |  | `ForceFlee` |  | `HooverDamIntOliverArea` |  |
-| `VMQYesMan03` | 0015827D | 1 | 7 |  | stages set by `VMQTops dialogue` | 31 |  | `ForceFlee` |  | `HooverDamIntOliverArea` |  |
-| `VMS31` | 001214AB | 13 | 6 | start game enabled, 0x10 | new game; stages set by `REFR VLegateTentGuard01MarkerREF`, `REFR VLegateTentGuard02MarkerREF`, `REFR VMS31MedicalSuppliesRef`, `VCFHAlexRichardsScript (on NPC_ VCFHAlexRichards)` +6 more | 54 |  | `ForceFlee` |  |  |  |
-| `GenericAdultCombat` | 0015ACB5 | 0 | 0 | start game enabled, 0x10 | new game | 0 |  | `GetGroupMemberCount` (condition) |  |  |  |
-| `GenericRobot` | 00015A37 | 0 | 0 | start game enabled, 0x10 | new game | 0 |  | `GetGroupMemberCount` (condition) |  |  |  |
-| `VDialogueBrotherhoodOfSteelFaction` | 001535FF | 0 | 0 | start game enabled, 0x10 | new game | 6 |  | `GetGroupMemberCount` (condition) |  |  |  |
-| `VFreeformFreeside` | 0010E195 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 577 |  | `ShowBarberMenu`, `GetGroupMemberCount` (condition) |  | `2ELVBStation`, `WastelandNV` |  |
-| `VFreeformGoodsprings` | 00104C66 | 0 | 0 | start game enabled, 0x10 | new game | 125 |  | `GetGroupMemberCount` (condition), `GetGroupTargetCount` (condition) |  |  | Its variables were set by console lines in the Goodsprings routes. Sunny's line from this quest that should start VCG02 isn't picked (see VCG02). (Evidence: docs/GOODSPRINGS_ROUTE.md.) |
-| `vDialogueKings` | 0013FB6E | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 1 |  | `GetGroupMemberCount` (condition) |  |  |  |
-| `vDialogueNCRMilitaryCombat` | 0015A79C | 0 | 0 | start game enabled, 0x10 | new game | 0 |  | `GetGroupMemberCount` (condition) |  |  |  |
-| `vDialogueSuperMutant` | 0013FB76 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 0 |  | `GetGroupMemberCount` (condition) |  |  |  |
-| `vDialogueSuperMutantFirstGen` | 0015CD9F | 0 | 0 | start game enabled, 0x10 | new game | 0 |  | `GetGroupMemberCount` (condition) |  |  |  |
-| `VCasinoCompsUltraLuxe` | 00160301 | 0 | 0 | start game enabled, 0x10 | new game; started by `casino UltraLuxeCasinoData (its winnings quest) [G]` | 6 | casino games |  |  |  |  |
-| `vCasinoCompsAtomicWrangler` | 001614E9 | 0 | 0 |  | started by `casino AtomicWranglerCasinoData (its winnings quest) [G]` | 1 | casino games |  |  |  |  |
-| `vCasinoCompsGomorrah` | 001607FF | 0 | 0 | start game enabled, 0x10 | new game; started by `casino GomorrahCasinoData (its winnings quest) [G]` | 5 | casino games |  |  |  |  |
-| `vCasinoCompsTheTops` | 00145F88 | 0 | 1 |  | started by `casino TheTopsCasinoData (its winnings quest) [G]` | 10 | casino games |  |  |  |  |
-| `vCasinoCompsVikkiAndVance` | 00161E96 | 0 | 0 |  | started by `casino VikkiVanceCasinoData (its winnings quest) [G]` | 6 | casino games |  |  |  |  |
 | `VCG04` | 0011649E | 0 | 0 | 0x10 | started by `VCG01 stage 200` | 3 | face editor | `SetLevel`, `AutoDisplayObjectives`, `ResetXP` |  |  |  |
 | `VMQ01` | 000842DD | 6 | 12 |  | started by `VCG01 stage 200`; stages set by `TERM VNovacTerminalManny`, `VDialogueNovac dialogue`, `VFreeformBoulderCity dialogue`, `VTopsBennyIntroTriggerSCRIPT (on ACTI VTopsBennyIntroTrigger)` | 29 |  | `AutoDisplayObjectives` |  |  |  |
 | `LilysPsychoticBreaks` | 00160269 | 0 | 0 |  | started by `LilyScript (on CREA Lily)` | 2 |  | `GetAnimAction` |  |  |  |
@@ -123,20 +95,23 @@ Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` list
 | `VNPCFollowers` | 000B16D0 | 0 | 0 | start game enabled, 0x10 | new game | 322 |  | `GetAnimAction`, `SetLevel` |  | `Lucky38BasementFloorB2`, `Lucky38CasinoFloor01`, `Lucky38SuiteFloor22`, `Lucky38World` +2 more |  |
 | `vDialogueLily` | 0013E510 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 69 |  | `GetAnimAction` |  |  |  |
 | `VEuclidQuest` | 0016AEFF | 0 | 0 |  | started by `EuclidsCFinderSCRIPT (on WEAP WeapNVEuclidsCFinder)` | 4 |  | `IsPlayerMovingIntoNewSpace`, `PlaceAtReticle` |  |  |  |
+| `VMQ03a` | 00131F08 | 6 | 8 |  | started by `VDialogueMrHouse dialogue`, `VFreeformHooverDam dialogue`, `VHDAssassinationConsoleScript`, `VMQTops dialogue`; stages set by `ElDoradoReactorSCRIPT (on TERM ElDoradoWallTerminal)`, `VHDAssassinationDialog dialogue`, `VHDCaptainGrahamSCRIPT (on NPC_ VHDCaptainGraham)`, `VHDColonelMooreSCRIPT (on NPC_ VHDColonelMoore)` +3 more | 81 |  | `IsPlayerMovingIntoNewSpace` |  | `HooverDamIntOliverArea`, `WastelandNV` |  |
 | `VMS03` | 000E282D | 3 | 10 | start game enabled, 0x10 | new game; stages set by `FantasticSCRIPT (on NPC_ Fantastic)` | 73 |  | `IsPlayerMovingIntoNewSpace`, `UseWeapon` |  |  |  |
 | `VMS49` | 00145F85 | 1 | 19 | repeated topics | started by `VDialogueVeronica dialogue`; stages set by `HVHardinScript (on NPC_ EdgarHardin)`, `NolanMcNamaraSCRIPT (on NPC_ NolanMcNamara)`, `VMS18 dialogue`, `VMS49PaladinScript (on NPC_ VMS49PaladinAAM +3)` | 240 |  | `IsPlayerMovingIntoNewSpace`, `UseWeapon` |  | `HiddenValley02`, `HiddenValleyBunker1` |  |
 | `VMS21` | 00110A63 | 6 | 36 |  | stages set by `VMS21BigSalScript (on NPC_ VMS21BigSal)`, `VMS21NeroScript (on NPC_ VMS21Nero)`, `vDialogueGomorrah dialogue`, `vDialogueGomorrahScript (on QUST vDialogueGomorrah)` | 98 |  | `UseWeapon` |  |  |  |
 | `vDialogueGomorrah` | 0010C721 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 190 |  | `UseWeapon` |  | `TheStripWorldNew` |  |
 | `RadioNewVegas` | 0014DF04 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 134 |  | `DetonatePlacedExplosives` |  |  |  |
+| `VMQ03b` | 00131F09 | 7 | 3 |  | started by `VDialogueCaesar dialogue`, `VFreeformTheFort dialogue`, `VHDAssassinationConsoleScript`; stages set by `VHDAssassinationDialog dialogue`, `VHDCatoHostiliusSCRIPT (on NPC_ VHDCatoHostilius)`, `VHDKimballSpeechSCRIPT (on QUST VHDKimballSpeech)`, `VHDKimballVertibirdScript (on ACTI VHDVertibirdKimballEncount01)` +1 more | 36 |  | `DetonatePlacedExplosives` |  |  |  |
 | `vHDBattleController` | 00133075 | 3 | 5 |  | started by `VHDHouseBattle stage 10`, `VHDIndependentBattle stage 10`; stages set by `VFreeformHooverDam dialogue`, `VLegateEndFailsafeTrigger (on ACTI VLegateEndFailSafe)`, `VLegateShowdownControlScript (on ACTI VLegateShowdownCodeHolder)`, `VMQ05 stage 100` | 44 |  | `DetonatePlacedExplosives` |  | `WastelandNV` |  |
 | `PressDemoQuest` | 0011EBA7 | 1 | 1 |  | started by `VMS30 dialogue`, `vDialogueCasinoCashier dialogue` | 5 |  | `SetLevel` |  | `WastelandNV` |  |
-| `Generic` | 000038B2 | 18 | 0 | start game enabled, repeated stages, 0x10 | new game; started by `perk AnimalFriend`, `perk Explorer`, `perk FortuneFinder`, `perk HereandNow` +4 more | 21 |  | `ShowAllMapMarkers`, `SetPCCanUsePowerArmor`, `GetGroupTargetCount` (condition) |  |  |  |
 | `VDialogueCraigBoone` | 00096BCD | 0 | 1 | start game enabled, 0x10 | new game | 90 |  | `Rotate` |  | `WastelandNV` |  |
 | `VFreeformMcCarran2` | 000E7913 | 0 | 0 | start game enabled, 0x10 | new game | 140 |  | `Rotate` |  |  |  |
+| `VFreeformFreeside` | 0010E195 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 577 |  | `ShowBarberMenu` |  | `2ELVBStation`, `WastelandNV` |  |
 | `VFreeformTheFort` | 0011F9CF | 0 | 0 | start game enabled, 0x10 | new game | 115 |  | `EnableLoadingMenu` |  | `WastelandNV` |  |
 | `FadeToCreditsTimer` | 0017A17C | 0 | 0 |  | started by `NarratorScript (on NPC_ Narrator)` | 2 |  | `ExitGame` |  |  |  |
 | `vMojaveExpressControl` | 0015F232 | 0 | 0 | start game enabled, 0x10 | new game | 2 |  | `GetContainerInventoryCount` |  |  |  |
 | `GenericKids` | 00049037 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 0 |  | `GetDisposition` (condition) |  |  |  |
+| `Generic` | 000038B2 | 18 | 0 | start game enabled, repeated stages, 0x10 | new game; started by `perk AnimalFriend`, `perk Explorer`, `perk FortuneFinder`, `perk HereandNow` +4 more | 21 |  | `ShowAllMapMarkers`, `SetPCCanUsePowerArmor` |  |  |  |
 | `AchievementQuest` | 0007691F | 0 | 0 | start game enabled, 0x10 | new game | 1 |  |  |  |  |  |
 | `ArcadeRetrieveArmorTimer` | 0017B387 | 0 | 0 |  | started by `VDialogueArcadeGannon dialogue` | 7 |  |  |  |  |  |
 | `AudioHolotapes` | 00044935 | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
@@ -165,12 +140,14 @@ Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` list
 | `FortEquipmentConfiscationQuest` | 00164762 | 0 | 0 |  | started by `VFreeformCottonwoodCove dialogue`, `VFreeformTheFort dialogue` | 22 |  |  |  |  |  |
 | `FriendOfTheNightQuest` | 0016511C | 1 | 0 | 0x10 | started by `perk FriendOfTheNight` | 1 |  |  |  |  |  |
 | `GenericAdult` | 0004ADEE | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 0 |  |  |  |  |  |
+| `GenericAdultCombat` | 0015ACB5 | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
 | `GenericFeralGhoul` | 0007AE95 | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
 | `GenericFiend` | 000FABE3 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 0 |  |  |  |  |  |
 | `GenericFriendlyFire` | 00040C5D | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 0 |  |  |  |  |  |
 | `GenericFriendlyFireCustomVoice` | 0007C70B | 0 | 0 | start game enabled, repeated topics, repeated stages, 0x10 | new game | 0 |  |  |  |  |  |
 | `GenericIdleChatter` | 000B87B5 | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
 | `GenericPlayer` | 00041E7F | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
+| `GenericRobot` | 00015A37 | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
 | `GenericSupMutBehemoth` | 0002242A | 0 | 0 | start game enabled | new game | 0 |  |  |  |  |  |
 | `GenericSupermutant` | 0001F93C | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 0 |  |  |  |  |  |
 | `HD00JukeboxMusic` | 000C4992 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 0 |  |  |  |  |  |
@@ -197,6 +174,7 @@ Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` list
 | `VCG01Test` | 001055BB | 0 | 0 | start game enabled, 0x10 | new game | 72 |  |  |  |  |  |
 | `VCampGolfBarkstrings` | 0010B909 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 0 |  |  |  |  |  |
 | `VCampGolfHanlon` | 001084AC | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 20 |  |  |  |  |  |
+| `VCasinoCompsUltraLuxe` | 00160301 | 0 | 0 | start game enabled, 0x10 | new game; started by `casino UltraLuxeCasinoData (its winnings quest) [G]` | 6 |  |  |  |  |  |
 | `VCassCompanion` | 0015DA16 | 16 | 15 |  | stages set by `RoseofSharonCassidyScript (on NPC_ RoseofSharonCassidy)`, `VDialogueCass dialogue`, `VDialogueCrimsonCaravan dialogue`, `VMS18 dialogue` +1 more | 42 |  |  |  | `FreesideVanGraffWarehouse` |  |
 | `VCassTimer` | 00161F07 | 0 | 0 | repeated topics | started by `VDialogueCass dialogue`, `VNPCFollowers dialogue` | 16 |  |  |  |  |  |
 | `VDeadSea` | 00125E7E | 4 | 2 | start game enabled, 0x10 | new game; stages set by `LegionaryDeadSeaDialogueSCRIPT (on NPC_ LegionaryDeadSea)`, `vDeadSeaNCRDeadscript` | 22 |  |  |  |  |  |
@@ -205,6 +183,7 @@ Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` list
 | `VDialogueBetsy` | 0015435E | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
 | `VDialogueBitterSprings` | 00139A43 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 2 |  |  |  |  |  |
 | `VDialogueBlackMountain` | 0015CDA0 | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
+| `VDialogueBrotherhoodOfSteelFaction` | 001535FF | 0 | 0 | start game enabled, 0x10 | new game | 6 |  |  |  |  |  |
 | `VDialogueCaesar` | 001227A1 | 3 | 3 | start game enabled, 0x10 | new game | 133 |  |  |  |  |  |
 | `VDialogueCass` | 00133FDC | 0 | 0 | start game enabled, 0x10 | new game | 68 |  |  |  |  |  |
 | `VDialogueChrisHaversam` | 0008D243 | 0 | 0 | start game enabled, 0x10 | new game | 40 |  |  |  |  |  |
@@ -270,10 +249,12 @@ Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` list
 | `VFreeformCasaMadrid` | 000F8B79 | 0 | 0 | start game enabled, 0x10 | new game | 72 |  |  |  |  |  |
 | `VFreeformCottonwoodCove` | 00130B8E | 0 | 0 | start game enabled, 0x10 | new game | 128 |  |  |  |  |  |
 | `VFreeformFreeside2` | 00156A93 | 0 | 0 | start game enabled, repeated topics, repeated stages, 0x10 | new game | 3 |  |  |  |  |  |
+| `VFreeformGoodsprings` | 00104C66 | 0 | 0 | start game enabled, 0x10 | new game | 125 |  |  |  |  | Its variables were set by console lines in the Goodsprings routes. Sunny's line from this quest that should start VCG02 isn't picked (see VCG02). (Evidence: docs/GOODSPRINGS_ROUTE.md.) |
 | `VFreeformHooverDam` | 001207BA | 0 | 0 | start game enabled, 0x10 | new game | 155 |  |  |  | `HooverDamIntOliverArea` |  |
 | `VFreeformMcCarran` | 000E7363 | 0 | 0 | start game enabled, 0x10 | new game | 133 |  |  | `VFreeformMcCarran dialogue` |  |  |
 | `VFreeformMcCarran3` | 000F7EAC | 0 | 0 | start game enabled, 0x10 | new game | 68 |  |  |  |  |  |
 | `VFreeformNCRCF` | 000CEF3A | 0 | 0 | start game enabled, 0x10 | new game | 45 |  |  |  |  |  |
+| `VFreeformNellis` | 000FED44 | 0 | 0 | start game enabled, 0x10 | new game | 221 |  |  |  |  |  |
 | `VFreeformNovac` | 00084223 | 0 | 0 | start game enabled, 0x10 | new game | 66 |  |  |  |  |  |
 | `VFreeformSSHQ` | 001019A6 | 0 | 0 | start game enabled, 0x10 | new game | 68 |  |  |  |  |  |
 | `VFreeformTheStreet01` | 00117AC4 | 7 | 1 | start game enabled, repeated stages, 0x10 | new game | 54 |  |  |  |  |  |
@@ -285,6 +266,7 @@ Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` list
 | `VHDAssassinationDialog` | 0013A243 | 0 | 0 | start game enabled, 0x10 | new game | 57 |  |  |  |  |  |
 | `VHDHouseBattle` | 00154234 | 7 | 6 |  | stages set by `MrHouseSCRIPT (on CREA MrHouse)`, `VFreeformHooverDam dialogue`, `VHDEastPPConsoleSCRIPT (on ACTI VHDEastPPConsole)`, `VHDSecuritronVaultSCRIPT (on ACTI VHDSecuritronVaultTRG)` +3 more | 27 |  |  |  | `Lucky38World`, `WastelandNV` |  |
 | `VHDIndependentBattle` | 00154233 | 8 | 7 |  | stages set by `VFreeformHooverDam dialogue`, `VHDEastPPConsoleSCRIPT (on ACTI VHDEastPPConsole)`, `VHDSecuritronVaultSCRIPT (on ACTI VHDSecuritronVaultTRG)`, `VHDWestPPConsoleSCRIPT (on ACTI VHDWestPPConsole)` +5 more | 45 |  |  |  | `Lucky38World`, `WastelandNV` |  |
+| `VHDKimballSpeech` | 00130C78 | 0 | 0 | repeated topics | started by `VDialogueMrHouse dialogue`, `VFreeformHooverDam dialogue`, `VHDAssassinationConsoleScript`, `VHDAssassinationDialog dialogue` +3 more | 41 |  |  |  | `HooverDamIntOliverArea` |  |
 | `VHDLegionBattle` | 00137AB9 | 4 | 7 | start game enabled, 0x10 | new game; stages set by `VFreeformHooverDam dialogue`, `VHDLegionEnterLegatesTentScript (on ACTI VHDLegionEnterLegatesTentTrigger)` | 93 |  |  |  | `HooverDamIntOliverArea`, `WastelandNV` |  |
 | `VHDOliverDeathTimer` | 001724CC | 0 | 0 |  | started by `VFreeformHooverDam dialogue` | 2 |  |  |  | `WastelandNV` |  |
 | `VHDOliverRetreatTimer` | 00179A8F | 0 | 0 |  | started by `VFreeformHooverDam dialogue` | 3 |  |  |  |  |  |
@@ -292,6 +274,7 @@ Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` list
 | `VMQ02` | 00129D14 | 12 | 35 |  | started by `VFreeformTheFort dialogue`; stages set by `FortArrivalTriggerScript (on ACTI FortArrivalTrigger)`, `FortCaesarScript (on NPC_ FortCaesar)`, `FortLegionaryPraetorianScript (on NPC_ FortBennyGuard +3)`, `FortLegionaryScript (on NPC_ FortLegionaryRecruitAAM2 +10)` +16 more | 135 |  |  |  | `WastelandNV` |  |
 | `VMQ03aTimer` | 001446AF | 0 | 0 |  | started by `VHDAssassinationDialog dialogue` | 3 |  |  |  |  |  |
 | `VMQ03bTimer` | 0013F373 | 0 | 0 |  | started by `VHDAssassinationDialog dialogue` | 3 |  |  |  | `WastelandNV` |  |
+| `VMQ05` | 00136166 | 9 | 18 | start game enabled, 0x10 | new game; stages set by `VFreeformHooverDam dialogue`, `VHDCaptainGrahamSCRIPT (on NPC_ VHDCaptainGraham)`, `VHDColonelMooreSCRIPT (on NPC_ VHDColonelMoore)`, `VHDKimballSpeechSCRIPT (on QUST VHDKimballSpeech)` +3 more | 68 |  |  |  | `HooverDamIntOliverArea` |  |
 | `VMQ06` | 0013A40B | 4 | 1 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
 | `VMQCaesarFail` | 00167F0F | 2 | 2 | start game enabled, 0x10 | new game; stages set by `VDialogueCaesar dialogue` | 6 |  |  |  |  |  |
 | `VMQHouse` | 001429F2 | 9 | 24 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
@@ -300,13 +283,16 @@ Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` list
 | `VMQHouse3` | 00147887 | 4 | 4 |  | stages set by `Lucky38SecuritronSCRIPT (on CREA VL38SecuritronMk2 +5)`, `Lucky38VictorElevatorScript (on CREA Lucky38VictorElevator)`, `Lucky38VictorEntranceSCRIPT (on CREA Lucky38VictorEntrance)`, `TERM Lucky38ControlTerminalWarning` +3 more | 19 |  |  |  | `Lucky38BasementFloorB2`, `Lucky38CasinoFloor01`, `Lucky38SuiteFloor22`, `Lucky38World` |  |
 | `VMQHouse4` | 00147888 | 4 | 4 |  | stages set by `Lucky38SecuritronSCRIPT (on CREA VL38SecuritronMk2 +5)`, `Lucky38VictorElevatorScript (on CREA Lucky38VictorElevator)`, `Lucky38VictorEntranceSCRIPT (on CREA Lucky38VictorEntrance)`, `TERM Lucky38ControlTerminalWarning` +3 more | 20 |  |  |  | `Lucky38BasementFloorB2`, `Lucky38CasinoFloor01`, `Lucky38SuiteFloor22`, `Lucky38World` |  |
 | `VMQHouse5` | 00147889 | 4 | 3 |  | stages set by `Lucky38SecuritronSCRIPT (on CREA VL38SecuritronMk2 +5)`, `Lucky38VictorElevatorScript (on CREA Lucky38VictorElevator)`, `Lucky38VictorEntranceSCRIPT (on CREA Lucky38VictorEntrance)`, `TERM Lucky38ControlTerminalWarning` +3 more | 15 |  |  |  | `Lucky38BasementFloorB2`, `Lucky38CasinoFloor01`, `Lucky38SuiteFloor22`, `Lucky38World` |  |
+| `VMQHouse6` | 0014788A | 6 | 4 |  | stages set by `Lucky38SecuritronSCRIPT (on CREA VL38SecuritronMk2 +5)`, `Lucky38VictorElevatorScript (on CREA Lucky38VictorElevator)`, `Lucky38VictorEntranceSCRIPT (on CREA Lucky38VictorEntrance)`, `TERM Lucky38ControlTerminalWarning` +3 more | 24 |  |  |  | `HooverDamIntOliverArea`, `Lucky38BasementFloorB2`, `Lucky38CasinoFloor01`, `Lucky38SuiteFloor22` +1 more |  |
 | `VMQHouse7` | 001599CD | 2 | 3 |  | stages set by `Lucky38SecuritronSCRIPT (on CREA VL38SecuritronMk2 +5)`, `Lucky38VictorElevatorScript (on CREA Lucky38VictorElevator)`, `Lucky38VictorEntranceSCRIPT (on CREA Lucky38VictorEntrance)`, `TERM Lucky38ControlTerminalWarning` +3 more | 12 |  |  |  | `Lucky38BasementFloorB2`, `Lucky38CasinoFloor01`, `Lucky38SuiteFloor22`, `Lucky38World` |  |
 | `VMQHouse8` | 0014788B | 2 | 1 |  | stages set by `Lucky38SecuritronSCRIPT (on CREA VL38SecuritronMk2 +5)`, `Lucky38VictorElevatorScript (on CREA Lucky38VictorElevator)`, `Lucky38VictorEntranceSCRIPT (on CREA Lucky38VictorEntrance)`, `MrHouseSCRIPT (on CREA MrHouse)` +4 more | 11 |  |  |  | `Lucky38BasementFloorB2`, `Lucky38CasinoFloor01`, `Lucky38SuiteFloor22`, `Lucky38World` +1 more |  |
 | `VMQHouseFail` | 00165AC2 | 2 | 2 |  | stages set by `NVCRMrHouseSCRIPT (on CREA NVCRMrHouse)`, `TERM Lucky38ControlTerminalWarning3` | 5 |  |  |  |  |  |
+| `VMQNCRFail` | 00167F0E | 2 | 6 | start game enabled, 0x10 | new game | 10 |  |  |  | `HooverDamIntOliverArea` |  |
 | `VMQTops` | 0011345D | 16 | 13 | start game enabled, 0x10 | new game; stages set by `BennySCRIPT (on NPC_ Benny)`, `PACK VTopsBennyFlee`, `TopsInteriorDoorScript (on DOOR VTopsInteriorDoor)`, `VDialogueBenny dialogue` +10 more | 238 |  |  |  | `WastelandNV` |  |
 | `VMQYesMan01` | 00157321 | 5 | 10 |  | stages set by `Lucky38UpgradeSecuritronsSCRIPT (on ACTI UpgradeSecuritronsObject)`, `VGenericTimerSCRIPT (on QUST VGenericTimer)`, `VMQTops dialogue` | 51 |  |  |  | `Lucky38BasementFloorB2`, `Lucky38World` |  |
 | `VMQYesMan01a` | 0016A161 | 2 | 4 |  | stages set by `SVMainConsoleScript (on ACTI SVMainConsole)`, `SecuritronVaultExplodeQuestScript (on QUST SecuritronVaultExplodeQuest)`, `VMQTops dialogue` | 13 |  |  |  |  |  |
 | `VMQYesMan02` | 00157322 | 1 | 31 |  | stages set by `VMQTops dialogue` | 74 |  |  |  |  |  |
+| `VMQYesMan03` | 0015827D | 1 | 7 |  | stages set by `VMQTops dialogue` | 31 |  |  |  | `HooverDamIntOliverArea` |  |
 | `VMQYesManFailsafe` | 00165C37 | 2 | 2 | start game enabled, 0x10 | new game; stages set by `VMQTops dialogue` | 18 |  |  |  |  |  |
 | `VMQYesManSupport` | 00174B63 | 0 | 0 | start game enabled, 0x10 | new game | 3 |  |  |  | `Lucky38BasementFloorB2`, `Lucky38World`, `WastelandNV` |  |
 | `VMS01` | 00080664 | 10 | 21 |  | started by `VDialogueCliffBriscoe dialogue`; stages set by `ChrisHaversamScript (on NPC_ ChrisHaversam)`, `DialogueNobark dialogue`, `GhoulJasonBrightSCRIPT (on CREA JasonBright2 +1)`, `REPCONEnterScript (on ACTI REPCONEntrance2Trigger +1)` +6 more | 90 |  |  |  |  |  |
@@ -344,6 +330,7 @@ Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` list
 | `VMS30HealTimer1` | 00152E8A | 0 | 0 |  | started by `VMS30InjuredTrooper01Script (on NPC_ VForlornHopeNCRTrooperInjured01)` | 4 |  |  |  |  |  |
 | `VMS30HealTimer2` | 00152E8B | 0 | 0 |  | started by `VMS30InjuredTrooper02Script (on NPC_ VForlornHopeNCRTrooperInjured02)` | 2 |  |  |  |  |  |
 | `VMS30HealTimer3` | 00152E8C | 0 | 0 |  | started by `VMS30InjuredTrooper03Script (on NPC_ VForlornHopeNCRTrooperInjured03)` | 2 |  |  |  |  |  |
+| `VMS31` | 001214AB | 13 | 6 | start game enabled, 0x10 | new game; stages set by `REFR VLegateTentGuard01MarkerREF`, `REFR VLegateTentGuard02MarkerREF`, `REFR VMS31MedicalSuppliesRef`, `VCFHAlexRichardsScript (on NPC_ VCFHAlexRichards)` +6 more | 54 |  |  |  |  |  |
 | `VMS32` | 001268BD | 6 | 4 |  | started by `VFreeformTheFort dialogue`; stages set by `FortHowitzerScript (on ACTI FortHowitzer)`, `FortLuciusScript (on NPC_ FortLucius)`, `HowitzerFiringMechanismScript (on MISC HowitzerFiringMechanism)`, `VFreeformNellis dialogue` +1 more | 14 |  |  |  | `WastelandNV` |  |
 | `VMS33` | 001271EA | 7 | 4 |  | started by `VFreeformTheFort dialogue`; stages set by `MartinaGroesbeckScript (on NPC_ MartinaGroesbeck)`, `VMQ02 stage 110`, `VMS33ThugScript (on NPC_ VMS33OmertaThug03 +2)`, `VulpesIncultaNiptonSCRIPT (on NPC_ VLegionaryVulpesInculta)` +2 more | 24 |  |  |  |  |  |
 | `VMS34` | 00129D1E | 0 | 0 | start game enabled, 0x10 | new game | 13 |  |  |  | `WastelandNV` |  |
@@ -418,6 +405,10 @@ Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` list
 | `vCCmovetothefort` | 001672BD | 0 | 0 |  | started by `NVCCBargeSCRIPT (on DOOR NVCCBarge)`, `NVCCTheFortGateSCRIPT (on DOOR NVCCInvisibleFortGate)`, `VFreeformCottonwoodCove dialogue` | 6 |  |  |  | `WastelandNV` |  |
 | `vCampGuardianRadio` | 0014ADAE | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 8 |  |  |  |  |  |
 | `vCaravanQuest` | 00157F76 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 17 |  |  |  |  |  |
+| `vCasinoCompsAtomicWrangler` | 001614E9 | 0 | 0 |  | started by `casino AtomicWranglerCasinoData (its winnings quest) [G]` | 1 |  |  |  |  |  |
+| `vCasinoCompsGomorrah` | 001607FF | 0 | 0 | start game enabled, 0x10 | new game; started by `casino GomorrahCasinoData (its winnings quest) [G]` | 5 |  |  |  |  |  |
+| `vCasinoCompsTheTops` | 00145F88 | 0 | 1 |  | started by `casino TheTopsCasinoData (its winnings quest) [G]` | 10 |  |  |  |  |  |
+| `vCasinoCompsVikkiAndVance` | 00161E96 | 0 | 0 |  | started by `casino VikkiVanceCasinoData (its winnings quest) [G]` | 6 |  |  |  |  |  |
 | `vCaveTransitionISFX` | 0014B0C8 | 0 | 0 |  | started by `NVCGBlackCaveDoorSCRIPT (on DOOR NVCGInvisibleCaveEntDoor +1)` | 4 |  |  |  |  |  |
 | `vCountryRadioQuest` | 0016B66E | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 16 |  |  |  |  |  |
 | `vCrucifiedFaction` | 00155DBF | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
@@ -446,12 +437,14 @@ Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` list
 | `vDialogueJacobstownGeneric` | 0013E490 | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
 | `vDialogueJacobstownMercenaryGeneric` | 0014B06A | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
 | `vDialogueJacobstownNightkinGeneric` | 001466F5 | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
+| `vDialogueKings` | 0013FB6E | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 1 |  |  |  |  |  |
 | `vDialogueMedicalClinic` | 001474CB | 0 | 0 | start game enabled, 0x10 | new game | 26 |  |  |  |  |  |
 | `vDialogueMojaveCivilian` | 0013FB74 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 0 |  |  |  |  |  |
 | `vDialogueNCRCFGeneric` | 0015441C | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 1 |  |  |  |  |  |
 | `vDialogueNCRCivilian` | 0013FB75 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 0 |  |  |  |  |  |
 | `vDialogueNCREldoradoSubstation` | 0015A5FE | 0 | 0 | start game enabled, 0x10 | new game | 12 |  |  |  |  |  |
 | `vDialogueNCRMilitary` | 0013FB6D | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 0 |  |  |  |  |  |
+| `vDialogueNCRMilitaryCombat` | 0015A79C | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
 | `vDialogueNightkin` | 0013FB77 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 0 |  |  |  |  |  |
 | `vDialogueNovacGeneric` | 0015FFC1 | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
 | `vDialogueOuterVegas` | 00140A91 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 0 |  |  |  |  |  |
@@ -469,6 +462,8 @@ Quests with a script whose source doesn't parse (`nvinspect <Data> scripts` list
 | `vDialogueSharecropper` | 001400F8 | 0 | 0 | start game enabled, 0x10 | new game | 10 |  |  |  |  |  |
 | `vDialogueSharecropperGeneric` | 0013F05D | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
 | `vDialogueSloanGeneric` | 0013EC0D | 0 | 0 | start game enabled, 0x10 | new game | 1 |  |  |  |  |  |
+| `vDialogueSuperMutant` | 0013FB76 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 0 |  |  |  |  |  |
+| `vDialogueSuperMutantFirstGen` | 0015CD9F | 0 | 0 | start game enabled, 0x10 | new game | 0 |  |  |  |  |  |
 | `vDialogueTestaclesDebug` | 00139B8C | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 212 |  |  |  |  |  |
 | `vDialogueTheFortGeneric` | 00140A96 | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 1 |  |  |  |  |  |
 | `vDialogueTheStrip` | 00140A7B | 0 | 0 | start game enabled, repeated topics, 0x10 | new game | 24 |  |  |  |  |  |

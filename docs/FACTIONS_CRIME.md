@@ -23,7 +23,7 @@ the NCR trooper armour's script, the disguise quest, spell and effect).
 - Each change: the HUD notice "<name>\n<sRepPositiveGain / NegativeGain /
   PositiveLoss / NegativeLoss>" (the data's "Fame Gained!", "Infamy
   Gained!", "Fame Reduced", "Infamy Reduced"), by command, not by sign;
-  its picture (`sRep…Icon`) is slot w1's `world::message_icon` work.
+  its picture (`sRep…Icon`) comes from `world::message_icon`.
   **Done (text).**
 - The changed axis's level changes: a message box (`006155f0`,
   `DisplayReputationTitleChange`, Xbox PDB, via `00703f10`): title the

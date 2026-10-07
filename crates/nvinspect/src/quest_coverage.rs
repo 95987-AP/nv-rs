@@ -1229,12 +1229,7 @@ mod tests {
         let mut infos = Vec::new();
         let mut d = sub(b"QSTI", &0x101u32.to_le_bytes());
         let mut ctda = vec![0u8; 28];
-        ctda[8..10].copy_from_slice(
-            &script::function("GetDisposition")
-                .unwrap()
-                .0
-                .to_le_bytes(),
-        );
+        ctda[8..10].copy_from_slice(&script::function("GetDisposition").unwrap().0.to_le_bytes());
         d.extend(sub(b"CTDA", &ctda));
         infos.extend(record(b"INFO", 0x300, &d));
         let mut d = sub(b"QSTI", &0x100u32.to_le_bytes());

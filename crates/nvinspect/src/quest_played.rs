@@ -156,30 +156,13 @@ pub struct SystemGap {
     pub source: &'static str,
 }
 
-pub const SYSTEM_GAPS: &[SystemGap] = &[
-    SystemGap {
-        system: "casino games",
-        functions: &[
-            "ShowSlotMachineMenu",
-            "ShowSlotMachineMenuParams",
-            "ShowBlackJackMenu",
-            "ShowBlackJackMenuParams",
-            "ShowRouletteMenu",
-            "ShowRouletteMenuParams",
-        ],
-        records: &["CSNO"],
-        note: "the games' rules are in `world::casino` but their screens aren't shown: the \
-               viewer only prints the script's request (`Event::Casino`)",
-        source: "viewer/src/scripts.rs, docs/CASINO.md, docs/CONTRIB_CHAZM.md",
-    },
-    SystemGap {
-        system: "face editor",
-        functions: &["ShowRaceMenu"],
-        records: &[],
-        note: "the race and face menu isn't built: it accepts itself and the face is kept",
-        source: "docs/TASKS.md B15, viewer/src/scripts.rs",
-    },
-];
+pub const SYSTEM_GAPS: &[SystemGap] = &[SystemGap {
+    system: "face editor",
+    functions: &["ShowRaceMenu"],
+    records: &[],
+    note: "the race and face menu isn't built: it accepts itself and the face is kept",
+    source: "docs/TASKS.md B15, viewer/src/scripts.rs",
+}];
 
 /// A quest's recorded status, by editor ID (ignoring case).
 pub fn entry(editor_id: &str) -> Option<&'static Entry> {

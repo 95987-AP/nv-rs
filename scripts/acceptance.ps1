@@ -21,6 +21,7 @@ viewer's output and no panic does. Outputs (logs, screenshots) go to
 .EXAMPLE
 powershell -File scripts\acceptance.ps1 -Data "D:\Steam\steamapps\common\Fallout New Vegas\Data"
 powershell -File scripts\acceptance.ps1 -Routes vms16 -Build
+powershell -File scripts\acceptance.ps1 -Background
 #>
 param(
     # The game's Data folder (or set NV_DATA).
@@ -30,7 +31,10 @@ param(
     # Where logs and screenshots go (default: %USERPROFILE%\nv-re\acceptance\<time>).
     [string]$Out,
     # Build the release viewer first.
-    [switch]$Build
+    [switch]$Build,
+    # Keep the runs out of the way (the viewer's --background: its window
+    # behind the others, without the focus, the mouse left alone).
+    [switch]$Background
 )
 
 $ErrorActionPreference = 'Stop'
@@ -107,6 +111,7 @@ foreach ($r in $chosen) {
     $log = Join-Path $Out "$r.log"
     $shot = Join-Path $Out "$r.png"
     $a = @($Data) + $spec.Args + @('--screenshot', $shot)
+    if ($Background) { $a += '--background' }
     Write-Host "== $r"
     $start = Get-Date
     # Windows PowerShell turns a native program's stderr lines into errors.

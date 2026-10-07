@@ -11,7 +11,7 @@
 //! value, `GetReputationPct` value / most (a fraction). Each axis's level
 //! from value / most: 1 from 0.15, 2 from 0.5, 3 at the most
 //! (`fReputationThreshold…`, `00616950`); the title is by infamy level × 4
-//! + fame level (`sRepTitlePos<F>Neg<I>`), and `GetReputationThreshold`
+//! plus fame level (`sRepTitlePos<F>Neg<I>`), and `GetReputationThreshold`
 //! answers per axis as `00616a90` does. Every change shows the HUD notice
 //! "<name>\n<sRepPositiveGain…>" (the data's "Fame Gained!" and so on);
 //! when the changed axis's level changes, a box with the reputation's

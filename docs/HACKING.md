@@ -246,6 +246,8 @@ Leaving (code 10, `00766aa0`) plays `OBJComputerTerminalPowerDown`
 ## Not done
 
 - The controller's cursor (special codes 1–4 and 9, `00767610`).
-- Crime when hacking an owned terminal with witnesses (`008c0ec0`).
+- (Done since: hacking an owned terminal raises the trespass alarm,
+  `008c0ec0`; see [FACTIONS_CRIME.md](FACTIONS_CRIME.md).)
 - Encounter-zone levels for leveled terminals.
-- The tutorial message the menu asks for on opening (`00718630(0x13, …)`).
+- (Done since: the tutorial message the menu asks for on opening,
+  `00718630(0x13, …)`; see [TUTORIALS.md](TUTORIALS.md).)
