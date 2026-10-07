@@ -3,7 +3,7 @@
 //! (`00740f30`) draws it: the depth cleared, every model in one pass seen by
 //! the table's camera, after the image space pass and under the menus'
 //! pictures; here into the HUD's picture by a camera of its own before the
-//! HUD's (which then leaves the picture as it is, `hud::HudCamera`).
+//! HUD's (which then blends over it, `game_menus::compose_hud_over_scene`).
 //!
 //! Each frame every piece is put where its model's pose has it (a hidden
 //! node hides it; the deck screen's models only while that screen's in, the
@@ -23,7 +23,7 @@ use std::sync::Arc;
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::prelude::*;
 use bevy::render::camera::{CameraOutputMode, Exposure, RenderTarget};
-use bevy::render::render_resource::{BlendState, WgpuFeatures};
+use bevy::render::render_resource::WgpuFeatures;
 use bevy::render::renderer::RenderDevice;
 use bevy::render::view::RenderLayers;
 use bevy::window::PrimaryWindow;
@@ -33,7 +33,7 @@ use nif::math::Transform as NifTransform;
 
 use crate::game_menus::caravan::CaravanScreen;
 use crate::game_menus::{GameMenus, OpenMenu};
-use crate::hud::{HudCamera, HudLayer};
+use crate::hud::HudLayer;
 use crate::lighting::GameLitMaterial;
 use crate::GameFiles;
 
@@ -232,33 +232,11 @@ fn show_table(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut pieces: Query<(&TablePiece, &mut Transform, &mut Visibility)>,
     mut cameras: Query<&mut Transform, (With<Camera3d>, Without<TablePiece>)>,
-    mut hud_cameras: Query<&mut Camera, With<HudCamera>>,
-    queue: Res<crate::menus::Menus>,
 ) {
     let open = caravan(&menus);
-    // While a menu's 3D is drawn (this table, the casino games':
-    // `casino_scene`; the lockpicking menu's, `lockpick`) the HUD's camera
-    // lays its pictures over it (blended) instead of replacing the picture.
-    let blend = crate::game_menus::scene_open(&menus) || queue.lockpicking;
-    for mut c in &mut hud_cameras {
-        let blends = matches!(
-            c.output_mode,
-            CameraOutputMode::Write {
-                blend_state: Some(_),
-                ..
-            }
-        );
-        if blends != blend {
-            c.output_mode = if blend {
-                CameraOutputMode::Write {
-                    blend_state: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    clear_color: ClearColorConfig::None,
-                }
-            } else {
-                CameraOutputMode::default()
-            };
-        }
-    }
+    // While the table's drawn the HUD's camera lays its pictures over it
+    // (blended): `game_menus::compose_hud_over_scene`, for every menu with
+    // a 3D scene.
     let TableShown { shown, layer } = &mut *shown;
     let stale = match (&*shown, open) {
         (Some(s), Some(c)) => !Arc::ptr_eq(&s.models, &c.models),

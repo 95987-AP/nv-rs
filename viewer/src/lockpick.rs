@@ -968,7 +968,7 @@ fn show_lockpicking(
     if shown.is_none() {
         // Into the HUD's picture: before the HUD's camera, which then lays
         // the game's menus (the tutorial box) over it, blended
-        // (`caravan_table`'s toggle), the scene's camera writing the
+        // (`game_menus::compose_hud_over_scene`), the scene's camera writing the
         // picture afresh. Into a picture of its own (no HUD): after its
         // clearing camera.
         let (scene_order, pictures_order, scene_output) = if hud_layer.is_some() {

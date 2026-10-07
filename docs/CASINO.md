@@ -202,7 +202,7 @@ states; the tiles, the 3D and the viewer follow Caravan's layout
   menu (`game_menus::slots`, `blackjack`, `roulette`); `casino_scene`
   draws the machine (with the lockpicking menu's camera) or the table
   (with its own) into the HUD's picture, under the menu's tiles (the
-  HUD's camera blends over any menu's 3D: `game_menus::scene_open`). The anti-cheat lock (`CasinoLock`) runs on
+  HUD's camera blends over any menu's 3D: `game_menus::compose_hud_over_scene`, `OpenMenu::draws_scene`). The anti-cheat lock (`CasinoLock`) runs on
   the real clock, stamped as a menu closes and armed by F9's load. The
   scripts' `MenuMode 1080`-`1082` run once the game's menu has opened, not
   for a refusal (`game_menus::casino::menu_mode`; the world's

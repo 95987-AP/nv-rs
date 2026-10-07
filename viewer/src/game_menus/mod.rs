@@ -44,6 +44,8 @@ use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::input::ButtonState;
 use bevy::prelude::*;
+use bevy::render::camera::CameraOutputMode;
+use bevy::render::render_resource::BlendState;
 use bevy::window::PrimaryWindow;
 use cellview::{Game, TextureData};
 use ui::draw::{DrawItem, DrawKind, Textures};
@@ -207,6 +209,22 @@ impl OpenMenu {
         matches!(self, OpenMenu::Barter(_) | OpenMenu::Recipe(_))
     }
 
+    /// A menu that draws a 3D scene into the HUD's picture, under the
+    /// menus' tiles: the Vigor Tester's machine (`vigor::draw`), the Caravan
+    /// table (`caravan_table`), the casino games' machine and tables
+    /// (`casino_scene`). (The rendered terminal lays its model on the HUD's
+    /// picture as one of its tiles, `rendered_terminal`, so isn't one.)
+    fn draws_scene(&self) -> bool {
+        matches!(
+            self,
+            OpenMenu::Vigor(_)
+                | OpenMenu::Caravan(_)
+                | OpenMenu::Slots(_)
+                | OpenMenu::Blackjack(_)
+                | OpenMenu::Roulette(_)
+        )
+    }
+
     fn closed(&self) -> bool {
         match self {
             OpenMenu::Message(m) => m.closed,
@@ -250,6 +268,7 @@ impl Plugin for GameMenusPlugin {
             .init_resource::<start::SaveFiles>()
             .init_resource::<FixedClicks>()
             .init_resource::<FixedKeys>()
+            .init_resource::<AnswerBoxes>()
             .init_resource::<hacking::HackingSounds>()
             .init_resource::<casino::CasinoLock>()
             .init_resource::<companion_wheel::WheelVoices>()
@@ -268,8 +287,125 @@ impl Plugin for GameMenusPlugin {
                     .before(crate::menus::run_menus),
             )
             .add_systems(Update, vigor::draw.after(run_open_menus))
+            .add_systems(
+                Update,
+                compose_hud_over_scene.after(crate::menus::run_menus),
+            )
             .add_systems(Update, hacking::play_sounds.after(run_open_menus))
             .add_systems(Update, companion_wheel::play_voices.after(run_open_menus));
+    }
+}
+
+/// How the HUD's camera writes its picture this frame: over a menu's 3D
+/// scene (drawn into the same picture first, by the scene's own camera at
+/// order −5) it blends its tiles over it; otherwise it writes the picture
+/// as it is. The lockpicking menu (`lockpick`, not one of these menus)
+/// draws its scene and pictures into the HUD's picture the same way.
+fn hud_output(open: &[OpenMenu], lockpicking: bool) -> CameraOutputMode {
+    if lockpicking || open.iter().any(OpenMenu::draws_scene) {
+        CameraOutputMode::Write {
+            blend_state: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            clear_color: ClearColorConfig::None,
+        }
+    } else {
+        CameraOutputMode::default()
+    }
+}
+
+fn blends(mode: &CameraOutputMode) -> bool {
+    matches!(
+        mode,
+        CameraOutputMode::Write {
+            blend_state: Some(_),
+            ..
+        }
+    )
+}
+
+/// The one place that sets the HUD camera's output, for every menu that
+/// draws a 3D scene under the menus. (Each menu used to set it itself, and
+/// the Caravan table's "not open, so stop blending" undid the Vigor
+/// Tester's every frame: the HUD's empty picture replaced the machine, so
+/// the tester's menu worked but couldn't be seen.)
+fn compose_hud_over_scene(
+    menus: Res<GameMenus>,
+    queue: Res<crate::menus::Menus>,
+    mut cameras: Query<&mut Camera, With<crate::hud::HudCamera>>,
+) {
+    let wanted = hud_output(
+        menus.screen.as_deref().map_or(&[], |s| &s.open),
+        queue.lockpicking,
+    );
+    for mut camera in &mut cameras {
+        if blends(&camera.output_mode) != blends(&wanted) {
+            camera.output_mode = wanted;
+        }
+    }
+}
+
+/// Which button `--answer-boxes` gives a box of `buttons` buttons: the only
+/// one, else the next choice given (taken), else none (left open).
+fn box_choice(buttons: usize, choices: &mut std::collections::VecDeque<usize>) -> Option<usize> {
+    match buttons {
+        0 => None,
+        1 => Some(0),
+        _ => choices.pop_front(),
+    }
+}
+
+/// `--answer-boxes`' step on the menu on top: a message box answered with
+/// a button (a click on it, `007aa070`) by [`box_choice`], a tutorial box
+/// closed (its close button, `007e8db0`), the name entry's text accepted
+/// (Enter, `007e6620`).
+fn answer_box(ui: &mut ui::Ui, top: &mut OpenMenu, answers: &mut AnswerBoxes, now: f64) {
+    match top {
+        OpenMenu::Message(m) if !m.closed => {
+            let Some(b) = m.queue.front() else {
+                return;
+            };
+            let what = format!("\"{}\" {:?}", b.text.replace('\n', " "), b.buttons);
+            // Buttons by their index among the box's own (a blank one
+            // keeps its index but isn't shown, `007a92e0`).
+            let shown: Vec<usize> = (0..b.buttons.len())
+                .filter(|&i| !b.buttons[i].is_empty())
+                .collect();
+            let first = b.first_number;
+            if shown.len() > 1 && answers.choices.is_empty() {
+                if answers.waiting.as_deref() != Some(what.as_str()) {
+                    println!("--answer-boxes: {what} waits for a choice (--box-answers).");
+                    answers.waiting = Some(what);
+                }
+                return;
+            }
+            let Some(i) = box_choice(shown.len(), &mut answers.choices) else {
+                return;
+            };
+            let i = if shown.len() == 1 { shown[0] } else { i };
+            let value = first + i as i32;
+            let Some(tile) = m
+                .list
+                .items
+                .iter()
+                .find(|item| item.value == value)
+                .map(|item| item.tile)
+            else {
+                println!("--answer-boxes: {what} has no button {i}.");
+                return;
+            };
+            println!("--answer-boxes: {what} answered with button {i}.");
+            answers.waiting = None;
+            m.click(ui, 7, Some(tile), now);
+        }
+        OpenMenu::Tutorial(m) if !m.closed => {
+            println!("--answer-boxes: a tutorial box closed.");
+            m.click(ui, ui::menus::tutorial::tile::CLOSE as i32, None, now);
+        }
+        OpenMenu::TextEdit(m) if !m.closed => {
+            if m.key(ui, ui::menu::key::ENTER, now) {
+                println!("--answer-boxes: the name entry accepted.");
+            }
+        }
+        _ => {}
     }
 }
 
@@ -290,6 +426,33 @@ pub struct FixedClicks {
 /// (a character, or left, right, up, down), for testing.
 #[derive(Resource, Default)]
 pub struct FixedKeys(pub Vec<(f64, String)>);
+
+/// `--answer-boxes` (a test aid for scripted routes, `scripts/acceptance.ps1`):
+/// the prompts on top, once shown, answered by rule as a player would. A
+/// message box with one button (an information box's OK) is answered with
+/// it; one with more buttons with the next of `--box-answers` (button
+/// indices in the box's own order, one per such box in turn), or left open
+/// when none is left; a tutorial box is closed; the name entry is accepted
+/// with Enter (the name in it). The prompts themselves open as the game
+/// opens them.
+#[derive(Resource, Default)]
+pub struct AnswerBoxes {
+    pub on: bool,
+    /// `--box-answers`: the choices still to give, in order.
+    pub choices: std::collections::VecDeque<usize>,
+    /// The box last reported as waiting for a choice (said once).
+    waiting: Option<String>,
+}
+
+impl AnswerBoxes {
+    pub fn new(on: bool, choices: Vec<usize>) -> AnswerBoxes {
+        AnswerBoxes {
+            on,
+            choices: choices.into(),
+            waiting: None,
+        }
+    }
+}
 
 /// `--open-menu NAME[:ID]`: a menu to open once the place has loaded, for
 /// testing.
@@ -651,23 +814,6 @@ fn screen<'a>(menus: &'a mut GameMenus, game: &Game, size: UVec2) -> Option<&'a 
     menus.screen.as_deref_mut()
 }
 
-/// Whether a menu with a 3D scene drawn under the menus' pictures is open
-/// (Caravan's table, the casino games'): the HUD's camera then blends its
-/// pictures over the scene's (`caravan_table`).
-pub fn scene_open(menus: &GameMenus) -> bool {
-    menus.screen.as_deref().is_some_and(|s| {
-        s.open.iter().any(|m| {
-            matches!(
-                m,
-                OpenMenu::Caravan(_)
-                    | OpenMenu::Slots(_)
-                    | OpenMenu::Blackjack(_)
-                    | OpenMenu::Roulette(_)
-            )
-        })
-    })
-}
-
 /// Whether the game's own menus show a request (the rest are the viewer's
 /// panel, `menus`).
 pub fn takes(m: &crate::menus::Menu) -> bool {
@@ -783,7 +929,7 @@ fn open_menus(
         }
         // A service menu made: the conversation fades out under it.
         if screen.open.len() > before && screen.open.last().is_some_and(OpenMenu::is_service) {
-            dialog::service_opened(screen);
+            dialog::service_opened(screen, time.delta_secs());
         }
         player.ready = false;
     }
@@ -838,6 +984,7 @@ pub struct MenuInput<'w, 's> {
     fixed: Res<'w, FixedPointer>,
     clicks: ResMut<'w, FixedClicks>,
     fixed_keys: ResMut<'w, FixedKeys>,
+    answer_boxes: ResMut<'w, AnswerBoxes>,
     pads: Query<'w, 's, &'static Gamepad>,
     /// Terminals drawn on the terminal's screen: the pointer goes through
     /// it.
@@ -971,6 +1118,10 @@ pub(crate) fn run_open_menus(
         let shown = fades.takes_pointer(menu);
         if !shown {
             interface.let_go_of(ui, menu);
+        }
+        // `--answer-boxes`: the box on top answered once it's shown.
+        if input.answer_boxes.on && shown {
+            answer_box(ui, top, &mut input.answer_boxes, now);
         }
         // `--menu-click`: pressed this frame, let go the next.
         let release = std::mem::take(&mut input.clicks.release);
@@ -1370,7 +1521,7 @@ pub(crate) fn run_open_menus(
                 screen.interface.focus = None;
             }
             if service {
-                dialog::service_closed(screen);
+                dialog::service_closed(screen, dt);
             }
         } else {
             i += 1;
@@ -1548,11 +1699,6 @@ pub(crate) fn draw_menus(
             // game's tile refresh sets it for any picture: the tutorial box's
             // Vault-Tec symbol and the start menu's title are sized from it.
             ui::draw::update_file_sizes(&mut screen.ui, menu, &mut files);
-            // The conversation's alpha under a service menu.
-            let alpha = match m {
-                OpenMenu::Dialog(d) => d.fade.alpha(),
-                _ => 1.0,
-            };
             let mut list = ui::draw_list(&mut screen.ui, menu, &mut files, &|_| None);
             // The terminal's and the hacking menu's on the terminal's own
             // screen (`rendered_terminal`).
@@ -1572,7 +1718,7 @@ pub(crate) fn draw_menus(
                 terminal_items.extend(list);
             } else {
                 let first = items.len();
-                items.extend(ui::draw::faded(&mut screen.ui, list, alpha));
+                items.extend(list);
                 // A start menu's `nif` tile (the pause background).
                 start::background_draws(
                     &mut screen.ui,
@@ -1739,5 +1885,55 @@ mod tests {
         assert_eq!(s.ui.number(m, t::VISIBLE), 0.0);
         s.end_fades();
         assert!(!s.busy());
+    }
+
+    /// `--answer-boxes`: a box with one button gets it; one with more the
+    /// next choice given, in turn; with none left it's left open.
+    #[test]
+    fn answered_boxes_take_their_choices_in_turn() {
+        let mut choices = std::collections::VecDeque::from(vec![1, 0]);
+        assert_eq!(box_choice(1, &mut choices), Some(0));
+        assert_eq!(choices.len(), 2);
+        assert_eq!(box_choice(2, &mut choices), Some(1));
+        assert_eq!(box_choice(3, &mut choices), Some(0));
+        assert_eq!(box_choice(2, &mut choices), None);
+        assert_eq!(box_choice(0, &mut choices), None);
+    }
+
+    /// A service menu over the conversation (`00763ff0`, `007640a0`): the
+    /// dialogue menu fades out and back in on the same fades as every
+    /// menu's, kept open (not marked to leave the stack) and hidden
+    /// meanwhile, then shown again.
+    #[test]
+    fn the_conversation_fades_under_a_service_menu_and_back() {
+        let mut s = bare();
+        let tile =
+            s.ui.load_menu(
+                b"<menu name=\"DialogMenu\"><image name=\"a\"><filename>solid.dds</filename></image></menu>",
+                &mut |_| None,
+            )
+            .unwrap();
+        s.open
+            .push(OpenMenu::Dialog(ui::menus::dialog::DialogMenu::new(tile)));
+        s.show_new(1.0);
+        s.end_fades();
+        assert_eq!(s.fades.state(tile), State::Shown);
+        dialog::service_opened(&mut s, 0.0);
+        assert!(dialog::hidden(&mut s));
+        assert_eq!(s.fades.state(tile), State::FadingOut);
+        s.fades.update(1.0);
+        s.end_fades();
+        assert_eq!(s.fades.state(tile), State::Hidden);
+        assert_eq!(s.ui.number(tile, t::VISIBLE), 0.0);
+        assert_eq!(s.open.len(), 1);
+        assert!(s.ui.is_under(tile, s.ui.screen));
+        dialog::service_closed(&mut s, 0.0);
+        assert!(!dialog::hidden(&mut s));
+        assert_eq!(s.fades.state(tile), State::FadingIn);
+        s.fades.update(1.0);
+        s.end_fades();
+        assert_eq!(s.fades.state(tile), State::Shown);
+        assert_eq!(s.fades.value(tile), 1.0);
+        assert_eq!(s.ui.number(tile, t::VISIBLE), 1.0);
     }
 }

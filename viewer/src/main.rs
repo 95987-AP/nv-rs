@@ -404,6 +404,10 @@ fn main() {
             release: false,
         })
         .insert_resource(game_menus::FixedKeys(args.menu_keys.clone()))
+        .insert_resource(game_menus::AnswerBoxes::new(
+            args.answer_boxes,
+            args.box_answers.clone(),
+        ))
         .add_plugins((GradePlugin, GameLightingPlugin, TerrainPlugin, LodPlugin))
         .add_plugins(shared_light::SharedLightPlugin)
         .add_plugins(present::PresentPlugin)

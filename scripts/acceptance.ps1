@@ -15,7 +15,21 @@ and docs/PATHING.md):
   vms16  Ghost Town Gunfight with Trudy's help: the gangers come in and
          die, stage 100.
 A route passes when every one of its success lines appears in the
-viewer's output and no panic does. Outputs (logs, screenshots) go to
+viewer's output and no panic does.
+Every route runs with the viewer's --answer-boxes test aid, which answers
+the prompts the game opens as a player would, by rule, as soon as each is
+shown: a message box with one button (OK) with it; a box with more buttons
+with the next of --box-answers (button numbers in the box's own order, 0
+the first); a tutorial box closed; the name entry accepted with Enter (the
+name in it). The routes give --box-answers 2: VCG01's "Before you venture
+deeper into the wasteland, you may revise your character." box answered
+"Finished - Travel Onward" (buttons: Edit Name, Rebuild Character,
+Finished - Travel Onward). With the DLCs installed their start-up quests
+also open message boxes on a new game (Dead Money's signal, the pre-order
+packs' "items added", the level-cap notices, ...), as the game does; left
+open, a prompt holds the AI and the input and the route never finishes.
+Each answer is logged as "--answer-boxes: ..."; a box with several
+buttons and no choice left is left open and logged as waiting. Outputs (logs, screenshots) go to
 -Out; they are private, never commit them.
 
 .EXAMPLE
@@ -110,7 +124,10 @@ foreach ($r in $chosen) {
     $spec = $routeArgs[$r]
     $log = Join-Path $Out "$r.log"
     $shot = Join-Path $Out "$r.png"
-    $a = @($Data) + $spec.Args + @('--screenshot', $shot)
+    # --answer-boxes: prompts answered as they appear, as a player would
+    # (see the header); --box-answers 2: VCG01's "revise your character"
+    # box answered "Finished - Travel Onward" (its third button).
+    $a = @($Data) + $spec.Args + @('--answer-boxes', '--box-answers', '2', '--screenshot', $shot)
     if ($Background) { $a += '--background' }
     Write-Host "== $r"
     $start = Get-Date

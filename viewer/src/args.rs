@@ -150,6 +150,18 @@ OPTIONS:
                             left, right, up, down, enter) into the top menu at
                             S seconds after starting; tab leaves the
                             hacking and terminal menus, as Tab does
+    --answer-boxes          for testing (the acceptance routes): answer the
+                            prompts on top by rule as soon as they're shown,
+                            as a player would: a message box with one button
+                            (OK) with it, one with more with the next of
+                            --box-answers (left open when none is left); a
+                            tutorial box closed; the name entry accepted
+                            with Enter (the name in it). The DLCs' start-up
+                            messages and VCG01's prompts would otherwise hold
+                            a scripted route
+    --box-answers I[,I...]  with --answer-boxes: the buttons (0 the first,
+                            by the box's own order) to answer the boxes with
+                            more than one button, one per box in turn
 
 CONTROLS:
     mouse                          look around (walking; flying: hold
@@ -281,6 +293,11 @@ pub struct Args {
     /// `--menu-keys`: keys typed into the menus (seconds after starting,
     /// the key).
     pub menu_keys: Vec<(f64, String)>,
+    /// `--answer-boxes`: message boxes answered with their first button,
+    /// tutorial boxes closed, once shown (a test aid).
+    pub answer_boxes: bool,
+    /// `--box-answers`: the buttons for boxes with several, in turn.
+    pub box_answers: Vec<usize>,
 }
 
 /// Where to stand, in the game's terms: feet position in game units, and
@@ -342,6 +359,8 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut vats = None;
     let mut cloud_time = None;
     let mut freeze_ai = false;
+    let mut answer_boxes = false;
+    let mut box_answers = Vec::new();
     let mut background = false;
     let mut pipboy = None;
     let mut pipboy_keys = Vec::new();
@@ -436,6 +455,17 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             "--movies" => movies = Some(true),
             "--no-movies" => movies = Some(false),
             "--freeze-ai" => freeze_ai = true,
+            "--answer-boxes" => answer_boxes = true,
+            "--box-answers" => {
+                let v = value("--box-answers")?;
+                for n in v.split(',') {
+                    box_answers.push(n.trim().parse::<usize>().map_err(|_| {
+                        format!(
+                            "--box-answers expects button numbers separated by commas, got '{v}'"
+                        )
+                    })?);
+                }
+            }
             "--background" => background = true,
             "--lockpick" => lockpick = Some(value("--lockpick")?),
             "--pipboy" => {
@@ -582,6 +612,8 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             movies,
             menu_clicks,
             menu_keys,
+            answer_boxes,
+            box_answers,
         })),
         [] | [_] => Err("expected the Data folder and a cell".into()),
         [_, _, extra, ..] => Err(format!("unexpected argument '{extra}'")),
@@ -631,6 +663,16 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(frozen.freeze_ai);
+        assert!(!frozen.answer_boxes);
+        let answering = parse(&strings(&["Data", "Cell", "--answer-boxes"]))
+            .unwrap()
+            .unwrap();
+        assert!(answering.answer_boxes);
+        let choosing = parse(&strings(&["Data", "Cell", "--box-answers", "1, 0"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(choosing.box_answers, vec![1, 0]);
+        assert!(parse(&strings(&["Data", "Cell", "--box-answers", "no"])).is_err());
         let character = parse(&strings(&["Data", "Cell", "--character", "c.txt"]))
             .unwrap()
             .unwrap();

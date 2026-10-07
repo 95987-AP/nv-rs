@@ -87,6 +87,13 @@ menus use).
 
 ## Checks
 
+The dialogue menu fading out under a service menu and back in
+(`00763ff0` / `007640a0`, [DIALOGUE.md](DIALOGUE.md)) is the same
+`StartFadeOut` / `StartFadeIn` on the same list: a menu kept open, not
+marked to leave the stack, so hidden when faded out
+(`DialogMenu::service_opened` / `service_closed` take the screen's
+`Fades`).
+
 `ui::fade` tests (the times, fading in then shown, fading out and gone,
 kept menus hidden, a hidden menu not fading out, instant fade out, every
 fade moving on when one starts, a fade taking no time, the loop stopping
