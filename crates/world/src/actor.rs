@@ -805,7 +805,7 @@ pub fn best_armour(order: &LoadOrder, candidates: &[FormId], slot: u32) -> Optio
             1.0
         };
         let score = f32::from(dr.trunc() as i32 as u16) * factor + dt;
-        if best.is_none_or(|(_, b)| b < score) {
+        if best.map_or(true, |(_, b)| b < score) {
             best = Some((item, score));
         }
     }

@@ -708,7 +708,7 @@ pub fn cast(
             }
             POISON_SPELL_TYPE | WORTCRAFT_SPELL_TYPE => {}
             _ => {
-                if let Some(i) = state.active_effects.iter().position(|e| matches(e)) {
+                if let Some(i) = state.active_effects.iter().position(matches) {
                     dispelled.push(state.active_effects.remove(i));
                 }
             }
