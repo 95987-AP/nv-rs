@@ -73,9 +73,20 @@ impl MenuCamera {
     /// `fDefaultFOV` (75 when unset, `0102f0f8`) and `fNearDistance` (5,
     /// `0101712c`).
     pub fn new(settings: &assets::IniSettings, width: u32, height: u32) -> MenuCamera {
+        MenuCamera::with_share(settings, width, height, FOV_SHARE)
+    }
+
+    /// [`MenuCamera::new`] with another share of the field of view (the
+    /// rendered terminal's `fRenderedTerminalFOV`, `007feeb0`).
+    pub fn with_share(
+        settings: &assets::IniSettings,
+        width: u32,
+        height: u32,
+        share: f32,
+    ) -> MenuCamera {
         let fov = settings.float("Display", "fDefaultFOV").unwrap_or(75.0);
         let near = settings.float("Display", "fNearDistance").unwrap_or(5.0);
-        let angle = (f64::from(fov) * f64::from(1.0f32.to_radians()) * f64::from(FOV_SHARE)) as f32;
+        let angle = (f64::from(fov) * f64::from(1.0f32.to_radians()) * f64::from(share)) as f32;
         let tan_half_width = angle.tan() * FRUSTUM_SCALE;
         let aspect = height as f32 / width.max(1) as f32;
         MenuCamera {
