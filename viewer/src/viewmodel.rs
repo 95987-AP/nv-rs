@@ -216,13 +216,16 @@ struct Built {
     weapon: Option<FormId>,
     worn: Vec<FormId>,
     female: bool,
-    lighting: u64,
 }
 
 /// The first-person view on screen.
 #[derive(Resource, Default)]
 pub struct ViewModel {
     built: Option<Built>,
+    /// The place's lighting it's lit with (`PlaceLighting::changes`), and
+    /// its pieces, to light them again when that changes.
+    lit_at: u64,
+    lit: crate::LitPieces,
     /// The entity under the first-person camera holding it, the skeleton's
     /// root, its joints.
     holder: Option<Entity>,
@@ -515,15 +518,26 @@ pub fn update_view_model(
         weapon: weapon.as_ref().map(|w| w.form_id),
         worn: worn.clone(),
         female,
-        lighting: lighting_changes,
     };
-    if view.built.as_ref() != Some(&wanted) {
+    if view.built.as_ref() == Some(&wanted)
+        && view.lit_at != lighting_changes
+        && view.root.is_some()
+    {
+        // The place's lighting changed (another place, or outdoors another
+        // square loaded): the same materials made with it, as rebuilding
+        // the view would make them, without rebuilding it.
+        view.lit_at = lighting_changes;
+        spawner.relight_lone_actor(&view.lit, lighting);
+    }
+    if view.built.as_ref() != Some(&wanted) || view.lit_at != lighting_changes {
         if let Some(old) = view.holder.take() {
             if let Ok(mut e) = commands.get_entity(old) {
                 e.despawn();
             }
         }
         view.built = Some(wanted);
+        view.lit_at = lighting_changes;
+        view.lit = crate::LitPieces::default();
         view.root = None;
         let held = weapon.as_ref().and_then(|w| {
             let model = order
@@ -545,9 +559,12 @@ pub fn update_view_model(
             .spawn((Transform::IDENTITY, Visibility::Hidden, ChildOf(camera)))
             .id();
         view.holder = Some(holder);
-        let Some((root, joints, _)) = spawner.spawn_lone_actor(&scene, lighting, holder) else {
+        let Some((root, joints, _, lit)) =
+            spawner.spawn_lone_actor_lit(&scene, lighting, holder, FIRST_PERSON_LAYER)
+        else {
             return;
         };
+        view.lit = lit;
         let skeleton = scene.actors[0].skeleton.clone();
         let find = |name: &str| {
             skeleton

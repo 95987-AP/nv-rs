@@ -37,13 +37,16 @@ struct Built {
     weapon: Option<FormId>,
     worn: Vec<FormId>,
     female: bool,
-    lighting: u64,
 }
 
 /// The player's third-person body on screen.
 #[derive(Resource, Default)]
 pub struct PlayerBody {
     built: Option<Built>,
+    /// The place's lighting it's lit with (`PlaceLighting::changes`), and
+    /// its pieces, to light them again when that changes.
+    lit_at: u64,
+    lit: crate::LitPieces,
     /// The entity placing it where the player stands, and the skeleton's
     /// root (which carries the `ActorRig`).
     holder: Option<Entity>,
@@ -129,12 +132,22 @@ pub fn update_player_body(
         weapon: weapon.as_ref().map(|w| w.form_id),
         worn,
         female: st.player_female.unwrap_or(false),
-        lighting: spawner.place_lighting.changes(),
     };
-    if body.built.as_ref() != Some(&wanted) {
+    let lighting_changes = spawner.place_lighting.changes();
+    if body.built.as_ref() == Some(&wanted)
+        && body.lit_at != lighting_changes
+        && body.root.is_some()
+    {
+        // The place's lighting changed (another place, or outdoors another
+        // square loaded): the same materials made with it, as rebuilding
+        // the body would make them, without rebuilding it.
+        body.lit_at = lighting_changes;
+        spawner.relight_lone_actor(&body.lit, lighting);
+    }
+    if body.built.as_ref() != Some(&wanted) || body.lit_at != lighting_changes {
         // The animations playing go on in the new body (it's rebuilt for
-        // another weapon or clothes, and whenever the place's lighting
-        // changes): only the model changes, as in the game.
+        // another weapon or clothes): only the model changes, as in the
+        // game.
         let carried = body.root.and_then(|r| rigs.get(r).ok()).map(|r| {
             (
                 r.player.clone(),
@@ -150,8 +163,10 @@ pub fn update_player_body(
             }
         }
         body.root = None;
+        body.lit = crate::LitPieces::default();
         let look = world::actor::player_look(order, wanted.female, &wanted.worn, wanted.weapon);
         body.built = Some(wanted);
+        body.lit_at = lighting_changes;
         let Some(look) = look else {
             return;
         };
@@ -160,10 +175,12 @@ pub fn update_player_body(
             .spawn((Transform::IDENTITY, Visibility::Hidden))
             .id();
         body.holder = Some(holder);
-        let Some((root, joints, _)) = spawner.spawn_lone_actor_on(&scene, lighting, holder, 0)
+        let Some((root, joints, _, lit)) =
+            spawner.spawn_lone_actor_lit(&scene, lighting, holder, 0)
         else {
             return;
         };
+        body.lit = lit;
         let skeleton = scene.actors[0].skeleton.clone();
         body.scale = look.scale;
         let mut rig = ActorRig::new(skeleton, look.scale, 0.0);

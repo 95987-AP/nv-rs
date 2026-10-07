@@ -308,6 +308,7 @@ fn main() {
         .insert_resource(walk::CellCollision(physics::Collider::new()))
         .insert_resource(walk::Doors(Vec::new()))
         .init_resource::<UploadedTextures>()
+        .init_resource::<daylight::RemadeLit>()
         .insert_resource(PendingScene(scene))
         .insert_resource(PendingExterior(outdoors))
         .insert_resource(grading)
@@ -1507,6 +1508,7 @@ pub struct Spawner<'w, 's> {
     water: water::WaterSpawn<'w>,
     particle_materials: ResMut<'w, Assets<particles::ParticleMaterial>>,
     uploaded: ResMut<'w, UploadedTextures>,
+    remade_lit: ResMut<'w, daylight::RemadeLit>,
 }
 
 /// What a place's texture on the GPU is: the file (or what it was made
@@ -1873,6 +1875,26 @@ pub struct Spawned {
     pub terrain: Vec<Handle<TerrainMaterial>>,
 }
 
+/// A lone actor's lit pieces (`Spawner::spawn_lone_actor_lit`): its
+/// textures, and each piece's material with what it was made from (its
+/// surface and whether it has tangents), to light them again.
+#[derive(Default)]
+pub struct LitPieces {
+    textures: Vec<Option<Handle<Image>>>,
+    lit: Vec<(Handle<GameLitMaterial>, cellview::MaterialData, bool)>,
+}
+
+impl LitPieces {
+    /// Each piece's material made again with `lighting`.
+    fn relight(&self, materials: &mut Assets<GameLitMaterial>, lighting: GameLighting) {
+        for (handle, material, tangents) in &self.lit {
+            if let Some(m) = materials.get_mut(handle) {
+                *m = lit_material_of(material, *tangents, &self.textures, lighting);
+            }
+        }
+    }
+}
+
 impl Spawner<'_, '_> {
     /// One actor on its own (the first-person view) under `parent`, lit by
     /// `lighting`, drawn by the first-person camera alone: its root, its
@@ -1895,6 +1917,19 @@ impl Spawner<'_, '_> {
         parent: Entity,
         layer: usize,
     ) -> Option<(Entity, Vec<Entity>, Vec<Entity>)> {
+        self.spawn_lone_actor_lit(scene, lighting, parent, layer)
+            .map(|(root, joints, pieces, _)| (root, joints, pieces))
+    }
+
+    /// [`Self::spawn_lone_actor_on`], also giving what it takes to light its
+    /// pieces again ([`Self::relight_lone_actor`]).
+    fn spawn_lone_actor_lit(
+        &mut self,
+        scene: &ViewerScene,
+        lighting: GameLighting,
+        parent: Entity,
+        layer: usize,
+    ) -> Option<(Entity, Vec<Entity>, Vec<Entity>, LitPieces)> {
         let actor = scene.actors.first()?;
         let compressed = self
             .device
@@ -1921,6 +1956,7 @@ impl Spawner<'_, '_> {
             })
             .collect();
         let mut pieces = Vec::new();
+        let mut lit = Vec::new();
         for draw in &scene.draws {
             let data = &scene.meshes[draw.mesh];
             let Some((mesh, bind)) = actors::skinned_mesh(data) else {
@@ -1931,6 +1967,11 @@ impl Spawner<'_, '_> {
             let material = self
                 .lit_materials
                 .add(lit_material(data, &textures, lighting));
+            lit.push((
+                material.clone(),
+                data.material.clone(),
+                data.tangents.is_some(),
+            ));
             let skin_joints = actors::skin_joints(data, &joints);
             pieces.push(
                 self.commands
@@ -1946,7 +1987,21 @@ impl Spawner<'_, '_> {
                     .id(),
             );
         }
-        Some((root, joints, pieces))
+        Some((root, joints, pieces, LitPieces { textures, lit }))
+    }
+
+    /// Lights a lone actor's pieces with `lighting`: each material made
+    /// again as [`Self::spawn_lone_actor_lit`] would make it now, and
+    /// handed to the daylight as a new one is (`daylight::RemadeLit`; it's
+    /// the only thing that changes a lone actor's materials after), without
+    /// rebuilding the actor.
+    fn relight_lone_actor(&mut self, pieces: &LitPieces, lighting: GameLighting) {
+        pieces.relight(&mut self.lit_materials, lighting);
+        // Outdoors the hour's light goes onto them as onto new ones.
+        self.remade_lit
+            .ids
+            .extend(pieces.lit.iter().map(|(handle, _, _)| handle.id()));
+        self.remade_lit.times += 1;
     }
 }
 
@@ -2490,7 +2545,17 @@ fn lit_material(
     textures: &[Option<Handle<Image>>],
     lighting: GameLighting,
 ) -> GameLitMaterial {
-    let m = &data.material;
+    lit_material_of(&data.material, data.tangents.is_some(), textures, lighting)
+}
+
+/// [`lit_material`] from the piece's material and whether it has tangents
+/// (all it reads of the piece).
+fn lit_material_of(
+    m: &cellview::MaterialData,
+    tangents: bool,
+    textures: &[Option<Handle<Image>>],
+    lighting: GameLighting,
+) -> GameLitMaterial {
     let [r, g, b, a] = m.color;
     let base = StandardMaterial {
         base_color: Color::linear_rgba(r, g, b, a),
@@ -2552,7 +2617,7 @@ fn lit_material(
         let glow = m.glow.and_then(|i| textures[i].clone());
         let normal_map = m
             .normal_map
-            .filter(|_| data.tangents.is_some())
+            .filter(|_| tangents)
             .and_then(|i| textures[i].clone());
         let [er, eg, eb] = m.emissive;
         let specular = m.specular.map_or(Vec4::ZERO, |s| {
@@ -3193,6 +3258,84 @@ mod tests {
             motion: None,
             billboard: None,
             local_map: false,
+        }
+    }
+
+    /// A place's lighting with every value set from `k`, so two differ
+    /// everywhere.
+    fn place_lighting(k: f32) -> GameLighting {
+        let v = |i: f32| Vec4::splat(k + 0.1 * i);
+        GameLighting {
+            ambient: v(0.0),
+            directional_color: v(1.0),
+            directional_direction: v(2.0),
+            emissive: v(3.0),
+            scale: v(4.0),
+            fog_color: v(5.0),
+            fog_range: v(6.0),
+            specular: v(7.0),
+            surface: v(8.0),
+            falloff: v(9.0),
+            environment: v(10.0),
+            draw: v(11.0),
+            lights: [lighting::GameLight {
+                position_radius: v(12.0),
+                color: v(13.0),
+            }; MAX_LIGHTS],
+            actor: v(14.0),
+            hair_tint: v(15.0),
+        }
+    }
+
+    /// The player's body and first-person view are lit again, not rebuilt,
+    /// when the place's lighting changes: their materials must come out as
+    /// a rebuild in the new light would make them.
+    #[test]
+    fn a_lone_actor_lit_again_is_as_if_built_in_that_light() {
+        let (before, after) = (place_lighting(1.0), place_lighting(2.0));
+        let mut skin = piece(Blend::Opaque, [0.0; 3]);
+        skin.material.shading = preview::cell::Shading::Skin;
+        skin.material.texture = Some(0);
+        skin.material.normal_map = Some(1);
+        skin.material.specular = Some(cellview::Specular {
+            color: [0.5; 3],
+            glossiness: 10.0,
+        });
+        skin.tangents = Some(vec![[1.0, 0.0, 0.0, 1.0]; 3]);
+        let mut hair = piece(Blend::Mask(0.5), [0.0; 3]);
+        hair.material.shading = preview::cell::Shading::Hair;
+        hair.material.hair_tint = Some([0.3, 0.2, 0.1]);
+        let mut decal = piece(Blend::Blend, [1.0; 3]);
+        decal.material.decal = true;
+        let mut unlit = piece(Blend::Add, [1.0; 3]);
+        unlit.material.unlit = true;
+        let all = [skin, hair, decal, unlit];
+        let textures = vec![Some(Handle::default()), Some(Handle::default())];
+        let mut materials = Assets::<GameLitMaterial>::default();
+        let pieces = LitPieces {
+            textures: textures.clone(),
+            lit: all
+                .iter()
+                .map(|d| {
+                    let m = materials.add(lit_material(d, &textures, before));
+                    (m, d.material.clone(), d.tangents.is_some())
+                })
+                .collect(),
+        };
+        pieces.relight(&mut materials, after);
+        for ((handle, _, _), data) in pieces.lit.iter().zip(&all) {
+            let got = materials.get(handle).unwrap();
+            let want = lit_material(data, &textures, after);
+            let old = lit_material(data, &textures, before);
+            assert_ne!(old.extension.lighting, want.extension.lighting);
+            assert_eq!(got.extension.lighting, want.extension.lighting);
+            assert_eq!(got.extension.key, want.extension.key);
+            assert_eq!(got.extension.normal_map, want.extension.normal_map);
+            assert_eq!(got.base.base_color, want.base.base_color);
+            assert_eq!(got.base.base_color_texture, want.base.base_color_texture);
+            assert_eq!(got.base.alpha_mode, want.base.alpha_mode);
+            assert_eq!(got.base.depth_bias, want.base.depth_bias);
+            assert_eq!(got.base.unlit, want.base.unlit);
         }
     }
 
