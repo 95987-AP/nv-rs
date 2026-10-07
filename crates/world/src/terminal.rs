@@ -291,7 +291,12 @@ const HACK_XP_DEFAULTS: [f32; 5] = [5.0, 10.0, 20.0, 30.0, 50.0];
 /// The hacking game won (`00766b80`): the terminal stays hacked, the
 /// experience for its difficulty (`006705b0(2, …)`: the reward beside the
 /// first of `iXPLevelHackComputer…` (0–4) the difficulty doesn't pass,
-/// `iXPRewardHackComputer…`), and "Computers Hacked" + 1.
+/// `iXPRewardHackComputer…`), and "Computers Hacked" + 1; then, for a
+/// terminal with an owner, the trespass alarm with the terminal and its
+/// owner (`008c0ec0(terminal, owner, -1)`, `world::living::trespass::
+/// alarm`: whoever sees the player and is the owner's, or in the owning
+/// faction, turns on them; a minor crime). The game doesn't ask whether
+/// the player may use the owner's things there.
 pub fn hacked(order: &LoadOrder, state: &mut GameState, terminal: &Terminal, reference: FormId) {
     let d = f32::from(difficulty(order, state, terminal, reference));
     state.terminal_states.entry(reference).or_default().hacked = true;
@@ -310,6 +315,29 @@ pub fn hacked(order: &LoadOrder, state: &mut GameState, terminal: &Terminal, ref
     }
     crate::experience::reward(order, state, f64::from(reward.unwrap_or(last)));
     crate::stats::bump(state, crate::stats::COMPUTERS_HACKED, 1);
+    // Translated from 00766b80 (decompiled, FalloutNV.exe 1.4.0.525)
+    if let Some(owner) = crate::crime::owner_of(order, state, reference) {
+        crate::living::trespass::alarm(order, state, reference, Some(owner));
+    }
+}
+
+/// The player's use of a terminal goes through to its menu or the hacking
+/// game (`00501310`, `BGSTerminal::Activate`, past its refusals): someone
+/// else's terminal (its owner, `world::crime::owner_of`, one whose things
+/// the player may not use) costs the stealing karma
+/// ([`crate::crime::stealing_karma`]) unless the record is flagged
+/// unlocked (`005015d0`; the record's flag only, not a script's `Unlock`).
+// Translated from 00501310 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn opened(order: &LoadOrder, state: &mut GameState, base: FormId, reference: FormId) {
+    if Terminal::load(order, base).map_or(true, |t| t.unlocked()) {
+        return;
+    }
+    let Some(owner) = crate::crime::owner_of(order, state, reference) else {
+        return;
+    };
+    if !crate::crime::may_take(order, state, Some(owner)) {
+        crate::crime::stealing_karma(order, state, owner);
+    }
 }
 
 /// The hacking game lost (`00501930(ref, 1)`): one more lockout.

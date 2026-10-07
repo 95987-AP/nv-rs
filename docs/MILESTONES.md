@@ -76,6 +76,11 @@ original game**.
   audio does), muzzle flashes on the player's (both views) and people's
   guns, melee swing-miss sounds; traced, unit-tested, seen live; not
   compared with the original ([WEAPON_EFFECTS.md](WEAPON_EFFECTS.md)).
+- M11 (2026-10-07, `claude/factions-crime`): reputation clamps, notices and
+  the title box, karma for owned terminals and notes, assault/murder
+  making the victim's factions enemies, hacking alarms, and the faction
+  armour disguises' engine side (form-list `GetEquipped`, area pulses)
+  traced and tested ([FACTIONS_CRIME.md](FACTIONS_CRIME.md)).
 - Acceptance evidence ([GOODSPRINGS_ROUTE.md](GOODSPRINGS_ROUTE.md)): with
   dialogue choices replayed by `--run` lines, Ghost Town Gunfight reaches
   stage 100 (XP +50) on the integration build; Back in the Saddle completes

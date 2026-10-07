@@ -13,6 +13,7 @@ pub mod crafting;
 pub mod dialogue;
 pub mod energy;
 pub mod fatigue;
+pub mod factions;
 pub mod fighting;
 pub mod functions;
 pub mod impacts;

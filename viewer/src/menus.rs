@@ -32,6 +32,15 @@ pub enum Menu {
         text: String,
         buttons: Vec<(usize, String)>,
     },
+    /// A box the game itself puts up (`world::scripting::Event::Popup`:
+    /// a reputation's new title), with one OK button whose answer goes to
+    /// no script.
+    Popup {
+        title: Option<String>,
+        text: String,
+        icon: Option<String>,
+        sound: Option<String>,
+    },
     Character(CharacterMenu),
     /// A container opened: its reference and name.
     Container(FormId, String),
@@ -250,6 +259,12 @@ fn open(
             title,
             text,
             buttons,
+        },
+        // Without the game's message menu: shown like a script's box.
+        Menu::Popup { title, text, .. } => Open::Message {
+            title,
+            text,
+            buttons: vec![(0, "OK".to_string())],
         },
         // Only the game's own menus show these (`game_menus`).
         Menu::Container(..)

@@ -501,6 +501,62 @@ pub fn add_spell(
     apply(order, state, target, spell, caster, held)
 }
 
+/// The largest area (`EFIT` u32 at 4) of a spell's touch-range effects
+/// (range, u32 at 12, 1), as `00818ce0` picks it; 0 when none has one.
+fn touch_area(order: &LoadOrder, spell: FormId) -> u32 {
+    let Some(record) = order.get(spell).and_then(|r| r.record().ok()) else {
+        return 0;
+    };
+    record
+        .get_all(esm::FourCC::new(b"EFIT"))
+        .filter(|s| s.data.len() >= 16)
+        .filter(|s| crate::cell::le_u32(&s.data, 12) == 1)
+        .map(|s| crate::cell::le_u32(&s.data, 4))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Whom a cast at `target` reaches besides it: with an area on the spell's
+/// touch-range effects, the living, enabled people in the player's cell
+/// other than the caster and the target within `fMagicUnitsPerFoot` (22)
+/// × that area of the target, at the effectiveness 1 a script's cast has
+/// (`MagicCaster::FindTargets` `00815d00`, its gathering `00818ce0` and
+/// `FindTargetsInArea` `00816f10`, Xbox PDB). The disguise pulse's area 25
+/// reaches 550 units. (The game also asks for a line of sight unless the
+/// spell's flag 0x10 says area effects ignore it, `008190d0`; not here.)
+// Translated from 00818ce0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn area_targets(
+    order: &LoadOrder,
+    state: &GameState,
+    spell: FormId,
+    caster: FormId,
+    target: FormId,
+) -> Vec<FormId> {
+    let area = touch_area(order, spell);
+    if area == 0 {
+        return Vec::new();
+    }
+    let feet = crate::scripting::game_setting(order, "fMagicUnitsPerFoot").unwrap_or(22.0);
+    let radius = (feet * 1.0).trunc() * area as f32;
+    let (Some(cell), Some((space, _, at, _))) = (state.player_cell, state.place(order, target))
+    else {
+        return Vec::new();
+    };
+    order
+        .references_in_cell(cell)
+        .into_iter()
+        .filter(|rr| matches!(rr.entry.header.kind.as_bytes(), b"ACHR" | b"ACRE"))
+        .map(|rr| rr.form_id)
+        .filter(|&w| w != caster && w != target && !state.dead.contains(&w))
+        .filter(|&w| state.disabled.get(&w) != Some(&true))
+        .filter(|&w| {
+            state.place(order, w).is_some_and(|(s, _, p, _)| {
+                s == space && (0..3).map(|i| (p[i] - at[i]).powi(2)).sum::<f32>().sqrt() <= radius
+            })
+        })
+        .collect()
+}
+
 /// Takes an item's or spell's effects off someone (`RemoveSpell`,
 /// `Dispel`): what was taken off (script effects still to finish).
 pub fn remove(state: &mut GameState, target: FormId, source: FormId) -> Vec<ActiveEffect> {
