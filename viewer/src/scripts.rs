@@ -442,7 +442,10 @@ fn use_object(
         // cards and leave the inventory).
         state.pick_up(order, r.reference, r.base, r.count);
         if let Some(owner) = owner.filter(|_| !world::crime::may_take(order, state, owner)) {
-            if world::crime::steal(order, state, r.reference, owner) {
+            // A note (`BGSNote::Activate`, `005e9360`): only the karma.
+            if r.kind.as_bytes() == b"NOTE" {
+                world::crime::stealing_karma(order, state, owner);
+            } else if world::crime::steal(order, state, r.reference, owner) {
                 println!("Seen stealing {}.", counted(r.base, r.count));
             }
         }
@@ -1301,7 +1304,10 @@ pub fn run_scripts(
                 Some(Used::Terminal(t, r)) => {
                     use crate::game_menus::hacking::{use_terminal, Using};
                     match use_terminal(order, state, t, r) {
-                        Using::Open(m) => waiting.push(m),
+                        Using::Open(m) => {
+                            world::terminal::opened(order, state, t, r);
+                            waiting.push(m);
+                        }
                         Using::Refused(why) => {
                             if let Some(s) = order.form_by_editor_id(crate::lockpick::POPUP_SOUND) {
                                 sound_requests.0.push(s);
@@ -1391,6 +1397,21 @@ pub fn run_scripts(
             })),
             Event::CharacterMenu(m) => {
                 waiting.push(crate::menus::Menu::Character(m));
+                None
+            }
+            // The game's own box (a reputation's title, `game_menus::message`).
+            Event::Popup {
+                title,
+                text,
+                icon,
+                sound,
+            } => {
+                waiting.push(crate::menus::Menu::Popup {
+                    title,
+                    text,
+                    icon,
+                    sound,
+                });
                 None
             }
             Event::Barter(merchant) => {
@@ -1672,6 +1693,7 @@ pub fn run_scripts(
                         use crate::game_menus::hacking::{use_terminal, Using};
                         match use_terminal(order, state, base.unwrap_or(what), what) {
                             Using::Open(m) => {
+                                world::terminal::opened(order, state, base.unwrap_or(what), what);
                                 waiting.push(m);
                                 None
                             }

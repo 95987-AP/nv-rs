@@ -1129,6 +1129,11 @@ pub fn play(
                     format!(" [{}]", b.join(" | "))
                 }
             ),
+            Event::Popup { title, text, .. } => format!(
+                "box: {}{}",
+                title.as_ref().map(|t| format!("{t}: ")).unwrap_or_default(),
+                text.replace(['\r', '\n'], " ")
+            ),
             Event::CharacterMenu(m) => format!("character menu opened: {m:?}"),
             Event::Barter(m) => format!("trading with {}", describe_id(order, *m)),
             Event::KnockedOut { who } => format!("{} is down", describe_id(order, *who)),

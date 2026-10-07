@@ -458,7 +458,8 @@ fn the_bed_script_makes_the_player_well_rested() {
     assert_eq!(ask(&order, &scripts, &mut state, "IsPCSleeping"), 0.0);
     Runner::new(&order, &scripts, &mut state).run_blocks(bed, Some(bed), "gamemode", |_| true);
     assert!(has_spell(&state, WELL_RESTED));
-    notices(&mut state);
+    // The effect starts as it's cast (`MagicTarget::CheckAddEffect` starts
+    // what it adds): its `ScriptEffectStart` has run.
     Runner::new(&order, &scripts, &mut state).update(0.1);
     assert_eq!(state.damage.get(&PLAYER_REF).copied().unwrap_or(0.0), 0.0);
     assert!(state.perks.contains(&FormId(WELL_RESTED_PERK)));

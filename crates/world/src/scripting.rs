@@ -1106,6 +1106,16 @@ pub enum Event {
         text: String,
         buttons: Vec<(usize, String)>,
     },
+    /// A box the game itself puts up (not a script's: its answer goes to
+    /// no script), with one button `sOk`: a reputation's new title
+    /// (`world::reputation::title_box`). The icon is a path under `Data`,
+    /// the sound a sound's editor ID.
+    Popup {
+        title: Option<String>,
+        text: String,
+        icon: Option<String>,
+        sound: Option<String>,
+    },
     /// Someone talks: the speaker, who they talk to, and the topic
     /// (`None`: their greeting). `SayTo` only has them say a line
     /// (`conversation` false); `StartConversation` opens the dialogue.
@@ -1876,11 +1886,22 @@ impl Facts<'_> {
                     0.0
                 }
             }
-            "GetEquipped" => flag(
-                s.equipped
-                    .get(&on?)
-                    .is_some_and(|e| e.contains(&arg(0).form())),
-            ),
+            // A form list asks for any of its forms (`0059da90`: type 0x55,
+            // the faction armour scripts' `GetEquipped FactionGearNVNCR`).
+            "GetEquipped" => {
+                let worn = s.equipped.get(&on?);
+                let asked = arg(0).form();
+                let is_list = self
+                    .order
+                    .get(asked)
+                    .is_some_and(|r| r.entry.header.kind.as_bytes() == b"FLST");
+                let forms = if is_list {
+                    crate::script_functions::form_list(self.order, s, asked)
+                } else {
+                    vec![asked]
+                };
+                flag(worn.is_some_and(|e| forms.iter().any(|f| e.contains(f))))
+            }
             "GetSelf" => f64::from(on?.0),
             "IsActionRef" => flag(s.action_ref == Some(arg(0).form())),
             "GetActionRef" => f64::from(s.action_ref.map_or(0, |f| f.0)),
@@ -2964,6 +2985,44 @@ impl<'a> Runner<'a> {
             let passed = std::mem::take(timer);
             self.seconds_passed = passed;
             self.run_blocks(q, None, "gamemode", |_| true);
+        }
+    }
+
+    /// A spell cast by a script (`CastImmediateOnSelf`, `Cast`) at
+    /// `target`, and at whoever its area reaches
+    /// ([`crate::magic::area_targets`]). On each, effects of the same spell
+    /// still working are dispelled first (their `ScriptEffectFinish` runs
+    /// if they had started) and the spell's effects take their place
+    /// (`MagicTarget::CheckAddEffect` → `MagicTarget::Dispel`, Xbox PDB,
+    /// for spells other than poisons, powers and the like).
+    pub fn cast(&mut self, spell: FormId, caster: FormId, target: FormId) {
+        let mut reached = vec![target];
+        reached.extend(crate::magic::area_targets(
+            self.order, self.state, spell, caster, target,
+        ));
+        for who in reached {
+            for mut e in crate::magic::remove(self.state, who, spell) {
+                if let Some(script) = e.script.filter(|_| e.started) {
+                    self.run_effect_script(script, &mut e, "scripteffectfinish", 0.0);
+                }
+            }
+            crate::magic::add_spell(self.order, self.state, who, spell, caster, false);
+            // Each effect starts as it's added (`CheckAddEffect` calls the
+            // new effect's start): a script effect's `ScriptEffectStart`
+            // runs now, not at the next update.
+            let mut i = 0;
+            while i < self.state.active_effects.len() {
+                let e = &self.state.active_effects[i];
+                if e.target == who && e.source == spell && !e.started && e.script.is_some() {
+                    let mut e = self.state.active_effects.remove(i);
+                    e.started = true;
+                    if let Some(script) = e.script {
+                        self.run_effect_script(script, &mut e, "scripteffectstart", 0.0);
+                    }
+                    self.state.active_effects.insert(i, e);
+                }
+                i += 1;
+            }
         }
     }
 
@@ -4092,16 +4151,23 @@ impl<'a> Runner<'a> {
                 }
                 let kind = kind as u8;
                 let n = arg(2).number();
-                let by = match name {
-                    "AddReputation" => Some(crate::reputation::bump(self.order, n as i32)?),
-                    "RemoveReputation" => Some(-crate::reputation::bump(self.order, n as i32)?),
-                    "AddReputationExact" => Some(n as f32),
-                    "RemoveReputationExact" => Some(-(n as f32)),
-                    _ => None,
-                };
-                match by {
-                    Some(by) => crate::reputation::change(self.order, self.state, rep, kind, by),
-                    None => crate::reputation::set(self.state, rep, kind, n as f32),
+                let (order, state) = (self.order, &mut *self.state);
+                match name {
+                    "AddReputation" => {
+                        let by = crate::reputation::bump(order, n as i32)?;
+                        crate::reputation::add(order, state, rep, kind, by);
+                    }
+                    "RemoveReputation" => {
+                        let by = crate::reputation::bump(order, n as i32)?;
+                        crate::reputation::remove(order, state, rep, kind, by);
+                    }
+                    "AddReputationExact" => {
+                        crate::reputation::add(order, state, rep, kind, n as f32);
+                    }
+                    "RemoveReputationExact" => {
+                        crate::reputation::remove(order, state, rep, kind, n as f32);
+                    }
+                    _ => crate::reputation::set(state, rep, kind, n as f32),
                 }
             }
             // A faction holds the player as an enemy for their crimes, or
@@ -4329,12 +4395,12 @@ impl<'a> Runner<'a> {
             // someone (`Cast spell target`), given (`AddSpell`), taken off.
             "CastImmediateOnSelf" => {
                 let who = target?;
-                crate::magic::add_spell(self.order, self.state, who, arg(0).form(), who, false);
+                self.cast(arg(0).form(), who, who);
             }
             "Cast" => {
                 let caster = target?;
                 let at = args.get(1).map_or(caster, Value::form);
-                crate::magic::add_spell(self.order, self.state, at, arg(0).form(), caster, false);
+                self.cast(arg(0).form(), caster, at);
             }
             "AddSpell" => {
                 let who = target?;

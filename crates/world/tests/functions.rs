@@ -224,15 +224,22 @@ fn a_fighting_friend_forgives_three_hits_within_ten_seconds() {
         ask(&order, &scripts, &mut state, "AdultRef.GetFriendHit"),
         3.0
     );
-    // The fourth: an assault.
+    // The fourth: an assault. He saw it, so his town (which tracks crime)
+    // holds the player as an enemy from now on (`Actor::AttackAlarm` →
+    // `SetFactionsThatCareAboutCrime`).
     state.seconds = 3.0;
     assert!(world::crime::assault(&order, &mut state, adult_ref));
+    assert!(state.crime_enemies.contains(&FormId(TOWN)));
     // Past `fFriendHitTimer` (10 s) the old hits are gone.
     state.seconds = 20.0;
     assert_eq!(
         ask(&order, &scripts, &mut state, "AdultRef.GetFriendHit"),
         0.0
     );
+    // No longer a friend: no allowance.
+    assert!(world::crime::assault(&order, &mut state, adult_ref));
+    // Forgiven again once the town's flag is cleared.
+    state.crime_enemies.clear();
     assert!(!world::crime::assault(&order, &mut state, adult_ref));
 }
 

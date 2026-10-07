@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 pub mod ai;
 pub mod crafting;
 pub mod dialogue;
+pub mod factions;
 pub mod fighting;
 pub mod functions;
 pub mod impacts;

@@ -1321,7 +1321,14 @@ fn reputation_and_karma_move_as_the_game_moves_them() {
             _ => None,
         })
         .collect();
-    assert_eq!(texts, ["Testville\nFame Gained!", "Accepted"]);
+    // The notice with the exe's words (this world's data has none); the
+    // new title in the game's box: titled with the reputation's name,
+    // "<title>\n<description>".
+    assert_eq!(texts, ["Testville\nReputation Gain"]);
+    assert!(state.events.iter().any(|e| matches!(e,
+        Event::Popup { title: Some(t), text, .. }
+            if t == "Testville"
+                && text == "Accepted\nFolks have come to accept you for your helpful nature.")));
     // Infamy to the top (12 + 12 = 24, clamped at 20): level 3 against fame
     // 1, "Merciful Thug", on the bad axis 3.
     run(
@@ -1378,7 +1385,9 @@ fn stealing_costs_karma_and_a_second_seen_theft_starts_a_fight() {
     // Again the same day: he attacks.
     assert!(crime::steal(&order, &mut state, chest, doc));
     assert_eq!(state.combat.get(&FormId(DOC_REF)), Some(&PLAYER_REF));
-    assert_eq!(state.player_crimes.0, 2);
+    // Thefts count for his town, not for the player's own minor crimes
+    // (`Actor::StealAlarm` counts them on the victim).
+    assert_eq!(state.player_crimes.0, 0);
     // Out of his sight (behind him), nobody sees, but the karma goes.
     let mut unseen = GameState::new(&order);
     unseen.player_cell = Some(FormId(CELL));
