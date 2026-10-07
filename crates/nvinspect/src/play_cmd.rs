@@ -1118,6 +1118,7 @@ pub fn play(
                 title,
                 text,
                 buttons,
+                ..
             } => format!(
                 "message: {}{}{}",
                 title.as_ref().map(|t| format!("{t}: ")).unwrap_or_default(),
@@ -1154,6 +1155,7 @@ pub fn play(
             Event::RepairServices(m) => {
                 format!("{}'s repair services", describe_id(order, *m))
             }
+            Event::TutorialMenu(m) => format!("the tutorial menu: {}", describe_id(order, *m)),
             Event::Casino {
                 game,
                 casino,
@@ -1259,6 +1261,14 @@ pub fn play(
                 if *completed { "completed" } else { "shown" },
                 describe_id(order, *quest)
             ),
+            Event::QuestText(t) => match t {
+                world::quest_text::QuestText::Quest { quest, update } => {
+                    format!("quest {update:?}: {}", describe_id(order, *quest))
+                }
+                world::quest_text::QuestText::Custom(c) => {
+                    format!("quest text: {} / {}", c.title, c.subtitle)
+                }
+            },
         });
     }
     writeln!(out, "\nWhat happened ({} events):", lines.len())?;

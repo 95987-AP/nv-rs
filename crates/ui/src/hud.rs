@@ -37,15 +37,14 @@ pub const MESSAGE_FADE: f32 = 0.35;
 pub const MESSAGE_SECONDS: f32 = 2.0;
 
 /// The HUD's parts whose code isn't followed here yet: enemy health,
-/// quest reminders, hotkeys, the region name, radiation, explosives,
-/// hardcore needs, the breath meter, crippled limbs, the damage threshold
-/// icons and the ammunition type. They're hidden; in normal play the game
-/// draws them all at alpha 0 (every one had alpha 0 in the recorded
-/// frame), so nothing on screen differs until aiming at someone, a quest
-/// update and so on.
-pub const NOT_FOLLOWED: [&str; 13] = [
+/// hotkeys, the region name, radiation, explosives, hardcore needs, the
+/// breath meter, crippled limbs, the damage threshold icons and the
+/// ammunition type. They're hidden; in normal play the game draws them all
+/// at alpha 0 (every one had alpha 0 in the recorded frame), so nothing on
+/// screen differs until aiming at someone and so on. (The quest reminder
+/// is `crate::quest_text`.)
+pub const NOT_FOLLOWED: [&str; 12] = [
     "EnemyHealth",
-    "QuestReminder",
     "Hokeys",
     "Region_Location",
     "RadiationMeter",
@@ -466,6 +465,8 @@ pub struct HudInput {
     /// A menu other than the dialogue menu is open (the XP meter hides and
     /// starts afresh).
     pub menu_open: bool,
+    /// What lets the quest text show (`crate::quest_text::Gate`).
+    pub quest_gate: crate::quest_text::Gate,
 }
 
 /// The weapon in hand.
@@ -537,6 +538,12 @@ pub struct Hud {
     /// The sneak meter's flash started for this [DANGER] (its text tile's
     /// trait 0x1004, `007732d0`).
     sneak_flashing: bool,
+    /// The quest text (`QuestReminder`), when the menu has it.
+    pub quest: Option<crate::quest_text::QuestText>,
+    /// Its game settings.
+    pub quest_timing: crate::quest_text::Timing,
+    /// Sounds the HUD asks for (editor IDs), for the caller to play.
+    pub sounds: Vec<String>,
 }
 
 /// What [`Hud::create`] needs: the menu's text and a file reader for its
@@ -849,6 +856,8 @@ impl Hud {
         }
         // The XP meter (placed with the rest, 0076bfe0).
         let xp = XpMeter::create(ui, menu);
+        // The quest reminder (0076bfe0, after the compass).
+        let quest = crate::quest_text::QuestText::create(ui, menu);
         // The menu shows.
         ui.set_number(menu, t::VISIBLE, 1.0);
 
@@ -916,6 +925,9 @@ impl Hud {
             anims: Animations::default(),
             xp,
             sneak_flashing: false,
+            quest,
+            quest_timing: crate::quest_text::Timing::default(),
+            sounds: Vec::new(),
         })
     }
 
@@ -971,6 +983,21 @@ impl Hud {
             ui.set_string(self.tiles.message_icon, t::FILENAME, &message.icon);
         }
         self.queue.push_back(message);
+    }
+
+    /// Queues a quest's name or custom text for the quest reminder
+    /// (`crate::quest_text::QuestText::queue`); `now` in seconds.
+    pub fn queue_quest(&mut self, notice: crate::quest_text::Notice, now: f32) {
+        if let Some(q) = &mut self.quest {
+            q.queue(notice, f64::from(now) * 1000.0);
+        }
+    }
+
+    /// Queues an objective line for the quest reminder.
+    pub fn queue_objective(&mut self, objective: crate::quest_text::Objective, now: f32) {
+        if let Some(q) = &mut self.quest {
+            q.queue_objective(objective, f64::from(now) * 1000.0);
+        }
     }
 
     /// Hides the pieces another menu's mask leaves out (`00771700`): each
@@ -1146,6 +1173,19 @@ impl Hud {
                     }
                 }
             }
+        }
+
+        // The quest reminder (`0077a650`).
+        if let Some(q) = &mut self.quest {
+            let sounds = q.update(
+                ui,
+                &mut self.anims,
+                f64::from(now),
+                input.opacity,
+                input.quest_gate,
+                &self.quest_timing,
+            );
+            self.sounds.extend(sounds);
         }
 
         // The XP meter and "LEVEL UP" (`0077c4e0`, after the first 200

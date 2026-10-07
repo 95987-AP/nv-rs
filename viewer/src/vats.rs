@@ -255,6 +255,12 @@ impl Vats {
         self.phase != Phase::Off
     }
 
+    /// Whether the menu is up (choosing targets), for the tutorial
+    /// manager (`VATSMenu`, 1056).
+    pub fn in_menu(&self) -> bool {
+        self.phase == Phase::Menu
+    }
+
     /// Whether a camera shot has the view (the first-person model hides).
     pub fn shot_view(&self) -> bool {
         self.shot_camera.is_some()
@@ -590,23 +596,40 @@ pub fn run_vats(
                 // stays open isn't traced; once here).
                 state.more.menu_open = Some(vats::VATS_MENU);
                 Runner::new(order, &scripts.0, state).menu_mode(vats::VATS_MENU);
+                // `VATSMenu::Create` asks for its help over itself
+                // (`007e9200`: `ShowMessage(0x15, 1056, 512)`; 0x1B with
+                // a pad, which V.A.T.S. here doesn't take).
+                world::tutorial::ask(
+                    order,
+                    &mut state.tutorials,
+                    world::tutorial::id::VATS_PC,
+                    world::tutorial::menu::VATS,
+                    world::tutorial::menu::DELAY,
+                );
             }
         }
         Phase::Menu => {
-            let keys_now = MenuKeys {
-                v_pressed: keys.just_pressed(KeyCode::KeyV),
-                v_held: keys.pressed(KeyCode::KeyV),
-                previous_target: keys.just_pressed(KeyCode::KeyA),
-                next_target: keys.just_pressed(KeyCode::KeyD),
-                next_part: keys.just_pressed(KeyCode::KeyW),
-                previous_part: keys.just_pressed(KeyCode::KeyS),
-                queue: mouse.just_pressed(MouseButton::Left),
-                undo: mouse.just_pressed(MouseButton::Right) || keys.just_pressed(KeyCode::KeyB),
-                execute: keys.just_pressed(KeyCode::KeyE),
-                special: [
-                    keys.just_pressed(KeyCode::KeyR),
-                    keys.just_pressed(KeyCode::KeyF),
-                ],
+            // One of the game's menus over it (its help) has the keys and
+            // buttons.
+            let keys_now = if menus.game_open {
+                MenuKeys::default()
+            } else {
+                MenuKeys {
+                    v_pressed: keys.just_pressed(KeyCode::KeyV),
+                    v_held: keys.pressed(KeyCode::KeyV),
+                    previous_target: keys.just_pressed(KeyCode::KeyA),
+                    next_target: keys.just_pressed(KeyCode::KeyD),
+                    next_part: keys.just_pressed(KeyCode::KeyW),
+                    previous_part: keys.just_pressed(KeyCode::KeyS),
+                    queue: mouse.just_pressed(MouseButton::Left),
+                    undo: mouse.just_pressed(MouseButton::Right)
+                        || keys.just_pressed(KeyCode::KeyB),
+                    execute: keys.just_pressed(KeyCode::KeyE),
+                    special: [
+                        keys.just_pressed(KeyCode::KeyR),
+                        keys.just_pressed(KeyCode::KeyF),
+                    ],
+                }
             };
             menu(
                 order,
@@ -682,6 +705,7 @@ pub fn run_vats(
 }
 
 /// The keys the menu reads this frame.
+#[derive(Default)]
 struct MenuKeys {
     v_pressed: bool,
     v_held: bool,

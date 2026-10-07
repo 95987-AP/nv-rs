@@ -392,16 +392,18 @@ impl CaravanMenu {
     }
 
     /// Where the deck screen's scrollbar is (its `_current_value`, which its
-    /// prefab's arrows, wheel and marker drag move), when the player moved
-    /// it away from the chosen card.
-    pub fn meter_moved(&mut self, ui: &mut Ui, chosen: usize) -> Option<usize> {
+    /// prefab's arrows, wheel and marker drag move; `DoIdle` reads it as a
+    /// whole number).
+    pub fn meter(&mut self, ui: &mut Ui) -> Option<usize> {
         let bar = self.tile(id::SCROLLBAR)?;
         let current = ui.names.lookup_or_add("_current_value").unwrap_or(0);
-        let at = ui.number(bar, current).round().max(0.0) as usize;
-        (at != chosen).then(|| {
-            self.values.insert(id::SCROLLBAR, at as i64);
-            at
-        })
+        Some(ui.number(bar, current).max(0.0) as usize)
+    }
+
+    /// The scrollbar's value taken as the code's own (so it isn't set back
+    /// while the cards move to it).
+    pub fn meter_taken(&mut self, at: usize) {
+        self.values.insert(id::SCROLLBAR, at as i64);
     }
 
     /// The track values' places (state 2's end, `00741d4f`): x = the width

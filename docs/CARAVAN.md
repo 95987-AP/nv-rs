@@ -167,7 +167,15 @@ constructor `0073b7e0`).
 - The deck screen: the player's cards sorted by value (out of the deck
   first, then in it; the game's `qsort`), the chosen one in the middle
   (the scrollbar starts at 12); ← / → or a drag move along (a step each, 5
-  or more one fast move); W (A) adds, A (X) removes, F (Y) plays with 30
+  or more one fast move). The drag (state 0, no pad): a mouse button held
+  (`InterfaceManager::fMouseHeldTime`, the interface's +0x48, above 0)
+  notes the scrollbar's value (`+0xaf8`, following `+0xe85`); let go on the
+  deck screen, the cards move by how far the bar moved since, so the bar
+  moved by the wheel with no button held moves no cards (a press on the bar
+  itself, `007492f0`, starts one too). With a pad the left stick (past
+  7849 of 32767) steps a card each update the menu is idle, forward for
+  right, before the arrows and without their guard; on the player's turn
+  it moves as the arrows do (an arrow taking the place of its axis). W (A) adds, A (X) removes, F (Y) plays with 30
   or more (at most 108), S (RB) makes a random deck of 30 (with more than
   30 owned, 30 up to one fewer than all). Steps forward show each card as
   they end; back, the cards are set once for the first step.
@@ -186,7 +194,9 @@ constructor `0073b7e0`).
   each track with marked rows, in track order, and its rows are taken
   without emptying the last (a full seventh row would be left doubled).
 - Sounds (`GAMECaravan…`), the tutorials (`HelpCaravanBetting`,
-  `…DeckBuilding`, `…StartingCaravans`, `…ContractWar`), the results'
+  `…DeckBuilding`, `…StartingCaravans`, `…ContractWar`, ids 0x1E–0x21 of
+  the tutorial manager, [TUTORIALS.md](TUTORIALS.md): opened by the menu
+  itself when not yet shown, the menu waiting until it's on top again), the results'
   `GAMECaravanWin` / `GAMECaravanLose` before the camera goes back.
 
 ## The table
@@ -196,7 +206,9 @@ constructor `0073b7e0`).
 (`0073ea90`) do: every model in one node, as authored (no transform set);
 the camera is the table's own `NiCamera` `object0` (under `Camera01` and
 `Dummy05`, which `Bet_to_Deck`, `Deck_to_Play` and `Play_to_Bet` move),
-with the file's frustum (45° across, 16:9, near 1, far 5000); the lights are
+with the file's frustum (45° across, 16:9, near 1, far 5000), kept on any
+shape of screen and so stretched (nothing in the menu fits it to the
+screen; the viewer's `FileFrustum`); the lights are
 the table's three point lights (also under `Dummy05`, so they move with the
 camera), radius 2.5 × the node's bound radius with only the table in it,
 attenuation zeroed (`00b5ca70`). Poses stay where a model's last sequence
@@ -233,7 +245,7 @@ the effects on the table, the cards written back, the stake paid) and draws
 the table (`viewer/src/caravan_table.rs`). Seen live against Ringo with his
 deck: the ante with its money, the deck screen, the deal and the start of a
 game, the quit box (Yes: lost for the stake, 4 caps paid to Ringo), the
-results back at the betting camera ("Losses to Date: 4", "0/1"). Checks: `world::caravan::tests`,
+results back at the betting camera ("Losses to Date: 4", "0/1"); the betting and deck-building tutorials (closed with E); the deck screen at 1024 × 768 showing the 16:9 frustum stretched (`--screen-size`). Checks: `world::caravan::tests`,
 `world::caravan::ai::tests` (39 whole games each end),
 `world::caravan::menu::tests` (40 whole games through the menu, every
 state reached), `world::caravan::money::tests`,
@@ -241,14 +253,7 @@ state reached), `world::caravan::money::tests`,
 
 ## Not done yet
 
-- The tutorial messages (`HelpCaravanBetting`…): the game's once-only
-  tutorial manager (`007185e0`, `00718840`) isn't here; the menu goes on
-  as if each were read.
-- The camera keeps its 45° across and the window's shape (the game keeps
-  the file's 16:9 frustum on any screen).
-- The deck screen's scrollbar: its arrows, page areas, wheel and marker
-  drag move it (its prefab's operators), and once let go the cards move
-  from the chosen one to it as the game's drag does (a step each up to 4,
-  else one fast move); what starts the game's own drag besides a press on
-  the bar (the interface's +0x48) isn't traced. The gamepad stick. The order money is paid in follows the form IDs here, not the
-  inventory's own order.
+- The order money is paid in follows the form IDs here: the game goes
+  through the loser's inventory list (`0046f310`: the reference's changed
+  entries, then its base container's), and nv-rs keeps no inventory order
+  (`GameState::items` is by holder and form).

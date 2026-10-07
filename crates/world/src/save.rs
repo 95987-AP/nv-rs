@@ -242,6 +242,7 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
         ("unconscious", &state.unconscious),
         ("marker", &state.map_markers),
         ("found", &state.discovered),
+        ("announced", &state.quests_announced),
         ("teammate", &state.teammates),
         ("picked", &state.picked),
     ] {
@@ -455,6 +456,7 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     crate::more_functions::save_lines(state, &mut line);
     crate::caravan::save_lines(state, &mut line);
     crate::casino::save_lines(state, &mut line);
+    crate::tutorial::save_lines(state, &mut line);
     crate::weapon_mods::save_lines(state, &mut line);
     out
 }
@@ -627,6 +629,9 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
             }
             "found" => {
                 state.discovered.insert(form(1)?);
+            }
+            "announced" => {
+                state.quests_announced.insert(form(1)?);
             }
             "teammate" => {
                 state.teammates.insert(form(1)?);
@@ -849,6 +854,7 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                 .or_else(|| crate::more_functions::load_line(&mut state, raw))
                 .or_else(|| crate::caravan::load_line(&mut state, raw))
                 .or_else(|| crate::casino::load_line(&mut state, raw))
+                .or_else(|| crate::tutorial::load_line(&mut state, raw))
                 .or_else(|| crate::weapon_mods::load_line(&mut state, raw))
             {
                 Some(Ok(())) => {}

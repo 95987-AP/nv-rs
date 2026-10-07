@@ -9,6 +9,7 @@ mod ai;
 mod anim_library;
 mod args;
 mod caravan_table;
+mod casino_scene;
 mod chatter;
 mod clutter;
 mod combat;
@@ -188,7 +189,9 @@ fn main() {
     let mut window = Window { title, ..default() };
     if args.screenshot.is_some() {
         // The game's own resolution here, so pictures line up pixel for pixel.
-        window.resolution = WindowResolution::new(1920.0, 1080.0).with_scale_factor_override(1.0);
+        let (w, h) = args.screen_size.unwrap_or((1920, 1080));
+        window.resolution =
+            WindowResolution::new(w as f32, h as f32).with_scale_factor_override(1.0);
     }
     // Walking, except for screenshots, which keep the exact eye given.
     let player = walk::Player::new(args.screenshot.is_none() || args.walk);
@@ -374,6 +377,7 @@ fn main() {
         .add_plugins(clutter::ClutterPlugin)
         .add_plugins(lockpick::LockpickPlugin)
         .add_plugins(caravan_table::CaravanTablePlugin)
+        .add_plugins(casino_scene::CasinoScenePlugin)
         .add_audio_source::<sounds::PcmSound>()
         // The first-person camera runs the image space passes with the
         // main camera's grade, once everything has set it.

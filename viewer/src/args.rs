@@ -31,6 +31,8 @@ OPTIONS:
                             FILE once everything has loaded, then quit
     --wait SECONDS          with --screenshot, let the game run this long
                             first (people walking, scripts)
+    --screen-size W,H       with --screenshot, open at this size instead
+                            (to check other shapes of screen)
     --walk                  walk even with --screenshot (which otherwise
                             flies, keeping the exact eye position given)
     --fps                   print the frame rate every two seconds
@@ -119,7 +121,7 @@ OPTIONS:
                             pixel (screenshots have no mouse)
     --key-at SECONDS KEY[:HOLD]
                             for testing: press a key (a letter or digit,
-                            mouse-left, mouse-right, mouse-x=COUNTS: the
+                            mouse-left, mouse-right, escape, mouse-x=COUNTS: the
                             mouse moving sideways each frame, or
                             wheel=NOTCHES, negative out) that
                             many seconds after you're placed, held HOLD
@@ -247,6 +249,8 @@ pub struct Args {
     pub menu_pointer: Option<(f32, f32)>,
     /// `--key-at`: keys to press: when, and the key (`KEY[:HOLD]`).
     pub key_at: Vec<(f32, String)>,
+    /// `--screen-size`: the screenshot's window size.
+    pub screen_size: Option<(u32, u32)>,
     /// Play the movies scripts ask for (`PlayBink`).
     pub movies: bool,
     /// `--menu-click`: when to click (seconds after starting).
@@ -322,6 +326,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut use_on = None;
     let mut menu_pointer = None;
     let mut key_at = Vec::new();
+    let mut screen_size = None;
     let mut movies = None;
     let mut menu_clicks = Vec::new();
     let mut menu_keys = Vec::new();
@@ -439,6 +444,14 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
                     _ => return Err(format!("--menu-pointer expects X,Y, got '{v}'")),
                 }
             }
+            "--screen-size" => {
+                let v = value("--screen-size")?;
+                let p: Vec<u32> = v.split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                match p[..] {
+                    [w, h] if w > 0 && h > 0 => screen_size = Some((w, h)),
+                    _ => return Err(format!("--screen-size expects W,H, got '{v}'")),
+                }
+            }
             "--menu-keys" => {
                 let v = value("--menu-keys")?;
                 for item in v.split(',') {
@@ -527,6 +540,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             use_on,
             menu_pointer,
             key_at,
+            screen_size,
             movies,
             menu_clicks,
             menu_keys,
@@ -735,6 +749,11 @@ mod tests {
             .unwrap();
         assert_eq!(args.menu_pointer, Some((10.0, 20.5)));
         assert!(parse(&strings(&["Data", "Cell", "--menu-pointer", "10"])).is_err());
+        let args = parse(&strings(&["Data", "Cell", "--screen-size", "1024,768"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(args.screen_size, Some((1024, 768)));
+        assert!(parse(&strings(&["Data", "Cell", "--screen-size", "0,768"])).is_err());
         assert!(parse(&strings(&["Data", "Cell", "--open-menu"])).is_err());
     }
 

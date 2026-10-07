@@ -219,10 +219,12 @@ pub fn after(
                                 .unwrap_or_else(|| "can't carry any more.".into())
                         );
                         println!("{text}");
+                        // Type 2: the sad Vault Boy (`0075dc80`).
                         state.events.push(world::scripting::Event::Message {
                             title: None,
                             text,
                             buttons: Vec::new(),
+                            icon: Some(world::message_icon::SAD.to_string()),
                         });
                         say_topic(order, state, reference, "FollowersOverburdened");
                         continue;

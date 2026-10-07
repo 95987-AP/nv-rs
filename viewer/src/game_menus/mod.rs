@@ -16,7 +16,9 @@
 
 pub mod asks;
 pub mod barter;
+pub mod blackjack;
 pub mod caravan;
+pub mod casino;
 pub mod chargen;
 pub mod companion_wheel;
 pub mod computers;
@@ -27,16 +29,19 @@ pub mod levelup;
 pub(crate) mod message;
 pub mod recipe;
 pub mod repair;
+pub mod roulette;
 pub mod sleepwait;
+pub mod slots;
 pub mod start;
 pub mod textedit;
 pub mod traits;
+pub mod tutorial;
 pub mod vigor;
 
 use std::collections::HashMap;
 
 use bevy::input::keyboard::{Key, KeyboardInput};
-use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::input::ButtonState;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -88,6 +93,8 @@ pub struct Screen {
     quantity_owner: Option<u32>,
     /// The pointer this frame, in menu units.
     pub pointer: Option<(f32, f32)>,
+    /// The mouse's movement this frame, in pixels (roulette's cursor).
+    pub mouse_move: (f32, f32),
     sizes: HashMap<String, Option<(u32, u32)>>,
     atlases: HashMap<String, Option<ui::Atlas>>,
     /// `nif` tiles' models (the start menu's pause background).
@@ -104,6 +111,9 @@ pub enum OpenMenu {
     Repair(Box<repair::RepairScreen>),
     CompanionWheel(Box<companion_wheel::WheelScreen>),
     Caravan(Box<caravan::CaravanScreen>),
+    Slots(Box<slots::SlotsScreen>),
+    Blackjack(Box<blackjack::BlackjackScreen>),
+    Roulette(Box<roulette::RouletteScreen>),
     Quantity(ui::menus::quantity::QuantityMenu),
     LevelUp(Box<ui::menus::levelup::LevelUpMenu>),
     Traits(Box<ui::menus::traits::TraitMenu>),
@@ -114,6 +124,7 @@ pub enum OpenMenu {
     Start(Box<start::StartScreen>),
     Hacking(Box<hacking::HackingScreen>),
     Computers(Box<computers::ComputersScreen>),
+    Tutorial(Box<ui::menus::tutorial::TutorialMenu>),
 }
 
 impl OpenMenu {
@@ -127,6 +138,9 @@ impl OpenMenu {
             OpenMenu::Repair(r) => &mut r.menu,
             OpenMenu::CompanionWheel(w) => &mut w.menu,
             OpenMenu::Caravan(c) => &mut c.menu,
+            OpenMenu::Slots(s) => &mut s.menu,
+            OpenMenu::Blackjack(b) => &mut b.menu,
+            OpenMenu::Roulette(r) => &mut r.menu,
             OpenMenu::Quantity(m) => m,
             OpenMenu::LevelUp(m) => &mut **m,
             OpenMenu::Traits(m) => &mut **m,
@@ -137,6 +151,7 @@ impl OpenMenu {
             OpenMenu::Start(m) => &mut m.menu,
             OpenMenu::Hacking(m) => &mut m.menu,
             OpenMenu::Computers(m) => &mut m.menu,
+            OpenMenu::Tutorial(m) => &mut **m,
         }
     }
 
@@ -150,6 +165,9 @@ impl OpenMenu {
             OpenMenu::Repair(r) => r.menu.menu,
             OpenMenu::CompanionWheel(w) => w.menu.menu,
             OpenMenu::Caravan(c) => c.menu.menu,
+            OpenMenu::Slots(s) => s.menu.menu,
+            OpenMenu::Blackjack(b) => b.menu.menu,
+            OpenMenu::Roulette(r) => r.menu.menu,
             OpenMenu::Quantity(m) => m.menu,
             OpenMenu::LevelUp(m) => m.menu,
             OpenMenu::Traits(m) => m.menu,
@@ -160,6 +178,7 @@ impl OpenMenu {
             OpenMenu::Start(m) => m.menu.menu,
             OpenMenu::Hacking(m) => m.menu.menu,
             OpenMenu::Computers(m) => m.menu.menu,
+            OpenMenu::Tutorial(m) => m.menu,
         }
     }
 
@@ -182,6 +201,9 @@ impl OpenMenu {
             OpenMenu::Repair(r) => r.menu.closed,
             OpenMenu::CompanionWheel(w) => w.menu.closed,
             OpenMenu::Caravan(c) => c.closed,
+            OpenMenu::Slots(s) => s.closed,
+            OpenMenu::Blackjack(b) => b.closed,
+            OpenMenu::Roulette(r) => r.closed,
             OpenMenu::Quantity(m) => m.closed,
             OpenMenu::LevelUp(m) => m.closed,
             OpenMenu::Traits(m) => m.closed,
@@ -194,6 +216,7 @@ impl OpenMenu {
             OpenMenu::Start(m) => m.menu.closed && m.menu.requests.is_empty(),
             OpenMenu::Hacking(m) => m.menu.closed,
             OpenMenu::Computers(m) => m.menu.closed,
+            OpenMenu::Tutorial(m) => m.closed,
         }
     }
 }
@@ -212,6 +235,7 @@ impl Plugin for GameMenusPlugin {
             .init_resource::<FixedClicks>()
             .init_resource::<FixedKeys>()
             .init_resource::<hacking::HackingSounds>()
+            .init_resource::<casino::CasinoLock>()
             .init_resource::<companion_wheel::WheelVoices>()
             .add_systems(
                 Update,
@@ -219,6 +243,7 @@ impl Plugin for GameMenusPlugin {
                     start_menu,
                     escape_opens_start_menu,
                     open_menus,
+                    run_tutorials,
                     run_open_menus,
                     start_menu_frame,
                     draw_menus,
@@ -424,6 +449,7 @@ impl Screen {
             rest_down: false,
             quantity_owner: None,
             pointer: None,
+            mouse_move: (0.0, 0.0),
             sizes: HashMap::new(),
             atlases: HashMap::new(),
             models: HashMap::new(),
@@ -527,6 +553,23 @@ fn screen<'a>(menus: &'a mut GameMenus, game: &Game, size: UVec2) -> Option<&'a 
     menus.screen.as_deref_mut()
 }
 
+/// Whether a menu with a 3D scene drawn under the menus' pictures is open
+/// (Caravan's table, the casino games'): the HUD's camera then blends its
+/// pictures over the scene's (`caravan_table`).
+pub fn scene_open(menus: &GameMenus) -> bool {
+    menus.screen.as_deref().is_some_and(|s| {
+        s.open.iter().any(|m| {
+            matches!(
+                m,
+                OpenMenu::Caravan(_)
+                    | OpenMenu::Slots(_)
+                    | OpenMenu::Blackjack(_)
+                    | OpenMenu::Roulette(_)
+            )
+        })
+    })
+}
+
 /// Whether the game's own menus show a request (the rest are the viewer's
 /// panel, `menus`).
 pub fn takes(m: &crate::menus::Menu) -> bool {
@@ -537,6 +580,9 @@ pub fn takes(m: &crate::menus::Menu) -> bool {
         || repair::takes(m)
         || companion_wheel::takes(m)
         || caravan::takes(m)
+        || slots::takes(m)
+        || blackjack::takes(m)
+        || roulette::takes(m)
         || levelup::takes(m)
         || traits::takes(m)
         || chargen::takes(m)
@@ -545,6 +591,7 @@ pub fn takes(m: &crate::menus::Menu) -> bool {
         || vigor::takes(m)
         || hacking::takes(m)
         || computers::takes(m)
+        || matches!(m, crate::menus::Menu::Tutorial(_))
 }
 
 /// The world's requests become menus.
@@ -577,10 +624,12 @@ fn open_menus(
         let before = screen.open.len();
         if message::takes(&request) {
             message::open(screen, &game.0, request);
+        } else if let crate::menus::Menu::Tutorial(form) = request {
+            tutorial::show_form(screen, &game.0, form);
         } else if hacking::takes(&request) {
-            hacking::open(screen, &game.0, &state.0, request, &hacking_sounds);
+            hacking::open(screen, &game.0, &mut state.0, request, &hacking_sounds);
         } else if computers::takes(&request) {
-            computers::open(screen, &game.0, &state.0, request);
+            computers::open(screen, &game.0, &mut state.0, request);
         } else if vigor::takes(&request) {
             sounds
                 .0
@@ -617,6 +666,18 @@ fn open_menus(
             companion_wheel::open(screen, &game.0, &scripts.0, &mut state.0, request);
         } else if caravan::takes(&request) {
             caravan::open(screen, &game.0, &mut state.0, request);
+        } else if slots::takes(&request) {
+            sounds
+                .0
+                .extend(slots::open(screen, &game.0, &mut state.0, request));
+        } else if blackjack::takes(&request) {
+            sounds
+                .0
+                .extend(blackjack::open(screen, &game.0, &mut state.0, request));
+        } else if roulette::takes(&request) {
+            sounds
+                .0
+                .extend(roulette::open(screen, &game.0, &mut state.0, request));
         } else {
             sounds
                 .0
@@ -636,6 +697,35 @@ fn open_menus(
     }
 }
 
+/// The tutorial manager's update (`007182e0`, in the interface manager's
+/// update): a message it picks opens over the menu it's for
+/// (`tutorial`).
+fn run_tutorials(
+    game: Res<GameFiles>,
+    mut menus: ResMut<GameMenus>,
+    mut queue: ResMut<crate::menus::Menus>,
+    mut state: ResMut<crate::dialogue::DialogueState>,
+    time: Res<Time<bevy::time::Real>>,
+    vats: Option<Res<crate::vats::Vats>>,
+    pipboy: Option<Res<crate::pipboy::Pipboy>>,
+) {
+    let Some(screen) = menus.screen.as_deref_mut() else {
+        return;
+    };
+    let now_ms = time.elapsed_secs_f64() * 1000.0;
+    // The viewer's own menus on top when none of the game's is: the
+    // lockpicking menu, V.A.T.S.'s, the Pip-Boy's.
+    let other = if queue.lockpicking {
+        Some(world::tutorial::menu::LOCKPICK)
+    } else if vats.as_ref().is_some_and(|v| v.in_menu()) {
+        Some(world::tutorial::menu::VATS)
+    } else {
+        pipboy.as_ref().and_then(|p| p.top_class())
+    };
+    tutorial::update(screen, &game.0, &mut state.0, now_ms, other);
+    queue.game_open = !screen.open.is_empty();
+}
+
 /// What the menus need each frame from Bevy: the pointer, buttons, wheel
 /// and keys.
 #[derive(bevy::ecs::system::SystemParam)]
@@ -643,12 +733,14 @@ pub struct MenuInput<'w, 's> {
     windows: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
     mouse: Res<'w, ButtonInput<MouseButton>>,
     scroll: Res<'w, AccumulatedMouseScroll>,
+    motion: Res<'w, AccumulatedMouseMotion>,
     keys: ResMut<'w, ButtonInput<KeyCode>>,
     typed: EventReader<'w, 's, KeyboardInput>,
     time: Res<'w, Time<bevy::time::Real>>,
     fixed: Res<'w, FixedPointer>,
     clicks: ResMut<'w, FixedClicks>,
     fixed_keys: ResMut<'w, FixedKeys>,
+    pads: Query<'w, 's, &'static Gamepad>,
 }
 
 /// A key as the game's interface turns it into a menu code (`007154b0`):
@@ -697,6 +789,7 @@ pub(crate) fn run_open_menus(
     mut hacking_sounds: ResMut<hacking::HackingSounds>,
     mut hud_messages: ResMut<crate::hud::HudMessages>,
     mut wheel_voices: ResMut<companion_wheel::WheelVoices>,
+    mut casino_lock: ResMut<casino::CasinoLock>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         input.typed.clear();
@@ -708,6 +801,22 @@ pub(crate) fn run_open_menus(
     }
     let now = input.time.elapsed_secs_f64();
     let dt = input.time.delta_secs();
+    // The pad's left stick (XInput's ±32767 from Bevy's −1..1) and the
+    // mouse held, for Caravan.
+    let caravan_input = {
+        let axis = |a: GamepadAxis| {
+            let v = input.pads.iter().find_map(|g| g.get(a)).unwrap_or(0.0);
+            (v * 32767.0).round() as i32
+        };
+        caravan::PadInput {
+            pad: !input.pads.is_empty(),
+            stick: [
+                world::caravan::menu::stick_axis(axis(GamepadAxis::LeftStickX)),
+                -world::caravan::menu::stick_axis(axis(GamepadAxis::LeftStickY)),
+            ],
+            mouse_held: input.mouse.pressed(MouseButton::Left),
+        }
+    };
     dialog::update(screen, &game.0.order, dt);
     container::update(screen);
     textedit::update(screen, now * 1000.0);
@@ -722,8 +831,11 @@ pub(crate) fn run_open_menus(
             open,
             rest_down,
             pointer: here,
+            mouse_move,
             ..
         } = &mut *screen;
+        // The mouse's raw movement (roulette's cursor, `00a239e0`).
+        *mouse_move = (input.motion.delta.x, input.motion.delta.y);
         let Some(top) = open.last_mut() else {
             return;
         };
@@ -818,11 +930,14 @@ pub(crate) fn run_open_menus(
                     continue;
                 }
             }
-            // Tab or Escape leave the hacking and terminal menus and the
-            // companion wheel (their code 10).
+            // Tab or Escape leave the hacking and terminal menus, the
+            // companion wheel and the tutorial box (their code 10).
             if matches!(
                 top,
-                OpenMenu::Hacking(_) | OpenMenu::Computers(_) | OpenMenu::CompanionWheel(_)
+                OpenMenu::Hacking(_)
+                    | OpenMenu::Computers(_)
+                    | OpenMenu::CompanionWheel(_)
+                    | OpenMenu::Tutorial(_)
             ) && matches!(e.logical_key, Key::Escape | Key::Tab)
             {
                 use ui::menu::MenuCode;
@@ -838,6 +953,9 @@ pub(crate) fn run_open_menus(
                     OpenMenu::Computers(c) => {
                         c.menu
                             .special_key(ui, ui::menus::computers::LEAVE, now * 1000.0);
+                    }
+                    OpenMenu::Tutorial(t) => {
+                        t.special_key(ui, ui::menus::tutorial::CLOSE_CODE, now * 1000.0);
                     }
                     _ => {}
                 }
@@ -882,9 +1000,19 @@ pub(crate) fn run_open_menus(
                 }
             }
         }
-        // `--menu-keys`: the ones due.
+        // `--menu-keys`: the ones due (`mDX/DY` moves the mouse).
         while let Some(i) = input.fixed_keys.0.iter().position(|(t, _)| *t <= now) {
             let (_, k) = input.fixed_keys.0.remove(i);
+            if let Some((dx, dy)) = k
+                .strip_prefix('m')
+                .and_then(|m| m.split_once('/'))
+                .and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?)))
+            {
+                println!("--menu-keys: the mouse moved {dx}, {dy}");
+                mouse_move.0 += dx;
+                mouse_move.1 += dy;
+                continue;
+            }
             let code = match k.to_ascii_lowercase().as_str() {
                 "left" => Some(ui::menu::key::LEFT),
                 "right" => Some(ui::menu::key::RIGHT),
@@ -914,8 +1042,8 @@ pub(crate) fn run_open_menus(
     }
     // The hacking and terminal menus' frames (`00767c90`, `00758470`),
     // after the pointer.
-    hacking::update(screen, now * 1000.0);
-    computers::update(screen, now * 1000.0);
+    hacking::update(screen, &state.0, now * 1000.0);
+    computers::update(screen, &state.0, now * 1000.0);
     // The sleep/wait menu's frame: its clicks carried out, the hours pass
     // (`007c0580`).
     let rest_held = screen.rest_down;
@@ -936,9 +1064,11 @@ pub(crate) fn run_open_menus(
     sounds
         .0
         .extend(barter::after(screen, &game.0, &mut state.0));
-    hud_messages
-        .queue
-        .extend(recipe::after(screen, &game.0, &mut state.0));
+    hud_messages.queue.extend(
+        recipe::after(screen, &game.0, &mut state.0)
+            .into_iter()
+            .map(Into::into),
+    );
     sounds
         .0
         .extend(repair::after(screen, &game.0, &mut state.0));
@@ -950,9 +1080,42 @@ pub(crate) fn run_open_menus(
         &mut wheel_voices,
         now * 1000.0,
     ));
-    sounds
-        .0
-        .extend(caravan::after(screen, &game.0, &mut state.0, now * 1000.0));
+    sounds.0.extend(caravan::after(
+        screen,
+        &game.0,
+        &mut state.0,
+        now * 1000.0,
+        caravan_input,
+    ));
+    for (played, said) in [
+        slots::after(
+            screen,
+            &game.0,
+            &mut state.0,
+            &mut casino_lock.0,
+            now * 1000.0,
+        ),
+        blackjack::after(
+            screen,
+            &game.0,
+            &mut state.0,
+            &mut casino_lock.0,
+            now * 1000.0,
+        ),
+        roulette::after(
+            screen,
+            &game.0,
+            &mut state.0,
+            &mut casino_lock.0,
+            now * 1000.0,
+        ),
+    ] {
+        sounds.0.extend(played);
+        for m in said {
+            println!("{}", m.text);
+            hud_messages.queue.push(m);
+        }
+    }
     sounds
         .0
         .extend(levelup::after(screen, &game.0, &mut state.0));
@@ -982,7 +1145,7 @@ pub(crate) fn run_open_menus(
         now * 1000.0,
     ) {
         println!("{n}");
-        hud_messages.queue.push(n);
+        hud_messages.queue.push(n.into());
     }
     // Closed menus leave the screen; a service menu closing brings the
     // conversation back (`007640a0`).
@@ -1067,11 +1230,15 @@ pub(crate) fn start_menu_frame(
     mut exit: EventWriter<AppExit>,
     mut music: ResMut<crate::music::Music>,
     mut sounds: ResMut<crate::sounds::SoundRequests>,
+    state: Res<crate::dialogue::DialogueState>,
 ) {
     let Some(screen) = menus.screen.as_deref_mut() else {
         return;
     };
     let out = start::frame(screen, &game.0, &mut settings, time.elapsed_secs_f64());
+    if out.help {
+        tutorial::open_manual(screen, &game.0, &state.0);
+    }
     for s in out.sounds {
         if let Some(id) = game.0.order.form_by_editor_id(&s) {
             sounds.0.push(id);
@@ -1154,6 +1321,12 @@ fn draw_menus(
                 items.extend(ui::draw_list(&mut screen.ui, fader, &mut files, &|_| None));
             }
         }
+        // Every picture's own size (`filewidth` / `fileheight`), as the
+        // game's tile refresh sets it for any picture: the tutorial box's
+        // Vault-Tec symbol and the start menu's title are sized from it.
+        for &menu in &tiles {
+            ui::draw::update_file_sizes(&mut screen.ui, menu, &mut files);
+        }
         for (&menu, &alpha) in tiles.iter().zip(&alphas) {
             let first = items.len();
             let drawn = ui::draw_list(&mut screen.ui, menu, &mut files, &|_| None);
@@ -1186,7 +1359,9 @@ fn draw_menus(
                     .ok()
                     .and_then(|w| w.physical_cursor_position()),
             };
-            match (at, wanted) {
+            // Roulette hides the pointer while it's on top (`007bd2a0`).
+            let hidden = matches!(screen.open.last(), Some(OpenMenu::Roulette(_)));
+            match (at, wanted && !hidden) {
                 (Some(p), true) => {
                     screen.ui.set_number(cursor, t::X, p.x * k);
                     screen.ui.set_number(cursor, t::Y, p.y * k);

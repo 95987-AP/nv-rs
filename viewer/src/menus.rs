@@ -58,6 +58,15 @@ pub enum Menu {
         difficulty: i32,
         share: f32,
     },
+    /// A casino game (`ShowSlotMachineMenuParams`, `ShowBlackJackMenuParams`,
+    /// `ShowRouletteMenuParams`), its `Create` checks passed
+    /// (`game_menus::casino`): the casino, the bets' limits.
+    Casino {
+        game: world::casino::Game,
+        casino: FormId,
+        min_bet: i32,
+        max_bet: i32,
+    },
     /// A computer terminal used (`world::terminal`): its record and the
     /// placed terminal.
     Terminal(FormId, FormId),
@@ -72,6 +81,9 @@ pub enum Menu {
     /// A level gained (`world::experience::level_up`): its skill points to
     /// share out, then a perk on perk levels.
     LevelUp(world::experience::LevelUp),
+    /// A script's `ShowTutorialMenu`: the tutorial menu with this message
+    /// (`game_menus::tutorial::show_form`).
+    Tutorial(FormId),
 }
 
 /// A menu on screen, with what's been chosen so far.
@@ -247,12 +259,14 @@ fn open(
         | Menu::Teammate(..)
         | Menu::CompanionWheel(..)
         | Menu::Caravan { .. }
+        | Menu::Casino { .. }
         | Menu::LevelUp(..)
         | Menu::Character(CharacterMenu::Traits { .. })
         | Menu::Character(CharacterMenu::TagSkills { .. })
         | Menu::Character(CharacterMenu::Name)
         | Menu::Character(CharacterMenu::Special { .. })
-        | Menu::SleepWait { .. } => {
+        | Menu::SleepWait { .. }
+        | Menu::Tutorial(..) => {
             println!("That menu can't be opened: the game's menus aren't available.");
             return None;
         }

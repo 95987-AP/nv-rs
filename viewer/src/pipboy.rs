@@ -611,6 +611,9 @@ pub struct Pipboy {
     drop_asked: Option<u32>,
     /// The number keys (hot keys 1 to 8) held, as their events said.
     hotkeys_held: [bool; 8],
+    /// ITEMS was up last frame (its `InventoryMenu` made: `0077fc10`
+    /// asks for the weapons help as it's made).
+    items_up: bool,
     /// A note's audio playing.
     note: Option<NotePlayback>,
     /// The world map's quest markers.
@@ -628,6 +631,13 @@ impl Pipboy {
     pub fn menu_class(&self) -> Option<i32> {
         let b = self.built.as_ref().filter(|_| self.open)?;
         Some(b.pipboy.class())
+    }
+
+    /// The class of its menu on top while it's up (STATS, ITEMS, DATA,
+    /// or the repair or mod screen over ITEMS), for the tutorial manager.
+    pub fn top_class(&self) -> Option<i32> {
+        let b = self.built.as_ref().filter(|_| self.open)?;
+        Some(b.pipboy.top_class())
     }
 
     /// Whether the game's cursor is hidden over the Pip-Boy (DATA's map
@@ -1137,10 +1147,30 @@ fn pipboy_keys(
         }
     }
 
+    // ITEMS made (`InventoryMenu::Create`, `0077fc10`): it asks for the
+    // weapons help over itself (`ShowMessage(0x22, 1002, 512)`).
+    let items_up = pipboy.open
+        && pipboy
+            .built
+            .as_ref()
+            .is_some_and(|b| b.pipboy.section == Section::Items);
+    if items_up && !pipboy.items_up {
+        use world::tutorial::{ask, id, menu};
+        ask(
+            order,
+            &mut state.0.tutorials,
+            id::WEAPONS,
+            menu::INVENTORY,
+            menu::DELAY,
+        );
+    }
+    pipboy.items_up = items_up;
+
     // One of the game's own menus over the Pip-Boy (the fast-travel
-    // question, "how many?") takes the keys and the mouse, as the game's
-    // interface hands them to the menu on top (`0070f6e0`; how it orders
-    // the Pip-Boy's menus under a box isn't traced further).
+    // question, "how many?", a help message) takes the keys and the
+    // mouse, as the game's interface hands them to the menu on top
+    // (`0070f6e0`; how it orders the Pip-Boy's menus under a box isn't
+    // traced further).
     if pipboy.open && menus.game_open {
         return;
     }
@@ -1363,13 +1393,16 @@ fn pipboy_keys(
         .filter(|_| b.pipboy.section == Section::Stats);
     let state = &mut state.0;
     state.healing_part = aim;
-    let mut say = |text: String| {
+    // A corner message with its picture (`world::message_icon`).
+    let mut say = |text: String, icon: Option<&str>| {
         if text.is_empty() {
             return;
         }
         println!("{text}");
         if messages.on {
-            messages.queue.push(text);
+            messages
+                .queue
+                .push(crate::hud::HudMessage::with_icon(text, icon));
         }
     };
     for action in actions {
@@ -1389,9 +1422,11 @@ fn pipboy_keys(
                 match kind {
                     // A book's own notice (its skill raised) is the
                     // game's.
-                    Some(k) if &k == b"BOOK" => {
-                        say(world::items::read_book(order, state, item).unwrap_or_default())
-                    }
+                    // (`sSkillIncreasedNum`, type 1: very happy.)
+                    Some(k) if &k == b"BOOK" => say(
+                        world::items::read_book(order, state, item).unwrap_or_default(),
+                        world::message_icon::for_setting("sSkillIncreasedNum"),
+                    ),
                     // Aid: no notice (the viewer's own line on the
                     // console only).
                     _ => {
@@ -1414,8 +1449,8 @@ fn pipboy_keys(
                 else {
                     continue;
                 };
-                if let Some(why) = world::map::travel_refused(order, state) {
-                    say(why);
+                if let Some((why, icon)) = world::map::travel_refusal(order, state) {
+                    say(why, Some(icon));
                     continue;
                 }
                 if !world::map::can_travel(state, &m) {
@@ -1479,7 +1514,10 @@ fn pipboy_keys(
                 let in_air = player.walking && !player.character.on_ground;
                 if let Some(setting) = world::items::drop_refusal(order, state, item, false, in_air)
                 {
-                    say(setting_text(pipboy, setting));
+                    say(
+                        setting_text(pipboy, setting),
+                        world::message_icon::for_setting(setting),
+                    );
                     continue;
                 }
                 let count = state.item_count(order, PLAYER_REF, item);
@@ -1513,7 +1551,7 @@ fn pipboy_keys(
                     println!("Hot key {}: {item}.", slot + 1);
                 }
             }
-            Action::Notice(text) => say(text),
+            Action::Notice(text) => say(text, None),
             // `007f8610(0, ±fScrollKnobIncrement, fScrollKnobRate)`.
             Action::ScrollKnob { down } => {
                 if let Some(s) = pipboy.knob_settings {
@@ -1588,6 +1626,10 @@ fn pipboy_keys(
                 if let Some(b) = pipboy.built.as_mut() {
                     b.pipboy.open_item_mod(&mut b.ui, input);
                 }
+            }
+            // `ShowMessage` (`00718630`): ITEMS' tab buttons.
+            Action::Tutorial { id, menu, delay } => {
+                world::tutorial::ask(order, &mut state.tutorials, id, menu, delay);
             }
             // A mod fitted (`007838a0` → `00783af0`): one used up, the
             // sound, the list again.
@@ -2110,12 +2152,17 @@ pub(crate) fn update_pipboy(
         // (`00798a00` hands the marker to the player's travel, `0093be30`).
         if let Some(reference) = pipboy.travel_after_close.take() {
             if let Some(m) = markers.list.iter().find(|m| m.reference.0 == reference) {
+                // A refusal's picture (`0093d660`), looked up before the
+                // trip as `travel` itself refuses.
+                let icon = world::map::travel_refusal(order, &state.0).map(|(_, icon)| icon);
                 match world::map::travel(order, &mut state.0, m) {
                     Ok(_) => println!("Fast travel to {}.", m.name),
                     Err(why) => {
                         println!("{why}");
                         if messages.on {
-                            messages.queue.push(why);
+                            messages
+                                .queue
+                                .push(crate::hud::HudMessage::with_icon(why, icon));
                         }
                     }
                 }

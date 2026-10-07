@@ -34,6 +34,13 @@ Pictures are kept privately in `%USERPROFILE%\nv-re\work\startmenu-2026-10-06`.
 | Back / Escape / click dispatch, meter drags | `007d0e40`, `007cf5e0`, `007ce9b0`, `007cf6a0` |
 | Background: `PauseScreen01.NIF`'s three planes drawn flat (screen x = tile x + 1.3333 × x, y = tile y − 1.3333 × y, far first), `Slide01` additive, `Slide02` multiply, `Glare` additive | NIF properties |
 
+Help (`007d0770`) shows the version tile and opens the help manual in
+the tutorial menu ([TUTORIALS.md](TUTORIALS.md)). The title picture
+(`main_title`, id 3) is sized from its own picture (`filewidth` /
+`fileheight`); the viewer sets those on every open game menu's pictures
+(`game_menus::draw_menus`), as the game's tile refresh does. In the pause
+menu the title is hidden, so nothing there changes.
+
 Saves are the viewer's own text saves ([PERSISTENCE.md](PERSISTENCE.md)):
 quick, auto and numbered `nv-rs-save-NNNN.txt` in the working directory.
 
@@ -44,7 +51,7 @@ Labelled guesses: the black under the background planes; the
 
 Nothing here has been compared side by side with the game. Not
 implemented: Main Menu (the viewer has no main menu: the choice is shown
-and only logs), Help (logs), settings written back to the INI
+and only logs), settings written back to the INI
 (`SavePreferences` does nothing), the Delete path and most settings
 pages beyond Audio not checked live. The controller and rumble rows are
 hidden without a pad (as traced); not checked with one.

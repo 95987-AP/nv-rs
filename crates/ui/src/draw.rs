@@ -6,6 +6,8 @@
 //! source alpha on the picture's stored values, back to front by depth
 //! (read from a recording of the game's HUD).
 
+use std::collections::BTreeMap;
+
 use crate::atlas::Atlas;
 use crate::font::Font;
 use crate::names::{kind, t};
@@ -501,31 +503,76 @@ pub fn draw_list(
                 continue;
             };
             let (x, y) = ui.screen_position(tile);
-            let glyphs: Vec<_> = layout
-                .quads
-                .iter()
-                .filter(|q| q.right > q.left)
-                .filter_map(|q| {
-                    let rect = [x + q.left, y + q.top, q.right - q.left, q.bottom - q.top];
-                    let (rect, uv) = match clip {
-                        Some(c) => clip_quad(rect, q.uv, c)?,
-                        None => (rect, q.uv),
-                    };
-                    Some((rect, uv, q.texture))
-                })
-                .collect();
-            if glyphs.is_empty() {
-                continue;
+            // HTML text can mix fonts: one item for each (`00a19060` makes
+            // a shape for each font), in font order.
+            let mut by_font: BTreeMap<usize, Vec<_>> = BTreeMap::new();
+            for (i, q) in layout.quads.iter().enumerate() {
+                if q.right <= q.left {
+                    continue;
+                }
+                let rect = [x + q.left, y + q.top, q.right - q.left, q.bottom - q.top];
+                let (rect, uv) = match clip {
+                    Some(c) => match clip_quad(rect, q.uv, c) {
+                        Some(r) => r,
+                        None => continue,
+                    },
+                    None => (rect, q.uv),
+                };
+                by_font
+                    .entry(layout.quad_font(i))
+                    .or_default()
+                    .push((rect, uv, q.texture));
             }
-            items.push(DrawItem {
-                tile,
-                depth,
-                color,
-                kind: DrawKind::Text {
-                    font: layout.font,
-                    glyphs,
-                },
-            });
+            for (font, glyphs) in by_font {
+                items.push(DrawItem {
+                    tile,
+                    depth,
+                    color,
+                    kind: DrawKind::Text { font, glyphs },
+                });
+            }
+            // An HTML text's pictures (`00a1a800`): the file as a
+            // picture tile's, its texels one to one.
+            for p in &layout.pictures {
+                let texture = texture_path(&p.file);
+                let Some((tw, th)) = textures.size(&texture) else {
+                    continue;
+                };
+                let rect = [x + p.rect[0], y + p.rect[1], p.rect[2], p.rect[3]];
+                let uv = [
+                    0.0,
+                    0.0,
+                    p.rect[2] / tw.max(1) as f32,
+                    p.rect[3] / th.max(1) as f32,
+                ];
+                let (rect, uv) = match clip {
+                    Some(c) => {
+                        let corners = [
+                            [uv[0], uv[1]],
+                            [uv[2], uv[1]],
+                            [uv[0], uv[3]],
+                            [uv[2], uv[3]],
+                        ];
+                        let Some((r, q)) = clip_quad(rect, corners, c) else {
+                            continue;
+                        };
+                        (r, [q[0][0], q[0][1], q[3][0], q[3][1]])
+                    }
+                    None => (rect, uv),
+                };
+                items.push(DrawItem {
+                    tile,
+                    depth,
+                    color,
+                    kind: DrawKind::Image {
+                        texture,
+                        rect,
+                        uv,
+                        repeat_u: false,
+                        scroll: None,
+                    },
+                });
+            }
             continue;
         }
         let Some((texture, rect, uv)) = image_geometry(ui, tile, textures) else {
@@ -866,5 +913,66 @@ mod tests {
         // Colour 0 isn't registered: the tile's own colour.
         let b = ui.find(m, "b").unwrap();
         assert_eq!(tile_color(&mut ui, b), [0.0, 1.0, 1.0, 1.0]);
+    }
+
+    /// An `ishtml` text tile (`00a21af0` → `00a17390`): its tags aren't
+    /// drawn, each font is its own item, its pictures are drawn, its size
+    /// and page count are the layout's.
+    #[test]
+    fn html_text_by_font_with_its_pictures() {
+        let mut ui = crate::menus::test_support::ui();
+        let m = ui
+            .load_menu(
+                b"<menu name=\"m\"><text name=\"t\"><x>100</x><y>50</y><ishtml>&true;</ishtml><wrapwidth>400</wrapwidth></text>
+                  <text name=\"plain\"></text></menu>",
+                &mut |_| None,
+            )
+            .unwrap();
+        ui.set_number(m, t::VISIBLE, 1.0);
+        let text = ui.find(m, "t").unwrap();
+        let plain = ui.find(m, "plain").unwrap();
+        ui.set_string(
+            text,
+            t::STRING,
+            "<p>AB<font face=2>CD</font><img src=\"Interface\\HUD\\hud_tick_mark.dds\" width=8 height=32>E",
+        );
+        ui.set_string(plain, t::STRING, "<p>AB");
+        let list = draw_list(&mut ui, m, &mut Fake, &|_| None);
+        let fonts: Vec<(usize, usize)> = list
+            .iter()
+            .filter_map(|i| match &i.kind {
+                DrawKind::Text { font, glyphs } if i.tile == text => Some((*font, glyphs.len())),
+                _ => None,
+            })
+            .collect();
+        // A, B and E in font 1, C and D in font 2: no tag drawn.
+        assert_eq!(fonts, [(1, 3), (2, 2)]);
+        let picture = list
+            .iter()
+            .find_map(|i| match &i.kind {
+                DrawKind::Image { texture, rect, .. } if i.tile == text => {
+                    Some((texture.clone(), *rect))
+                }
+                _ => None,
+            })
+            .unwrap();
+        // After four letters 10 wide, standing on the line (35 down).
+        assert_eq!(picture.0, "textures\\interface\\hud\\hud_tick_mark.dds");
+        assert_eq!(picture.1, [140.0, 53.0, 8.0, 32.0]);
+        // One line: five letters and the picture wide, the table's line
+        // height (35) high; one page.
+        assert_eq!(ui.number(text, t::WIDTH), 58.0);
+        assert_eq!(ui.number(text, t::HEIGHT), 35.0);
+        assert_eq!(ui.number(text, t::PAGECOUNT), 1.0);
+        // The same text in a tile without `ishtml` shows its tags.
+        let glyphs = list
+            .iter()
+            .filter(|i| i.tile == plain)
+            .map(|i| match &i.kind {
+                DrawKind::Text { glyphs, .. } => glyphs.len(),
+                _ => 0,
+            })
+            .sum::<usize>();
+        assert_eq!(glyphs, 5);
     }
 }

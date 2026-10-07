@@ -937,6 +937,8 @@ pub fn set_objective(runner: &mut Runner, quest: FormId, index: i32, new: u8) {
                 text,
                 completed: false,
             });
+            // The first shown announces its quest ("Quest added").
+            crate::quest_text::objective_shown(runner.state, quest);
         }
         2 => {
             runner.state.objectives.remove(&key);
@@ -945,7 +947,9 @@ pub fn set_objective(runner: &mut Runner, quest: FormId, index: i32, new: u8) {
         _ => {
             runner.state.objectives.insert(key, true);
             runner.state.set_by_scripts.hidden_completed.remove(&key);
-            if shown {
+            // Only for an objective that was shown, of a quest not
+            // completed (`005ec5d0`).
+            if shown && !runner.state.completed.contains(&quest) {
                 let text = objective_text(runner, quest, index);
                 runner.state.events.push(Event::Objective {
                     quest,
@@ -1386,6 +1390,7 @@ fn carry_out(
                 st.variables.remove(&quest);
                 st.completed.remove(&quest);
                 st.failed.remove(&quest);
+                st.quests_announced.remove(&quest);
                 st.quest_timers.remove(&quest);
                 let starts = order
                     .get(quest)

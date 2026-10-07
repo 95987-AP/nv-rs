@@ -76,10 +76,16 @@ fn a_greeting_and_the_quest_script_carry_the_quest_through() {
                 text: "Talk to the doctor.".into(),
                 completed: false
             },
+            // Its first objective shown: "Quest added" (`005ec5d0`).
+            Event::QuestText(world::quest_text::QuestText::Quest {
+                quest: FormId(QUEST),
+                update: world::quest_text::Update::Added
+            }),
             Event::Message {
                 title: Some("Note".into()),
                 text: "Hello there.".into(),
                 buttons: vec![],
+                icon: None,
             },
         ]
     );
@@ -998,12 +1004,25 @@ fn locks_keys_and_terminals() {
         locks::try_open(&order, &mut state, strongbox),
         Opening::NeedsSkill(50)
     );
-    // With the key it opens, and stays unlocked.
+    // With the key it opens, and stays unlocked: "Unlocked with <key>."
+    // with the key picture (`005180b0`, `00516dc0`).
+    state.events.clear();
     state.items.insert((PLAYER_REF, FormId(KEY)), 1);
     assert_eq!(
         locks::try_open(&order, &mut state, strongbox),
         Opening::WithKey
     );
+    let unlocked: Vec<_> = state
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Message { text, icon, .. } => Some((text.clone(), icon.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(unlocked.len(), 1, "{unlocked:?}");
+    assert!(unlocked[0].0.starts_with("Unlocked with "), "{unlocked:?}");
+    assert_eq!(unlocked[0].1.as_deref(), Some(world::message_icon::KEY));
     assert_eq!(
         ask(&order, &scripts, &mut state, "StrongboxRef.GetLocked"),
         0.0
@@ -1322,6 +1341,20 @@ fn reputation_and_karma_move_as_the_game_moves_them() {
         })
         .collect();
     assert_eq!(texts, ["Testville\nFame Gained!", "Accepted"]);
+    // Fame gained has the very happy Vault Boy (`sRepPositiveGainIcon`);
+    // the new title none of its own here.
+    let icons: Vec<Option<String>> = state
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Message { icon, .. } => Some(icon.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        icons,
+        [Some(world::message_icon::VERY_HAPPY.to_string()), None]
+    );
     // Infamy to the top (12 + 12 = 24, clamped at 20): level 3 against fame
     // 1, "Merciful Thug", on the bad axis 3.
     run(
@@ -1827,6 +1860,7 @@ fn message_boxes_ask_and_the_character_is_made() {
             title: Some("Choose".into()),
             text: "You have 5 caps (50%).".into(),
             buttons: vec![(0, "First".into()), (2, "Third".into())],
+            icon: None,
         })
     );
     // Nothing pressed yet: -1. Pressed: given once.

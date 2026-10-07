@@ -187,10 +187,12 @@ pub(crate) fn change(
                 let sleep = arg(0) != 0.0;
                 if arg(1) == 1.0 {
                     if let Err(why) = sleep::may_wait(order, runner.state) {
+                        // Every refusal has the sad Vault Boy (`00969fa0`).
                         runner.state.events.push(crate::scripting::Event::Message {
                             title: None,
                             text: why,
                             buttons: Vec::new(),
+                            icon: Some(crate::message_icon::SAD.to_string()),
                         });
                         return Some(1.0);
                     }
@@ -338,12 +340,14 @@ pub(crate) fn setting(order: &esm::LoadOrder, name: &str, exe: f32) -> f32 {
     crate::scripting::game_setting(order, name).unwrap_or(exe)
 }
 
-/// A notice on the screen (the game's HUD message, `007052f0`).
-pub(crate) fn notice(state: &mut GameState, text: String) {
+/// A notice on the screen (the game's HUD message, `007052f0`) with its
+/// picture (`world::message_icon`).
+pub(crate) fn notice_with(state: &mut GameState, text: String, icon: Option<&str>) {
     state.events.push(crate::scripting::Event::Message {
         title: None,
         text,
         buttons: Vec::new(),
+        icon: icon.map(str::to_string),
     });
 }
 

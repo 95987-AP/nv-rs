@@ -109,6 +109,15 @@ pub fn open(screen: &mut Screen, game: &Game, state: &mut GameState, request: Me
         recipes,
         making: None,
     })));
+    // The crafting tutorial, once (`00726ff0`: the message by editor ID,
+    // marked as id 0x26; the menu doesn't wait on it).
+    super::tutorial::show_once(
+        screen,
+        game,
+        state,
+        world::tutorial::id::RECIPE,
+        "HelpCrafting",
+    );
 }
 
 /// The right side for a recipe (`00727b10` with a recipe line).

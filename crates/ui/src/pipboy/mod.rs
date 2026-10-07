@@ -399,6 +399,14 @@ pub enum Action {
         weapon: u32,
         item: u32,
     },
+    /// Ask the tutorial manager for a help message (`ShowMessage(id,
+    /// menu, delay)`, `00718630`): ITEMS' Apparel and Ammo tabs
+    /// (`00780140`).
+    Tutorial {
+        id: u8,
+        menu: i32,
+        delay: u32,
+    },
 }
 
 /// A tile found by its `id` in a menu (the menu objects keep their tiles
@@ -470,6 +478,10 @@ pub struct Pipboy {
 pub const STATS_CLASS: i32 = 0x3eb;
 pub const ITEMS_CLASS: i32 = 0x3ea;
 pub const DATA_CLASS: i32 = 0x3ff;
+/// `RepairMenu` 1035 (`007b5720`) and `ItemModMenu` 1061 (`00783640`),
+/// over ITEMS.
+pub const REPAIR_CLASS: i32 = 0x40b;
+pub const ITEM_MOD_CLASS: i32 = 0x425;
 
 /// The left mouse button this frame, as `0070c4a0` reads it
 /// (`00a23a50(0, 0 / 1 / 2)`: held, gone down, come up).
@@ -587,6 +599,18 @@ impl Pipboy {
             Section::Stats => STATS_CLASS,
             Section::Items => ITEMS_CLASS,
             Section::Data => DATA_CLASS,
+        }
+    }
+
+    /// The class of the menu on top: the repair or mod screen over ITEMS,
+    /// else the shown menu's.
+    pub fn top_class(&self) -> i32 {
+        if self.repair.is_some() && self.repairing {
+            REPAIR_CLASS
+        } else if self.item_mod.is_some() && self.modding {
+            ITEM_MOD_CLASS
+        } else {
+            self.class()
         }
     }
 
@@ -1289,9 +1313,18 @@ pub(crate) mod tests {
         assert_eq!(out, [sound("UIMenuFocus")]);
         p.pointer(&mut ui, Some([250.0, 610.0]), PRESS, 0.0, &input);
         let out = p.pointer(&mut ui, Some([250.0, 610.0]), RELEASE, 0.0, &input);
-        assert_eq!(out, [sound("UIPipBoyTab")]);
+        let apparel_help = Action::Tutorial {
+            id: 0x23,
+            menu: ITEMS_CLASS,
+            delay: 512,
+        };
+        assert_eq!(out, [sound("UIPipBoyTab"), apparel_help.clone()]);
         assert_eq!(p.items.tab, 1);
         assert_eq!(p.items.shown, [0xB1]);
+        // Pressed again: no turn, the help asked for all the same.
+        p.pointer(&mut ui, Some([250.0, 610.0]), PRESS, 0.0, &input);
+        let out = p.pointer(&mut ui, Some([250.0, 610.0]), RELEASE, 0.0, &input);
+        assert_eq!(out, [apparel_help]);
     }
 
     /// `007f8720` / `0070c4a0`: the model's DATA button shows DATA with

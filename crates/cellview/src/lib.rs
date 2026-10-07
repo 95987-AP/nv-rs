@@ -15,6 +15,7 @@
 //! # Ok::<(), cellview::Error>(())
 //! ```
 
+pub mod blackjack;
 pub mod caravan;
 pub mod game;
 pub mod grass;
@@ -22,6 +23,7 @@ pub mod impacts;
 pub mod lockpick;
 pub mod music;
 pub mod particles;
+pub mod roulette;
 pub mod slots;
 pub mod sound;
 pub mod space;
