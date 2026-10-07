@@ -295,8 +295,20 @@ Checks: `crates/world/tests/companions.rs` (`nerve`,
 `ui::menus::companion_wheel::tests::choosing_with_the_stick`,
 `ui::menus::container::tests::a_companions_line_on_the_subtitle`.
 
+Seen in the viewer (2026-10-07, Mojave Outpost barracks): with Cass made
+a teammate and given reinforced leather armour, opening and closing her
+things (`--open-menu teammate:RoseofSharonCassidyREF`, space) logs her
+putting on her hat and the armour (`00135F19 puts on 0015EF8B`,
+`… 001264FE`); with her hired (`bCassHired`, `SetPlayerTeammate 1`,
+`Waiting` 0), `player.moveto MojaveOutpostMapMarker` brings her out with
+the player (`00135F19 comes along with the player`, then `comes into
+view` outside, standing on the player's spot).
+
 ## Not done
 
+- The viewer draws people in their record's clothes
+  (`world::placement_of`): what a companion puts on after trading is in
+  the state but not shown on them.
 - A companion's weapon picked after trading (`004c7400` by `00645380`'s
   damage per second), and a creature companion's (`005f9e00`).
 - The navmesh spot behind the player that those coming along are put on
