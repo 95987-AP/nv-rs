@@ -635,6 +635,7 @@ pub struct MenuInput<'w, 's> {
     fixed: Res<'w, FixedPointer>,
     clicks: ResMut<'w, FixedClicks>,
     fixed_keys: ResMut<'w, FixedKeys>,
+    pads: Query<'w, 's, &'static Gamepad>,
 }
 
 /// A key as the game's interface turns it into a menu code (`007154b0`):
@@ -695,10 +696,11 @@ pub(crate) fn run_open_menus(
     let now = input.time.elapsed_secs_f64();
     let dt = input.time.delta_secs();
     dialog::update(screen, &game.0.order, dt);
-    container::update(screen);
+    container::update(screen, now * 1000.0);
     textedit::update(screen, now * 1000.0);
     vigor::update(screen, dt);
     companion_wheel::update(screen, &mut wheel_voices, now * 1000.0);
+    companion_wheel::stick(screen, input.pads.iter().next().map(|p| p.left_stick()));
     // The Rest control (T) this frame, for the sleep/wait menu.
     let mut rest_pressed = false;
     {
@@ -916,9 +918,14 @@ pub(crate) fn run_open_menus(
     // What the menus did.
     let order = &game.0.order;
     message::after(&mut screen.open, &mut state.0, &mut sounds, order);
-    sounds
-        .0
-        .extend(container::after(screen, &game.0, &scripts.0, &mut state.0));
+    sounds.0.extend(container::after(
+        screen,
+        &game.0,
+        &scripts.0,
+        &mut state.0,
+        &mut wheel_voices,
+        now * 1000.0,
+    ));
     sounds
         .0
         .extend(barter::after(screen, &game.0, &mut state.0));

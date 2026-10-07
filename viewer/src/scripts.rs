@@ -1410,6 +1410,10 @@ pub fn run_scripts(
                 waiting.push(crate::menus::Menu::Teammate(who));
                 None
             }
+            Event::BackUp(who) => {
+                println!("{who} steps back from the player (default package 0x27): not carried out here.");
+                None
+            }
             Event::Casino {
                 game,
                 casino,

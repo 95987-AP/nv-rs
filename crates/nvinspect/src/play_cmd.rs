@@ -1141,6 +1141,7 @@ pub fn play(
             Event::TeammateContainer(m) => {
                 format!("trading things with {}", describe_id(order, *m))
             }
+            Event::BackUp(m) => format!("{} steps back from the player", describe_id(order, *m)),
             Event::Caravan {
                 npc,
                 deck,

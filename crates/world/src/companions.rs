@@ -113,9 +113,20 @@ pub fn wheel_allowed(order: &LoadOrder, state: &GameState, who: FormId) -> bool 
     !crate::factions::attacks_on_sight(order, state, who, PLAYER_REF)
 }
 
-/// A companion says their line for a topic (`007573d0`) and, with
-/// `run_scripts`, its result scripts run on them at once (`007575b0`: the
-/// begin script, then the end script). The line said, if they have one.
+/// A companion says their line for a topic (`007573d0`, as the container
+/// menu's bark `0075ec60`): the topic's line for them and the player
+/// (`0061a720`), whose first response is voiced and put on the menu's
+/// subtitle. With `run_scripts` the line is picked **again** (`007575b0`
+/// calls `0061a720` itself) and that one's result scripts run on them at
+/// once: the begin script, then the end script, straight through the
+/// script runner (`005ac1e0`). Neither path goes through the dialogue's
+/// own result-script call (`0061f170`, which also marks a say-once line
+/// said for an actor, `00935920`), so a line said here isn't marked said,
+/// its topics aren't added and the companion isn't counted as talked to.
+/// The line said, if they have one.
+///
+/// Translated from 007573d0, 007575b0 (decompiled, FalloutNV.exe
+/// 1.4.0.525).
 pub fn say_topic(
     order: &LoadOrder,
     scripts: &ScriptCache,
@@ -127,17 +138,58 @@ pub fn say_topic(
     let topic = order.form_by_editor_id(topic)?;
     let base = base_of(order, who)?;
     let speaker = Speaker::load(order, who, base)?;
-    let info = crate::dialogue::pick(order, topic, &speaker, state)?;
-    crate::dialogue::line_begins(state, &info, who);
+    let said = crate::dialogue::pick(order, topic, &speaker, state);
     if run_scripts {
-        for source in [info.begin_script.as_deref(), info.end_script.as_deref()]
-            .into_iter()
-            .flatten()
-        {
-            Runner::new(order, scripts, state).run_source(source, Some(who), Some(who));
+        if let Some(info) = crate::dialogue::pick(order, topic, &speaker, state) {
+            for source in [info.begin_script.as_deref(), info.end_script.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                Runner::new(order, scripts, state).run_source(source, Some(who), Some(who));
+            }
         }
     }
-    Some(info)
+    said
+}
+
+/// The wheel's Back Up (`00756930` → `008a7760`,
+/// `Actor::InitiateBackUpPackage` (Xbox PDB)): the companion's default
+/// package 0x27, a `BackUpPackage` aimed at the player, put on them
+/// ([`crate::scripting::Event::BackUp`]; packages are the AI's).
+pub fn back_up(state: &mut GameState, who: FormId) {
+    state.events.push(crate::scripting::Event::BackUp(who));
+}
+
+/// Charisma's actor value.
+const CHARISMA: u16 = 8;
+
+/// Nerve: what the player's Charisma does for their teammates' fighting.
+/// For the player's teammate (actor `+0x18d`, `00566950`) 1 + 0.05 × the
+/// player's Charisma as the game asks it (`0066ef50(8)` on the player:
+/// the value now, kept within 1 to 10 by `0066f190` since Charisma's
+/// flags are 0x8009, `0066f260`); 1 for anyone else. It multiplies:
+/// - a teammate's weapon or fists damage (`00644ce0`, the last factor),
+///   and their melee, unarmed and creature attacks' damage once more as
+///   the hit is made (`009b5170`; a shot's, `009b5650`, isn't);
+/// - a teammate's damage resistance (its share out of 100) and damage
+///   threshold when they're hit (`009b5a30`, before the ammunition's
+///   effects and the `fMaxArmorRating` limit).
+///
+/// Translated from 00644ce0, 009b5170, 009b5a30 (decompiled,
+/// FalloutNV.exe 1.4.0.525).
+pub fn nerve(order: &LoadOrder, state: &GameState, who: FormId) -> f32 {
+    if who == PLAYER_REF || !state.teammates.contains(&who) {
+        return 1.0;
+    }
+    let charisma = crate::scripting::Facts {
+        order,
+        state,
+        speaker: None,
+    }
+    .current_actor_value(PLAYER_REF, CHARISMA)
+    .unwrap_or(0.0)
+    .clamp(1.0, 10.0) as f32;
+    charisma * 0.05 + 1.0
 }
 
 /// The Stimpak (`DOBJ` default object 0).

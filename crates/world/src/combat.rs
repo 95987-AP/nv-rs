@@ -341,7 +341,9 @@ pub struct Hit {
 /// (`fAVDUnarmedDamageBase` 0.5 + `…Mult` 0.05 × Unarmed) for
 /// hand-to-hand and fists; C = 1 above 75% condition, else 1 − 0.67 ×
 /// (0.75 − condition) (the `fDamage…WeapCond…` settings aren't used for
-/// this). `power` is `fDamagePowerAttackBonus` (2) for a power attack.
+/// this). `power` is `fDamagePowerAttackBonus` (2) for a power attack. A
+/// player's teammate's damage is also × their Nerve
+/// ([`crate::companions::nerve`]).
 pub fn weapon_damage(
     order: &LoadOrder,
     state: &GameState,
@@ -424,7 +426,9 @@ pub fn weapon_damage_at(
         1.0 - 0.67 * (0.75 - condition)
     };
     let scale = state.scales.get(&attacker).copied().unwrap_or(1.0);
-    (base * skill_factor * power + added) * condition * scale
+    // A teammate's Nerve (`00644ce0`'s last factor).
+    let nerve = crate::companions::nerve(order, state, attacker);
+    (base * skill_factor * power + added) * condition * scale * nerve
 }
 
 /// [`weapon_damage`] for a weapon, without a power attack.
@@ -573,7 +577,9 @@ pub fn with_ammo(effects: &[(u32, u32, f32)], kind: u32, value: f32) -> f32 {
 /// actor value and worn armour's, after the ammunition's threshold
 /// effects, then the perks': see [`hit_through_armour`]), then the
 /// ammunition's damage effects (hollow points × 1.75: after the
-/// threshold, as the game does it). With no attacker: nobody's perks.
+/// threshold, as the game does it). With no attacker: nobody's perks. A
+/// player's teammate's resistance and threshold are × their Nerve
+/// ([`crate::companions::nerve`]).
 pub fn through_armour(
     order: &LoadOrder,
     state: &GameState,
@@ -632,10 +638,13 @@ pub fn armour_hit(
     let setting = |n: &str, default: f32| game_setting(order, n).unwrap_or(default);
     let effects = ammo.map(|a| ammo_effects(order, a)).unwrap_or_default();
     let least = damage * setting("fMinDamMultiplier", 0.2);
+    // A teammate's Nerve raises both, before the ammunition's effects
+    // (`009b5a30`).
+    let nerve = crate::companions::nerve(order, state, target);
     let resist = with_ammo(
         &effects,
         1,
-        damage_resistance(order, state, target).min(100.0),
+        damage_resistance(order, state, target).min(100.0) * nerve,
     );
     let resist = (resist / 100.0)
         .min(setting("fMaxArmorRating", 85.0) / 100.0)
@@ -643,7 +652,7 @@ pub fn armour_hit(
     let mut threshold = with_ammo(
         &effects,
         2,
-        worn_damage_threshold(order, state, target).max(0.0),
+        worn_damage_threshold(order, state, target).max(0.0) * nerve,
     );
     if let Some((who, weapon)) = attacker {
         // A block adds the blocker's skill to the threshold, before the

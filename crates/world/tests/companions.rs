@@ -108,6 +108,15 @@ fn the_companion_wheel() {
     assert_eq!(info.responses[0].text, "I'll sit tight.");
     assert!(companions::switches(&order, &scripts, &state, doc).waiting);
     assert_eq!(state.globals.get(&FormId(GLOBAL)), Some(&7.0));
+    // Not through the dialogue's own result-script call (`0061f170`): the
+    // line isn't marked said, nor he talked to.
+    assert!(!state.said.contains(&FormId(WAIT_LINE)));
+    assert!(!state.talked_to.contains(&doc));
+
+    // Back Up (`008a7760`): the hook for the AI's default package.
+    state.events.clear();
+    companions::back_up(&mut state, doc);
+    assert_eq!(state.events, vec![Event::BackUp(doc)]);
 
     // The Stimpak: none, then one; not hurt, nothing.
     assert!(!companions::heal_with_stimpak(&order, &mut state, doc));
@@ -131,4 +140,59 @@ fn the_companion_wheel() {
     state.value_damage.insert((doc, 29), 100.0);
     assert!(companions::heal_with_stimpak(&order, &mut state, doc));
     assert!(!state.value_damage.contains_key(&(doc, 29)));
+}
+
+/// Nerve (`00644ce0`, `009b5170`, `009b5a30`): a teammate's damage, and
+/// their resistance and threshold when hit, × 1 + 0.05 × the player's
+/// Charisma (kept within 1 to 10).
+#[test]
+fn nerve() {
+    use world::combat;
+    use world::companions;
+    let (_data, order) = order("companions-nerve");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let doc = FormId(DOC_REF);
+    let player = world::dialogue::PLAYER_REF;
+    state.actor_values.insert((player, 8), 6.0);
+    assert_eq!(companions::nerve(&order, &state, doc), 1.0);
+    let rifle = combat::Weapon::load(&order, FormId(RIFLE)).unwrap();
+    let plain = combat::weapon_damage(&order, &state, doc, Some(&rifle), false);
+    let plain_armour = combat::through_armour(&order, &state, 100.0, doc, None);
+    let mut fists = state.clone();
+    let plain_punch = Runner::new(&order, &scripts, &mut fists)
+        .hit(doc, FormId(GECKO_REF), None)
+        .unwrap();
+
+    state.teammates.insert(doc);
+    assert!((companions::nerve(&order, &state, doc) - 1.3).abs() < 1e-6);
+    // The player isn't their own teammate.
+    assert_eq!(companions::nerve(&order, &state, player), 1.0);
+    let nervy = combat::weapon_damage(&order, &state, doc, Some(&rifle), false);
+    assert!((nervy - plain * 1.3).abs() < 1e-3, "{plain} {nervy}");
+    // Fists: `00644ce0`'s Nerve and `009b5170`'s (the same dice).
+    let mut fists = state.clone();
+    let punch = Runner::new(&order, &scripts, &mut fists)
+        .hit(doc, FormId(GECKO_REF), None)
+        .unwrap();
+    assert!(
+        (punch - plain_punch * 1.3 * 1.3).abs() < 1e-3,
+        "{plain_punch} {punch}"
+    );
+
+    // Hit: resistance 20 and threshold 4 become 26 and 5.2.
+    state.actor_values.insert((doc, 18), 20.0);
+    state.actor_values.insert((doc, 76), 4.0);
+    let hit = combat::through_armour(&order, &state, 100.0, doc, None);
+    assert!((hit - (100.0 * (1.0 - 0.26) - 5.2)).abs() < 1e-3, "{hit}");
+    state.teammates.remove(&doc);
+    let hit = combat::through_armour(&order, &state, 100.0, doc, None);
+    assert!((hit - 76.0).abs() < 1e-3, "{hit} {plain_armour}");
+
+    // Charisma within 1 to 10.
+    state.teammates.insert(doc);
+    state.actor_values.insert((player, 8), 0.0);
+    assert!((companions::nerve(&order, &state, doc) - 1.05).abs() < 1e-6);
+    state.actor_values.insert((player, 8), 14.0);
+    assert!((companions::nerve(&order, &state, doc) - 1.5).abs() < 1e-6);
 }

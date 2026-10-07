@@ -1169,6 +1169,11 @@ pub enum Event {
     /// `OpenTeammateContainer`: trading things with a companion (the
     /// container menu's mode 3).
     TeammateContainer(FormId),
+    /// The companion wheel's Back Up (`00756930` → `008a7760`,
+    /// `Actor::InitiateBackUpPackage` (Xbox PDB)): the companion is given
+    /// their default package 0x27 (a `BackUpPackage`, away from the
+    /// player). Packages are the AI's to carry out.
+    BackUp(FormId),
     /// `ShowCaravanMenu`: a game of Caravan against this person with their
     /// deck, the AI's difficulty and the share of their funds they bet
     /// (`world::caravan`).
@@ -3226,6 +3231,12 @@ impl<'a> Runner<'a> {
         };
         // V.A.T.S.'s melee moves and automatic melee weapons (`world::vats`).
         damage *= crate::vats::attack_damage_mult(order, self.state, attacker, weapon);
+        // A teammate's Nerve once more for a melee, unarmed or creature
+        // attack (`009b5170`; on top of `00644ce0`'s for weapons and
+        // fists); a shot's damage (`009b5650`) has it once.
+        if weapon.map_or(true, |w| w.is_melee()) {
+            damage *= crate::companions::nerve(order, self.state, attacker);
+        }
         let sneak = attacker == PLAYER_REF
             && self.state.player_sneaking
             && self
