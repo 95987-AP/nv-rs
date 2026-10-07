@@ -378,9 +378,12 @@ pub(crate) fn melee_met(
     reach: f32,
     now: f32,
 ) -> Met {
+    // A body its critical stage ended has no collision left (`008a1a70` →
+    // `0057b520(0)`, `world::more_functions::body_gone`): no swing meets it.
     let near: Vec<world::melee::Body> = talkers
         .0
         .iter()
+        .filter(|t| !world::more_functions::body_gone(state, t.reference))
         .map(|t| {
             let rig = rigs.iter().find(|(w, _)| w.reference == t.reference);
             world::melee::Body {
@@ -486,8 +489,9 @@ pub(crate) fn meetable(
     r.script.is_some()
         && r.trigger.is_none()
         && world::enabled_now(order, r.reference, &state.disabled)
-        // A body its critical stage culled (`00450f90(1)` on its 3D,
-        // `world::more_functions::body_gone`) has nothing left to meet.
+        // A body its critical stage ended has its collision taken out
+        // (`008a1a70` → `0057b520(0)`) and its 3D culled (`00450f90(1)`,
+        // `world::more_functions::body_gone`): nothing left to meet.
         && !world::more_functions::body_gone(state, r.reference)
 }
 
@@ -1511,6 +1515,39 @@ mod tests {
             ragdoll: None,
         };
         (Walker::new(&actor), rig, data)
+    }
+
+    #[test]
+    fn a_body_its_critical_stage_culled_offers_the_crosshair_nothing() {
+        use bevy::ecs::system::RunSystemOnce;
+        // 008a1a70: stages 2 and 4 take the collision out (0057b520(0)).
+        let (walker, mut rig, _) = person(true);
+        let who = walker.reference;
+        assert!(rig.go_limp(0.0, walker.placement(), None, None));
+        let mut app = World::new();
+        app.spawn((walker, rig));
+        let shapes = |stage: Option<i32>| {
+            let mut state = world::scripting::GameState::default();
+            state.dead.insert(who);
+            if let Some(s) = stage {
+                state.more.critical_stage.insert(who, s);
+            }
+            move |rigs: Query<(&Walker, &ActorRig)>| {
+                let talkers = Talkers(vec![crate::dialogue::Talker {
+                    reference: who,
+                    base: FormId(0x1235),
+                    position: [0.0; 3],
+                }]);
+                crate::crosshair::people_shapes(&talkers, &state, &rigs).len()
+            }
+        };
+        // Dead, whole: the ragdoll's one body.
+        assert_eq!(app.run_system_once(shapes(None)).unwrap(), 1);
+        // Disintegrated or gooed: nothing.
+        let end = world::more_functions::DISINTEGRATE_END;
+        assert_eq!(app.run_system_once(shapes(Some(end))).unwrap(), 0);
+        let goo = world::more_functions::GOO_END;
+        assert_eq!(app.run_system_once(shapes(Some(goo))).unwrap(), 0);
     }
 
     #[test]

@@ -540,8 +540,9 @@ pub const GOO_END: i32 = 2;
 pub const DISINTEGRATE_END: i32 = 4;
 
 /// Whether someone's body is gone (critical stage [`GOO_END`] or
-/// [`DISINTEGRATE_END`]: `008a1a70` culls its 3D), for the viewer to stop
-/// drawing it.
+/// [`DISINTEGRATE_END`]: `008a1a70` takes its collision out of the Havok
+/// world, `0057b520(0)`, and culls its 3D), for the viewer to stop
+/// drawing it and letting shots, swings and the crosshair meet it.
 pub fn body_gone(state: &GameState, who: FormId) -> bool {
     matches!(
         state.more.critical_stage.get(&who),

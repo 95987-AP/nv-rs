@@ -45,7 +45,7 @@ impl Crosshair {
 
 /// The people's shapes for the pick: the living's controllers, the dead's
 /// ragdoll capsules.
-fn people_shapes(
+pub(crate) fn people_shapes(
     talkers: &Talkers,
     state: &world::scripting::GameState,
     rigs: &Query<(&Walker, &ActorRig)>,
@@ -55,6 +55,13 @@ fn people_shapes(
     for t in &talkers.0 {
         let r = t.reference.0;
         if state.dead.contains(&t.reference) {
+            // A body its critical stage ended (`008a1a70`: stages 2 and 4)
+            // has its collision taken out of the Havok world
+            // (`0057b520(0)`) before its 3D is culled (`00450f90(1)`):
+            // nothing left for the pick.
+            if world::more_functions::body_gone(state, t.reference) {
+                continue;
+            }
             let Some(dead) = rigs
                 .iter()
                 .find(|(w, _)| w.reference == t.reference)

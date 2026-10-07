@@ -179,18 +179,21 @@ Seen on 2026-10-07 (release build, `FalloutNV.esm`):
 ## Not done / gaps
 
 - Nothing compared with the original game.
-- After the body is culled, its bounds still take shots and the
-  crosshair (the viewer meets scripted people by bounds); whether the
-  game's culled corpse can still be hit isn't traced.
+- After the body is culled nothing meets it, as in the game: stages 2
+  and 4 run `0057b520(0)`, which takes the reference's collision out of
+  the Havok world (with 1 it adds it back, `00620130`), before culling
+  the 3D, and shots, swings and the crosshair's pick all go through
+  Havok. Here the crosshair's ragdoll shapes, the melee search, the shots'
+  people (dead are never shot here) and scripted references' bounds all
+  skip such a body (`more_functions::body_gone`).
 - Visuals (the effects batch, B5/B6): the beam and bolt models, muzzle
   flash, the glow and disintegration shaders (`PMS`). The piles are
   drawn (as references scripts make), but the viewer's crosshair doesn't
   pick made references other than dropped items, so E on the pile isn't
-  wired (`activation::stands_for` is ready for it); the culled corpse is
-  still searched by its bounds meanwhile.
+  wired (`activation::stands_for` is ready for it).
 - The pile's ground ray and tilt (no collision in the world crate: it
-  goes at the body's feet); `0057b520(0)` and vtable `+0x1c0` at stages
-  2 and 4; `bDisableAllGore` (INI) isn't read.
+  goes at the body's feet); vtable `+0x1c0` at stages 2 and 4;
+  `bDisableAllGore` (INI) isn't read.
 - Missiles: gravity (run-time flag 0x40) and the Turbo slow-down
   (`009bf370`), the projectile's own collision shape, the player's
   scoped-range multiplier (`009bda10`), people leading or dodging bolts,
