@@ -5,9 +5,9 @@
 //! and is marked shown; Caravan and the crafting menu open theirs directly
 //! ([`show`]).
 //!
-//! The manager's "held" (the start menu up, the name entry) and "outside
-//! the game" don't arise here: the viewer has neither the start menu nor
-//! the main menu. A menu's fade-in (`Menu` +0x24, `007024e0`) isn't kept:
+//! The manager is held while the start menu is up as the pause menu
+//! ([`held`]); the name entry and "outside the game" (the main menu) don't
+//! arise here. A menu's fade-in (`Menu` +0x24, `007024e0`) isn't kept:
 //! menus here are shown at once, so the top menu counts as shown.
 
 use cellview::Game;
@@ -92,6 +92,16 @@ pub fn show_once(
     shown
 }
 
+/// Whether the manager waits (`007182e0`'s first test, `004a4040`): the
+/// start menu is up with its pause flag (`+0x1a8` bit 1, the pause menu
+/// over the game).
+pub fn held(open: &[OpenMenu]) -> bool {
+    open.iter().any(|m| match m {
+        OpenMenu::Start(s) => s.menu.flags & ui::menus::start::flag::PAUSE != 0,
+        _ => false,
+    })
+}
+
 /// The class of the menu on top: the game's menus here, else the
 /// lockpicking menu when it's up (it isn't one of them in the viewer).
 pub fn top_class(screen: &mut Screen, lockpicking: bool) -> Option<i32> {
@@ -110,8 +120,9 @@ pub fn update(
     now_ms: f64,
     lockpicking: bool,
 ) {
+    let held = held(&screen.open);
     let top = Top(top_class(screen, lockpicking));
-    let Some(id) = state.tutorials.update(now_ms as u32, true, false, &top) else {
+    let Some(id) = state.tutorials.update(now_ms as u32, true, held, &top) else {
         return;
     };
     let form = world::tutorial::message_form(id);
@@ -119,4 +130,35 @@ pub fn update(
         return;
     }
     println!("Error occurred while trying to display tutorial message");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::menus::start::{flag, StartMenu};
+
+    /// The start menu holds the manager only as the pause menu (its flag
+    /// 1), as `004a4040` asks.
+    #[test]
+    fn the_pause_menu_holds_the_tutorials() {
+        let ui = ui::Ui::new(
+            ui::Screen {
+                width_px: 1920,
+                height_px: 1080,
+                safe_x: 15.0,
+                safe_y: 15.0,
+            },
+            ui::SystemColors::new(None, None),
+            Box::new(|_| None),
+        );
+        let start = |flags: u32| {
+            let mut menu = StartMenu::new(0, &ui);
+            menu.flags = flags;
+            OpenMenu::Start(Box::new(super::super::start::StartScreen::new(menu, false)))
+        };
+        assert!(!held(&[]));
+        assert!(!held(&[start(0)]));
+        assert!(held(&[start(flag::PAUSE)]));
+        assert!(held(&[start(flag::PAUSE | flag::SAVE_MODE)]));
+    }
 }

@@ -33,6 +33,12 @@ pub struct StartScreen {
     was_paused: bool,
 }
 
+impl StartScreen {
+    pub fn new(menu: StartMenu, was_paused: bool) -> StartScreen {
+        StartScreen { menu, was_paused }
+    }
+}
+
 /// The settings the user options show and change: (value, default) by
 /// setting, as the INI holds them (the exe's defaults where it's silent).
 /// Changes stay in this run: the user's own `FalloutPrefs.ini` isn't
@@ -357,9 +363,9 @@ pub fn open(
     }
     screen.ui.set_number(tile, t::VISIBLE, 1.0);
     println!("Pause menu.");
-    screen
-        .open
-        .push(OpenMenu::Start(Box::new(StartScreen { menu, was_paused })));
+    screen.open.push(OpenMenu::Start(Box::new(StartScreen::new(
+        menu, was_paused,
+    ))));
     true
 }
 

@@ -2113,7 +2113,7 @@ pub(crate) fn update_pipboy(
                     Err(why) => {
                         println!("{why}");
                         if messages.on {
-                            messages.queue.push(why);
+                            messages.queue.push(why.into());
                         }
                     }
                 }

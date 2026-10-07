@@ -103,5 +103,6 @@ A player's own bindings aren't read.
 Not done: V.A.T.S.'s, the Pip-Boy's (weapons, apparel, ammo; the
 Pip-Boy isn't one of the game menus here), the reputation message (no
 reputation message box here), the start menu's help manual and
-`ShowTutorialMenu`; the "held" and "outside the game" states (the viewer
-has no start or main menu) and the menus' fade-in (shown at once here).
+`ShowTutorialMenu`; "outside the game" (the viewer has no main menu) and
+the menus' fade-in (shown at once here). "Held" is the start menu up as
+the pause menu (`viewer/src/game_menus/tutorial.rs`, `held`).
