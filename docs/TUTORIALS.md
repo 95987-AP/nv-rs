@@ -136,7 +136,11 @@ else key by `sKB…`, the DirectInput key number's setting, `011d52f0`).
 the box reads "WSAD: Apply torque…" and "F: Force Lock" as in the game.
 A player's own bindings aren't read.
 
-Not done: the reputation title's own box (`006155f0`'s message box with
+Not done: HTML text (a `DESC` starting with `<` sets the text tile's
+`isHTML`, whose layout the game's parser `00a17390` does: `FONT`,
+`ALIGN`, `<p>`…; `ui` doesn't parse it, so `HelpHealingLimbs`, the one
+help message written that way (`ShowTutorialMenu`'s, page 9 of the
+manual), shows its `<div>` and `<p>` tags); the reputation title's own box (`006155f0`'s message box with
 the title's picture and sound; the title is a corner message here, so the
 reputation help waits for the next message box); the pad's messages
 (0x1B, 0x1C, `HelpManualXBox`); "outside the game" (the viewer has no
