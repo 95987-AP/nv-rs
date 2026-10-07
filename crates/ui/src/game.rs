@@ -570,6 +570,18 @@ pub fn set_pad(ui: &mut Ui, pad: bool) {
     }
 }
 
+/// Whether a 360 pad is in use (`globals()`' `_Has360Controller`, as
+/// [`set_pad`] leaves it): what the menus ask `004b71d0`.
+pub fn has_pad(ui: &mut Ui) -> bool {
+    let Some(globals) = ui.globals else {
+        return false;
+    };
+    match ui.names.lookup("_Has360Controller") {
+        Some(id) => ui.number(globals, id) != 0.0,
+        None => false,
+    }
+}
+
 /// `[Interface] fMenuBackgroundOpacity`'s default in the exe.
 pub const MENU_BACKGROUND_OPACITY: f32 = 0.8;
 /// `[Interface] fPopUpBackgroundOpacity`'s default (`011d3bc8`): a message

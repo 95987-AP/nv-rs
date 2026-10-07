@@ -650,6 +650,7 @@ pub fn item_mod_input(
         form: m.0,
         name: world::items::item_info(order, m).map_or_else(String::new, |i| i.name),
         description: record_text(order, m, esm::FourCC::new(b"DESC")).unwrap_or_default(),
+        icon: record_text(order, m, ICON),
         fitted,
     };
     let flags = world::weapon_mods::flags(state, PLAYER_REF, weapon);

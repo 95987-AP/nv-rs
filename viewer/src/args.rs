@@ -116,7 +116,8 @@ OPTIONS:
                             object (editor ID or form ID), as if the
                             player's crosshair were on it
     --menu-pointer X,Y      for testing: put the menus' pointer at this
-                            pixel (screenshots have no mouse)
+                            pixel (screenshots have no mouse); the
+                            Pip-Boy's too, through its screen
     --key-at SECONDS KEY[:HOLD]
                             for testing: press a key (a letter or digit,
                             mouse-left, mouse-right, mouse-x=COUNTS: the
