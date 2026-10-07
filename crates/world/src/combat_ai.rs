@@ -1390,6 +1390,9 @@ mod tests {
             semi_auto_delay: (0.0, 0.3),
             speed: 1.0,
             cone_mult: 1.0,
+            crit_effect: None,
+            crit_on_death: false,
+            resist: None,
         }
     }
 

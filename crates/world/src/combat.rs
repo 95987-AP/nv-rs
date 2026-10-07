@@ -112,6 +112,19 @@ pub struct Weapon {
     /// What its shots' cone is multiplied by: 1, or a fitted split beam
     /// mod's second value (`00523150`; `world::weapon_mods::modded`).
     pub cone_mult: f32,
+    /// `CRDT` u32 at 12: the critical effect, a spell cast on whoever a
+    /// critical hit strikes (the weapon's `+0x1cc`, `0051f4d0`): the laser
+    /// weapons' `LaserDisintegrationFXSpell`, the plasma ones'
+    /// `PlasmaEffect` (see `docs/ENERGY_WEAPONS.md`).
+    pub crit_effect: Option<FormId>,
+    /// `CRDT` u8 at 8, flag 0x01 "on death" (the weapon's `+0x1c8`,
+    /// `009b73b0`): the effect only when the critical hit kills.
+    pub crit_on_death: bool,
+    /// `DNAM` i32 at 120: the actor value that resists its damage (the
+    /// weapon's `+0x16c`, `009b6600`; -1 none): 60 Energy Resistance on
+    /// the lasers and plasma weapons, 61 EMP on the pulse gun, 52 Fire on
+    /// the flamers.
+    pub resist: Option<u16>,
 }
 
 impl Weapon {
@@ -176,6 +189,12 @@ impl Weapon {
             semi_auto_delay: (f(128).unwrap_or(0.0), f(132).unwrap_or(0.0)),
             speed: f(4).unwrap_or(1.0),
             cone_mult: 1.0,
+            crit_effect: (crdt.len() >= 16).then(|| le_u32(crdt, 12)).and_then(form),
+            crit_on_death: crdt.get(8).is_some_and(|f| f & 0x01 != 0),
+            resist: u(120)
+                .map(|v| v as i32)
+                .filter(|&v| v >= 0)
+                .map(|v| v as u16),
         })
     }
 
@@ -462,6 +481,7 @@ pub fn critical(
     .current_actor_value(attacker, 11)
     .unwrap_or(0.0) as f32;
     let mut chance = setting("fAVDCritLuckBase", 0.0) + setting("fAVDCritLuckMult", 1.0) * luck;
+    chance /= critical_divisor(weapon);
     if let Some(m) = weapon.map(|w| w.crit_mult).filter(|m| *m >= 0.0) {
         chance *= m;
     }
@@ -487,6 +507,81 @@ pub fn critical(
         chance *= setting("fCombatSneakAttackBonusMult", 100.0);
     }
     (roll % 1000) < (chance * 10.0) as u64
+}
+
+/// What a hit's critical chance is divided by (`00646d80`, the chance
+/// `009b7060` starts from): an automatic weapon's (`DNAM` flags 0x02,
+/// `00524b40`) fire rate (`DNAM` f32 at 64, `00821640`), 1 when that's 0
+/// and for anything else: the Gatling laser's 30 shots a second, the
+/// laser RCW's 9, share what one shot of a semi-automatic would have.
+// Translated from 00646d80 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn critical_divisor(weapon: Option<&Weapon>) -> f32 {
+    match weapon {
+        Some(w) if w.flags1 & 0x02 != 0 && w.fire_rate != 0.0 => w.fire_rate,
+        _ => 1.0,
+    }
+}
+
+/// `BannedEffectsOnSitters` (`FLST` 001768D7 in `FalloutNV.esm`, looked
+/// up by its ID by `0089a760`): the goo and the two disintegrations.
+pub const BANNED_EFFECTS_ON_SITTERS: FormId = FormId(0x0017_68D7);
+
+/// A critical hit's effect after its damage (`0089a760`, at
+/// `0089b295`–`0089b43a`): the weapon's critical effect (`CRDT`, carried
+/// by the hit from `009b7060`; fists have none) is cast on the target,
+/// by the target's own caster (`+0x88`, `00815b00`, `00824110`), when
+/// the target was alive before the hit, and
+///
+/// - not when the effect is "on death" and the target is essential
+///   (`0087f3d0`) or the hit didn't kill (`DamageHealthAndFatigue`,
+///   vtable `+0x338`, returns `IsDead` after the damage);
+/// - not when the target is in a sit or sleep state (`GetSitSleepState`,
+///   vtable `+0x214`, not 0) and `BannedEffectsOnSitters` holds it;
+/// - not with `bDisableAllGore` (INI, `011df7f8`, default 0; not read
+///   here).
+///
+/// The laser and plasma weapons' effects are script effects whose magic
+/// effects aren't dispelled by death (`MGEF` flag 0x10000000,
+/// `world::magic::tick`): they disintegrate or goo the corpse
+/// (`SetCriticalStage`, `AttachAshPile`). What was cast, if anything.
+// Translated from 0089a760 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn critical_effect(
+    order: &LoadOrder,
+    state: &mut GameState,
+    target: FormId,
+    weapon: Option<&Weapon>,
+    was_alive: bool,
+    dead_now: bool,
+) -> Option<FormId> {
+    let w = weapon?;
+    let effect = w.crit_effect?;
+    if !was_alive {
+        return None;
+    }
+    let essential = crate::more_functions::is_essential(order, state, target);
+    if (essential || !dead_now) && w.crit_on_death {
+        return None;
+    }
+    if sit_sleep_state(state, target) != 0
+        && crate::script_functions::form_list(order, state, BANNED_EFFECTS_ON_SITTERS)
+            .contains(&effect)
+    {
+        return None;
+    }
+    crate::magic::add_spell(order, state, target, effect, target, false);
+    Some(effect)
+}
+
+/// Someone's sit or sleep state as the game keeps it (`GetSitSleepState`,
+/// the value `GetSitting` and `GetSleeping` map, `world::furniture`): 0
+/// when neither; someone placed in furniture without a state yet counts
+/// as seated (4).
+pub fn sit_sleep_state(state: &GameState, who: FormId) -> u8 {
+    match state.sitters.get(&who) {
+        Some(sitter) => sitter.state.number(),
+        None if state.furniture.contains_key(&who) => 4,
+        None => 0,
+    }
 }
 
 /// What a critical hit adds to its damage (`009b7060`): the weapon's
@@ -684,9 +779,44 @@ pub fn armour_hit(
         );
     }
     armour_damage += wear * threshold.max(0.0).min(after - least);
+    let weapon = attacker
+        .and_then(|(_, w)| w)
+        .and_then(|w| Weapon::load(order, w));
     ArmourHit {
-        damage: after.max(least),
+        damage: after.max(least) * resisted_share(order, state, weapon.as_ref(), target),
         armour_damage,
+    }
+}
+
+/// What's left of a hit after the target resists the weapon's kind of
+/// damage, the last step of the armour (`009b5a30`, after the 20% floor,
+/// so it can go below it): with a resist type (`DNAM` i32 at 120, the
+/// weapon's `+0x16c`, `009b6600`; -1 none), r = min(the target's actor
+/// value, 100) ÷ 100, and when 0 < r ≤ 1 the hit × (1 − r). Lasers and
+/// plasma weapons are resisted by Energy Resistance (actor value 60), the
+/// pulse gun by EMP Resistance (61), flamers by Fire Resistance (52).
+// Translated from 009b5a30 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn resisted_share(
+    order: &LoadOrder,
+    state: &GameState,
+    weapon: Option<&Weapon>,
+    target: FormId,
+) -> f32 {
+    let Some(kind) = weapon.and_then(|w| w.resist) else {
+        return 1.0;
+    };
+    let value = Facts {
+        order,
+        state,
+        speaker: None,
+    }
+    .current_actor_value(target, kind)
+    .unwrap_or(0.0) as f32;
+    let r = value.min(100.0) / 100.0;
+    if 0.0 < r && r <= 1.0 {
+        1.0 - r
+    } else {
+        1.0
     }
 }
 

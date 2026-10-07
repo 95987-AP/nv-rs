@@ -3313,7 +3313,14 @@ impl<'a> Runner<'a> {
         if attacker == PLAYER_REF && person && !was_hostile {
             fights_back &= crate::crime::assault(order, self.state, target);
         }
+        let was_alive = !self.state.dead.contains(&target);
         let killed = crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker);
+        // A critical hit's effect: the energy weapons' disintegration and
+        // goo on the killed (`0089a760`, `world::combat::critical_effect`).
+        if critical {
+            let dead_now = self.state.dead.contains(&target);
+            crate::combat::critical_effect(order, self.state, target, weapon, was_alive, dead_now);
+        }
         self.state
             .hits_taken
             .push((target, part.map_or(-1, i32::from), killed));
@@ -3437,7 +3444,15 @@ impl<'a> Runner<'a> {
         if source == Some(PLAYER_REF) && person && !was_hostile {
             fights_back &= crate::crime::assault(order, self.state, target);
         }
-        if crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker) {
+        let was_alive = !self.state.dead.contains(&target);
+        let killed = crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker);
+        // The explosion's hit carries its weapon's critical effect too
+        // (`009b5770` builds it with the weapon, `009b7060`, `0089a760`).
+        if critical {
+            let dead_now = self.state.dead.contains(&target);
+            crate::combat::critical_effect(order, self.state, target, weapon, was_alive, dead_now);
+        }
+        if killed {
             self.state.killing_blow_limb.insert(target, -1);
             if let Some(s) = source.filter(|&s| {
                 person && !was_hostile && (s == PLAYER_REF || self.state.teammates.contains(&s))
@@ -3553,6 +3568,11 @@ impl<'a> Runner<'a> {
                 // A sex: compiled as 0 male, 1 female.
                 Some(18) if w.eq_ignore_ascii_case("male") => Value::Number(0.0),
                 Some(18) if w.eq_ignore_ascii_case("female") => Value::Number(1.0),
+                // A critical stage (parameter type 0x37, `SetCriticalStage`
+                // `DisintegrateStart`): its number in the game's name
+                // table at `0119bbb0`.
+                Some(55) => crate::more_functions::critical_stage_number(w)
+                    .map_or(Value::Text(w.clone()), |n| Value::Number(f64::from(n))),
                 _ => Value::Text(w.clone()),
             },
         }

@@ -511,14 +511,40 @@ pub fn remove(state: &mut GameState, target: FormId, source: FormId) -> Vec<Acti
     gone
 }
 
+/// `MGEF` `DATA` flag 0x10000000 ("No Death Dispel", xEdit's name): the
+/// effect keeps working on someone dead (`00804560`).
+pub const NO_DEATH_DISPEL: u32 = 0x1000_0000;
+
+/// Whether a magic effect keeps working after its target dies (its `MGEF`
+/// flags have [`NO_DEATH_DISPEL`]: the energy weapons' critical effects,
+/// `LaserDisintegrationEffect` and `GooificationEffect`, 0x10000475).
+pub fn survives_death(order: &LoadOrder, effect: FormId) -> bool {
+    order
+        .get(effect)
+        .filter(|r| r.entry.header.kind.as_bytes() == b"MGEF")
+        .and_then(|r| r.record().ok())
+        .and_then(|r| r.get(esm::sig::DATA).map(|s| s.data.clone()))
+        .filter(|d| d.len() >= 4)
+        .is_some_and(|d| crate::cell::le_u32(&d, 0) & NO_DEATH_DISPEL != 0)
+}
+
 /// Time passes for every effect: changes over time are applied, script
-/// effects run, and what has run its course ends. The dead lose theirs.
+/// effects run, and what has run its course ends. The dead lose theirs
+/// (a script effect's `ScriptEffectFinish` runs) unless the magic effect
+/// survives death ([`survives_death`]): those go on as on the living.
+// Translated from 00804560 (decompiled, FalloutNV.exe 1.4.0.525;
+// `ActiveEffect`'s update): after the frame's update, a target actor that
+// `IsDead` with the effect's flag 0x10000000 clear ends the effect (+0x13),
+// and an effect that started then finishes (vtable +0x58).
 pub fn tick(runner: &mut Runner, seconds: f32) {
     let order = runner.order;
     let active = std::mem::take(&mut runner.state.active_effects);
     let mut kept = Vec::with_capacity(active.len());
     for mut e in active {
-        if runner.state.dead.contains(&e.target) {
+        if runner.state.dead.contains(&e.target) && !survives_death(order, e.effect) {
+            if let (true, Some(script)) = (e.started, e.script) {
+                runner.run_effect_script(script, &mut e, "scripteffectfinish", seconds);
+            }
             continue;
         }
         let step = seconds.min(e.remaining.max(0.0));

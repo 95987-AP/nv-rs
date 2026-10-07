@@ -230,6 +230,23 @@ pub fn action_class(order: &LoadOrder, state: &GameState, reference: FormId) -> 
     }
 }
 
+/// The reference activating `reference` really activates
+/// (`TESObjectREFR::Activate`, `00573170`): an ash or goo pile
+/// (`DefaultAshPile1` / `2`) carrying a link to a corpse
+/// (`ExtraAshPileRef`, `0041e310`; `AttachAshPile` made it) passes the
+/// activation on to that corpse, so the disintegrated are searched
+/// through their pile; anything else is itself.
+// Translated from 00573170 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn stands_for(order: &LoadOrder, state: &GameState, reference: FormId) -> FormId {
+    use crate::more_functions::placed;
+    let pile = placed::base_now(order, state, reference)
+        .is_some_and(|b| b == placed::ASH_PILE || b == placed::GOO_PILE);
+    match state.more.ash_piles.get(&reference) {
+        Some(&corpse) if pile => corpse,
+        _ => reference,
+    }
+}
+
 /// What the Info panel shows for a reference (`00775a00`).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Info {

@@ -323,6 +323,33 @@ pub fn place_leveled_actor(runner: &mut Runner, caller: FormId, actor: FormId) -
     Some(make(runner, actor, (space, cell), position, rotation))
 }
 
+/// The ash pile and the goo pile (`ACTI` 0x1B `DefaultAshPile1`, "Ash
+/// Pile", and 0x22 `DefaultAshPile2`, "Goo Pile", both in `FalloutNV.esm`;
+/// the engine looks them up by these IDs at start, `0046a370`, and keeps
+/// them at `011ca27c` and `011ca280`).
+pub const ASH_PILE: FormId = FormId(0x1B);
+pub const GOO_PILE: FormId = FormId(0x22);
+
+/// `AttachAshPile [kind]` on an actor (`005db870`): a reference of the goo
+/// pile when `kind` is 2, else the ash pile, in the actor's cell, turned
+/// to the actor's heading, linked to the actor both ways (extra data
+/// `ExtraAshPileRef`, `0041e340` on each; kept as
+/// [`super::State::ash_piles`]), so that activating the pile activates the
+/// corpse (`00573170`: its container, [`crate::activation::stands_for`]).
+/// The game places it where a ray from 32 units above the actor's
+/// position straight down to 256 below meets the ground, tilted to the
+/// ground's slope, else at the actor's position; the world here has no
+/// collision, so it goes on the actor's position (their feet). The pile
+/// made.
+pub fn attach_ash_pile(runner: &mut Runner, actor: FormId, kind: i32) -> Option<FormId> {
+    let order = runner.order;
+    let (space, cell, position, heading) = runner.state.place(order, actor)?;
+    let base = if kind == 2 { GOO_PILE } else { ASH_PILE };
+    let pile = make(runner, base, (space, cell), position, [0.0, 0.0, heading]);
+    runner.state.more.ash_piles.insert(pile, actor);
+    Some(pile)
+}
+
 /// `fPlayerDropDistance` (`011d0628`): how far in front of the player a
 /// dropped item goes, beyond its own size.
 pub const DROP_DISTANCE: f32 = 100.0;
