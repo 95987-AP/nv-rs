@@ -88,6 +88,12 @@ impl DialogueRun {
         }
     }
 
+    /// Whether the made conversation package (type 0x1c) is theirs now,
+    /// waiting for its ACTIVATE (what `009336c0` asks).
+    pub fn conversation_package_made(&self) -> bool {
+        self.initiated
+    }
+
     /// The activation could not happen on this update (another talk opens
     /// first): the made package tries again on its next update.
     pub fn retry(&mut self) {

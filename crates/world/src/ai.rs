@@ -81,6 +81,9 @@ pub mod kinds {
     pub const GUARD: u8 = 14;
     pub const DIALOGUE: u8 = 15;
     pub const USE_WEAPON: u8 = 16;
+    /// The packages the game makes itself, by the exe's type-name table
+    /// (`0119bcb0`, one name per type): 21 "Alarm" (tested by `008a61b0`).
+    pub const ALARM: u8 = 21;
 }
 
 /// A `PLDT`/`PLD2` as the loader keeps it (`0067f060`: kind i32, form u32,

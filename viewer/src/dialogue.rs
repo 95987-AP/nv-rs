@@ -368,6 +368,7 @@ type TalkExtras<'w, 's> = (
     ResMut<'w, crate::game_menus::GameMenus>,
     ResMut<'w, DialogueView>,
     ResMut<'w, AutoSay>,
+    ResMut<'w, crate::chatter::Lines>,
 );
 
 /// Looking for someone to talk to, and the conversation itself.
@@ -390,6 +391,7 @@ pub fn talk(
         mut game_menus,
         mut view,
         mut auto_say,
+        mut lines,
     ): TalkExtras<'_, '_>,
     mut conversation: ResMut<Conversation>,
     mut player: ResMut<Player>,
@@ -733,6 +735,9 @@ pub fn talk(
         match found {
             Some((talker, name)) => {
                 let topic = topic.unwrap_or(GREETING);
+                // Saying stops the speech in progress first (`005c9100`
+                // and the say, `008a20d0`, call `00934250`).
+                crate::chatter::hush(&mut commands, &mut lines, talker.reference);
                 if let Some(talk) = start_talk(
                     order,
                     &scripts.0,
@@ -851,6 +856,22 @@ pub fn talk(
         Use::Nothing => return,
         Use::Talk => {}
     }
+    // An NPC's `Activate` (`005fa330`): the greeting found for them decides
+    // between the dialogue menu and a line said on its own, through the
+    // GREET procedure (`world::dialogue::activation_says_a_line`); the line
+    // is then picked again (`0057b7c0` asks `0061b320` itself), as the menu
+    // picks its own. Either way the speech in progress stops (`00934250`).
+    let menu = Speaker::load(order, talker.reference, talker.base).is_none_or(|speaker| {
+        state.0.roll();
+        dialogue::pick(order, GREETING, &speaker, &state.0)
+            .is_none_or(|info| !dialogue::activation_says_a_line(&info))
+    });
+    crate::chatter::hush(&mut commands, &mut lines, talker.reference);
+    if !menu {
+        println!(
+            "{now:.1} s: {name} only says a line when activated (a one-response Goodbye greeting)."
+        );
+    }
     let Some(mut talk) = start_talk(
         order,
         &scripts.0,
@@ -859,14 +880,16 @@ pub fn talk(
         name,
         GREETING,
         now,
-        true,
+        menu,
     ) else {
         return;
     };
     talk.voice = play_voice(&mut commands, &mut audio, &game.0, &talk);
-    player.ready = false;
-    for mut text in &mut prompt {
-        text.0.clear();
+    if menu {
+        player.ready = false;
+        for mut text in &mut prompt {
+            text.0.clear();
+        }
     }
     conversation.0 = Some(talk);
 }
@@ -892,6 +915,14 @@ fn start_talk(
         return None;
     };
     begin_line(order, scripts, state, &info, talker.reference, menu);
+    if !menu {
+        let said: Vec<&str> = info.responses.iter().map(|r| r.text.as_str()).collect();
+        println!(
+            "{now:.1} s: {name} says to the player, no menu ({}): {}",
+            info.form_id,
+            said.join(" ")
+        );
+    }
     // The menu's zoom follows a running dialogue package's (`00761a20`:
     // package type 15, `00672850` reads its `PKDD` float).
     let package_zoom = world::ai::current_package(order, state, talker.reference)

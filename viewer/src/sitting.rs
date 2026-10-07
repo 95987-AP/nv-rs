@@ -1236,7 +1236,7 @@ fn sitter_is_none(state: &GameState, me: FormId) -> bool {
 
 /// Someone's sit state number (`Actor` vfunc +0x214): their sit
 /// procedure's, else seated (4) when the state has them in furniture.
-fn sit_state(state: &GameState, me: FormId) -> u8 {
+pub(crate) fn sit_state(state: &GameState, me: FormId) -> u8 {
     match state.sitters.get(&me) {
         Some(s) => s.state.number(),
         None if state.furniture.contains_key(&me) => SitState::Sitting.number(),

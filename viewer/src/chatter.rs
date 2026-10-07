@@ -34,6 +34,12 @@ pub struct LineRequest {
     /// which force one unless the speaker's package has idles
     /// (`world::talk_idles::greet_forces_tree`).
     pub conversation: Option<bool>,
+    /// A GREET line said to its listener (a greeting, a "Say To"): while
+    /// it's said the speaker's greeting timer is held at `fAIGreetingTimer`
+    /// and, said to the player, the player counts as spoken to (`008dbe30`
+    /// with a listener: process +0x330, player +0x6cc). Idle chatter has
+    /// no listener in the game (`008eeec0` passes none).
+    pub to_listener: bool,
 }
 
 /// A response begun this frame (each one of a line is its own say,
@@ -51,6 +57,7 @@ struct Saying {
     info: Info,
     listener: FormId,
     conversation: Option<bool>,
+    to_listener: bool,
     response: usize,
     since: f32,
     voice: Option<Entity>,
@@ -74,14 +81,47 @@ impl Lines {
         self.saying.contains_key(&who) || self.queue.iter().any(|r| r.speaker == who)
     }
 
-    /// Asks someone to say a line.
+    /// Asks someone to say a line with no listener of its own (idle
+    /// chatter; `listener` is only whom it's printed as said to).
     pub fn say(&mut self, speaker: FormId, listener: FormId, info: Info) {
         self.queue.push(LineRequest {
             speaker,
             listener,
             info,
             conversation: None,
+            to_listener: false,
         });
+    }
+
+    /// Asks someone to say a GREET line to `listener` (a greeting, a
+    /// "Say To" package's line).
+    pub fn say_to(&mut self, speaker: FormId, listener: FormId, info: Info) {
+        self.queue.push(LineRequest {
+            speaker,
+            listener,
+            info,
+            conversation: None,
+            to_listener: true,
+        });
+    }
+
+    /// Whether someone is saying (or about to say) a GREET line to a
+    /// listener.
+    pub fn greeting(&self, who: FormId) -> bool {
+        self.saying.get(&who).is_some_and(|s| s.to_listener)
+            || self.queue.iter().any(|r| r.speaker == who && r.to_listener)
+    }
+
+    /// Whether anyone is saying (or about to say) a GREET line to `whom`
+    /// (for the player: +0x6cc, `world::social::GreetingCheck`).
+    pub fn spoken_to(&self, whom: FormId) -> bool {
+        self.saying
+            .values()
+            .any(|s| s.to_listener && s.listener == whom)
+            || self
+                .queue
+                .iter()
+                .any(|r| r.to_listener && r.listener == whom)
     }
 
     /// Asks someone to say a conversation's line (`009ee0a0`), its says
@@ -98,6 +138,7 @@ impl Lines {
             listener,
             info,
             conversation: Some(force_tree),
+            to_listener: false,
         });
     }
 
@@ -224,6 +265,7 @@ pub fn say_lines(
                 info,
                 listener: request.listener,
                 conversation: request.conversation,
+                to_listener: request.to_listener,
                 response: 0,
                 since: now,
                 voice,

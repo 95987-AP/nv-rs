@@ -275,6 +275,97 @@ sandbox walk after the farewell sticks at (2292, 2311) behind the player
 in the doorway (not part of this fix). Not carried out: "once a day"
 packages' day note (actor +0x28c), whether DONE runs the end action a
 second time (`008eeec0` case 0x36 with `IsPackageDoneOnce`).
+
+## Greetings, and activating someone who only says a line (B10)
+
+Branch `claude/b10-greetings`, 2026-10-07. Playtest bug: people greeted
+too often, sometimes as the player started talking to them; some people
+should only say a line when activated. Private exports in
+`%USERPROFILE%\nv-re\work\b10`. Vtables read from the exe file:
+`HighProcess` (Xbox PDB) `01087864`, `Character` `01086a6c`,
+`PlayerCharacter` `0108aa3c` (RTTI names); package type names from the
+table at `0119bcb0` (21 "Alarm", 22 "Flee", 0x1c "In Game Dialogue").
+
+### Greeting the player (`008eeec0`, each high-process update)
+
+| Address | What | Used for |
+| --- | --- | --- |
+| `008eeec0` (`008ef5cc`…`008ef6c0`) | First gate: not in combat (+0x104), fleeing (`008a6650`), unconscious (life state 3), knocked down (knock state, process +0x40c), saying something (process +0x48c slot 0: the voice handle `00934250` stops), greeting already (process +0x32c), and nobody saying a GREET line to the player (player +0x6cc). Fails: no greeting and no idle chatter | `GreetingCheck::busy` |
+| `008ef715`…`008ef808` | Near: detection > 0 (`008a0d10`), not asleep (actor +0x1ac == 9), the player not sneaking (move flags 0x400 without 0x800, `004997b0`) or trespassing (player +0x1c0, `008d2a40` → `00546da0`), within `fAIMinGreetingDistance` (150, exe; not in the data). Near: no idle chatter at all | `Social::greeting` → `Near`/`Greet` |
+| `008ef80e`…`008ef8e4` | Greet: the player not in combat (+0xdf0), the package allows hellos (`008a78f0(0)`: general flag 0x1000 set and behaviour flag 0x01 clear forbids), not an alarm package (21), not standing still in a made conversation package (0x1c, `009336c0`/`004938e0`), greeting timer (process +0x330) ≤ 0 → `008bc3d0(HELLO)` | `Greeting::Greet` |
+| `008bc3d0` | Greet: only when the player's cooldown (+0xe24) is negative (`008bc520`); then the GREET procedure and the cooldown noted as `GetTickCount` (`008bc560`) | `HelloCooldown::free`, `greeted` |
+| `00944179`…`009441e4` (player update, no function in the database) | +0xe24 back to −1 once `fHelloCooldownTime` (30 s, `00f65740`; not in the data) × 1000 ms have passed; −1 from the start (`00938180`) | `HelloCooldown::update` |
+| `008dbe30` | GREET: with a listener, process +0x330 = `fAIGreetingTimer` (20 s) on every update while the line is said (also when no line was found), player +0x6cc set (`008dd880`) and cleared at the end (`00953ce0`) | `Lines::say_to`, `greeting`, `spoken_to`; the timer held while the line lasts |
+| `008ef8ee`…`008ef9af` | Idle chatter only when not near: counts down, also while in a made conversation package; due with no package, or a package that isn't a dialogue package and has behaviour flag 0x80 (`0067abd0`) | `Social::chatter_due` |
+| `008efa4e` | Conversations with others only when the GREET flag is clear and nobody speaks to the player | viewer `social_frame` |
+
+So one person greets the player at a time, and after a greeting nobody
+else greets for 30 s (real time); the greeter waits 20 s after the line.
+The viewer greeted with only the 20 s per person, began the timer when the
+line began, let everyone near greet at once, and ran idle chatter for
+anyone whose package forbade it.
+
+### Activating someone (`005fa330`)
+
+| Address | What | Used for |
+| --- | --- | --- |
+| `005fa9be`…`005faa8f` | The player activating: the `GREETING` line found (`0061a2d0(0, 0)`, `0061b320`); flagged Goodbye (`00619df0`, INFO +0x25 & 1) with a single response (`0083c7b0`, `0083c7e0`) → `0057b7c0`: the actor says the topic (picked again) to the player through GREET, no menu; else `00709470(4, …)`, the dialogue menu; no line: nothing | `dialogue::activation_says_a_line`, viewer `talk` |
+| `0057b7c0`, `005c9100`, `008a20d0` → `00934250` | Saying (and a script's `SayTo`) first stops the speech in progress | viewer `talk` hushes the speaker's line as the menu or line starts |
+
+Goodsprings settlers (`GSSettlerCM` and the like) greet with 0015D8AA
+"Way too many strangers coming into town these days. No offense." (DATA
+flags 0x03: Goodbye, random; one response): activating them only says a
+line. Easy Pete, Trudy, Chet, Sunny open the menu.
+
+### Implemented
+
+- `world::social`: `GreetingCheck`, `Greeting`, `Social::greeting`,
+  `HelloCooldown`, `package_forbids_hellos`, `package_allows_chatter`;
+  `chatter_due` takes the package's chatter flag and the made package.
+  `world::dialogue::activation_says_a_line`. `world::ai::kinds::ALARM`.
+  `DialogueRun::conversation_package_made`.
+- Viewer: `social_frame` asks the whole check, the cooldown on the real
+  clock, holds the greeter's timer while a GREET line (or a line said on
+  its own) lasts; `Lines::say_to` for greetings and "Say To" lines; `talk`
+  says a one-response Goodbye greeting without the menu and stops the
+  speaker's line before saying.
+
+### Tested
+
+`world::social` unit tests (the decision, busy people, what keeps a near
+person quiet, the package flags, the cooldown, chatter flags);
+`crates/world/tests/dialogue_flow.rs`
+`a_one_response_goodbye_greeting_is_said_without_the_menu`; viewer
+`one_greeting_at_a_time_and_none_till_the_cooldown_is_over`.
+
+### Verified live (release viewer, installed data)
+
+- `WastelandNV --at -70618,-1000,8200,180 --talk` (Goodsprings Settler
+  01): "only says a line", 0015A47D "Hey there." said with no dialogue
+  menu (the HUD alone in the screenshot). `--at -67845,3250,8400,0 --talk`:
+  "Dialogue menu: talking to Easy Pete."
+- Walking past (11 `player.MoveTo` over 115 s between settlers 01–03 and
+  Easy Pete): 3 greetings, all Easy Pete's, 35 and 31 s apart. Settler 03
+  (`GSSettlerSandbox`) never greets: its package forbids hellos (general
+  flag 0x1000, behaviour 0x01 clear); the settlers' packages don't allow
+  idle chatter either.
+- Standing at Easy Pete: one greeting at 0.5 s; at 13–18 s he was ready
+  again (timer out, detecting the player) and the 30 s cooldown held him.
+  From about 20 s his detection of the player standing on him fell to −10
+  (the detection rules, not this fix), so no second greeting.
+
+Not compared with the original game, and the old build wasn't replayed
+on these routes.
+
+### Not carried out
+
+Untraced conditions, left out (they never block): the player's
+`00969860` (+0x224 → +0x94), process `+0x66c` (`00901460`), the actor's
+look target (process +0x40) not being the player, process `+0x4e0`
+(+0x374). The GREET line's subtitle path in `0057b7c0` (`00705210`).
+Idle chatter's listener (the chatter GREET's +0x70 target) isn't
+settled.
+
 ## Remaining gaps
 
 - The head's bound: the game merges the face node's skinned pieces'
