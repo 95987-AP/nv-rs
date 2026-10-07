@@ -112,7 +112,10 @@ NPC guns show no muzzle flash and their shots aren't heard from where
 they are. The player's shots show no projectile or tracer effects; melee
 swings and hits show none either. Trace the weapon's fire path (muzzle
 flash node, projectile spawn and its effects, the 3D sound attached to
-the shooter) and implement it for NPCs and the player.
+the shooter) and implement it for NPCs and the player. Firing sounds and
+muzzle flashes done on `claude/b5-weapon-effects` (docs/WEAPON_EFFECTS.md);
+left: projectiles and tracers in flight, the flash's light and particles,
+stereo panning, `FireWeapon` objects.
 
 **B6. Bullet impacts: decals, particles and sounds.** Shots hitting the
 world or bodies need the game's impact data set (IPDS/IPCT) effects:
@@ -141,19 +144,25 @@ states and their animation groups.
 moment the player starts a conversation. Some NPCs, when activated,
 should only say a line (no conversation menu). Trace the hello timers
 (`fAIMinGreetingDistance`, greeting cooldowns), how activation decides
-between "say a line" and a conversation, and fix both.
+between "say a line" and a conversation, and fix both. Done on
+`claude/b10-greetings` (docs/DIALOGUE.md, B10); left: four greeting
+conditions not decoded (listed there).
 
 **B11. Voice stops after skipping lines.** After skipping some lines,
-the next lines show text but play no voice. Find and fix.
+the next lines show text but play no voice. Done on
+`claude/b11-voice-skip`: the voice file name rule (`006172c0`), not the
+skip; left: check every line's file name against the voice archives.
 
 **B12. Doc Mitchell traps you in dialogue at the door.** After Doc walks
 the player to the door and they talk, leaving the conversation starts
-another one with him at once, forever. Fix per the quest's scripts and
-the dialogue package's rules.
+another one with him at once, forever. Done on `claude/b12-doc-dialogue`
+(docs/DIALOGUE.md, B12); left: Doc's sandbox walk sticks in the doorway
+after the farewell.
 
 **B13. Barter menu over the dialogue.** Opening barter from dialogue
-draws the dialogue box in front of the barter menu. Fix the menu
-ordering and hiding as the game does.
+draws the dialogue box in front of the barter menu. Done on
+`claude/b13-barter-menu` (docs/DIALOGUE.md, B13); left: the `BarterExit`
+line, other menus' fades.
 
 ### Opening
 
@@ -180,7 +189,9 @@ particle, light or sun glare) and fix it.
 
 **B18. Frame time and hitches.** Measure frame time, loading and
 streaming stalls on Goodsprings routes; publish the numbers and remove
-the stalls without changing behaviour (M4 in MILESTONES).
+the stalls without changing behaviour (M4 in MILESTONES). First numbers
+with Chazm's PR #12 in docs/CONTRIB_CHAZM.md (measured on a busy machine;
+a clean measurement on an idle one is still to do).
 
 ### Smaller follow-ups
 
@@ -199,8 +210,16 @@ untraced guess): Ringo offers two extra replies. Trace or gate it.
 
 ### In progress
 
-- Death animation into ragdoll (dog left standing after `Kill`):
-  maintainer, branch `claude/m2-death-ragdoll`.
-- One radio state (Pip-Boy radio and the script functions) and the 2 key
-  (Ammo Swap vs hot key 2): maintainer, branch `claude/m2-radio-unify`.
-- Merging Chazm's PR #11: branch `claude/contrib-chazm`.
+- B4 NPCs and the ground: branch `claude/b4-npc-ground`.
+- B6 bullet impacts: branch `claude/b6-impacts`.
+- B16 local map: branch `claude/b16-local-map`.
+
+Landed on the integration branch 2026-10-07: death into ragdoll, one
+radio state and the 2 key, Chazm's PRs #11 and #12 (docs/CONTRIB_CHAZM.md),
+B3, B5, B10, B11, B12, B13.
+
+Follow-ups found: creatures without a ragdoll tip onto their side (a
+stand-in, `ai::fallen_transform`, from the original baseline) instead of
+playing `Death`; ragdolls don't come to rest (B1); receivers (NPC radios)
+play without distance falloff; thrown weapons play `SNAM`, which the game
+doesn't.

@@ -9,51 +9,43 @@ branch green.
 
 ## State at handoff
 
+Updated 2026-10-07 morning (overnight session 2026-10-06 → 07).
+
 - Integration branch: `claude/overnight-integration` (pushed). `main` is
   untouched; merging integration into `main` is the user's decision.
-- Published: play build 11 in `Desktop\nv-rs-play` (see "Publishing").
-  Doc's walk, Back in the Saddle and Ghost Town Gunfight pass
-  (`scripts/acceptance.ps1`, the gunfight 2 of 2).
-- Merged today: NPC animations, NPC navigation, look-IK (reconciled with
-  the Dead Money contributor's head tracking), physics batches 2 and 3,
-  third-person weapon, start menu/radio/local map, NPC hit fix, the Dead
-  Money contributor's branches (docs/CONTRIB_PLAYCON.md).
-- Stopped mid-task by a computer restart (their agents are gone; the work
-  is on disk in their worktrees under `%USERPROFILE%\nv-re\work\`):
-  - `wt-death`, branch `claude/m2-death-ragdoll` (death animation into
-    ragdoll; Cheyenne left standing after `Kill`): 2 commits plus
-    uncommitted changes in 4 files.
-  - `wt-radio-unify`, branch `claude/m2-radio-unify` (one radio state for
-    the Pip-Boy and the script functions; the 2 key, Ammo Swap vs hot
-    key 2): 1 commit plus uncommitted changes in 8 files.
-  - `wt-contrib-chazm`, branch `claude/contrib-chazm`: merging Chazm's
-    PR #11 (`pr/11`; terminals, hacking, item scripts, repair, weapon
-    mods, companions, Caravan, casinos, crafting, Bink intro, "faster NPC
-    pathing / mouse look"). The merge is in progress and uncommitted
-    (about 160 files staged or conflicted). Crafting, Caravan and
-    companion functions overlap the Dead Money merge: keep one traced
-    implementation (Chazm owns these areas, so his where equally traced)
-    without losing tests. Write docs/CONTRIB_CHAZM.md.
-  - Chazm's PR #12 (performance; fetch with `git fetch origin
-    pull/12/head:refs/remotes/pr/12`): 18 commits on top of integration
-    `22d3461`, 41 files (+1635/-253). Not started. It doesn't contain PR
-    #11; its first commit repeats PR #11's "no per-minute lighting hitch,
-    faster NPC pathing, mouse look", so merge PR #11 first and expect
-    that one to collide. Review each commit as behaviour-preserving
-    (performance must not change behaviour), especially "places share
-    the textures already on the GPU": the Dead Money contributor's
-    texture cache was dropped because keying by file path mixes up
-    tinted face and hair textures made from the same file; check this
-    one doesn't. Also check present mode "mailbox", bindless materials
-    and "no light clusters" don't change what's drawn (screenshots of
-    Doc's house and Goodsprings before and after). Measure frame times
-    before and after on the acceptance routes and record them in the
-    pull request's merge notes and docs/MILESTONES.md.
-  Resume each as a new agent in the same worktree: tell it to inspect
-  `git status`/`git log`/`git diff`, keep the work already there, and
-  finish the original task (each needs live verification, full checks
-  and `scripts/acceptance.ps1`). Then merge into integration, run
-  acceptance, publish, push.
+- Published: play builds 12 to 19 (and later) in `Desktop\nv-rs-play`.
+  Every merge was checked with the full root and viewer checks and
+  `scripts/acceptance.ps1` before publishing.
+- Landed overnight: one radio state and the 2 key (`claude/m2-radio-unify`),
+  death into ragdoll (`claude/m2-death-ragdoll`), Chazm's PR #11
+  (`claude/contrib-chazm`) and PR #12 (`claude/contrib-chazm-perf`; both in
+  docs/CONTRIB_CHAZM.md), B3 crosshair pick, B5 firing sounds and muzzle
+  flashes, B10 greetings, B11 voice file names, B12 Doc's door loop, B13
+  barter over dialogue. Details and what each left are in TASKS.md.
+- Still running or unmerged at handoff: see TASKS.md "In progress"
+  (B4 NPCs and the ground, B6 bullet impacts, B16 local map). Each has its
+  own worktree `%USERPROFILE%\nv-re\work\wt-b<n>-*`; resume as a new agent
+  in that worktree (inspect `git status`/`log`/`diff`, keep the work, finish
+  with live checks and acceptance), then merge, check, publish, push.
+- GitHub: issues #13–#24 are the twelve `[task] M<n>` major systems
+  (links point at this branch until it is merged into `main`). PRs #11 and
+  #12 are merged into integration only; they stay open on GitHub for the
+  maintainer.
+- Ghidra: one shared read-only server replaces per-agent `ghidra.ps1` runs
+  for queries (docs/RESEARCH_WORKFLOW.md, "Ghidra MCP trial"). Start it with
+  the local `start-nvrs.ps1` in the tool's folder under
+  `%USERPROFILE%\nv-re\tools\ghidra-mcp`; agents use its HTTP read
+  endpoints on 127.0.0.1:8089. It isn't registered as an MCP server in
+  Claude Code yet (the `claude` CLI wasn't on PATH; the snippet is in that
+  folder's NVRS-SETUP.md).
+- Acceptance flakiness: the gunfight (vms16) failed twice in a row once
+  and passed four times in an A/B rerun on the same build; Back in the
+  Saddle (vcg02) failed once when Sunny reached the player after the
+  route's `StartConversation` and passed two reruns. Both are
+  timing-dependent under heavy machine load.
+- Agents wrote into the main checkout through relative paths twice
+  tonight (both reverted at once); keep checking `git status` there after
+  each agent.
 
 ## First steps
 
