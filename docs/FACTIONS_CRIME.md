@@ -134,7 +134,7 @@ What the engine needs, now **done**: `GetEquipped` of a form list
 the loaded actors and the player, not the caster, not ghosts, each with a
 line of sight from the target unless the spell's `SPIT` flag 0x10 says
 area effects ignore it (`008190d0`: to their position raised by half
-their height; through the viewer's `Sight`, untested headless); each effect a cast adds goes
+their height; through the viewer's `Sight`; headless it isn't tested); each effect a cast adds goes
 through `MagicTarget::CheckAddEffect` (Xbox PDB, `00823210`,
 `magic::cast`): for actor effects, diseases, powers, abilities and
 addictions the identical effect from the same spell and caster is

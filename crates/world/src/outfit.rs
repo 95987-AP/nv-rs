@@ -55,7 +55,8 @@ impl StartWorn {
 }
 
 /// What a person (base record) wears from the start: the clothes and
-/// armour their look draws ([`crate::actor::actor_look`]).
+/// armour the game puts on from their record's container
+/// ([`crate::actor::pick_worn`], `006047c0`), as their look draws them.
 pub fn start_worn(order: &LoadOrder, base: FormId) -> StartWorn {
     let Some((rr, record)) = data_record(order, base, USE_INVENTORY) else {
         return StartWorn::default();
@@ -68,7 +69,7 @@ pub fn start_worn(order: &LoadOrder, base: FormId) -> StartWorn {
         .collect();
     let pieces = worn_of(
         order,
-        items.iter().map(|(item, _)| *item),
+        crate::actor::pick_worn(order, &entries),
         is_female(order, base),
     )
     .into_iter()

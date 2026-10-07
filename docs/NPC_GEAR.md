@@ -103,12 +103,15 @@ weapon it looked at (`ActorRig::held_weapon`), and new actors get the
 
 ## Not done / differences
 
-- Picking again after a worn item is taken away: the start's pieces come
-  back if still carried; the game's `InitDefaultWorn` picks the best armour
-  per slot from the whole inventory (`GetBestArmor`, ported for the
-  companions, [COMPANIONS.md](COMPANIONS.md); not used here yet). The
-  start's own choice is the
-  look's first-per-slot rule, not `GetBestArmor`.
+- The start's choice is the game's (`actor::pick_worn`,
+  `TESNPC::InitDefaultWorn` `006047c0` with
+  `InventoryChanges::GetBestArmor` `004c8220` per slot 0 to 19, on the
+  record's container: directly named items first, then what leveled lists
+  gave, whose order among themselves isn't traced). Picking again after a
+  worn item is taken away (`ProcessRemoveWorn` → `InitDefaultWorn`, above)
+  isn't applied yet: the start's pieces come back if still carried, where
+  the game picks per slot from the whole inventory (as companions do after
+  trading, [COMPANIONS.md](COMPANIONS.md)).
 - A person whose inventory comes from their template: taking the
   template's clothes away isn't seen (`GameState::stock` copies only the
   person's own record).

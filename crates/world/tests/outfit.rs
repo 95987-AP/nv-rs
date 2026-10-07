@@ -75,23 +75,24 @@ fn what_is_worn_follows_equipping_taking_off_and_taking_away() {
     let order = LoadOrder::from_data_dir(data.path(), &ActivePlugins::OfficialOnly).unwrap();
     let who = FormId(NPC_REF);
     let start = start_worn(&order, FormId(NPC));
-    // From the start: the shirt, the hat and the list's first gloves, as the
-    // look draws them; the list's gloves are known to come from the list.
+    // From the start, put on slot by slot (006047c0): the shirt (slot 2),
+    // the list's first gloves (slot 3), the hat (slot 10); the list's gloves
+    // are known to come from the list.
     assert_eq!(
         start.pieces.iter().map(|p| p.item).collect::<Vec<_>>(),
-        ids(&[SHIRT, HAT, GLOVES_A])
+        ids(&[SHIRT, GLOVES_A, HAT])
     );
-    assert_eq!(start.pieces[2].from, ids(&[GLOVES_A, GLOVES_B]));
+    assert_eq!(start.pieces[1].from, ids(&[GLOVES_A, GLOVES_B]));
     let mut state = GameState::new(&order);
     let worn = |state: &GameState| worn_armour(&order, state, who, &start);
-    assert_eq!(worn(&state), ids(&[SHIRT, HAT, GLOVES_A]));
+    assert_eq!(worn(&state), ids(&[SHIRT, GLOVES_A, HAT]));
     // Untouched, the look made from what's worn is the record's own.
     let look = world::actor::npc_look_wearing(&order, FormId(NPC), &worn(&state), None);
     assert_eq!(look, world::actor_look(&order, FormId(NPC)));
 
     // Equipping what they don't carry does nothing (`0088c830`).
     state.equip(&order, who, FormId(DRESS));
-    assert_eq!(worn(&state), ids(&[SHIRT, HAT, GLOVES_A]));
+    assert_eq!(worn(&state), ids(&[SHIRT, GLOVES_A, HAT]));
     // Given the dress, it's worn, and what it covers comes off.
     state.stock(&order, who);
     // The list's pick, whichever it was, keeps the gloves drawn.
@@ -113,7 +114,7 @@ fn what_is_worn_follows_equipping_taking_off_and_taking_away() {
     assert_eq!(worn(&state), ids(&[HAT]));
     // Taken away: they pick again, and wear the shirt and gloves again.
     state.items.remove(&(who, FormId(DRESS)));
-    assert_eq!(worn(&state), ids(&[SHIRT, HAT, GLOVES_A]));
+    assert_eq!(worn(&state), ids(&[SHIRT, GLOVES_A, HAT]));
 
     // The hat taken off, then put on again.
     state.unequip_item(&order, who, FormId(HAT));
@@ -130,6 +131,55 @@ fn what_is_worn_follows_equipping_taking_off_and_taking_away() {
     assert_eq!(worn(&state), ids(&[GLOVES_A, HAT]));
     state.items.remove(&(who, FormId(GLOVES_B)));
     assert_eq!(worn(&state), ids(&[HAT]));
+}
+
+#[test]
+fn the_best_armour_for_each_slot_is_put_on() {
+    // 004c8220: the highest DR (DNAM u16 / 100, truncated) + DT wins its
+    // slot, the first of equals; 006047c0 puts on slot 2's first, and a
+    // piece over the upper body only for slot 2.
+    let data = testdata::quests("outfit-best");
+    let mut plugin = plugin();
+    let armour = |id: u32, name: &str, slots: u32, dr: u16, dt: f32| {
+        let mut d = sub(b"EDID", &zstr(name));
+        let mut bmdt = slots.to_le_bytes().to_vec();
+        bmdt.extend([0; 4]);
+        d.extend(sub(b"BMDT", &bmdt));
+        let mut dnam = dr.to_le_bytes().to_vec();
+        dnam.extend([0; 2]);
+        dnam.extend(dt.to_le_bytes());
+        d.extend(sub(b"DNAM", &dnam));
+        let mut fields = 10i32.to_le_bytes().to_vec();
+        fields.extend(100i32.to_le_bytes());
+        fields.extend(1f32.to_le_bytes());
+        d.extend(sub(b"DATA", &fields));
+        record(b"ARMO", id, &d)
+    };
+    let mut more = armour(0x910, "Vest", 0x04, 100, 0.0);
+    more.extend(armour(0x911, "Plate", 0x04, 1000, 2.0));
+    more.extend(armour(0x912, "Helmet", 0x400 | 0x04, 2000, 0.0));
+    more.extend(armour(0x913, "Mitts", 0x08 | 0x10, 0, 1.0));
+    more.extend(armour(0x914, "MittsToo", 0x08 | 0x10, 0, 1.0));
+    plugin.extend(group(*b"ARMO", 0, &more));
+    data.write("FalloutNV.esm", &plugin);
+    let order = LoadOrder::from_data_dir(data.path(), &ActivePlugins::OfficialOnly).unwrap();
+    let carried = |items: &[u32]| -> Vec<(FormId, Vec<(FormId, i32)>)> {
+        items
+            .iter()
+            .map(|&i| (FormId(i), vec![(FormId(i), 1)]))
+            .collect()
+    };
+    // The plate (10 + 2) beats the vest (1) on slot 2; the helmet covers
+    // the upper body too (20), so it wins slot 2 and the hat slot comes
+    // with it; the first mitts of equals.
+    let pick = |items: &[u32]| world::actor::pick_worn(&order, &carried(items));
+    assert_eq!(pick(&[0x910, 0x911]), ids(&[0x911]));
+    assert_eq!(pick(&[0x910, 0x911, 0x912]), ids(&[0x912]));
+    assert_eq!(pick(&[0x913, 0x914]), ids(&[0x913]));
+    assert_eq!(
+        world::actor::best_armour(&order, &ids(&[0x910, 0x911]), 2),
+        Some(FormId(0x911))
+    );
 }
 
 #[test]
