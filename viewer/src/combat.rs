@@ -535,6 +535,11 @@ pub(crate) fn tell_hit(
     if hit.knocked_down {
         said.push_str("; knocked down");
     }
+    // Fatigue damage (`world::fatigue`): fists' half, a bean bag's.
+    if hit.fatigue > 0.0 {
+        let fatigue = world::fatigue::fatigue(order, state, target).unwrap_or(0.0);
+        said.push_str(&format!("; fatigue {:.1} ({fatigue:.1} left)", hit.fatigue));
+    }
     said
 }
 

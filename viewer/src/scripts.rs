@@ -311,7 +311,7 @@ fn bring_teammates(order: &esm::LoadOrder, state: &mut world::scripting::GameSta
     };
     let space = state.player_world.unwrap_or(cell);
     for t in state.teammates.clone() {
-        if state.dead.contains(&t) || state.more.down.contains_key(&t) {
+        if state.dead.contains(&t) || world::fatigue::lies_down(state, t) {
             continue;
         }
         if state.place(order, t).is_some_and(|p| p.0 == space) {
@@ -1491,6 +1491,15 @@ pub fn run_scripts(
             }),
             Event::KnockedOut { who } => Some(format!("{} is down.", name(who))),
             Event::GotUp { who } => Some(format!("{} gets up.", name(who))),
+            // `ForceFlee` (`world::ai::flee::force`): printed; the AI runs to
+            // the place given, or stands (`ai::forced_flee_frame`).
+            Event::Flees { who, to } => {
+                match to {
+                    Some(to) => println!("{} flees (ForceFlee) to {}.", name(who), name(to)),
+                    None => println!("{} flees (ForceFlee).", name(who)),
+                }
+                None
+            }
             Event::Journal { quest, text } => Some(format!("{}: {text}", name(quest))),
             Event::Objective {
                 text, completed, ..

@@ -306,6 +306,8 @@ pub(crate) fn detect(n: &Noticing, state: &mut GameState, walker: &mut Walker, o
     let noticed_min = s("fSneakNoticedMin", -20.0);
     let in_combat = state.combat.contains_key(&me);
     let mut start = None;
+    // Whose side they took (their combat group, `world::combat_groups`).
+    let mut helped = None;
     // The view cone: `fDetectionViewCone` (190°) across (`0088c570`).
     let half_cone = s("fDetectionViewCone", 190.0).to_radians() * 0.5;
     for &(r, v, sight, at) in &values {
@@ -356,9 +358,10 @@ pub(crate) fn detect(n: &Noticing, state: &mut GameState, walker: &mut Walker, o
         }
         if v > 0 {
             let value_of = |x: FormId| values.iter().find(|e| e.0 == x).map(|e| e.1);
-            // Only out of a fight: whether `008ff350`'s help check runs for
-            // someone already fighting isn't traced (and the player's
-            // "fight" here is only whoever hurt them last).
+            // Taking a new target to help only out of a fight: what
+            // `008ff350`'s help does to someone already fighting beyond
+            // moving them into the friend's combat group isn't traced (and
+            // the player's "fight" here is only whoever hurt them last).
             let helping = (!fighting)
                 .then(|| combat_ai::assists_against(order, state, me, r, v, value_of))
                 .flatten();
@@ -366,6 +369,15 @@ pub(crate) fn detect(n: &Noticing, state: &mut GameState, walker: &mut Walker, o
                 println!("{:.1} s: {me} helps {r} against {enemy}.", n.now);
                 walker.targets.add(enemy);
                 start = Some(enemy);
+                helped = Some(r);
+            } else if fighting
+                && world::combat_groups::helps_group(order, state, me, r, v, value_of)
+            {
+                // Already fighting: the help check still puts them in the
+                // friend's combat group (`008ff350` → `CombatManager::
+                // AddGroupMember` → `CombatGroup::MergeGroup`).
+                println!("{:.1} s: {me} joins {r}'s combat group.", n.now);
+                world::combat_groups::join(state, me, r);
             }
         }
     }
@@ -377,6 +389,9 @@ pub(crate) fn detect(n: &Noticing, state: &mut GameState, walker: &mut Walker, o
         );
         state.combat.insert(me, t);
         walker.fleeing = None;
+        if let Some(friend) = helped {
+            world::combat_groups::join(state, me, friend);
+        }
     }
 }
 
