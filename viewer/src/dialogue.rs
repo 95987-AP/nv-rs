@@ -18,14 +18,14 @@ use bevy::audio::AudioPlayer;
 use bevy::prelude::*;
 use bevy::render::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::render::mesh::VertexAttributeValues;
-use cellview::{ActorData, ACTIVATE_REACH};
+use cellview::ActorData;
 use esm::FormId;
 use world::dialogue::{self, Choice, GameState, Info, Speaker, Topic};
 use world::dialogue_view::{self as view_rules, Focus, FocusInput, MenuZoom, ViewSettings};
 use world::scripting::{Runner, ScriptCache};
 
 use crate::scripts::{ScriptedTalk, Scripts};
-use crate::walk::{game_point, CellCollision, Player, Prompt};
+use crate::walk::{game_point, Player, Prompt};
 use crate::{FlyCamera, GameFiles};
 
 /// The `GREETING` topic (a fixed form in every game).
@@ -232,33 +232,6 @@ pub fn setup_dialogue_text(mut commands: Commands) {
     ));
 }
 
-/// Where a ray from the eye meets an upright cylinder around a person
-/// (radius 25, height 130 above their feet), if it does.
-fn ray_person(eye: [f32; 3], dir: [f32; 3], feet: [f32; 3]) -> Option<f32> {
-    const RADIUS: f32 = 25.0;
-    const HEIGHT: f32 = 130.0;
-    let (ox, oy) = (eye[0] - feet[0], eye[1] - feet[1]);
-    let a = dir[0] * dir[0] + dir[1] * dir[1];
-    let b = 2.0 * (ox * dir[0] + oy * dir[1]);
-    let c = ox * ox + oy * oy - RADIUS * RADIUS;
-    let t = if a < 1e-9 {
-        (c <= 0.0).then_some(0.0)?
-    } else {
-        let disc = b * b - 4.0 * a * c;
-        if disc < 0.0 {
-            return None;
-        }
-        let near = (-b - disc.sqrt()) / (2.0 * a);
-        let far = (-b + disc.sqrt()) / (2.0 * a);
-        if far < 0.0 {
-            return None;
-        }
-        near.max(0.0)
-    };
-    let z = eye[2] + dir[2] * t - feet[2];
-    (0.0..=HEIGHT).contains(&z).then_some(t)
-}
-
 /// Plays a response's voice, if its file is found.
 fn play_voice(
     commands: &mut Commands,
@@ -379,7 +352,7 @@ pub fn talk(
     game: Res<GameFiles>,
     mut state: ResMut<DialogueState>,
     talkers: Res<Talkers>,
-    collision: Res<CellCollision>,
+    crosshair: Res<crate::crosshair::Crosshair>,
     mut target: ResMut<TalkTarget>,
     (
         mut auto_talk,
@@ -395,7 +368,6 @@ pub fn talk(
     mut player: ResMut<Player>,
     mut audio: ResMut<Assets<crate::sounds::PcmSound>>,
     voices: Query<(), With<AudioPlayer<crate::sounds::PcmSound>>>,
-    cameras: Query<&Transform, With<FlyCamera>>,
     mut prompt: Query<&mut Text, (With<Prompt>, Without<DialogueText>)>,
     mut panel: Query<(&mut Text, &mut Visibility), With<DialogueText>>,
 ) {
@@ -660,29 +632,12 @@ pub fn talk(
         return;
     }
 
-    // Not talking: who's in view, within reach?
-    let Ok(camera) = cameras.single() else {
-        return;
-    };
-    let eye = game_point(camera.translation);
-    let f = camera.forward().as_vec3();
-    let dir = [f.x, -f.z, f.y];
-    let mut best: Option<(f32, Talker)> = None;
-    for t in &talkers.0 {
-        if let Some(d) = ray_person(eye, dir, t.position) {
-            if d <= ACTIVATE_REACH && best.is_none_or(|(bd, _)| d < bd) {
-                best = Some((d, *t));
-            }
-        }
-    }
-    // Walls in the way hide them.
-    let best = best.filter(|(d, _)| {
-        collision
-            .0
-            .raycast(eye, dir, *d)
-            .is_none_or(|(wall, _)| wall >= d - 10.0)
-    });
-    target.0 = best.and_then(|(_, t)| {
+    // Not talking: the person the crosshair is on, within reach
+    // (`crosshair`, the game's view caster).
+    let best = crosshair
+        .target()
+        .and_then(|r| talkers.0.iter().find(|t| t.reference == r).copied());
+    target.0 = best.and_then(|t| {
         if target
             .0
             .as_ref()
@@ -754,6 +709,8 @@ pub fn talk(
     let auto = auto_talk.0 && player.ready && !talkers.0.is_empty();
     let chosen = if auto {
         auto_talk.0 = false;
+        // (Nearest across the floor: the eye stands over the feet.)
+        let eye = player.character.feet;
         talkers
             .0
             .iter()
@@ -1159,18 +1116,6 @@ mod tests {
         assert_eq!(say.pick(&offered), None);
         assert_eq!(say.pick(&["No.", "Sure, I'll come with you."]), Some(1));
         assert!(say.0.is_empty());
-    }
-
-    #[test]
-    fn rays_find_people_in_front_at_body_height() {
-        let feet = [100.0, 0.0, 0.0];
-        // Looking along +x at eye height: hits the near side of the body.
-        let d = ray_person([0.0, 0.0, 120.0], [1.0, 0.0, 0.0], feet).unwrap();
-        assert!((d - 75.0).abs() < 1e-3, "{d}");
-        // Looking away, or over their head.
-        assert!(ray_person([0.0, 0.0, 120.0], [-1.0, 0.0, 0.0], feet).is_none());
-        let up = [0.6, 0.0, 0.8];
-        assert!(ray_person([0.0, 0.0, 120.0], up, feet).is_none());
     }
 
     /// `00762950`: a clicked-away voice plays on for 500 ms; `008a20d0`: a

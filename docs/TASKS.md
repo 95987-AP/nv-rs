@@ -95,11 +95,10 @@ things. Trace the game's grab spring (`0095f930`, `00960520`, the
 `fZKey…` settings; docs/PHYSICS.md) and the held body's collision. Depends
 on B1 for the solver, but the spring itself can land first.
 
-**B3. The crosshair pick misses objects.** Some objects can only be
-activated by looking above them (likely since the physics batches moved
-bodies into the collider). Trace the activation pick (layer, ray length,
-which shapes count) and fix it. Check doors, clutter, NPCs, bottles,
-chairs.
+**B3. The crosshair pick misses objects.** Done on
+`claude/b3-crosshair-pick` (docs/PLAYER_ACTIONS.md, "The crosshair's
+pick"); left: drawn-triangle picking, placeable water, comparison with the
+game.
 
 **B4. NPCs fall through or sink into the ground.** NPCs phase into the
 terrain or fall through it. Trace the character controller's support

@@ -104,58 +104,6 @@ impl ObjectBounds {
     pub fn from_scene(bounds: &[cellview::ObjectBounds]) -> Self {
         Self(bounds.iter().map(|b| (b.reference, (b.lo, b.hi))).collect())
     }
-
-    fn hit(&self, reference: FormId, eye: [f32; 3], dir: [f32; 3], margin: f32) -> Option<f32> {
-        let (lo, hi) = self.0.get(&reference.0)?;
-        ray_box(eye, dir, lo.map(|v| v - margin), hi.map(|v| v + margin))
-    }
-}
-
-/// Where a ray enters an axis-aligned world-space box.
-fn ray_box(origin: [f32; 3], dir: [f32; 3], lo: [f32; 3], hi: [f32; 3]) -> Option<f32> {
-    let (mut near, mut far) = (0.0f32, f32::INFINITY);
-    for axis in 0..3 {
-        if dir[axis].abs() < 1e-9 {
-            if origin[axis] < lo[axis] || origin[axis] > hi[axis] {
-                return None;
-            }
-            continue;
-        }
-        let a = (lo[axis] - origin[axis]) / dir[axis];
-        let b = (hi[axis] - origin[axis]) / dir[axis];
-        near = near.max(a.min(b));
-        far = far.min(a.max(b));
-    }
-    (near <= far).then_some(near)
-}
-
-/// How far along the view the activation pick meets an object: a sphere
-/// of `fActivatePickSphereRadius` (16) cast from the eye (`0070bc20`),
-/// met where it touches the object's bounds (the game casts against the
-/// object's collision; its bounds stand in for that here).
-fn target_hit_distance(
-    object: &Interactive,
-    object_bounds: &ObjectBounds,
-    eye: [f32; 3],
-    dir: [f32; 3],
-) -> Option<f32> {
-    let r = world::activation::PICK_RADIUS;
-    let empty_record_bounds = object
-        .bounds
-        .is_none_or(|(lo, hi)| lo == [0.0; 3] && hi == [0.0; 3]);
-    if empty_record_bounds {
-        object_bounds
-            .hit(object.reference, eye, dir, r)
-            .or_else(|| object.ray_hit_within(eye, dir, r))
-    } else {
-        object.ray_hit_within(eye, dir, r)
-    }
-}
-
-fn hidden_by_surface(collision: &physics::Collider, eye: [f32; 3], dir: [f32; 3], d: f32) -> bool {
-    collision
-        .raycast(eye, dir, d)
-        .is_some_and(|(wall, _)| wall < d - 10.0)
 }
 
 /// The object in view that E would use, and the prompt for it ("Take
@@ -513,55 +461,27 @@ fn object_in_view(
     order: &esm::LoadOrder,
     state: &GameState,
     refs: &[Interactive],
-    object_bounds: &ObjectBounds,
-    collision: &physics::Collider,
-    view: ([f32; 3], [f32; 3]),
+    target: Option<FormId>,
 ) -> Option<(FormId, String)> {
-    let (eye, dir) = view;
-    let mut best: Option<(f32, &Interactive)> = None;
-    // Objects Havok moves (`clutter`) are picked where their bodies are:
-    // the pick sphere against their triangles, which move with them.
-    let body_pick = collision.spherecast(
-        eye,
-        dir,
-        world::activation::PICK_LENGTH,
-        world::activation::PICK_RADIUS,
-    );
-    for r in refs {
-        if r.trigger.is_some() || [*b"NPC_", *b"CREA", *b"DOOR"].contains(r.kind.as_bytes()) {
-            continue;
-        }
-        let hit = if collision.owns(r.reference.0) {
-            body_pick
-                .as_ref()
-                .filter(|h| collision.owner(h.triangle) == r.reference.0)
-                .map(|h| h.distance)
-        } else {
-            target_hit_distance(r, object_bounds, eye, dir)
-        };
-        let Some(d) = hit else {
-            continue;
-        };
-        if d > world::activation::PICK_LENGTH || best.is_some_and(|(bd, _)| d >= bd) {
-            continue;
-        }
-        let usable =
-            r.is_item() || r.is_container() || r.is_furniture() || has_on_activate(order, cache, r);
-        if usable && world::enabled_now(order, r.reference, &state.disabled) {
-            best = Some((d, r));
-        }
+    // The reference the crosshair is on within reach (`crosshair`, the
+    // game's view caster, which also leaves out what a wall hides).
+    let target = target?;
+    let r = refs.iter().find(|r| {
+        r.reference == target
+            && r.trigger.is_none()
+            && ![*b"NPC_", *b"CREA", *b"DOOR"].contains(r.kind.as_bytes())
+    })?;
+    let usable =
+        r.is_item() || r.is_container() || r.is_furniture() || has_on_activate(order, cache, r);
+    if !usable || !world::enabled_now(order, r.reference, &state.disabled) {
+        return None;
     }
-    let (d, r) = best?;
     // A reference a script has "destroyed" (`SetDestroyed 1`, form flag
     // 0x800000, `00477ba0`) under the crosshair has no prompt (the HUD's
     // crosshair update, `00775a00`, clears it for anything but actors) and
     // doesn't activate (`005180b0` returns at once): the VCG02 bottles
     // after their `OnLoad`.
     if state.destroyed.contains(&r.reference) {
-        return None;
-    }
-    // Walls in the way hide it.
-    if hidden_by_surface(collision, eye, dir, d) {
         return None;
     }
     let name = r.name.clone().unwrap_or_else(|| r.reference.to_string());
@@ -1001,6 +921,8 @@ pub struct HereNow<'w> {
     player_idle: ResMut<'w, crate::player_idle::PlayerIdle>,
     seats: Res<'w, crate::sitting::Seats>,
     object_bounds: Option<Res<'w, ObjectBounds>>,
+    /// What the crosshair is on (`crosshair`, the game's view caster).
+    crosshair: Res<'w, crate::crosshair::Crosshair>,
     player_seat: ResMut<'w, crate::sitting::PlayerSeat>,
     later: ResMut<'w, LaterCommands>,
 }
@@ -1062,6 +984,7 @@ pub fn run_scripts(
         mut player_idle,
         seats,
         object_bounds,
+        crosshair,
         mut player_seat,
         mut later,
     } = here_now;
@@ -1330,15 +1253,7 @@ pub fn run_scripts(
         } else {
             std::borrow::Cow::Owned([cell_scripts.refs.as_slice(), &dropped].concat())
         };
-        object_in_view(
-            &scripts.0,
-            order,
-            state,
-            &refs,
-            object_bounds.as_deref().unwrap_or(&ObjectBounds::default()),
-            &collision.0,
-            (eye, dir),
-        )
+        object_in_view(&scripts.0, order, state, &refs, crosshair.target())
     } else {
         None
     };
@@ -1982,73 +1897,6 @@ mod tests {
         )
     }
 
-    fn box_collider(lo: [f32; 3], hi: [f32; 3]) -> physics::Collider {
-        let [x0, y0, z0] = lo;
-        let [x1, y1, z1] = hi;
-        let vertices = [
-            [x0, y0, z0],
-            [x1, y0, z0],
-            [x1, y1, z0],
-            [x0, y1, z0],
-            [x0, y0, z1],
-            [x1, y0, z1],
-            [x1, y1, z1],
-            [x0, y1, z1],
-        ];
-        let triangles = [
-            [0, 2, 1],
-            [0, 3, 2],
-            [4, 5, 6],
-            [4, 6, 7],
-            [0, 1, 5],
-            [0, 5, 4],
-            [1, 2, 6],
-            [1, 6, 5],
-            [2, 3, 7],
-            [2, 7, 6],
-            [3, 0, 4],
-            [3, 4, 7],
-        ];
-        let mut collider = physics::Collider::new();
-        collider.add(&vertices, &triangles);
-        collider
-    }
-
-    fn vigor_tester_ref() -> Interactive {
-        Interactive {
-            reference: FormId(0x0010_4c13),
-            base: FormId(0x0010_4c0a),
-            script: Some(FormId(0x0010_4c03)),
-            count: 1,
-            position: [1883.0, 1763.0, 7360.0],
-            rotation: [0.0; 3],
-            scale: 1.0,
-            trigger: None,
-            // FalloutNV.esm's VCG01VigorTester ACTI has empty OBND.
-            bounds: Some(([0.0; 3], [0.0; 3])),
-            name: Some("Vit-o-matic Vigor Tester".into()),
-            kind: esm::FourCC::new(b"ACTI"),
-        }
-    }
-
-    #[test]
-    fn mesh_bounds_do_not_expand_targets_with_real_record_bounds() {
-        let mut object = vigor_tester_ref();
-        object.bounds = Some(([-1.0; 3], [1.0; 3]));
-        let mesh_bounds = ObjectBounds::from_scene(&[cellview::ObjectBounds {
-            reference: object.reference.0,
-            lo: [1842.0, 1746.0, 7360.0],
-            hi: [1924.0, 1782.0, 7522.0],
-        }]);
-        assert!(target_hit_distance(
-            &object,
-            &mesh_bounds,
-            [1883.0, 1600.0, 7440.0],
-            [0.0, 1.0, 0.0],
-        )
-        .is_none());
-    }
-
     #[test]
     fn failed_reload_preserves_quests_triggers_camera_requests_and_destination() {
         let data = testdata::functions::functions("transactional-reload");
@@ -2289,36 +2137,30 @@ mod tests {
             .any(|e| matches!(e, Event::CharacterMenu(_))));
     }
 
+    /// E uses the object the crosshair is on (`crosshair`, the game's view
+    /// caster) and nothing else: the Vigor Tester (an `ACTI` with an
+    /// `OnActivate` script and an empty `OBND`, picked by its collision),
+    /// not when the crosshair is elsewhere, and not once it's destroyed.
     #[test]
-    fn empty_obnd_uses_vigor_testers_real_mesh_bounds_and_keeps_wall_occlusion() {
-        // nvinspect on the installed NV_VitoMaticVigorTester_Cabinet02.NIF
-        // reports mesh and Havok hull extents x[-41,41], y[-17,19], z[0,162].
-        // The placed reference is at (1883,1763,7360), rotation 0, scale 1.
-        let object = vigor_tester_ref();
-        let eye = [1883.0, 1600.0, 7440.0];
-        let dir = [0.0, 1.0, 0.0];
-        assert!(object.ray_hit(eye, dir).is_none());
+    fn the_object_used_is_the_one_the_crosshair_is_on() {
+        use esm::{ActivePlugins, LoadOrder};
+        use testdata::functions::ids::{HOUSE, VIGOR_TESTER_REF};
 
-        let object_bounds = ObjectBounds::from_scene(&[cellview::ObjectBounds {
-            reference: object.reference.0,
-            lo: [1842.0, 1746.0, 7360.0],
-            hi: [1924.0, 1782.0, 7522.0],
-        }]);
-        // The pick's sphere (radius 16) touches the front plane, 146 ahead,
-        // 16 sooner.
-        let hit = target_hit_distance(&object, &object_bounds, eye, dir).unwrap();
-        assert!((hit - 130.0).abs() < 1e-5, "{hit}");
-
-        // The same NIF's collision hull reaches the same front plane, so it
-        // is not mistaken for a blocking wall before the rendered target.
-        let cabinet = box_collider([1842.0, 1746.0, 7360.0], [1924.0, 1782.0, 7522.0]);
-        assert!(!hidden_by_surface(&cabinet, eye, dir, hit));
-
-        // A separate nearer wall still hides the tester.
-        let wall = box_collider([1800.0, 1699.0, 7300.0], [1960.0, 1701.0, 7600.0]);
-        assert!(hidden_by_surface(&wall, eye, dir, hit));
+        let data = testdata::functions::functions("crosshair-object");
+        let order = LoadOrder::from_data_dir(data.path(), &ActivePlugins::OfficialOnly).unwrap();
+        let cache = ScriptCache::default();
+        let refs = world::scripting::interactive_references(&order, FormId(HOUSE));
+        let mut state = GameState::new(&order);
+        let tester = FormId(VIGOR_TESTER_REF);
+        let seen = |state: &GameState, target| {
+            object_in_view(&cache, &order, state, &refs, target).map(|(r, _)| r)
+        };
+        assert_eq!(seen(&state, Some(tester)), Some(tester));
+        assert_eq!(seen(&state, None), None);
+        assert_eq!(seen(&state, Some(FormId(0x00AB_CDEF))), None);
+        state.destroyed.insert(tester);
+        assert_eq!(seen(&state, Some(tester)), None);
     }
-
     #[test]
     fn keys_in_messages_become_the_viewers() {
         assert_eq!(

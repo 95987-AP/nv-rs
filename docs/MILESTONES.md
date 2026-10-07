@@ -530,6 +530,13 @@ animation through the ragdoll isn't traced). Evidence and gaps:
 [PHYSICS.md](PHYSICS.md). **Next action:** trace how the game drives a
 dying creature's ragdoll with its death animation.
 
+B3 (`claude/b3-crosshair-pick`, 2026-10-07): the crosshair pick is the
+game's view caster (`0070bc20` → `00631d60`: layer-40 sphere cast, exact
+ray/NiPick per hit, fuzzy fallback for statics), one pick for talk, doors,
+objects, HUD and Grab; live in Doc's house and the Prospector Saloon
+([PLAYER_ACTIONS.md](PLAYER_ACTIONS.md)). **Next action:** compare the
+pick's fuzzy cases with the original game.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

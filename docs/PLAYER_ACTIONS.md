@@ -23,7 +23,7 @@ below), **compared** (checked against the running original game).
 | `00775a00` | Info panel: crime → Pickpocket / Steal / teammate Talk; dead people Search; doors Pick / Close / Open; books "Take"; name `%s (%d)` with the count; load doors `%s %s %s` ("Door to Goodsprings"); lock line (`sBroken`, `[sLocked - sHUDUseKey]`, `[sLocked - <level>]`, `[Requires Key]`); `sEmpty` for empty containers and bodies; weight `%.1f` / value `%.0f` (`%.1f` under 1, `--` at 0) for ARMO, carried LIGH, WEAP, AMMO, MISC, ALCH, IMOD (weapons ≥ 10 × perk entry 73); crime colour on all lines | implemented, tested |
 | `0076bfe0` | Info lines' layout: lock / Empty at y 65 centred; weight right-justified at w/2 − 25, value at w − 30, labels at 10 and w/2 + 5, y 60; `template_info_seperator` | implemented, tested (`ui::hud`) |
 | `00586500` | `TESWorldSpace` +0x138: the map region (`RDAT` 4 / `RDMP`) holding the point, highest priority; the cell's `XCLR` regions first | implemented, tested (`world::region::location_name`) |
-| `0070bc20` | Pick: sphere of `fActivatePickSphereRadius` 16 from the camera node along the view, `iActivatePickLength` 150 | radius applied to the viewer's bounds-based pick |
+| `0070bc20`, `00631d60` | Pick: the view caster (below): sphere of `fActivatePickSphereRadius` 16 from the camera node along the view, `iActivatePickLength` 150, layer 40 | implemented, tested (`physics::view_caster`), live (below) |
 
 Live (2026-10-06, Doc's house, posted window messages + F12 reports):
 "E) Sit / Ruined Couch", E → temporary third person, seated first
@@ -42,6 +42,79 @@ The `WG`/`VAL` labels (checked again, second batch): they are made from
 system colour 0xff4) — none sets 0xfa9 (the weight value's tile, +0xb4,
 gets its alpha set at `0076dce1`). By data and code the labels stay
 invisible and only the numbers show. Still to compare with the game.
+
+## The crosshair's pick (B3, `claude/b3-crosshair-pick`, 2026-10-07)
+
+Playtest bug: some objects could only be activated by looking above them.
+Cause: since the physics batches put clutter bodies into the collider, the
+viewer took the *first* thing its 16-unit sphere touched; a bottle on a
+table lost to the table top 8 units under the line, and the other
+references were picked by their record bounds, people by a 25 × 130
+cylinder, load doors by a box, each in its own system.
+
+The game (`0070bc20` → `00631d60`, `ViewCaster.cpp`), now
+`physics::view_caster` with `world::activation::fuzzy_replaces`:
+
+- A sphere phantom of `fActivatePickSphereRadius` on layer 40
+  (`CUSTOMPICK2`, `00631ab0`; the player's system group) is cast from the
+  eye along the camera's forward column for `iActivatePickLength`, with an
+  all-hits collector, sorted. Layer 40's row touches nearly everything
+  (0–14, 16, 17, 19, 20, 22–32, 35–40, 42), bipeds, dead bodies and
+  controllers included.
+- For each hit (not the player): an exact pick along the line only, by
+  Havok's ray against that body (clutter, weapon, projectile layers 4–6,
+  or a static-layer shape of type 10, or form `011ca240`;
+  `iMaxViewCasterPicksHavok` 10) or Gamebryo's `NiPick` of the
+  reference's 3D (triangles, both faces, sorted;
+  `iMaxViewCasterPicksGamebryo` 10).
+- The fuzzy candidate (`bUseFuzzyPicking` 1): of hits not on layers 1,
+  13, 17, 18 (6 only for a body; a sitting/sleeping actor's controller
+  not), the one whose touching point is nearest the line, at most
+  `iMaxViewCasterPicksFuzzy` 5 checked by a layer-40 ray from the eye to
+  the point that must meet nothing or that reference first.
+- Result: the nearest exact pick (Havok's only if strictly nearer); if none,
+  or a static, static collection, tree or uncarriable light (0x20, 0x21,
+  0x25, 0x1e), the fuzzy candidate at the distance to its point. Within
+  `iActivatePickLength` it's the activation target (+0xfc), else only the
+  crosshair's (+0x100). Settings' values from `00f56a90`…`00f56b20`;
+  `Fallout_default.ini` doesn't change them.
+
+The viewer (`viewer::crosshair`) picks once a frame and every user reads it:
+talking (`dialogue`), load and swinging doors (`walk`), objects
+(`scripts`), the Info panel (`hud`), Grab (`clutter`). The collider's
+triangles now carry the placed reference they come from
+(`Collider::add_placed`, `preview::cell`), whoever owns them.
+
+Stand-ins, labelled in code: both exact picks are a ray against the
+reference's collision triangles (the game's NiPick uses its drawn
+triangles; the static "shape type 10" and form `011ca240` cases aren't told
+apart); people are their controller's capsule (`CharacterShape::PLAYER`,
+the size every controller has) when alive and their ragdoll capsules when
+dead (a dead actor without a ragdoll offers nothing); collision on layers
+that don't block walking isn't in the collider. Left out: the controller
+exclusion while sitting or sleeping (needs the controller's unnamed
+`+0x600`; the states are those `GetSitting`/`GetSleeping` count,
+`0059dd90`/`0059dc90`), `0070bc20`'s second look for placeable water (cell
+`+0xc4` `+0x5c`, `BGSPlaceableWater` by `0057b240`'s cast: drinking), the
+HUD's `+0x75e` flag (taken as set).
+
+Tested: `physics::view_caster` (8: bottle on a table picked at its middle
+and fuzzily beside it, chair, a wall hiding a bottle, a person in front of
+a table, the player never, fuzzy limits), `world` activation
+(`fuzzy_replaces`), `preview` collision (every part names its reference),
+viewer `scripts` (E uses the crosshair's object only).
+
+Live (release viewer, `NV_LOG_CROSSHAIR=1` logs each change of target,
+screenshots read back; private, `nv-re\work\b3\live*`):
+Doc's house: dining chair 00103E45 "E) Sit / Dining Chair" (exact, 121);
+the swinging door 001062AC "E) Open / Door" (44); the Stimpak 00105BF3 on
+the medical shelf "E) Take / Stimpak" with the crosshair just beside it
+(fuzzy, 108–113); Doc Mitchell "E) Talk / Doc Mitchell" (81); killed
+(`--run-at 1 DocMitchellREF.kill`), his ragdoll on the floor "E) Search /
+Doc Mitchell" (110). Prospector Saloon: the empty whiskey bottle 00107CB8
+on the bar shelf "E) Steal / Empty Whiskey Bottle" (exact, 74–75); the
+play build before the fix, crosshair on that bottle's body from the same
+`--at`, said "E) Steal / Shot glass". Not compared with the original game.
 
 ## Pickups (`004ce380`, `008adcf0`)
 
@@ -191,8 +264,8 @@ jump, F view, V V.A.T.S., T wait.
   activation text; class 10; terminals' lock line; doors' flag 0x100
   (`0057b460`).
 - Hotkeys 1–8 (Pip-Boy batch), grab (physics batch).
-- The pick is the viewer's bounds/collision ray plus the sphere radius,
-  not Havok's sphere cast.
+- The pick's stand-ins (see "The crosshair's pick"): collision triangles
+  for the drawn ones, controller capsules for people, no water.
 - The player's death ragdoll; the death message box variant.
 
 ## Checks

@@ -29,6 +29,7 @@ pub mod ragdoll;
 pub mod rigid;
 pub mod shapes;
 mod vec;
+pub mod view_caster;
 pub mod wind;
 
 use std::collections::{HashMap, HashSet};
@@ -73,6 +74,9 @@ struct Triangle {
     /// Its body's Havok layer ([`ANY_LAYER`]: not given), which decides
     /// what casts meet it ([`Collider::raycast_layer`]).
     layer: u8,
+    /// The placed reference it comes from, 0 for none
+    /// ([`Collider::add_placed`]).
+    reference: u32,
 }
 
 /// A triangle added without a Havok layer: every cast meets it.
@@ -99,6 +103,8 @@ struct Live {
     /// owned triangles themselves, by owner.
     rest: HashMap<u32, Vec<(u32, Vec3)>>,
     owned: HashMap<u32, Vec<u32>>,
+    /// The triangles of each placed reference ([`Collider::add_placed`]).
+    placed: HashMap<u32, Vec<u32>>,
 }
 
 /// Another character a walking one runs into: the game's character
@@ -183,14 +189,31 @@ impl Collider {
     }
 
     /// [`Self::add_solid_surface`] with the Havok layer of the body the
-    /// triangles belong to (`nif::CollisionPart::layer`).
+    /// triangles belong to (`nif::CollisionPart::layer`). An owner is also
+    /// the placed reference they come from ([`Self::add_placed`]).
     pub fn add_layered(
+        &mut self,
+        vertices: &[Vec3],
+        triangles: &[[u32; 3]],
+        parts: (f32, u32, u32),
+        surface: Option<Surface>,
+        layer: u8,
+    ) {
+        self.add_placed(vertices, triangles, parts, surface, layer, parts.1);
+    }
+
+    /// [`Self::add_layered`] for the collision of a placed reference
+    /// (`reference`, 0 for none): what the crosshair's pick
+    /// ([`view_caster`]) takes a triangle for, whether or not the triangles
+    /// have an owner that moves or switches them off.
+    pub fn add_placed(
         &mut self,
         vertices: &[Vec3],
         triangles: &[[u32; 3]],
         (shell, owner, material): (f32, u32, u32),
         surface: Option<Surface>,
         layer: u8,
+        reference: u32,
     ) {
         let surface = surface.map_or(0, |s| self.surface_index(s));
         let base = self.vertices.len() as u32;
@@ -212,7 +235,7 @@ impl Collider {
                 [t[0] + base, t[1] + base, t[2] + base],
                 shell,
                 owner,
-                (material, surface, layer),
+                (material, surface, layer, reference),
             );
         }
     }
@@ -288,7 +311,7 @@ impl Collider {
         tri: [u32; 3],
         shell: f32,
         owner: u32,
-        (material, surface, layer): (u32, u16, u8),
+        (material, surface, layer, reference): (u32, u16, u8, u32),
     ) {
         let [a, b, c] = tri.map(|i| self.vertices[i as usize]);
         if [a, b, c].iter().flatten().any(|v| !v.is_finite()) {
@@ -307,9 +330,13 @@ impl Collider {
             material,
             surface,
             layer,
+            reference,
         });
         if owner != 0 {
             self.live.owned.entry(owner).or_default().push(index);
+        }
+        if reference != 0 {
+            self.live.placed.entry(reference).or_default().push(index);
         }
         for key in bucket_keys(a, b, c) {
             self.grid.entry(key).or_default().push(index);
@@ -337,7 +364,7 @@ impl Collider {
                 tri.corners.map(|i| i + base),
                 tri.shell,
                 tri.owner,
-                (tri.material, surface, tri.layer),
+                (tri.material, surface, tri.layer, tri.reference),
             );
         }
         self.live.hidden.extend(other.live.hidden.iter().copied());
@@ -574,6 +601,134 @@ impl Collider {
         }
         best
     }
+
+    /// The placed reference a triangle comes from (0 for none).
+    pub fn reference(&self, index: u32) -> u32 {
+        self.triangles[index as usize].reference
+    }
+
+    /// Every triangle a sphere of `radius` cast from `origin` along
+    /// `direction` (unit length) for up to `max` units touches, as an
+    /// all-hits collector gathers a Havok linear cast's: each with where it
+    /// is touched, nearest first. Only triangles whose body's layer the
+    /// cast's `layer` touches ([`layers::Filter::layers_touch`], the cast
+    /// first; those added without a layer always count), not switched off.
+    pub fn spherecast_all(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max: f32,
+        radius: f32,
+        layer: u8,
+    ) -> Vec<SphereHit> {
+        let filter = layers::Filter::shared();
+        let lo = [0, 1, 2].map(|i| origin[i].min(origin[i] + direction[i] * max) - radius);
+        let hi = [0, 1, 2].map(|i| origin[i].max(origin[i] + direction[i] * max) + radius);
+        let mut out = Vec::new();
+        for t in self.near(lo, hi) {
+            let tl = self.layer(t);
+            if tl != ANY_LAYER && !filter.layers_touch(layer, tl) {
+                continue;
+            }
+            let [a, b, c] = self.triangle(t);
+            let shell = self.shell(t);
+            if let Some((d, on_triangle)) =
+                sphere_sweep_triangle(origin, direction, max, radius + shell, a, b, c)
+            {
+                let centre = add(origin, scale(direction, d));
+                let point = add(
+                    on_triangle,
+                    scale(normalize(sub(centre, on_triangle)), shell),
+                );
+                out.push(SphereHit {
+                    distance: d,
+                    point,
+                    triangle: t,
+                });
+            }
+        }
+        out.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+        out
+    }
+
+    /// Where a ray from `origin` along `direction` (unit length) first meets
+    /// one placed reference's triangles ([`Self::add_placed`]), however far,
+    /// passing everything else; `None` when it misses them or they're
+    /// switched off.
+    pub fn raycast_reference(&self, origin: Vec3, direction: Vec3, reference: u32) -> Option<f32> {
+        let tris = self.live.placed.get(&reference)?;
+        tris.iter()
+            .filter(|&&t| !self.switched_off(t))
+            .filter_map(|&t| {
+                let [a, b, c] = self.triangle(t);
+                ray_triangle(origin, direction, a, b, c)
+            })
+            .min_by(f32::total_cmp)
+    }
+}
+
+/// Where a ray from `o` along `d` (unit length) first meets a capsule (the
+/// segment `a b` grown by `r`); 0 when it starts inside.
+pub fn ray_capsule(o: Vec3, d: Vec3, a: Vec3, b: Vec3, r: f32) -> Option<f32> {
+    let inside = {
+        let p = closest_on_segment(o, a, b);
+        dist2(o, p) <= r * r
+    };
+    if inside {
+        return Some(0.0);
+    }
+    let mut best: Option<f32> = None;
+    let mut consider = |t: f32| {
+        if t >= 0.0 && best.map_or(true, |b| t < b) {
+            best = Some(t);
+        }
+    };
+    if let Some((t, _)) = sphere_sweep_segment(o, d, r, a, b) {
+        consider(t);
+    }
+    for c in [a, b] {
+        if let Some(t) = ray_sphere(o, d, c, r) {
+            consider(t);
+        }
+    }
+    best
+}
+
+/// A sphere of radius `r` moving from `o` along `d` (unit length) up to
+/// `max`: when it first touches a capsule (segment `a b`, radius `cr`) and
+/// the point of the capsule's surface it touches; already touching, 0 and
+/// the capsule's surface point nearest the start.
+pub fn sphere_sweep_capsule(
+    o: Vec3,
+    d: Vec3,
+    max: f32,
+    r: f32,
+    (a, b, cr): (Vec3, Vec3, f32),
+) -> Option<(f32, Vec3)> {
+    let t = ray_capsule(o, d, a, b, r + cr)?;
+    if t > max {
+        return None;
+    }
+    let centre = add(o, scale(d, t));
+    let axis = closest_on_segment(centre, a, b);
+    let toward = sub(centre, axis);
+    let n = if dot(toward, toward) > 1e-12 {
+        normalize(toward)
+    } else {
+        scale(d, -1.0)
+    };
+    Some((t, add(axis, scale(n, cr))))
+}
+
+/// The point of segment `a b` nearest `p`.
+fn closest_on_segment(p: Vec3, a: Vec3, b: Vec3) -> Vec3 {
+    let e = sub(b, a);
+    let ee = dot(e, e);
+    if ee < 1e-12 {
+        return a;
+    }
+    let u = (dot(sub(p, a), e) / ee).clamp(0.0, 1.0);
+    add(a, scale(e, u))
 }
 
 /// Where a swept sphere first touches something ([`Collider::spherecast`]).

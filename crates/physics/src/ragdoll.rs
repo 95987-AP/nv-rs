@@ -190,6 +190,23 @@ impl Ragdoll {
         (r, sub(s.x, mat_vec(&r, self.bodies[body].center)))
     }
 
+    /// Each body's capsule where it is now, in the world: body index, ends
+    /// and radius (bodies of other shapes are left out).
+    pub fn world_capsules(&self) -> Vec<(usize, Vec3, Vec3, f32)> {
+        (0..self.bodies.len())
+            .filter_map(|i| {
+                let (a, b, r) = self.bodies[i].capsule?;
+                let (m, origin) = self.frame(i);
+                Some((
+                    i,
+                    add(origin, mat_vec(&m, a)),
+                    add(origin, mat_vec(&m, b)),
+                    r,
+                ))
+            })
+            .collect()
+    }
+
     /// Sets every body moving at `velocity`.
     pub fn set_velocity(&mut self, velocity: Vec3) {
         for s in &mut self.state {

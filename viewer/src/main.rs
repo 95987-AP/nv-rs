@@ -12,6 +12,7 @@ mod chatter;
 mod clutter;
 mod combat;
 mod controls;
+mod crosshair;
 mod daylight;
 mod dialogue;
 mod doors;
@@ -296,6 +297,7 @@ fn main() {
         .init_resource::<scripts::ActivateRequest>()
         .init_resource::<dialogue::Talkers>()
         .init_resource::<dialogue::TalkTarget>()
+        .init_resource::<crosshair::Crosshair>()
         .init_resource::<dialogue::Conversation>()
         .init_resource::<dialogue::DialogueView>()
         .insert_resource(dialogue::AutoTalk(
@@ -430,7 +432,8 @@ fn main() {
                     vats::apply_shot_camera,
                 )
                     .chain(),
-                (dialogue::talk, chatter::say_lines).chain(),
+                // What the crosshair is on, for everything E and the HUD do.
+                (crosshair::pick, dialogue::talk, chatter::say_lines).chain(),
                 // The scripts, then E on doors, then the doors' swings.
                 (
                     scripts::start_use,

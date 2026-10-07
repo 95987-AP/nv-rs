@@ -596,6 +596,7 @@ fn grab_held(
     mut collision: ResMut<CellCollision>,
     mut clutter: ResMut<Clutter>,
     cameras: Query<&Transform, With<FlyCamera>>,
+    crosshair: Res<crate::crosshair::Crosshair>,
 ) {
     let clutter = &mut *clutter;
     let busy = !player.walking || !player.ready || conversation.0.is_some() || menus.is_open();
@@ -655,17 +656,12 @@ fn grab_held(
     if !pressed {
         return;
     }
-    // What the crosshair's pick meets (`fActivatePickSphereRadius` along
-    // the activation reach), and its body.
-    let Some(hit) = collision.0.spherecast(
-        eye,
-        view,
-        world::activation::PICK_LENGTH,
-        world::activation::PICK_RADIUS,
-    ) else {
+    // What the crosshair is on (`crosshair`, the game's view caster), and
+    // its body.
+    let Some(hit) = crosshair.0 else {
         return;
     };
-    let owner = collision.0.owner(hit.triangle);
+    let owner = hit.reference;
     let Some(i) = clutter.world.find(owner) else {
         return;
     };
