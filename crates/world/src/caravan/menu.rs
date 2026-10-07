@@ -2258,4 +2258,30 @@ mod tests {
         m.update(tick, &Half, &mut |n| rng.next(n));
         assert_eq!((m.state, m.chosen), (state::IDLE, 0));
     }
+
+    /// On the player's turn the stick chooses the hand card as the arrows
+    /// do (right: the next one).
+    #[test]
+    fn the_stick_chooses_hand_cards() {
+        let (mut m, mut tick, mut rng) = at_deck();
+        let mut all = Vec::new();
+        m.key('F', &mut |n| rng.next(n));
+        settle(&mut m, &mut tick, &mut rng, &mut all);
+        assert_eq!(m.screen, Screen::Game);
+        let before = m.hand_card;
+        let n = m.game.as_ref().unwrap().player_hand.len();
+        m.pad = true;
+        m.stick = [0.0, 0.0];
+        // Past the quarter-second guard.
+        for _ in 0..40 {
+            tick += 16;
+            m.update(tick, &Half, &mut |n| rng.next(n));
+        }
+        assert_eq!(m.hand_card, before);
+        m.stick = [0.6, 0.0];
+        tick += 16;
+        let fx = m.update(tick, &Half, &mut |n| rng.next(n));
+        assert_eq!(m.hand_card, (before + 1) % n);
+        assert!(fx.contains(&Effect::Sound("GAMECaravanSwitchCard")));
+    }
 }
