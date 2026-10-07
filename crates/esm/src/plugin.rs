@@ -234,6 +234,20 @@ impl Plugin {
         self.parse_entry_subrecords(entry, &data)
     }
 
+    /// The data of a record's first subrecord of one type, without
+    /// decoding the rest (borrowed from the file unless the record is
+    /// compressed). The same bytes as `record(entry)?.get(kind)`.
+    pub fn subrecord_of(&self, entry: &RecordEntry, kind: FourCC) -> Result<Option<Cow<'_, [u8]>>> {
+        let data = self.data(entry)?;
+        let Some(range) = find_subrecord(&data, kind) else {
+            return Ok(None);
+        };
+        Ok(Some(match data {
+            Cow::Borrowed(b) => Cow::Borrowed(&b[range]),
+            Cow::Owned(v) => Cow::Owned(v[range].to_vec()),
+        }))
+    }
+
     /// Decodes a whole record.
     pub fn record(&self, entry: &RecordEntry) -> Result<Record> {
         Ok(Record {
@@ -313,6 +327,37 @@ fn in_record(header: &RecordHeader, source: Error) -> Error {
 /// Compressed records store a u32 decompressed size followed by a zlib stream.
 /// A wrong checksum is accepted when the data comes out at its stated size,
 /// as the game accepts it (see [`inflate::zlib_decompress_unverified`]).
+/// Where the first subrecord of a type's data is in a record's data, read
+/// as [`crate::record::parse_subrecords`] reads them (an `XXXX` before a
+/// subrecord gives its real size); `None` if it has none, or the data ends
+/// before it.
+fn find_subrecord(data: &[u8], kind: FourCC) -> Option<std::ops::Range<usize>> {
+    let mut at = 0usize;
+    let mut big: Option<usize> = None;
+    while at + 6 <= data.len() {
+        let this = FourCC([data[at], data[at + 1], data[at + 2], data[at + 3]]);
+        let size = usize::from(u16::from_le_bytes([data[at + 4], data[at + 5]]));
+        at += 6;
+        if this == sig::XXXX {
+            if size != 4 || at + 4 > data.len() {
+                return None;
+            }
+            big = Some(
+                u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]) as usize,
+            );
+            at += 4;
+            continue;
+        }
+        let size = big.take().unwrap_or(size);
+        let end = at.checked_add(size).filter(|&e| e <= data.len())?;
+        if this == kind {
+            return Some(at..end);
+        }
+        at = end;
+    }
+    None
+}
+
 fn decompress_record<'a>(header: &RecordHeader, raw: &'a [u8]) -> Result<Cow<'a, [u8]>> {
     if !header.is_compressed() {
         return Ok(Cow::Borrowed(raw));

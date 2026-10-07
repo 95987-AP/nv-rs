@@ -70,7 +70,7 @@ pub fn relations(order: &LoadOrder, faction: FormId) -> Vec<(FormId, Reaction)> 
     let Some(rr) = order.get(faction).filter(|r| r.entry.header.kind == FACT) else {
         return Vec::new();
     };
-    let Ok(record) = rr.record() else {
+    let Ok(record) = rr.record_shared() else {
         return Vec::new();
     };
     record

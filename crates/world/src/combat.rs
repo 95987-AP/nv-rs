@@ -114,7 +114,7 @@ pub struct Weapon {
 impl Weapon {
     pub fn load(order: &LoadOrder, id: FormId) -> Option<Weapon> {
         let rr = order.get(id).filter(|r| r.entry.header.kind == WEAP)?;
-        let record = rr.record().ok()?;
+        let record = rr.record_shared().ok()?;
         let data = record.get(esm::sig::DATA).filter(|s| s.data.len() >= 15)?;
         let d = &data.data;
         let dnam = record.get(DNAM).map(|s| s.data.as_slice()).unwrap_or(&[]);

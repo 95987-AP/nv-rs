@@ -147,11 +147,13 @@ pub fn game_setting(order: &LoadOrder, name: &str) -> Option<f32> {
     if rr.entry.header.kind != GMST {
         return None;
     }
-    let record = rr.record().ok()?;
-    let data = record.get(esm::sig::DATA).filter(|s| s.data.len() >= 4)?;
+    let data = rr.subrecord(esm::sig::DATA).ok()??;
+    if data.len() < 4 {
+        return None;
+    }
     match name.as_bytes().first() {
-        Some(b'f') => Some(le_f32(&data.data, 0)),
-        Some(b'i') => Some(le_u32(&data.data, 0) as i32 as f32),
+        Some(b'f') => Some(le_f32(&data, 0)),
+        Some(b'i') => Some(le_u32(&data, 0) as i32 as f32),
         _ => None,
     }
 }
@@ -1073,9 +1075,12 @@ pub fn base_of(order: &LoadOrder, reference: FormId) -> Option<FormId> {
         return Some(PLAYER_BASE);
     }
     let rr = order.get(reference)?;
-    let record = rr.record().ok()?;
-    let name = record.get(NAME).filter(|s| s.data.len() >= 4)?;
-    Some(rr.plugin.to_global(FormId(le_u32(&name.data, 0))))
+    // Its `NAME` alone: asked for very often.
+    let name = rr.subrecord(NAME).ok()??;
+    if name.len() < 4 {
+        return None;
+    }
+    Some(rr.plugin.to_global(FormId(le_u32(&name, 0))))
 }
 
 /// Every `CNTO` (form, count) on the base of a container, NPC or creature
@@ -1130,11 +1135,13 @@ pub struct Whereabouts {
 
 pub fn whereabouts(order: &LoadOrder, reference: FormId) -> Option<Whereabouts> {
     let rr = order.get(reference)?;
-    let record = rr.record().ok()?;
-    let data = &record
-        .get(esm::sig::DATA)
-        .filter(|d| d.data.len() >= 24)?
-        .data;
+    // Only its `DATA` is read (this is asked for many references every
+    // frame).
+    let data = rr.subrecord(esm::sig::DATA).ok()??;
+    let data = &data[..];
+    if data.len() < 24 {
+        return None;
+    }
     Some(Whereabouts {
         cell: order.cell_of(&rr)?,
         world: order.world_of(&rr),
@@ -1418,9 +1425,11 @@ pub fn script_of(order: &LoadOrder, owner: FormId) -> Option<FormId> {
     } else {
         order.get(base_of(order, owner)?)?
     };
-    let record = holder.record().ok()?;
-    let s = record.get(SCRI).filter(|s| s.data.len() >= 4)?;
-    Some(holder.plugin.to_global(FormId(le_u32(&s.data, 0))))
+    let s = holder.subrecord(SCRI).ok()??;
+    if s.len() < 4 {
+        return None;
+    }
+    Some(holder.plugin.to_global(FormId(le_u32(&s, 0))))
 }
 
 /// A script variable's name by its number (`SLSD` index, then `SCVR`).
@@ -1743,7 +1752,7 @@ impl Facts<'_> {
                     flag(s.perks.contains(&perk))
                 } else {
                     let rr = self.order.get(self.base(r)?)?;
-                    let record = rr.record().ok()?;
+                    let record = rr.record_shared().ok()?;
                     let has = record.get_all(PRKR).any(|p| {
                         p.data.len() >= 4 && rr.plugin.to_global(FormId(le_u32(&p.data, 0))) == perk
                     });
@@ -2150,7 +2159,7 @@ impl Facts<'_> {
             return aidt.data.get(usize::from(index)).map(|&v| f64::from(v));
         }
         let rr = self.order.get(base)?;
-        let record = rr.record().ok()?;
+        let record = rr.record_shared().ok()?;
         // Karma: `ACBS` (flags, fatigue, barter gold, level, calc min and
         // max, speed mult, then karma f32 at 16).
         if index == 23 {

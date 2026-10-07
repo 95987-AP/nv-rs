@@ -413,7 +413,7 @@ pub fn weapon_impact_set(order: &LoadOrder, weapon: FormId) -> Option<FormId> {
 /// guess at which template flag covers the impact material, impact set and
 /// sounds: the game's own split isn't traced; the spawned creatures, with
 /// every flag set, are the same either way).
-fn look_record(order: &LoadOrder, who: FormId) -> Option<(RecordRef<'_>, Record)> {
+fn look_record(order: &LoadOrder, who: FormId) -> Option<(RecordRef<'_>, std::sync::Arc<Record>)> {
     let is_base = order
         .get(who)
         .is_some_and(|r| r.entry.header.kind == NPC_ || r.entry.header.kind == CREA);
@@ -608,7 +608,7 @@ pub fn creature_sounds(order: &LoadOrder, who: FormId, kind: u32) -> Vec<(FormId
             let Some(r) = order.get(next) else {
                 return Vec::new();
             };
-            let Ok(rec) = r.record() else {
+            let Ok(rec) = r.record_shared() else {
                 return Vec::new();
             };
             at = (r, rec);

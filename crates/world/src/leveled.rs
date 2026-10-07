@@ -55,7 +55,7 @@ pub struct Leveled {
 impl Leveled {
     pub fn load(order: &LoadOrder, id: FormId) -> Option<Leveled> {
         let rr = order.get(id).filter(|r| is_leveled(r.entry.header.kind))?;
-        let record = rr.record().ok()?;
+        let record = rr.record_shared().ok()?;
         let global = record
             .get(LVLG)
             .filter(|s| s.data.len() >= 4)
@@ -63,7 +63,7 @@ impl Leveled {
             .filter(|g| g.0 != 0)
             .and_then(|g| {
                 let gr = order.get(g).filter(|r| r.entry.header.kind == GLOB)?;
-                let rec = gr.record().ok()?;
+                let rec = gr.record_shared().ok()?;
                 let v = rec.get(FLTV).filter(|s| s.data.len() >= 4)?;
                 Some(f32::from_le_bytes(v.data[..4].try_into().ok()?))
             });

@@ -427,6 +427,12 @@ impl AudioMarker {
         if rr.entry.header.kind.as_bytes() != b"REFR" {
             return None;
         }
+        // Its base first (a world's every reference is looked at): only an
+        // audio marker's record is read whole.
+        let name = rr.subrecord(esm::sig::NAME).ok()??;
+        if form(&rr, &name) != Some(AUDIO_MARKER) {
+            return None;
+        }
         let record = rr.record().ok()?;
         let base = record
             .get(esm::sig::NAME)

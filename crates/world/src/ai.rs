@@ -209,7 +209,7 @@ pub struct Package {
 impl Package {
     pub fn load(order: &LoadOrder, id: FormId) -> Option<Package> {
         let rr = order.get(id).filter(|r| r.entry.header.kind == PACK)?;
-        let record = rr.record().ok()?;
+        let record = rr.record_shared().ok()?;
         let pkdt = record.get(PKDT).filter(|s| s.data.len() >= 5)?;
         let location = record
             .get(PLDT)
