@@ -207,6 +207,10 @@ impl Material2d for TileMaterial {
 /// A piece on screen: its entity and assets.
 type Drawn = (Entity, Handle<Mesh>, Handle<TileMaterial>);
 
+/// The camera drawing the HUD's pieces onto its picture.
+#[derive(Component)]
+pub struct HudCamera;
+
 /// The HUD as built for the window's size, and what's on screen of it.
 struct Built {
     ui: ui::Ui,
@@ -270,7 +274,8 @@ fn setup_hud_layer(
     let layer = images.add(image);
     commands.insert_resource(HudLayer(layer.clone()));
     // The scope's overlay is drawn onto the picture first and clears it
-    // (`scope`); the HUD's pieces go over it.
+    // while a scope is up (`scope`); the HUD's pieces go over it. The rest
+    // of the time the HUD's camera clears it.
     crate::scope::spawn_camera(&mut commands, layer.clone());
     commands.spawn((
         Camera2d,
@@ -281,15 +286,17 @@ fn setup_hud_layer(
             // (`lockpick`).
             order: -4,
             // A float picture: stored values kept as they are, blended as
-            // they are. The scope's camera cleared it (`scope`).
+            // they are. Cleared here, or by the scope's camera while it's
+            // on (`scope::update_scope`).
             hdr: true,
-            clear_color: ClearColorConfig::None,
+            clear_color: ClearColorConfig::Custom(Color::NONE),
             ..default()
         },
         Tonemapping::None,
         DebandDither::Disabled,
         Msaa::Off,
         RenderLayers::layer(HUD_LAYER),
+        HudCamera,
     ));
     let mut white = Image::new_fill(
         Extent3d {

@@ -60,13 +60,15 @@ pub struct ScopeOverlay {
     last: Option<[f32; 3]>,
 }
 
-/// The overlay's camera onto the HUD's picture, before the HUD's pieces
-/// (the HUD's camera is next and doesn't clear: this one clears the
-/// picture every frame).
+/// The overlay's camera onto the HUD's picture, before the HUD's pieces:
+/// on only while a scope is up (a 3D view costs a frame its work even
+/// with nothing in it), clearing the picture then, the HUD's camera
+/// clearing it otherwise ([`update_scope`]).
 pub fn spawn_camera(commands: &mut Commands, layer: Handle<Image>) {
     commands.spawn((
         Camera3d::default(),
         Camera {
+            is_active: false,
             target: RenderTarget::from(layer),
             order: -5,
             hdr: true,
@@ -233,7 +235,10 @@ pub fn update_scope(
     mut overlay: ResMut<ScopeOverlay>,
     (mut meshes, mut materials, mut images): OverlayAssets,
     mut visibility: Query<&mut Visibility>,
-    mut cameras: Query<&mut Projection, With<ScopeCamera>>,
+    (mut cameras, mut hud): (
+        Query<(&mut Projection, &mut Camera), With<ScopeCamera>>,
+        Query<&mut Camera, (With<crate::hud::HudCamera>, Without<ScopeCamera>)>,
+    ),
 ) {
     let order = &game.0.order;
     let weapon = world::combat::weapon_in_hand(order, &state.0, PLAYER_REF);
@@ -250,6 +255,25 @@ pub fn update_scope(
         .map(|w| w.form_id);
     if scoped.0 != now {
         scoped.0 = now;
+    }
+    // The overlay's camera on while a scope is up (this frame: the cameras
+    // that draw are decided after `Update`), the HUD's clearing the
+    // picture when it's off.
+    let on = now.is_some();
+    for (_, mut camera) in &mut cameras {
+        if camera.is_active != on {
+            camera.is_active = on;
+        }
+    }
+    for mut camera in &mut hud {
+        let clearing = !matches!(camera.clear_color, ClearColorConfig::None);
+        if clearing == on {
+            camera.clear_color = if on {
+                ClearColorConfig::None
+            } else {
+                ClearColorConfig::Custom(Color::NONE)
+            };
+        }
     }
     // The overlay's model follows the weapon in hand (`0077f2f0`).
     let wanted = weapon
@@ -294,7 +318,7 @@ pub fn update_scope(
         .float("Display", "fDefaultFOV")
         .unwrap_or(cellview::GAME_FOV_DEGREES);
     let fov = frustum_fov(default_fov);
-    for mut p in &mut cameras {
+    for (mut p, _) in &mut cameras {
         if let Projection::Perspective(p) = p.as_mut() {
             if p.fov != fov {
                 p.fov = fov;
