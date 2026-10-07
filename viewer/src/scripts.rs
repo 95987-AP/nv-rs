@@ -295,6 +295,17 @@ fn refresh_cell_scripts(
     }
 }
 
+/// The references made while playing that E can use (dropped items, ash
+/// piles) and the placed mines, in the player's place.
+fn made_and_mines(order: &esm::LoadOrder, state: &GameState) -> Vec<world::scripting::Interactive> {
+    let Some((space, ..)) = state.place(order, PLAYER_REF) else {
+        return Vec::new();
+    };
+    let mut out = world::more_functions::placed::dropped_items(order, state, space);
+    out.extend(world::mines::interactive_in(order, state, space));
+    out
+}
+
 /// Whether an object's script has an `OnActivate` block.
 fn has_on_activate(order: &esm::LoadOrder, cache: &ScriptCache, r: &Interactive) -> bool {
     r.script
@@ -319,6 +330,8 @@ enum Used {
     Furniture(FormId),
     /// An item taken that the game doesn't announce (`004ce380`'s types).
     Taken,
+    /// A sound to play (a mine's disable sound).
+    Sound(FormId),
 }
 
 /// E on an object: its `OnActivate` script runs, if it has one, and its
@@ -350,6 +363,29 @@ fn use_object(
             .and_then(|rec| rec.full_name())
             .unwrap_or_else(|| id.to_string())
     };
+    // A placed mine: disarmed, then taken (`world::mines::use_placed`).
+    if r.kind == esm::FourCC::new(b"PROJ") {
+        return match world::mines::use_placed(order, state, r.reference)? {
+            world::mines::MineUsed::Disarmed(sound) => {
+                println!("Disarmed {}.", r.reference);
+                sound.map(Used::Sound)
+            }
+            world::mines::MineUsed::Taken(_, Some(message)) => Some(Used::Notice(
+                message,
+                // The "added" notice's gift box (`004821a0`).
+                Some(world::message_icon::GIFT_BOX),
+            )),
+            world::mines::MineUsed::Taken(_, None) => Some(Used::Taken),
+        };
+    }
+    // An ash or goo pile passes the activation on to its corpse
+    // (`TESObjectREFR::Activate`, `00573170`): the corpse is searched.
+    let corpse = world::activation::stands_for(order, state, r.reference);
+    if corpse != r.reference {
+        let label = world::script_functions::full_name(order, state, corpse)
+            .unwrap_or_else(|| corpse.to_string());
+        return Some(Used::Container(corpse, label));
+    }
     let counted = |item: FormId, n: i32| {
         if n > 1 {
             format!("{} ({n})", name(item))
@@ -449,8 +485,16 @@ fn object_in_view(
             && r.trigger.is_none()
             && ![*b"NPC_", *b"CREA", *b"DOOR"].contains(r.kind.as_bytes())
     })?;
-    let usable =
-        r.is_item() || r.is_container() || r.is_furniture() || has_on_activate(order, cache, r);
+    // An ash or goo pile standing for a corpse is used to search it; a
+    // placed mine to disarm or take it.
+    let pile = world::activation::stands_for(order, state, r.reference) != r.reference;
+    let mine = r.kind == esm::FourCC::new(b"PROJ");
+    let usable = r.is_item()
+        || r.is_container()
+        || r.is_furniture()
+        || pile
+        || mine
+        || has_on_activate(order, cache, r);
     if !usable || !world::enabled_now(order, r.reference, &state.disabled) {
         return None;
     }
@@ -472,7 +516,17 @@ fn object_in_view(
         );
     let steal =
         || world::scripting::game_setting_text(order, "sSteal").unwrap_or_else(|| "Steal".into());
-    let prompt = if r.is_item() {
+    let pile = world::activation::stands_for(order, state, r.reference) != r.reference;
+    let mine = r.kind == esm::FourCC::new(b"PROJ");
+    let prompt = if pile || mine {
+        // The pile's own words (an activator with a name: "Activate",
+        // `world::activation::info`).
+        let info = world::activation::info(order, state, r.reference);
+        match info.and_then(|i| i.action) {
+            Some(action) => format!("{action} {name}"),
+            None => name,
+        }
+    } else if r.is_item() {
         let verb = if owned { steal() } else { "Take".into() };
         if r.count > 1 {
             format!("{verb} {name} ({})", r.count)
@@ -1192,10 +1246,7 @@ pub fn run_scripts(
         });
         // Items the player dropped (made references) are taken as placed
         // items are (the hook the Pip-Boy's Drop needs; `pipboy`).
-        let dropped = state
-            .place(order, PLAYER_REF)
-            .map(|(space, ..)| world::more_functions::placed::dropped_items(order, state, space))
-            .unwrap_or_default();
+        let dropped = made_and_mines(order, state);
         if let Some(r) = activate_request.0.take().filter(|_| !refused) {
             let object = cell_scripts
                 .refs
@@ -1233,6 +1284,7 @@ pub fn run_scripts(
                     waiting.push(crate::menus::Menu::SleepWait { sleep: true });
                 }
                 Some(Used::Furniture(f)) => player_seat.activated = Some(f),
+                Some(Used::Sound(s)) => sound_requests.0.push(s),
                 Some(Used::Taken) | None => {}
             }
             // A taken item's pick-up sound: its own (`YNAM`), else a
@@ -1251,10 +1303,7 @@ pub fn run_scripts(
             }
         }
     }
-    let dropped = state
-        .place(order, PLAYER_REF)
-        .map(|(space, ..)| world::more_functions::placed::dropped_items(order, state, space))
-        .unwrap_or_default();
+    let dropped = made_and_mines(order, state);
     // Scripts can turn the crosshair's roll-over text (and with it using
     // things) off (`DisablePlayerControls`).
     let rollover = !state.controls_off[world::scripting::controls::ROLLOVER];
@@ -1405,6 +1454,15 @@ pub fn run_scripts(
             }),
             Event::KnockedOut { who } => Some(format!("{} is down.", name(who))),
             Event::GotUp { who } => Some(format!("{} gets up.", name(who))),
+            // `ForceFlee` (`world::ai::flee::force`): printed; the AI runs to
+            // the place given, or stands (`ai::forced_flee_frame`).
+            Event::Flees { who, to } => {
+                match to {
+                    Some(to) => println!("{} flees (ForceFlee) to {}.", name(who), name(to)),
+                    None => println!("{} flees (ForceFlee).", name(who)),
+                }
+                None
+            }
             Event::Journal { quest, text } => Some(format!("{}: {text}", name(quest))),
             // The HUD's objective lines (`0077a5b0`).
             Event::Objective {

@@ -665,9 +665,12 @@ pub fn talk(
     }
 
     // Not talking: the person the crosshair is on, within reach
-    // (`crosshair`, the game's view caster).
+    // (`crosshair`, the game's view caster). A body whose critical stage
+    // culled it (disintegrated, gooified) isn't there to search: its ash
+    // or goo pile is (`scripts`).
     let best = crosshair
         .target()
+        .filter(|&r| !world::more_functions::body_gone(&state.0, r))
         .and_then(|r| talkers.0.iter().find(|t| t.reference == r).copied());
     target.0 = best.and_then(|t| {
         if target

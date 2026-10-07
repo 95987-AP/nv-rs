@@ -116,6 +116,93 @@ pub fn flee_to(order: &LoadOrder, actor: FormId, package: &Package) -> Option<Fo
     }
 }
 
+/// A flee the engine started for someone (`Actor::InitiateFlee` (Xbox
+/// PDB), `00897de0`: a package of type 0x16, `FleePackage`), as
+/// `ForceFlee` starts it: from nobody, to the reference or cell given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ForcedFlee {
+    /// The cell to flee to (`ForceFlee`'s first, optional parameter).
+    pub cell: Option<FormId>,
+    /// The reference to flee to (its second); with both, the reference
+    /// wins (`00897de0` tests it first).
+    pub to: Option<FormId>,
+}
+
+/// `ForceFlee` on `who` (`005d09e0`; Xbox `Script::ForceFleeFunction`).
+/// Nothing for the player. Someone fighting (a combat controller, actor
+/// vtable +0x428) is passed to `CombatController::ForceFlee`, which does
+/// nothing in this build (an empty function, `008d0600`); only a flee
+/// already running takes the new destination (process vtable +0x27c, a
+/// flee package). Anyone else starts the engine's flee package
+/// (`00897de0`) unless restrained (life state 5), unconscious (3) or
+/// dead: from nobody (with no reference or cell given, the process's flee
+/// distance becomes 20 if it was 0 or less, and nobody is looked for to
+/// flee from, `009f1140` with none), to the reference, else the cell. The
+/// package replaces what they were doing (vtable +0x2f4) and makes them
+/// fleeing (`Actor::IsFleeing` (Xbox PDB): a current package of type
+/// 0x16, never for the player). Whether it started.
+// Translated from 005d09e0 and 00897de0 (decompiled, FalloutNV.exe
+// 1.4.0.525).
+pub fn force(state: &mut GameState, who: FormId, cell: Option<FormId>, to: Option<FormId>) -> bool {
+    if who == crate::dialogue::PLAYER_REF {
+        return false;
+    }
+    if state.combat.contains_key(&who) {
+        if let Some(f) = state.forced_flee.get_mut(&who) {
+            if to.is_some() {
+                f.to = to;
+            } else if cell.is_some() {
+                f.cell = cell;
+            }
+        }
+        return false;
+    }
+    if state.set_by_scripts.restrained.contains(&who)
+        || state.unconscious.contains(&who)
+        || state.dead.contains(&who)
+    {
+        return false;
+    }
+    state.forced_flee.insert(who, ForcedFlee { cell, to });
+    state.events.push(crate::scripting::Event::Flees {
+        who,
+        to: to.or(cell),
+    });
+    true
+}
+
+/// Whether someone runs the engine's flee package (`Actor::IsFleeing`'s
+/// first test): alive and not fighting (starting a fight puts the combat
+/// package in its place, `Actor::StartCombat` (Xbox PDB), vtable +0x2f0).
+pub fn forced(state: &GameState, who: FormId) -> bool {
+    state.forced_flee.contains_key(&who)
+        && !state.dead.contains(&who)
+        && !state.combat.contains_key(&who)
+}
+
+/// The engine's flee package ends when the actor's package is picked again
+/// from their list (`EvaluatePackage`, `ResetAI`: `Actor::EvaluatePackage`
+/// (Xbox PDB) makes the picked package current). It doesn't end by itself
+/// with nobody to flee from (`FleePackage::ShouldShutDown` (Xbox PDB) only
+/// ends one whose sole avoided reference is the player, when a test on the
+/// player, not traced, fails).
+pub fn end_forced(state: &mut GameState, who: FormId) {
+    state.forced_flee.remove(&who);
+}
+
+/// Flees that ended by a fight or death are forgotten.
+pub fn tidy(state: &mut GameState) {
+    let gone: Vec<FormId> = state
+        .forced_flee
+        .keys()
+        .copied()
+        .filter(|&w| !forced(state, w))
+        .collect();
+    for w in gone {
+        state.forced_flee.remove(&w);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

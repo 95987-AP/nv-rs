@@ -1,4 +1,6 @@
-//! Blocking and power attacks, as `FalloutNV.exe` 1.4.0.525 does them.
+//! Melee and unarmed fighting: blocking, power attacks, what a swing
+//! hits, the unarmed specials and knockdowns, as `FalloutNV.exe` 1.4.0.525
+//! does them (`docs/MELEE_UNARMED.md`).
 //!
 //! **Blocking.** The Aim control (6, "Block" in the INI) with a melee
 //! weapon or fists out starts the block (`0093e860` → `00894cc0(1)`): the
@@ -27,7 +29,30 @@
 //! the custom power attacks (entry points 61–66), and an unarmed attack
 //! within the counter-attack timer with entry point 64 is the `Counter`
 //! (0xa8). The power attack's damage is × `fDamagePowerAttackBonus`
-//! unless the attacker sneaks (`009b5170`, `00644520`).
+//! unless the attacker sneaks (`009b5170`, `00644520`): inside a weapon's
+//! damage, after the armour for fists (`world::combat::fists_power_bonus`).
+//! Power attacks cost no action points or fatigue (the settings
+//! `fActionPointsPowerAttackMult`, `fPowerAttackFatiguePenalty` and the
+//! direction bonuses `fDamagePowerAttack…Bonus` are read by nothing), and
+//! there's no cooldown besides the hold (`fPowerAttackDelay`).
+//!
+//! **What a swing hits** ([`find_target`], `009a60e0`, after
+//! [`swing_reach`], `008990f0`): someone with a combat target only that
+//! one; the player whoever is within reach (the gap between the bodies)
+//! and the hit cone ([`Cones`], [`cone_check`]: the player's cone by the
+//! attack, `009a6a40`; × 3 up close; dead ones × 2) nearest its middle.
+//!
+//! **Unarmed specials** ([`unarmed_special_group`], `00893a40`): outside
+//! V.A.T.S. an unarmed attack becomes `Attack6` (uppercut) or `Attack7`
+//! (cross) by chances from the Unarmed skill; the hit ([`special_of`],
+//! `00899200` → `0089a760`) then staggers (uppercut, and the unarmed
+//! left and right custom power attacks: a staggered person drops the
+//! weapon when the arm holding it is hit) or does × 2.5 limb damage
+//! (cross). V.A.T.S.'s Uppercut and Cross play the same groups
+//! (`world::vats::attack_group`).
+//!
+//! **Knockdowns** ([`knockdown_chance`], [`knocks_down`]): the attacker's
+//! "Knockdown Chance" perks (Super Slam) on each hit (`0089a760`).
 
 use esm::{FormId, LoadOrder};
 
@@ -39,6 +64,10 @@ use crate::scripting::{game_setting, Facts, GameState};
 /// `011977d8`).
 pub mod group {
     pub const ATTACK_RIGHT: u8 = 0x20;
+    /// The unarmed uppercut and cross (`00893a40`, V.A.T.S.'s Uppercut and
+    /// Cross, `00948310`).
+    pub const ATTACK6: u8 = 0x38;
+    pub const ATTACK7: u8 = 0x3e;
     pub const ATTACK_POWER: u8 = 0x5c;
     pub const ATTACK_FORWARD_POWER: u8 = 0x5d;
     pub const ATTACK_BACK_POWER: u8 = 0x5e;
@@ -50,6 +79,8 @@ pub mod group {
     pub const ATTACK_CUSTOM4_POWER: u8 = 0x64;
     pub const ATTACK_CUSTOM5_POWER: u8 = 0x65;
     pub const COUNTER: u8 = 0xa8;
+    /// V.A.T.S.'s Stomp (`00948310`).
+    pub const STOMP: u8 = 0xa9;
     pub const BLOCK_IDLE: u8 = 0xaa;
     pub const BLOCK_HIT: u8 = 0xab;
 }
@@ -113,23 +144,10 @@ impl Settings {
 }
 
 /// Whether `attacker_at` is within the hit cone of someone at `at` facing
-/// `heading` (radians clockwise from north): the angle between the heading
-/// and the direction to the attacker, in degrees, at most `cone` (× 3
-/// within 128 units).
-// Translated from 009a6ae0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `heading` (radians clockwise from north), as a block asks it: the
+/// plain cone ([`cone_check`] with a living attacker).
 pub fn in_hit_cone(at: [f32; 3], heading: f32, attacker_at: [f32; 3], cone: f32) -> bool {
-    let d = [attacker_at[0] - at[0], attacker_at[1] - at[1]];
-    let to_attacker = d[0].atan2(d[1]);
-    // `00408860` (fabs) of the difference, in degrees, folded past 180.
-    let mut angle = ((heading - to_attacker) * 57.29578).abs();
-    if angle > 180.0 {
-        angle = (angle - 360.0).abs();
-    }
-    // The distance (`00457990`, the whole vector's length) under 128.
-    let dz = attacker_at[2] - at[2];
-    let distance = (d[0] * d[0] + d[1] * d[1] + dz * dz).sqrt();
-    let cone = if distance < 128.0 { cone * 3.0 } else { cone };
-    angle <= cone
+    cone_check(at, heading, attacker_at, cone, false, 1.0).0
 }
 
 /// What a block adds to the blocker's damage threshold against one hit
@@ -287,6 +305,379 @@ pub fn power_attack_mult(s: &Settings, power: bool, sneaking: bool) -> f32 {
     }
 }
 
+/// The hit cones' settings (`009a6a40`, `009a6ae0`; the exe's defaults,
+/// which `FalloutNV.esm` doesn't change).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Cones {
+    /// `fCombatHitConeAngle` (35 degrees): everyone's, and the player's
+    /// for attacks other than the ones below.
+    pub hit: f32,
+    /// `fCombatOverheadHitConeAngle` (40): the player's `AttackPower` and
+    /// `AttackForwardPower`.
+    pub overhead: f32,
+    /// `fCombatSweepHitConeAngle` (100): the player's back, left and right
+    /// power attacks.
+    pub sweep: f32,
+    /// `fCombatUppercutHitConeAngle` (50): the player's
+    /// `AttackCustom1Power` (the unarmed forward power attack).
+    pub uppercut: f32,
+    /// `fCombatDeadActorHitConeMult` (2): the cone × it for a dead target
+    /// outside it.
+    pub dead_mult: f32,
+}
+
+impl Default for Cones {
+    fn default() -> Self {
+        Cones {
+            hit: 35.0,
+            overhead: 40.0,
+            sweep: 100.0,
+            uppercut: 50.0,
+            dead_mult: 2.0,
+        }
+    }
+}
+
+impl Cones {
+    pub fn read(order: &LoadOrder) -> Cones {
+        let d = Cones::default();
+        let g = |n: &str, v: f32| game_setting(order, n).unwrap_or(v);
+        Cones {
+            hit: g("fCombatHitConeAngle", d.hit),
+            overhead: g("fCombatOverheadHitConeAngle", d.overhead),
+            sweep: g("fCombatSweepHitConeAngle", d.sweep),
+            uppercut: g("fCombatUppercutHitConeAngle", d.uppercut),
+            dead_mult: g("fCombatDeadActorHitConeMult", d.dead_mult),
+        }
+    }
+
+    /// The player's cone for the attack group playing (`009a6a40`): 0x5c
+    /// and 0x5d overhead, 0x5e–0x60 sweep, 0x61 uppercut, anything else
+    /// the plain one. Everyone else's is always the plain one
+    /// (`009a6ae0`).
+    // Translated from 009a6a40 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn for_attack(&self, group: u8) -> f32 {
+        match group {
+            group::ATTACK_POWER | group::ATTACK_FORWARD_POWER => self.overhead,
+            group::ATTACK_BACK_POWER..=group::ATTACK_RIGHT_POWER => self.sweep,
+            group::ATTACK_CUSTOM1_POWER => self.uppercut,
+            _ => self.hit,
+        }
+    }
+}
+
+/// The angle (degrees, 0–180) between `heading` (radians clockwise from
+/// north) at `at` and the direction to `other` (`009a6ae0`).
+pub fn angle_off(at: [f32; 3], heading: f32, other: [f32; 3]) -> f32 {
+    let d = [other[0] - at[0], other[1] - at[1]];
+    let to_other = d[0].atan2(d[1]);
+    // `00408860` (fabs) of the difference, in degrees, folded past 180.
+    let mut angle = ((heading - to_other) * 57.29578).abs();
+    if angle > 180.0 {
+        angle = (angle - 360.0).abs();
+    }
+    angle
+}
+
+/// Whether `other` is within the hit cone of someone at `at` facing
+/// `heading` (`009a6ae0`), and the angle off: within `cone` degrees,
+/// × 3 when they're less than 128 units apart (the whole vector's
+/// length, `00457990`); a dead `other` outside that, within the cone ×
+/// `dead_mult`. (The player's auto-aim turn, `00965620` on the
+/// `ProjectileNode`, isn't added to the heading here.)
+// Translated from 009a6ae0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn cone_check(
+    at: [f32; 3],
+    heading: f32,
+    other: [f32; 3],
+    cone: f32,
+    other_dead: bool,
+    dead_mult: f32,
+) -> (bool, f32) {
+    let angle = angle_off(at, heading, other);
+    let d = [other[0] - at[0], other[1] - at[1], other[2] - at[2]];
+    let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let cone = if distance < 128.0 { cone * 3.0 } else { cone };
+    let inside = angle <= cone || (other_dead && angle <= cone * dead_mult);
+    (inside, angle)
+}
+
+/// Someone a swing might meet (`009a60e0`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Body {
+    pub reference: FormId,
+    /// Where they stand.
+    pub position: [f32; 3],
+    /// Their collision radius (`008be420`).
+    pub radius: f32,
+    pub dead: bool,
+}
+
+/// A melee attack looking for what it hits (`009a60e0`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Swing {
+    pub at: [f32; 3],
+    /// Radians clockwise from north.
+    pub heading: f32,
+    /// The attacker's collision radius.
+    pub radius: f32,
+    /// [`swing_reach`].
+    pub reach: f32,
+    /// The hit cone ([`Cones::for_attack`] for the player).
+    pub cone: f32,
+    pub dead_mult: f32,
+    pub player: bool,
+    /// V.A.T.S. is playing (mode 4).
+    pub vats_playback: bool,
+}
+
+impl Swing {
+    /// The gap to `b` (`009a64d0`): the distance less both radii
+    /// (`009a6770`).
+    pub fn gap(&self, b: &Body) -> f32 {
+        let d = [
+            b.position[0] - self.at[0],
+            b.position[1] - self.at[1],
+            b.position[2] - self.at[2],
+        ];
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - (self.radius + b.radius)
+    }
+
+    fn cone(&self, b: &Body) -> (bool, f32) {
+        cone_check(
+            self.at,
+            self.heading,
+            b.position,
+            self.cone,
+            b.dead,
+            self.dead_mult,
+        )
+    }
+}
+
+/// How far a swing reaches (`008990f0`): a weapon's reach ×
+/// `fCombatDistance` (128), else `fHandReachMult` (0.5) × 128 for people
+/// (the actor's `GetReach`, vtable `+0x380`, `0088b850`), × the
+/// attacker's scale, × `fVATSMeleeReachMult` (2) for the player while
+/// V.A.T.S. plays.
+// Translated from 008990f0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn swing_reach(
+    order: &LoadOrder,
+    weapon: Option<&Weapon>,
+    scale: f32,
+    player_in_vats: bool,
+) -> f32 {
+    let g = |n: &str, v: f32| game_setting(order, n).unwrap_or(v);
+    let distance = g("fCombatDistance", 128.0);
+    let reach = match weapon {
+        Some(w) => w.reach * distance,
+        None => g("fHandReachMult", 0.5) * distance,
+    };
+    let reach = reach * scale;
+    if player_in_vats {
+        reach * g("fVATSMeleeReachMult", 2.0)
+    } else {
+        reach
+    }
+}
+
+/// Whom a melee attack hits (`Actor::FindMeleeTarget`, Xbox PDB, `009a60e0`).
+/// An attacker with a combat target hits only that one, when it's in the
+/// cone and the gap is at most the reach. Otherwise (the player) everyone
+/// near is looked at: not the attacker, not the dead while V.A.T.S. plays,
+/// the dead only for the player; within reach and the cone; the one
+/// nearest the middle of the cone (the smallest angle; the later of
+/// equals) is hit. The player's swing then needs a line of sight to them
+/// (`0088b880`), which the caller checks.
+// Translated from 009a60e0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn find_target(swing: &Swing, combat_target: Option<&Body>, near: &[Body]) -> Option<FormId> {
+    if let Some(t) = combat_target {
+        return (swing.cone(t).0 && swing.gap(t) <= swing.reach).then_some(t.reference);
+    }
+    let mut best: Option<(FormId, f32)> = None;
+    for b in near {
+        if swing.vats_playback && b.dead {
+            continue;
+        }
+        if b.dead && !swing.player {
+            continue;
+        }
+        if swing.gap(b) > swing.reach {
+            continue;
+        }
+        let (inside, angle) = swing.cone(b);
+        if inside && best.map_or(true, |(_, a)| angle <= a) {
+            best = Some((b.reference, angle));
+        }
+    }
+    best.map(|(r, _)| r)
+}
+
+/// The settings of the unarmed specials outside V.A.T.S. (`00893a40`; the
+/// exe's defaults, which `FalloutNV.esm` doesn't change).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UnarmedSpecials {
+    /// `fUpperCutThreshold` (50) and `fUpperCutSkillChance` (0.15).
+    pub uppercut_threshold: f32,
+    pub uppercut_chance: f32,
+    /// `fCrossThreshold` (75) and `fCrossSkillChance` (0.15).
+    pub cross_threshold: f32,
+    pub cross_chance: f32,
+    /// `fCrossSkillDamageMultiplier` (2.5): a cross's limb damage.
+    pub cross_limb_mult: f32,
+    /// `iCombatCrippledTorsoHitStaggerChance` (50).
+    pub torso_stagger_chance: f32,
+}
+
+impl Default for UnarmedSpecials {
+    fn default() -> Self {
+        UnarmedSpecials {
+            uppercut_threshold: 50.0,
+            uppercut_chance: 0.15,
+            cross_threshold: 75.0,
+            cross_chance: 0.15,
+            cross_limb_mult: 2.5,
+            torso_stagger_chance: 50.0,
+        }
+    }
+}
+
+impl UnarmedSpecials {
+    pub fn read(order: &LoadOrder) -> UnarmedSpecials {
+        let d = UnarmedSpecials::default();
+        let g = |n: &str, v: f32| game_setting(order, n).unwrap_or(v);
+        UnarmedSpecials {
+            uppercut_threshold: g("fUpperCutThreshold", d.uppercut_threshold),
+            uppercut_chance: g("fUpperCutSkillChance", d.uppercut_chance),
+            cross_threshold: g("fCrossThreshold", d.cross_threshold),
+            cross_chance: g("fCrossSkillChance", d.cross_chance),
+            cross_limb_mult: g("fCrossSkillDamageMultiplier", d.cross_limb_mult),
+            torso_stagger_chance: g(
+                "iCombatCrippledTorsoHitStaggerChance",
+                d.torso_stagger_chance,
+            ),
+        }
+    }
+}
+
+/// Whether an attack may turn into an unarmed special (`00893a40`): with
+/// no weapon or a hand-to-hand one (animation type 0) whose attack
+/// animation isn't a loop or spin (0x4a–0x5b), by a person or the player,
+/// not sneaking (or while V.A.T.S. plays), and outside V.A.T.S. (where
+/// the queue picks the moves).
+pub fn may_turn_special(
+    weapon: Option<&Weapon>,
+    person: bool,
+    sneaking: bool,
+    in_vats: bool,
+) -> bool {
+    let hand = weapon.map_or(true, |w| {
+        w.animation == 0 && !(0x4a..0x5c).contains(&w.attack_animation)
+    });
+    hand && person && !sneaking && !in_vats
+}
+
+/// The group an unarmed attack turns into (`Actor::StartAttack`, Xbox
+/// PDB, `00893a40`), outside V.A.T.S.: with Unarmed (whole points) above
+/// `fUpperCutThreshold`, a chance of Unarmed × `fUpperCutSkillChance` %
+/// for `Attack6` (0x38, the uppercut), and above `fCrossThreshold` a
+/// further Unarmed × `fCrossSkillChance` % for `Attack7` (0x3e, the
+/// cross); `roll` U(0, 100). `None`: the attack stays as it was.
+// Translated from 00893a40 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn unarmed_special_group(s: &UnarmedSpecials, unarmed_skill: f32, roll: f32) -> Option<u8> {
+    let skill = unarmed_skill.trunc();
+    let uppercut = if s.uppercut_threshold < skill {
+        skill * s.uppercut_chance
+    } else {
+        0.0
+    };
+    let cross = if s.cross_threshold < skill {
+        skill * s.cross_chance
+    } else {
+        0.0
+    };
+    if uppercut == 0.0 && cross == 0.0 {
+        return None;
+    }
+    if roll <= uppercut {
+        Some(group::ATTACK6)
+    } else if roll < uppercut + cross {
+        Some(group::ATTACK7)
+    } else {
+        None
+    }
+}
+
+/// What an unarmed hit does besides its damage, by the attack group that
+/// struck (`Actor::MeleeAttack`, Xbox PDB, `00899200`, passed to the hit,
+/// `0089a760`): with no weapon or a hand-to-hand one, `Attack6` and the
+/// left and right custom power attacks (0x64, 0x65) stagger, `Attack7`
+/// crosses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Special {
+    #[default]
+    None,
+    /// 1: the one hit staggers (and drops the weapon when an arm is hit).
+    Stagger,
+    /// 2: the limb damage × `fCrossSkillDamageMultiplier`.
+    Cross,
+}
+
+/// A melee blow's particulars for the hit (`Runner::blow_at`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Blow {
+    /// A power attack (`fDamagePowerAttackBonus`).
+    pub power: bool,
+    /// [`special_of`].
+    pub special: Special,
+}
+
+/// The [`Special`] of a blow struck with `weapon` in `attack_group`.
+// Translated from 00899200 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn special_of(weapon: Option<&Weapon>, attack_group: u8) -> Special {
+    if weapon.is_some_and(|w| w.animation != 0) {
+        return Special::None;
+    }
+    match attack_group {
+        group::ATTACK6 | group::ATTACK_CUSTOM4_POWER | group::ATTACK_CUSTOM5_POWER => {
+            Special::Stagger
+        }
+        group::ATTACK7 => Special::Cross,
+        _ => Special::None,
+    }
+}
+
+/// The chance (0..1) that `attacker`'s hit with `weapon` knocks the one
+/// hit down (`0089a760`): their perks' "Knockdown Chance" (entry point
+/// 52, asked about the weapon, the fists when none) from 0 — Super Slam
+/// 0.15 with hand-to-hand and one-handed melee weapons, 0.30 with
+/// two-handed ones.
+pub fn knockdown_chance(
+    order: &LoadOrder,
+    state: &GameState,
+    attacker: FormId,
+    weapon: Option<FormId>,
+) -> f32 {
+    perks::apply_for(
+        order,
+        state,
+        attacker,
+        perks::entry::KNOCKDOWN_CHANCE,
+        0.0,
+        &[perks::weapon_tab(weapon)],
+    )
+}
+
+/// Whether the hit knocks them down (`0089a760`): a chance above 0 and a
+/// roll U(0, 1) (`00476b70(0, 1)`) at most the chance. The knockdown
+/// itself (the process's knock, vtable `+0x418`, from the attacker's
+/// position, with `00646580`'s force from the target's Agility) is the
+/// animation's and the physics'.
+// Translated from 0089a760 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn knocks_down(chance: f32, roll: f32) -> bool {
+    chance > 0.0 && roll <= chance
+}
+
 /// The animation group's file stem in `_1stperson` / `_male` (`AttackPower`
 /// → `attackpower`), for the weapon kinds' files (`1hmattackpower.kf`).
 pub fn group_file_stem(g: u8) -> Option<String> {
@@ -359,6 +750,9 @@ pub(crate) mod tests {
             semi_auto_delay: (0.0, 0.0),
             speed: 1.0,
             cone_mult: 1.0,
+            crit_effect: None,
+            crit_on_death: false,
+            resist: None,
         }
     }
 
@@ -479,5 +873,115 @@ pub(crate) mod tests {
         assert_eq!(power_attack_mult(&s, true, true), 1.0);
         assert_eq!(power_attack_mult(&s, false, false), 1.0);
         assert!(!counter_attack(&order, &state, true, 0.5));
+    }
+
+    #[test]
+    fn the_players_cone_follows_the_attack_and_widens_for_the_dead() {
+        let c = Cones::default();
+        assert_eq!(c.for_attack(group::ATTACK_RIGHT), 35.0);
+        assert_eq!(c.for_attack(group::ATTACK_POWER), 40.0);
+        assert_eq!(c.for_attack(group::ATTACK_FORWARD_POWER), 40.0);
+        assert_eq!(c.for_attack(group::ATTACK_BACK_POWER), 100.0);
+        assert_eq!(c.for_attack(group::ATTACK_LEFT_POWER), 100.0);
+        assert_eq!(c.for_attack(group::ATTACK_RIGHT_POWER), 100.0);
+        assert_eq!(c.for_attack(group::ATTACK_CUSTOM1_POWER), 50.0);
+        assert_eq!(c.for_attack(group::ATTACK_CUSTOM2_POWER), 35.0);
+        // 50 degrees off at 300 units: outside 35, inside for the dead
+        // (× 2) and for a sweep.
+        let off = 50f32.to_radians();
+        let at = [300.0 * off.sin(), 300.0 * off.cos(), 0.0];
+        assert!(!cone_check([0.0; 3], 0.0, at, 35.0, false, 2.0).0);
+        assert!(cone_check([0.0; 3], 0.0, at, 35.0, true, 2.0).0);
+        assert!(cone_check([0.0; 3], 0.0, at, 100.0, false, 2.0).0);
+        assert!((cone_check([0.0; 3], 0.0, at, 35.0, false, 2.0).1 - 50.0).abs() < 1e-3);
+    }
+
+    fn body(r: u32, at: [f32; 3], dead: bool) -> Body {
+        Body {
+            reference: FormId(r),
+            position: at,
+            radius: 20.25,
+            dead,
+        }
+    }
+
+    #[test]
+    fn a_swing_hits_the_one_nearest_the_middle_within_reach() {
+        let swing = Swing {
+            at: [0.0; 3],
+            heading: 0.0,
+            radius: 20.25,
+            reach: 64.0,
+            cone: 35.0,
+            dead_mult: 2.0,
+            player: true,
+            vats_playback: false,
+        };
+        // 100 north (gap 59.5) and 100 at 20 degrees: the straight one.
+        let off = 20f32.to_radians();
+        let ahead = body(1, [0.0, 100.0, 0.0], false);
+        let aside = body(2, [100.0 * off.sin(), 100.0 * off.cos(), 0.0], false);
+        assert_eq!(find_target(&swing, None, &[aside, ahead]), Some(FormId(1)));
+        // Out of reach (gap 79.5 > 64): nobody.
+        let far = body(3, [0.0, 120.0, 0.0], false);
+        assert_eq!(find_target(&swing, None, &[far]), None);
+        // The player may hit the dead, but not while V.A.T.S. plays;
+        // others never.
+        let corpse = body(4, [0.0, 100.0, 0.0], true);
+        assert_eq!(find_target(&swing, None, &[corpse]), Some(FormId(4)));
+        let vats = Swing {
+            vats_playback: true,
+            ..swing
+        };
+        assert_eq!(find_target(&vats, None, &[corpse]), None);
+        let npc = Swing {
+            player: false,
+            ..swing
+        };
+        assert_eq!(find_target(&npc, None, &[corpse]), None);
+        // With a combat target, only that one, and only in reach and cone.
+        assert_eq!(
+            find_target(&npc, Some(&aside), &[ahead, aside]),
+            Some(FormId(2))
+        );
+        assert_eq!(find_target(&npc, Some(&far), &[ahead]), None);
+    }
+
+    #[test]
+    fn unarmed_skill_turns_attacks_into_uppercuts_and_crosses() {
+        let s = UnarmedSpecials::default();
+        // Unarmed 50: nothing (above 50 is asked).
+        assert_eq!(unarmed_special_group(&s, 50.0, 0.0), None);
+        // Unarmed 60: 9% uppercut.
+        assert_eq!(unarmed_special_group(&s, 60.9, 9.0), Some(group::ATTACK6));
+        assert_eq!(unarmed_special_group(&s, 60.0, 9.5), None);
+        // Unarmed 100: 15% uppercut, then 15% cross.
+        assert_eq!(unarmed_special_group(&s, 100.0, 15.0), Some(group::ATTACK6));
+        assert_eq!(unarmed_special_group(&s, 100.0, 29.0), Some(group::ATTACK7));
+        assert_eq!(unarmed_special_group(&s, 100.0, 30.5), None);
+        // Who may: fists or hand-to-hand weapons, a person, not sneaking,
+        // not in V.A.T.S.
+        let knuckles = weapon(0);
+        let machete = weapon(1);
+        assert!(may_turn_special(None, true, false, false));
+        assert!(may_turn_special(Some(&knuckles), true, false, false));
+        assert!(!may_turn_special(Some(&machete), true, false, false));
+        assert!(!may_turn_special(None, false, false, false));
+        assert!(!may_turn_special(None, true, true, false));
+        assert!(!may_turn_special(None, true, false, true));
+        // What the groups do when they hit.
+        assert_eq!(special_of(None, group::ATTACK6), Special::Stagger);
+        assert_eq!(
+            special_of(None, group::ATTACK_CUSTOM4_POWER),
+            Special::Stagger
+        );
+        assert_eq!(
+            special_of(None, group::ATTACK_CUSTOM5_POWER),
+            Special::Stagger
+        );
+        assert_eq!(special_of(Some(&knuckles), group::ATTACK7), Special::Cross);
+        assert_eq!(special_of(Some(&machete), group::ATTACK6), Special::None);
+        assert_eq!(special_of(None, group::ATTACK_RIGHT), Special::None);
+        assert!(knocks_down(0.15, 0.15) && !knocks_down(0.15, 0.2) && !knocks_down(0.0, 0.0));
     }
 }

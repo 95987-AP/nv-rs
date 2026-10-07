@@ -171,6 +171,8 @@ pub fn vats(tag: &str) -> TempData {
         data.push(13);
         d.extend(sub(b"DATA", &data));
         let mut dnam = vec![0u8; 204];
+        // No resist type (-1 at 120), as the game's guns.
+        dnam[120..124].copy_from_slice(&(-1i32).to_le_bytes());
         dnam[0..4].copy_from_slice(&g.animation.to_le_bytes());
         dnam[4..8].copy_from_slice(&1.0f32.to_le_bytes());
         dnam[8..12].copy_from_slice(&g.reach.to_le_bytes());

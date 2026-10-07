@@ -112,6 +112,19 @@ pub struct Weapon {
     /// What its shots' cone is multiplied by: 1, or a fitted split beam
     /// mod's second value (`00523150`; `world::weapon_mods::modded`).
     pub cone_mult: f32,
+    /// `CRDT` u32 at 12: the critical effect, a spell cast on whoever a
+    /// critical hit strikes (the weapon's `+0x1cc`, `0051f4d0`): the laser
+    /// weapons' `LaserDisintegrationFXSpell`, the plasma ones'
+    /// `PlasmaEffect` (see `docs/ENERGY_WEAPONS.md`).
+    pub crit_effect: Option<FormId>,
+    /// `CRDT` u8 at 8, flag 0x01 "on death" (the weapon's `+0x1c8`,
+    /// `009b73b0`): the effect only when the critical hit kills.
+    pub crit_on_death: bool,
+    /// `DNAM` i32 at 120: the actor value that resists its damage (the
+    /// weapon's `+0x16c`, `009b6600`; -1 none): 60 Energy Resistance on
+    /// the lasers and plasma weapons, 61 EMP on the pulse gun, 52 Fire on
+    /// the flamers.
+    pub resist: Option<u16>,
 }
 
 impl Weapon {
@@ -176,6 +189,12 @@ impl Weapon {
             semi_auto_delay: (f(128).unwrap_or(0.0), f(132).unwrap_or(0.0)),
             speed: f(4).unwrap_or(1.0),
             cone_mult: 1.0,
+            crit_effect: (crdt.len() >= 16).then(|| le_u32(crdt, 12)).and_then(form),
+            crit_on_death: crdt.get(8).is_some_and(|f| f & 0x01 != 0),
+            resist: u(120)
+                .map(|v| v as i32)
+                .filter(|&v| v >= 0)
+                .map(|v| v as u16),
         })
     }
 
@@ -244,12 +263,17 @@ impl Weapon {
     }
 
     /// How far a melee attack reaches between the bodies' edges
-    /// (`findings\hits.md` §6): the weapon's reach × 128, 64 unarmed (× the
+    /// (`CombatUtilities::GetWeaponReach`, Xbox PDB, `009a69c0`): a melee
+    /// weapon's (animation types 0–2, hand-to-hand ones too: the brass
+    /// knuckles' 1 gives 128) reach × `fCombatDistance` (128), a gun 128,
+    /// no weapon a person's `fHandReachMult` (0.5) × 128 = 64 (× the
     /// attacker's scale, left to the caller).
+    // Translated from 009a69c0 (decompiled, FalloutNV.exe 1.4.0.525)
     pub fn melee_reach(weapon: Option<&Weapon>) -> f32 {
         match weapon {
-            Some(w) if w.animation != 0 => w.reach * 128.0,
-            _ => 64.0,
+            Some(w) if w.is_melee() => w.reach * 128.0,
+            Some(_) => 128.0,
+            None => 64.0,
         }
     }
 
@@ -328,6 +352,13 @@ pub struct Hit {
     pub multiplier: f32,
     /// What it did to the part.
     pub hurt: Option<crate::body_parts::PartHurt>,
+    /// The attacker's "Knockdown Chance" perk knocked them down
+    /// (`world::melee::knocks_down`).
+    pub knocked_down: bool,
+    /// The fatigue damage it did (`world::fatigue`): bare fists' half of
+    /// their damage, a bean bag's; 0 when the target's fatigue was already
+    /// at `fMinimumFatigue` or below.
+    pub fatigue: f32,
 }
 
 /// The damage one of the attacker's hits with a weapon (or fists, `None`)
@@ -341,9 +372,11 @@ pub struct Hit {
 /// (`fAVDUnarmedDamageBase` 0.5 + `…Mult` 0.05 × Unarmed) for
 /// hand-to-hand and fists; C = 1 above 75% condition, else 1 − 0.67 ×
 /// (0.75 − condition) (the `fDamage…WeapCond…` settings aren't used for
-/// this). `power` is `fDamagePowerAttackBonus` (2) for a power attack. A
-/// player's teammate's damage is also × their Nerve
-/// ([`crate::companions::nerve`]).
+/// this). `power` is `fDamagePowerAttackBonus` (2) for a power attack
+/// with a weapon (hand-to-hand ones too); fists' damage is worked out
+/// with 1 there (`00646310`) and a power attack's bonus comes after the
+/// armour instead ([`fists_power_bonus`]). A player's teammate's damage
+/// is also × their Nerve ([`crate::companions::nerve`]).
 pub fn weapon_damage(
     order: &LoadOrder,
     state: &GameState,
@@ -414,7 +447,7 @@ pub fn weapon_damage_at(
             )
         })
         .unwrap_or(0.0);
-    let power = if power {
+    let power = if power && weapon.is_some() {
         setting("fDamagePowerAttackBonus", 2.0)
     } else {
         1.0
@@ -429,6 +462,22 @@ pub fn weapon_damage_at(
     // A teammate's Nerve (`00644ce0`'s last factor).
     let nerve = crate::companions::nerve(order, state, attacker);
     (base * skill_factor * power + added) * condition * scale * nerve
+}
+
+/// A fists' power attack's bonus (`009b5170`): with no weapon, a person's
+/// (not a creature's) power attack doesn't change the damage
+/// (`00646310` asks `00644ce0` with 1) but sets the hit's bonus
+/// multiplier (`fBonusMult`, `+0x5c`, `009b7840`: the larger of it and
+/// what's there) to `fDamagePowerAttackBonus` (exe 3, data 2); the body
+/// part's multiplier may raise it (`009b6620`), and it multiplies the
+/// damage after the armour (`009b73d0`). 0: none.
+// Translated from 009b5170 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn fists_power_bonus(order: &LoadOrder, power: bool) -> f32 {
+    if power {
+        game_setting(order, "fDamagePowerAttackBonus").unwrap_or(3.0)
+    } else {
+        0.0
+    }
 }
 
 /// [`weapon_damage`] for a weapon, without a power attack.
@@ -466,6 +515,7 @@ pub fn critical(
     .current_actor_value(attacker, 11)
     .unwrap_or(0.0) as f32;
     let mut chance = setting("fAVDCritLuckBase", 0.0) + setting("fAVDCritLuckMult", 1.0) * luck;
+    chance /= critical_divisor(weapon);
     if let Some(m) = weapon.map(|w| w.crit_mult).filter(|m| *m >= 0.0) {
         chance *= m;
     }
@@ -491,6 +541,81 @@ pub fn critical(
         chance *= setting("fCombatSneakAttackBonusMult", 100.0);
     }
     (roll % 1000) < (chance * 10.0) as u64
+}
+
+/// What a hit's critical chance is divided by (`00646d80`, the chance
+/// `009b7060` starts from): an automatic weapon's (`DNAM` flags 0x02,
+/// `00524b40`) fire rate (`DNAM` f32 at 64, `00821640`), 1 when that's 0
+/// and for anything else: the Gatling laser's 30 shots a second, the
+/// laser RCW's 9, share what one shot of a semi-automatic would have.
+// Translated from 00646d80 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn critical_divisor(weapon: Option<&Weapon>) -> f32 {
+    match weapon {
+        Some(w) if w.flags1 & 0x02 != 0 && w.fire_rate != 0.0 => w.fire_rate,
+        _ => 1.0,
+    }
+}
+
+/// `BannedEffectsOnSitters` (`FLST` 001768D7 in `FalloutNV.esm`, looked
+/// up by its ID by `0089a760`): the goo and the two disintegrations.
+pub const BANNED_EFFECTS_ON_SITTERS: FormId = FormId(0x0017_68D7);
+
+/// A critical hit's effect after its damage (`0089a760`, at
+/// `0089b295`–`0089b43a`): the weapon's critical effect (`CRDT`, carried
+/// by the hit from `009b7060`; fists have none) is cast on the target,
+/// by the target's own caster (`+0x88`, `00815b00`, `00824110`), when
+/// the target was alive before the hit, and
+///
+/// - not when the effect is "on death" and the target is essential
+///   (`0087f3d0`) or the hit didn't kill (`DamageHealthAndFatigue`,
+///   vtable `+0x338`, returns `IsDead` after the damage);
+/// - not when the target is in a sit or sleep state (`GetSitSleepState`,
+///   vtable `+0x214`, not 0) and `BannedEffectsOnSitters` holds it;
+/// - not with `bDisableAllGore` (INI, `011df7f8`, default 0; not read
+///   here).
+///
+/// The laser and plasma weapons' effects are script effects whose magic
+/// effects aren't dispelled by death (`MGEF` flag 0x10000000,
+/// `world::magic::tick`): they disintegrate or goo the corpse
+/// (`SetCriticalStage`, `AttachAshPile`). What was cast, if anything.
+// Translated from 0089a760 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn critical_effect(
+    order: &LoadOrder,
+    state: &mut GameState,
+    target: FormId,
+    weapon: Option<&Weapon>,
+    was_alive: bool,
+    dead_now: bool,
+) -> Option<FormId> {
+    let w = weapon?;
+    let effect = w.crit_effect?;
+    if !was_alive {
+        return None;
+    }
+    let essential = crate::more_functions::is_essential(order, state, target);
+    if (essential || !dead_now) && w.crit_on_death {
+        return None;
+    }
+    if sit_sleep_state(state, target) != 0
+        && crate::script_functions::form_list(order, state, BANNED_EFFECTS_ON_SITTERS)
+            .contains(&effect)
+    {
+        return None;
+    }
+    crate::magic::add_spell(order, state, target, effect, target, false);
+    Some(effect)
+}
+
+/// Someone's sit or sleep state as the game keeps it (`GetSitSleepState`,
+/// the value `GetSitting` and `GetSleeping` map, `world::furniture`): 0
+/// when neither; someone placed in furniture without a state yet counts
+/// as seated (4).
+pub fn sit_sleep_state(state: &GameState, who: FormId) -> u8 {
+    match state.sitters.get(&who) {
+        Some(sitter) => sitter.state.number(),
+        None if state.furniture.contains_key(&who) => 4,
+        None => 0,
+    }
 }
 
 /// What a critical hit adds to its damage (`009b7060`): the weapon's
@@ -693,9 +818,44 @@ pub fn armour_hit(
         );
     }
     armour_damage += wear * threshold.max(0.0).min(after - least);
+    let weapon = attacker
+        .and_then(|(_, w)| w)
+        .and_then(|w| Weapon::load(order, w));
     ArmourHit {
-        damage: after.max(least),
+        damage: after.max(least) * resisted_share(order, state, weapon.as_ref(), target),
         armour_damage,
+    }
+}
+
+/// What's left of a hit after the target resists the weapon's kind of
+/// damage, the last step of the armour (`009b5a30`, after the 20% floor,
+/// so it can go below it): with a resist type (`DNAM` i32 at 120, the
+/// weapon's `+0x16c`, `009b6600`; -1 none), r = min(the target's actor
+/// value, 100) ÷ 100, and when 0 < r ≤ 1 the hit × (1 − r). Lasers and
+/// plasma weapons are resisted by Energy Resistance (actor value 60), the
+/// pulse gun by EMP Resistance (61), flamers by Fire Resistance (52).
+// Translated from 009b5a30 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn resisted_share(
+    order: &LoadOrder,
+    state: &GameState,
+    weapon: Option<&Weapon>,
+    target: FormId,
+) -> f32 {
+    let Some(kind) = weapon.and_then(|w| w.resist) else {
+        return 1.0;
+    };
+    let value = Facts {
+        order,
+        state,
+        speaker: None,
+    }
+    .current_actor_value(target, kind)
+    .unwrap_or(0.0) as f32;
+    let r = value.min(100.0) / 100.0;
+    if 0.0 < r && r <= 1.0 {
+        1.0 - r
+    } else {
+        1.0
     }
 }
 
@@ -747,12 +907,23 @@ fn worn_armour_sum(
     sum
 }
 
+/// A worn armour's damage resistance (`004bdf90`): its `DNAM` i16 at 0
+/// (the form's `+0x178`) ÷ 100 (`004be080`), cut to a whole number (the
+/// FPU's truncating mode, control word | 0xc00): Vault 11's jumpsuit
+/// stores 100 for DR 1. At its condition: [`armour_figure_at`].
+// Translated from 004bdf90 and 004be080 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn armour_resistance(stored: i16) -> f32 {
+    (f32::from(stored) / 100.0).trunc()
+}
+
 /// Someone's damage resistance: their actor value (18) plus worn armour's
-/// (`ARMO` `DNAM` i16 at 0, each piece at its condition, the sum at most
-/// `fMaxArmorRating`: `008d22b0`).
+/// (`ARMO` `DNAM` i16 at 0 in hundredths, [`armour_resistance`]; each
+/// piece at its condition, the sum at most `fMaxArmorRating`: `008d22b0`).
 pub fn damage_resistance(order: &LoadOrder, state: &GameState, who: FormId) -> f32 {
+    // In hundredths (`004be080`); [`armour_figure_at`] truncates it as
+    // `004bdf90` does.
     let mut worn = worn_armour_sum(order, state, who, &|d| {
-        (d.len() >= 2).then(|| f32::from(i16::from_le_bytes([d[0], d[1]])))
+        (d.len() >= 2).then(|| f32::from(i16::from_le_bytes([d[0], d[1]])) / 100.0)
     });
     let most = game_setting(order, "fMaxArmorRating").unwrap_or(90.0);
     if most > 0.0 {
@@ -1632,6 +1803,29 @@ pub fn projectile_reach(order: &LoadOrder, projectile: FormId) -> Option<f32> {
     Some(speed * speed / (gravity * crate::combat_ai::WORLD_GRAVITY))
 }
 
+/// The projectile a weapon's shot is: the ammunition in use's (`AMMO`
+/// `DAT2` form at 4) when it names one, else the weapon's own (`DNAM` 36),
+/// as V.A.T.S. reads it (`world::vats`). The rockets' high-explosive and
+/// high-velocity loads (`MissileProjectileHE`, `…HV`), the 25 mm HE and
+/// 40 mm incendiary grenades fly their own projectiles this way.
+pub fn fired_projectile(
+    order: &LoadOrder,
+    state: &GameState,
+    shooter: FormId,
+    weapon: &Weapon,
+) -> Option<FormId> {
+    let from_ammo = weapon
+        .ammo_in_use(order, state, shooter)
+        .and_then(|a| order.get(a))
+        .and_then(|rr| {
+            let d = rr.record().ok()?.get(FourCC::new(b"DAT2"))?.data.clone();
+            (d.len() >= 8)
+                .then(|| rr.plugin.to_global(FormId(le_u32(&d, 4))))
+                .filter(|f| f.0 != 0)
+        });
+    from_ammo.or(weapon.projectile)
+}
+
 /// A creature's attack reach and type (`CREA` `RNAM` u8, `DATA` byte 0;
 /// the tutorial gecko 25, type 1): `None` for anyone else. From its
 /// template when it takes its base data (reach; which template flag covers
@@ -1764,6 +1958,18 @@ impl ReadyKey {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn worn_armour_resistance_is_stored_in_hundredths() {
+        // `VaultSuit11` stores 100, `OutfitTrenchcoat` 500,
+        // `DamWarTrooper` 2000, `ArmorTeslaPowerFX` 4000.
+        assert_eq!(super::armour_resistance(100), 1.0);
+        assert_eq!(super::armour_resistance(500), 5.0);
+        assert_eq!(super::armour_resistance(2000), 20.0);
+        assert_eq!(super::armour_resistance(4000), 40.0);
+        assert_eq!(super::armour_resistance(250), 2.0);
+        assert_eq!(super::armour_resistance(0), 0.0);
+    }
+
     use super::*;
     use KeyState::*;
     use ReadyAction::*;

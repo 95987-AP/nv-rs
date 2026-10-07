@@ -663,6 +663,54 @@ Goodsprings, each 2 s window's longest frame 130–230 ms before
 `5e7f8eb`. Not fixable here: a minimized window held to 60 fps (bevy_winit
 redraw pacing). **Next action:** re-measure the route table on a quiet
 machine.
+M4 weapon class batch `claude/energy-weapons` (2026-10-07): energy
+weapons. Traced and implemented: critical effects (laser disintegration,
+plasma goo: cast on a killing critical, kept on the dead, ash/goo piles
+standing for the corpse, critical stages, the Disintegrations statistic),
+the weapons' resist type (Energy Resistance) after the armour floor,
+automatic weapons' critical chance ÷ fire rate, beams striking at once
+and plasma bolts flying at their speed (player and NPCs). Generated-data
+tests; live check in Doc Mitchell's house; not compared with the
+original. Evidence, gaps and next action: [ENERGY_WEAPONS.md](ENERGY_WEAPONS.md).
+
+M4 weapon class batch `claude/launchers-mines` (2026-10-07): launchers,
+explosive projectiles, thrown weapons and mines. Traced and implemented:
+missiles falling under their record's gravity (the projectile's character
+controller), the ammunition's own projectile (HE/HV missiles), explosions'
+object effects (EMP, fire) and knockdown rules, the AI holding explosives
+that would catch its own side, mines (proximity, owners, Light Step, the
+fuse and blink, disarming with XP, taking the mine, placed `PGRE` mines
+saved), and E on ash piles; worn armour's DR read in hundredths.
+Generated-data tests; live checks (grenade rifle and rocket in
+Goodsprings, the mined corridor in `NorthVegasHouseTools`); not compared
+with the original. Evidence, gaps and next action:
+[EXPLOSIVES.md](EXPLOSIVES.md).
+
+M4 weapon class batch `claude/melee-unarmed` (2026-10-07): melee and
+unarmed. Inventory against the exe, then traced and implemented: reach
+of hand-to-hand weapons, what a swing hits (`FindMeleeTarget`: combat
+target, else nearest the hit cone's middle; the player's cone by the
+attack, dead targets ×2), fists' power attack bonus after the armour,
+unarmed uppercut/cross outside V.A.T.S. by the Unarmed skill and their
+effects (stagger and disarm, ×2.5 limb damage), the stagger rules,
+Super Slam's knockdown chance, V.A.T.S. specials' names (`VANM`),
+thresholds and spells (Mauler's knockdown). Generated-data tests; live
+check in Doc Mitchell's house; not compared with the original. Evidence,
+gaps (fatigue damage, the stagger/knockdown animations, NPC specials)
+and next action: [MELEE_UNARMED.md](MELEE_UNARMED.md).
+
+M4/M3 batch `claude/fatigue-blockers` (2026-10-07): fatigue and
+knock-outs, and two quest blockers. Traced and implemented: full fatigue
+(record + derived, auto-calculated people), fists' and the bean bag's
+fatigue damage through the armour, `fMinimumFatigue`, regeneration with
+the all-back-at-0 rule, the knock states (fatigue below 0, paralysis,
+essential down; `GetKnockedState` now 1, not 2), `GetFatiguePercentage`;
+`ForceFlee` (the engine's flee package out of a fight, nothing in one)
+and `GetGroupMemberCount`/`GetGroupTargetCount` (combat groups: alone,
+joined by helpers, merged, the player's). Unblocks by function: 9 quests
+calling `ForceFlee`, 9 asking `GetGroupMemberCount`. Generated-data
+tests; live checks in the Prospector Saloon; not compared with the
+original. Evidence, gaps and next action: [FATIGUE.md](FATIGUE.md).
 
 ## Deferred
 

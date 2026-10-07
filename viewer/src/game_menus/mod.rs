@@ -1670,6 +1670,7 @@ mod tests {
             rest_down: false,
             quantity_owner: None,
             pointer: None,
+            mouse_move: (0.0, 0.0),
             terminal_left: false,
             sizes: HashMap::new(),
             atlases: HashMap::new(),

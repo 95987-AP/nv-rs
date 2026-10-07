@@ -11,13 +11,17 @@ pub mod ai;
 pub mod companion_gear;
 pub mod crafting;
 pub mod dialogue;
+pub mod energy;
+pub mod fatigue;
 pub mod fighting;
 pub mod functions;
 pub mod impacts;
+pub mod launchers;
 pub mod living;
 pub mod lod;
 pub mod long_paths;
 pub mod mods;
+pub mod melee;
 pub mod more;
 pub mod music;
 pub mod packages;
@@ -1933,6 +1937,8 @@ End
     pistol_data.push(13);
     pistol.extend(sub(b"DATA", &pistol_data));
     let mut weapon_dnam = vec![0u8; 204];
+    // No resist type (-1 at 120), as the game's guns.
+    weapon_dnam[120..124].copy_from_slice(&(-1i32).to_le_bytes());
     weapon_dnam[0] = 3; // a one-handed pistol
     weapon_dnam[4..8].copy_from_slice(&1.0f32.to_le_bytes()); // speed
     weapon_dnam[60..64].copy_from_slice(&1.0f32.to_le_bytes()); // attack multiplier

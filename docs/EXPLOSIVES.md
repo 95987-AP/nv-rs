@@ -1,7 +1,11 @@
 # Explosives: thrown weapons, grenades and explosions
 
 M2 blocker for Ghost Town Gunfight (`VMS16`, objective 40: Easy Pete hands
-out `WeapNVDynamite`). Branch `claude/m2-explosives`, 2026-10-06.
+out `WeapNVDynamite`). Branch `claude/m2-explosives`, 2026-10-06. Launchers,
+explosive missiles, the other grenades and mines (M4): branch
+`claude/launchers-mines`, 2026-10-07 (Xbox decompiles of the `Projectile`,
+`MissileProjectile`, `GrenadeProjectile`, `Explosion` and `CombatFormulas`
+functions in `%USERPROFILE%\nv-re\decomp\launchers`).
 
 Sources: FalloutNV.exe 1.4.0.525 (unpacked image, Ghidra project copy
 `ghidra_8`; private exports in `%USERPROFILE%\nv-re\work\explosives-2026-10-06`),
@@ -21,6 +25,22 @@ running original game yet).
 | `NVDynamiteFragProjectile` `000E3F03` | flags 0x0806 (explosion, alt. trigger, rotation), lobber, gravity 1, speed 1200, range 10000, timer 2.5 s, proximity 0, explosion `NVDynamiteExplosion`, impact force 0.5, countdown sound `0017242D`, bounciness 1 |
 | `NVDynamiteExplosion` `000E397F` | force 90, damage 75, radius 750, flags 0x49 (radius in units, knock down by formula, ignore image space swap), image space radius 1500, model `Effects\ExplosionGrenadeFrag.NIF`, two sounds, impact set `00093BA4` |
 
+Launchers and mines (`FalloutNV.esm`; `PROJ` flags 0x02 explosion, 0x04
+alt. trigger, 0x08 muzzle flash, 0x20 can be disabled, 0x40 can be picked
+up; type 1 missile, 2 lobber):
+
+| Weapon | Projectile | Explosion |
+| --- | --- | --- |
+| `WeapMissileLauncher` (anim 9, `AmmoListMissile`) | `MissileProjectile` 0x0A, gravity 0, speed 1550; HV ammo `MissileProjectileHV` 5000; HE `MissileProjectileHE` | `MissileExplosion` damage 200, radius 1000 units, flags 0x43; HE `MissileExplosionHE` |
+| `WeapNVGrenadeRifle` / `…Launcher` (anim 5) | `40mmGrenadeProjectile` 0x0A, gravity 1.5, speed 1750 (unique 3500); incendiary ammo `40mmGrenadeProjectileInc` | `40mmGrenadeExplosion` 100, 750, 0x49 (knock down by formula); `…Inc` with `EnchIncendiaryGrenadeEffect` |
+| `WeapNVGrenadeMachinegun` (anim 8, automatic) | `25mmGrenadeProjectile` gravity 1.5, speed 2000; HE ammo | `25mmGrenadeExplosion` |
+| `WeapFatman` (anim 9) | `FatMan` 0x02, gravity 1, speed 2500 | `FatManNukeExplosion` 600, 1700 ft |
+| `WeapGrenadeFrag` / `Pulse` / `Plasma`, `WeapNVGrenadeIncendiary` / `Stun`, `WeapGrenadeGas` (anim 10) | lobbers 0x06, speed 1200 (gas 600), timer 2.5 | `GrenadePulseExplosion` with `EMP`; `GrenadeIncendiaryExplosion`, `GrenadeStunExplosion` with their enchantments |
+| `WeapMineFrag`, `…Plasma`, `…Pulse`, `WeapNVMinePowderCharge` (anim 11), `WeapMineBottlecap`, `WeapNVC4PlasticExplosive`, `WeapNVTimeBomb` (anim 12) | mines 0x66: lobber, speed 400, proximity 100, timer 3, default weapon source at `DATA` 64; C4 0x462 ("detonates"); time bomb 0x806, timer 15 | `MineFragExplosion` 100, 192, 0x49 |
+
+174 placed mines (`PGRE`): 131 frag, 33 powder charges, 7 C4 (Hoover Dam's
+Oliver area), 3 bottlecap mines; some owned by a faction (`XOWN`).
+
 Settings used (data = set by `FalloutNV.esm`, exe = built-in default):
 `fGrenadeRestitution` data 0.01, `fGrenadeFriction` data 5,
 `fDamageGunWeapCondBase/Mult` data 0.66/0.34, `fDamageSkillBase/Mult` data
@@ -28,7 +48,14 @@ Settings used (data = set by `FalloutNV.esm`, exe = built-in default):
 `fExplosionLOSBuffer` exe 6, `fThrowingStrengthPenalty` exe 0.05,
 `fGrenadeHighArcSpeedPercentage` exe 0.67, `fGrenadeThrowHitFractionThreshold`
 exe 0.8, `iBallisticProjectilePathPickSegments` exe 4,
-`fCombatSplashDamageMaxSpeed/MinRadius/MinDamage` exe 3000/50/20.
+`fCombatSplashDamageMaxSpeed/MinRadius/MinDamage` exe 3000/50/20;
+mines: `fMinesDelayMin` data 0.2, `fMineExteriorRadiusMult` data 1.6,
+`iProjectileMineShooterCanTrigger` data 1, `iMineDisarmExperience` data 5,
+`fMinesBlinkMax/Fast/Slow` exe 2/0.1/0.25, `fMineAgeMax` exe 0;
+`fDangerousProjectileExplosionDamage/Radius` exe 5/30,
+`iAvoidHurtingNonTargetsResponsibility` exe 50; `fKnockdownBaseHealthThreshold`
+exe 75, `fKnockdownCurrentHealthThreshold` data 50, `fKnockdownAgilBase/Mult`
+exe 0/1, `fKnockdownDamageBase/Mult` exe 0/0.3, `fKnockdownChance` exe 0.25.
 
 ## Traced behaviour
 
@@ -82,9 +109,64 @@ Addresses are PC function entries; Xbox names where the prototype has them.
   built from the hit, read here as the ray's z, < −0.98 and the hit is
   within `fExplosionLOSBuffer`) or it belongs to the source. Actors with
   3D get six more points ±2 × a radius (`0084d030`, `+0xc`) on each axis.
-- **Knockdown** (`009b0d70`, `00646400`), **limb targets** (`009afcc0`,
-  `009b1720`), **forces** (`009b0920`, `fExplosionMaxImpulse`), **shudder**
-  and image space (`009b00a0` tail, `009acd60`): read, not implemented.
+- **After the hit** (`009b00a0`): the explosion's object effect (`EITM`,
+  the form's `+0x68`) is cast on the target by the actor cause's caster
+  (`+0x88`), else the explosion's own (`+0x37`); then, for the living, the
+  record's flag 0x04 always, or 0x08 by `CombatFormulas::CheckKnockdown`
+  (`00646400`), pushes the actor down (`Explosion::PushActor`, `009b0d70`).
+  `00646400`: only if the hit leaves them alive; damage over 75 % of full
+  health always; else over `fKnockdownCurrentHealthThreshold` % of health
+  now gives (damage × 0.3) ÷ (Agility × 10), at most 0.25, against a roll
+  of 1000. The damage is the explosion's at their distance before armour
+  (`HitData::InitializeExplosionData`, hit `+0x14`).
+- **Limb targets** (`Explosion::FindTargets` / `CheckLimbTarget` /
+  `AddLimbTarget`, Xbox): each Havok body of an actor overlapping the
+  sphere adds its body part, keeping the two nearest per actor; how the
+  hit then uses them isn't read. **Forces** (`009b0920`), **shudder** and
+  image space: read, not implemented (physics and effects).
+- **Missiles** (`MissileProjectile`): they move by their speed along their
+  heading (`009bf300`) through a Havok character controller
+  (`ProjectileListener`, made by `Projectile::InitHavok` `009be0a0` →
+  `009c6440`) whose gravity is the projectile's (`00966980`: 1 for lobbers,
+  else `PROJ` gravity; ÷ the time multiplier under the shooter's Turbo):
+  so they fall (`MobileObject::Move`). Run-time flag 0x40 (gravity without
+  hitscan, `009b7cc0`) only turns the model to its way (`009bf470`, its
+  sole reader). A missile striking someone hits them as a bullet would
+  (`Projectile::ProcessImpacts`, Xbox: `CombatHit` with the projectile's
+  damage), then explodes where it struck (`009c3190`).
+- **Ammunition's projectile**: `AMMO` `DAT2` form at 4, else the weapon's.
+- **The AI's danger test** (`CombatManager::CheckExplosionAttack`,
+  `00992720`, asked by the attack procedures `009d0a30`, `009cb380`, …):
+  record damage ≥ `fDangerousProjectileExplosionDamage`, and the distance
+  where its blast still does that much (radius × √(1 − 5 ÷ damage),
+  `006479a0` → `00647960`) ≥ `fDangerousProjectileExplosionRadius`: then
+  those within it of the aim point (`00992ba0`) refuse the attack: the
+  attacker, their combat group, and spectators when the attacker's
+  Responsibility ≥ 50, each unless the combat style's flag 0x20 / 0x40 /
+  0x80 ("ignore damaging self / group / spectators", `009928c0`).
+- **Mines**: no fuse at launch (`009bda10`); each frame
+  (`Projectile::CheckExplosion` `009c3190`) an alt.-trigger projectile with
+  a proximity and no fuse runs `Projectile::CheckExplosionProximity`
+  (`009c39e0`): the high-process actors within the proximity (×
+  `fMineExteriorRadiusMult` outdoors) it reacts to
+  (`Projectile::GetMineReactsToTarget` `009c3930`: not its layer unless
+  `iProjectileMineShooterCanTrigger`, not the dead, not its owner
+  faction's members, its layer's reaction neutral or enemy), then the
+  player, who sets it off only if a roll of 100 is under their perks'
+  entry point 4 "Calculate Mine Explode Chance" (Light Step: 0); a failed
+  roll spares the player from then on (flag 0x4000). The fuse: for
+  characters Explosives × the record's timer ÷ 100 + `fMinesDelayMin`, for
+  creatures `fMinesDelayMin`. It then counts down and blinks every
+  (slow − fast) ÷ max × fuse + fast seconds (slow above `fMinesBlinkMax`),
+  restarting the countdown sound. There is no arming delay in the code.
+  Mines last for `fMineAgeMax` (0: for ever, `009b41b0`).
+- **Disarming** (`BGSProjectile::Activate`, Xbox; `Projectile::TurnOff`
+  `009c43e0`): E on an armed mine whose record "can be disabled" turns it
+  off (flag 0x200; the disable sound, `DATA` form at 60); when its fuse was
+  running or it reacts to the one disarming, the "Mines Disarmed"
+  statistic and `iMineDisarmExperience`. E on a disarmed one that "can be
+  picked up" takes it. The crosshair says "Disarm Mine" (`sDisarmMine`)
+  while armed, "Take" after (`00775a00` at `007778fe`).
 - **AI throws** (`CombatProcedureAttackGrenade`, `009cafe0`; aim
   `009cb6e0` → `009a8bf0` → `009a8df0` → `009a8f00`): aim mode (`009a8bf0`):
   2 for a high arc of a falling projectile, 4 (feet, `009a8460`) for
@@ -107,7 +189,15 @@ Core (`crates/world`):
   `aim_point`, `arc_clear`. Translated functions carry their address.
 - `Runner::explosion_hit` (`world::scripting`): `OnHit`/`OnHitWith`,
   armour, critical, health, `OnDeath`, crime and fighting back.
-- `combat_ai::ranged_band_blast`; perk entries 59 and 72.
+- `combat_ai::ranged_band_blast`; perk entries 4, 59 and 72.
+- `projectiles::missile_gravity`, `Missile::stretch` (the fall);
+  `combat::fired_projectile`; `explosions::cast_enchantment`,
+  `knocks_down`, `knockdown_by_formula`, `explosion_attack_allowed`,
+  `reach_of_damage`; `Flight::set_off`, mines' age.
+- `mines` (new): `MineSettings`, `reacts_to`, `check_proximity`,
+  `fuse_for`, `blink_interval`, `activation`, `disarm`, `placed_in`,
+  `take`, `use_placed`, saved `minedisarmed` / `minegone` lines;
+  `activation::info` "Disarm Mine".
 
 Viewer:
 
@@ -115,9 +205,24 @@ Viewer:
   cell collision, using up the weapon), flight through the collision,
   explosion sounds, hits on everyone alive in range and sight, hit reports.
 - `combat`: the player's attack throws weapons of types 10–13.
-- `fighting`: people holding one keep out of its blast and throw it.
+- `fighting`: people holding one keep out of its blast and throw it;
+  people don't fire or throw explosives whose blast would catch their own
+  side (`blast_is_safe`); their shots use the ammunition's projectile.
+- `bolts`: rockets, 40 mm and 25 mm grenades and the Fat Man's nuke fly as
+  bolts and fall under their gravity; explode where they strike.
+- `explosives`: the explosion's object effect and knockdown (logged; the
+  fall isn't played); placed mines of the player's place and laid mines
+  go off for whoever comes near, count down and explode; `scripts`: E
+  disarms a placed mine (sound, XP), then takes it.
 
 ## Tested (generated inputs, no game files)
+
+`world` integration tests `crates/world/tests/launchers_mines.rs` (7, on
+`testdata::launchers` with the game's values: ammunition projectiles,
+gravity, EMP cast, knockdowns, the danger test, mine proximity, owners,
+Light Step, the layer, disarming, taking, saving, a laid mine's fuse);
+`projectiles::tests` (a 40 mm grenade aimed as the AI aims comes down on
+its target).
 
 `world` unit tests `explosions::tests` (15: record parsing, radius units,
 falloff, damage, restitution, fuse/landing/rest, impact grenades, expiry,
@@ -126,6 +231,40 @@ pitch, aim point, aim mode, arc test); `combat_ai::tests::
 dynamite_keeps_its_thrower_out_of_the_blast`; integration test
 `scripting::explosions_hurt_through_the_hit_path`; viewer
 `explosives::tests` (normals, queue).
+
+## Test scenes (live, release viewer, 2026-10-07)
+
+Mines (the mined corridor of `NorthVegasHouseTools`, eleven frag mines):
+
+```powershell
+nv-viewer.exe "<Data>" NorthVegasHouseTools --at 3152,3580,7616,180,55 `
+  --walk --freeze-ai --run "player.modav health 1000" `
+  --run "player.addperk LightStep" --key-at 3 e --key-at 4 e `
+  --run-at 5 "player.removeperk LightStep" --run-at 5.5 "player.MoveTo 000EBA66" `
+  --screenshot shot.png --wait 9
+```
+
+Seen: "E) Disarm Mine / Frag Mine" under the crosshair (red: owned), no
+mine set off while Light Step is held; E: "Disarmed 000EBAAB", "XP +5",
+the prompt turns to "E) Take"; E: "Frag Mine added"; without the perk,
+standing among the rest, three are set off (0.65 s fuse: Explosives 15 ×
+3 ÷ 100 + 0.2) and hurt the player by the falloff (96.9 at 34 units, 99.9
+at 5, 86.9 at 69); the one 97 units away that had spared the player under
+Light Step stays quiet (flag 0x4000).
+
+A frag mine the player lays at their feet in Doc Mitchell's house
+(`--weapon WeapMineFrag`, looking down) stays quiet: the data lets a
+layer set off their own mine (`iProjectileMineShooterCanTrigger` 1), but
+`PlayerFaction` lists itself as an ally (its own `XNAM`, reaction 2), so
+the player's mines react to neither the player nor their allies; Doc's
+factions are no enemy either.
+
+Launchers (Goodsprings, `WastelandNV --at -68250,5800,8480,180,0 --walk
+--freeze-ai --weapon WeapNVGrenadeRifle|WeapMissileLauncher --key-at 5
+mouse-left --wait 9`): the 40 mm grenade fired level struck the ground
+1032 units out, 164 below the eye (the controller's fall over 0.58 s);
+the rocket flew straight 1015 units into the house; damage 57.5 (100 ×
+1.0 × (0.5 + 0.5 × Explosives 15 ÷ 100)) and 115.
 
 ## Not compared / gaps (labelled in code)
 
@@ -140,15 +279,28 @@ dynamite_keeps_its_thrower_out_of_the_blast`; integration test
 - Throw origin (eye for the player, 60 units up for people), immediate
   release (no throw animation timing), target height 128 for the aim.
 - Not done: models (projectile, explosion), light, image space, decals,
-  camera shake, the countdown sound, forces on bodies (forces on clutter:
-  [PHYSICS.md](PHYSICS.md), `009b0920`), knockdowns,
-  limb damage from blasts, mines/proximity, damage to destructible
-  objects, the planner switching NPCs to grenades (only the weapon in hand
-  is thrown), `CheckExplosionAttack` (`00992720`, friends in the blast).
+  camera shake, the mines' blinking light, forces on bodies (forces on
+  clutter: [PHYSICS.md](PHYSICS.md), `009b0920`), the knockdown's fall
+  (`009b0d70`: decided and logged only), limb damage from blasts (the
+  limb targets are read, their use isn't), damage to destructible objects
+  (mines shot or caught in a blast don't go off: `DEST`), the planner
+  switching NPCs to grenades or mines (only the weapon in hand is used),
+  homing missiles (`ProjectileTarget`, `AimAtPoint` `009c6030`), the
+  character controller's own limits on a missile's fall (taken as free
+  fall), Turbo's share of the gravity, `DisableAllMines`, E on mines the
+  player laid (they aren't references here), and V.A.T.S. grenade aiming.
+- The AI's danger test counts "their side" as faction allies and friends
+  (the game's combat group, `00992ba0`, isn't modelled) and bystanders as
+  everyone else who isn't a target.
+- Disarming a placed mine credits the player by whether it reacts to them
+  (whether its fuse was running isn't passed from the viewer).
+- The line of sight of an explosion on the floor ignores the surface the
+  ray starts on (the collider's triangles are two-sided; a hit at 0).
 - Explosion hit reports carry the thrower's weapon, so the hit sounds are
   the weapon's impact set (which set the game uses for blasts isn't
   traced).
 
-Next action: run the Goodsprings gunfight with the player and a settler
-holding `WeapNVDynamite`, and compare fuse, arc and damage with the
-original game.
+Next action: in the original game, fire the grenade rifle level from the
+test scene's spot (where it lands), disarm a `NorthVegasHouseTools` mine
+(XP, prompt) and walk onto the next (fuse), comparing with the scenes
+above.

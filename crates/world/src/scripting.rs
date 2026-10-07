@@ -359,6 +359,13 @@ pub struct GameState {
     pub spaces: HashMap<FormId, (FormId, FormId)>,
     /// People knocked out by scripts (`SetUnconscious 1`).
     pub unconscious: HashSet<FormId>,
+    /// Knock states other than normal: knocked out by fatigue or
+    /// paralysis (`world::fatigue`).
+    pub knocks: crate::fatigue::Knocks,
+    /// Flees `ForceFlee` started (`world::ai::flee::force`).
+    pub forced_flee: HashMap<FormId, crate::ai::flee::ForcedFlee>,
+    /// Who joined whose combat group (`world::combat_groups`).
+    pub combat_groups: crate::combat_groups::CombatGroups,
     /// Sizes scripts set (`SetScale`).
     pub scales: HashMap<FormId, f32>,
     /// Objects Havok moved (shot, blown or pushed clutter: the game's
@@ -1256,13 +1263,21 @@ pub enum Event {
         by: FormId,
     },
     /// Someone essential was brought to 0 health: they go down instead of
-    /// dying (`world::combat::hurt`).
+    /// dying (`world::combat::hurt`); or someone is knocked out by fatigue
+    /// below 0 or paralysis (`world::fatigue`).
     KnockedOut {
         who: FormId,
     },
-    /// Someone who was down gets up (`world::combat::advance_down`).
+    /// Someone who was down gets up (`world::combat::advance_down`,
+    /// `world::fatigue`).
     GotUp {
         who: FormId,
+    },
+    /// `ForceFlee` started the engine's flee package on someone
+    /// (`world::ai::flee::force`), to a reference or cell if given.
+    Flees {
+        who: FormId,
+        to: Option<FormId>,
     },
     /// `PlayGroup`: an animation group (by the game's name: `Forward`,
     /// `Open`, `SpecialIdle`…) to play on a person or an object's model,
@@ -2202,15 +2217,17 @@ impl Facts<'_> {
             // True of a new game, where nobody has been eaten yet
             // (hardcore: `world::living`).
             "HasBeenEaten" => 0.0,
-            // Knock state 2 (as `PushActorAway` leaves it) for someone
-            // essential brought down.
-            "GetKnockedState" => {
-                if s.more.down.contains_key(&on?) {
-                    2.0
-                } else {
-                    0.0
-                }
-            }
+            // `005a08c0`: 1 while knocked out or falling to it (knock
+            // states 3 and 4; essential people who are down lie knocked
+            // out), else 0 (`world::fatigue`).
+            "GetKnockedState" => crate::fatigue::knocked_state_value(s, on?),
+            // `00893530`: fatigue now ÷ its full value (`world::fatigue`).
+            "GetFatiguePercentage" => crate::fatigue::percentage(self.order, s, on?)?,
+            // `005a4240`, `005a42b0`: the members and targets of the
+            // actor's combat group, 0 out of a fight
+            // (`world::combat_groups`).
+            "GetGroupMemberCount" => crate::combat_groups::member_count(s, on?) as f64,
+            "GetGroupTargetCount" => crate::combat_groups::target_count(s, on?) as f64,
             // `005dec30`: the player's winnings there by quarters of its
             // limit (`world::casino`); 0 where they haven't played.
             "GetCasinoWinningsLevel" => {
@@ -2518,6 +2535,8 @@ impl Facts<'_> {
                 "fAVDMeleeDamageStrengthMult",
                 5,
             ),
+            // Fatigue: the record's and the derived part (`world::fatigue`).
+            22 => crate::fatigue::base_fatigue(self, who),
             25..=31 => Some(100.0),
             // What they carry weighs (the items' records' weights).
             46 => Some(f64::from(self.state.inventory_weight(self.order, who))),
@@ -3276,6 +3295,30 @@ impl<'a> Runner<'a> {
         part: Option<u8>,
         power: bool,
     ) -> Option<crate::combat::Hit> {
+        self.blow_at(
+            attacker,
+            target,
+            weapon,
+            part,
+            crate::melee::Blow {
+                power,
+                special: crate::melee::Special::None,
+            },
+        )
+    }
+
+    /// [`Self::strike_at`] with a melee blow's particulars
+    /// (`world::melee::Blow`): a power attack, an unarmed uppercut or
+    /// cross (`00899200` → `0089a760`).
+    pub fn blow_at(
+        &mut self,
+        attacker: FormId,
+        target: FormId,
+        weapon: Option<&crate::combat::Weapon>,
+        part: Option<u8>,
+        blow: crate::melee::Blow,
+    ) -> Option<crate::combat::Hit> {
+        let power = blow.power;
         let order = self.order;
         let names = |b: &script::Block, id: Option<FormId>| match b.args.first() {
             None => true,
@@ -3310,10 +3353,20 @@ impl<'a> Runner<'a> {
         // the weapon's damage (a creature's bite, or fists), a critical
         // adding the weapon's critical damage, the armour, then a sneak
         // attack's multiplier.
+        // Fists' power attack: a bonus multiplier after the armour
+        // (`world::combat::fists_power_bonus`); a creature's own attack
+        // has none.
+        let mut fists_bonus = 0.0;
+        // Bare fists' fatigue damage, half their damage (`00646310`,
+        // `world::fatigue`).
+        let mut fatigue = 0.0;
         let mut damage = match weapon {
             Some(w) => crate::combat::weapon_damage(order, self.state, attacker, Some(w), power),
             None => crate::combat::creature_damage(order, attacker).unwrap_or_else(|| {
-                crate::combat::weapon_damage(order, self.state, attacker, None, power)
+                fists_bonus = crate::combat::fists_power_bonus(order, power);
+                let fists = crate::combat::weapon_damage(order, self.state, attacker, None, false);
+                fatigue = crate::fatigue::fists_fatigue(order, self.state, attacker, target, fists);
+                fists
             }),
         };
         // V.A.T.S.'s melee moves and automatic melee weapons (`world::vats`).
@@ -3353,27 +3406,45 @@ impl<'a> Runner<'a> {
         }
         let vats_mult = crate::vats::player_damage_mult(order, self.state, target);
         let after_armour = armoured.damage * vats_mult;
-        // The player's armour wears (`0089a760`).
-        crate::combat::wear_armour(
+        // The fatigue damage through the armour, the ammunition's added
+        // (`009b5a30`, `world::fatigue::through_armour`).
+        fatigue = crate::fatigue::through_armour(
             order,
-            self.state,
-            target,
-            part,
-            armoured.armour_damage * vats_mult,
-        );
+            fatigue,
+            ammo,
+            weapon.is_some(),
+            damage,
+            armoured.damage,
+        ) * vats_mult;
+        // A hit doing fatigue damage wears no armour (`009b5a30`).
+        let armour_damage = if fatigue > 0.0 {
+            0.0
+        } else {
+            armoured.armour_damage
+        };
+        // The player's armour wears (`0089a760`).
+        crate::combat::wear_armour(order, self.state, target, part, armour_damage * vats_mult);
         // The part it landed on: limb damage from the damage after armour,
         // and the hit's multiplier (`009b6620`).
         let at = crate::body_parts::part_hit(order, self.state, target, weapon, part, after_armour);
         let mut dealt = at.health_damage;
-        // The multiplier last (`009b73d0`): with a part found, a sneak
-        // attack's bonus when it's at least 1, then the damage × it.
-        let mut multiplier = at.multiplier;
+        // The multiplier last (`009b73d0`): the part's (or a fists' power
+        // attack's bonus, the larger: `009b7840`), a sneak attack's bonus
+        // when it's at least 1, then the damage × it.
+        let mut multiplier = at.multiplier.max(fists_bonus);
         if multiplier > 0.0 {
             if multiplier >= 1.0 && sneak {
                 multiplier *=
                     crate::combat::sneak_multiplier(order, weapon.map_or(true, |w| w.is_melee()));
             }
             dealt *= multiplier;
+            // An unarmed blow's fatigue takes it too (`009b73d0`: attacker
+            // not a creature, the hit's skill Unarmed).
+            if weapon.map_or(true, |w| w.skill == crate::combat::av::UNARMED)
+                && !crate::combat::is_creature(order, attacker)
+            {
+                fatigue *= multiplier;
+            }
         }
         self.state
             .hit_location
@@ -3386,6 +3457,7 @@ impl<'a> Runner<'a> {
             &at,
             critical,
             (attacker, weapon_id),
+            blow.special,
         );
         // The player hitting a person who isn't fighting them: an assault,
         // unless a friend or ally forgives it (`world::crime::assault`);
@@ -3396,7 +3468,30 @@ impl<'a> Runner<'a> {
         if attacker == PLAYER_REF && person && !was_hostile {
             fights_back &= crate::crime::assault(order, self.state, target);
         }
+        let was_alive = !self.state.dead.contains(&target);
         let killed = crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker);
+        // Then the fatigue, while above `fMinimumFatigue` (`0089d6f0`).
+        if !crate::fatigue::take_hit(order, self.state, target, fatigue) {
+            fatigue = 0.0;
+        }
+        // A critical hit's effect: the energy weapons' disintegration and
+        // goo on the killed (`0089a760`, `world::combat::critical_effect`).
+        if critical {
+            let dead_now = self.state.dead.contains(&target);
+            crate::combat::critical_effect(order, self.state, target, weapon, was_alive, dead_now);
+        }
+        // A V.A.T.S. special's spell (the Mauler's knockdown), cast by the
+        // one struck on themselves (`world::vats::special_effect`).
+        if let Some(spell) = crate::vats::special_effect(order, self.state, attacker, weapon) {
+            crate::magic::add_spell(order, self.state, target, spell, target, false);
+        }
+        // The attacker's "Knockdown Chance" perks (Super Slam,
+        // `world::melee::knockdown_chance`).
+        let chance = crate::melee::knockdown_chance(order, self.state, attacker, weapon_id);
+        let knocked_down = chance > 0.0 && {
+            let roll = (self.state.roll() % 1_000_000) as f32 / 1_000_000.0;
+            crate::melee::knocks_down(chance, roll)
+        };
         self.state
             .hits_taken
             .push((target, part.map_or(-1, i32::from), killed));
@@ -3426,6 +3521,8 @@ impl<'a> Runner<'a> {
             critical,
             multiplier,
             hurt,
+            knocked_down,
+            fatigue,
         })
     }
 
@@ -3520,7 +3617,15 @@ impl<'a> Runner<'a> {
         if source == Some(PLAYER_REF) && person && !was_hostile {
             fights_back &= crate::crime::assault(order, self.state, target);
         }
-        if crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker) {
+        let was_alive = !self.state.dead.contains(&target);
+        let killed = crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker);
+        // The explosion's hit carries its weapon's critical effect too
+        // (`009b5770` builds it with the weapon, `009b7060`, `0089a760`).
+        if critical {
+            let dead_now = self.state.dead.contains(&target);
+            crate::combat::critical_effect(order, self.state, target, weapon, was_alive, dead_now);
+        }
+        if killed {
             self.state.killing_blow_limb.insert(target, -1);
             if let Some(s) = source.filter(|&s| {
                 person && !was_hostile && (s == PLAYER_REF || self.state.teammates.contains(&s))
@@ -3537,6 +3642,8 @@ impl<'a> Runner<'a> {
             critical,
             multiplier: 0.0,
             hurt: None,
+            knocked_down: false,
+            fatigue: 0.0,
         })
     }
 
@@ -3638,6 +3745,11 @@ impl<'a> Runner<'a> {
                 // A sex: compiled as 0 male, 1 female.
                 Some(18) if w.eq_ignore_ascii_case("male") => Value::Number(0.0),
                 Some(18) if w.eq_ignore_ascii_case("female") => Value::Number(1.0),
+                // A critical stage (parameter type 0x37, `SetCriticalStage`
+                // `DisintegrateStart`): its number in the game's name
+                // table at `0119bbb0`.
+                Some(55) => crate::more_functions::critical_stage_number(w)
+                    .map_or(Value::Text(w.clone()), |n| Value::Number(f64::from(n))),
                 _ => Value::Text(w.clone()),
             },
         }
@@ -4034,6 +4146,14 @@ impl<'a> Runner<'a> {
             }
             "StopCombat" => {
                 self.state.combat.remove(&target?);
+            }
+            // `005d09e0` (`world::ai::flee::force`): an optional cell, then
+            // an optional reference to flee to.
+            "ForceFlee" => {
+                let who = target?;
+                let cell = args.first().map(Value::form).filter(|f| f.0 != 0);
+                let to = args.get(1).map(Value::form).filter(|f| f.0 != 0);
+                crate::ai::flee::force(self.state, who, cell, to);
             }
             // `005b5690`: the same as `RemoveAllTypedItems` for every type
             // (`script_functions::remove_all`): the player's quest items
@@ -4563,8 +4683,12 @@ impl<'a> Runner<'a> {
                 self.state.evaluate.insert(who);
             }
             // The package is looked at again at once (the viewer's AI).
+            // It also ends `ForceFlee`'s flee: the package picked from their
+            // list replaces it (`Actor::EvaluatePackage` (Xbox PDB)).
             "EvaluatePackage" => {
-                self.state.evaluate.insert(target?);
+                let who = target?;
+                self.state.evaluate.insert(who);
+                crate::ai::flee::end_forced(self.state, who);
             }
             // The command queues a full reset, not just package evaluation.
             // 005c9530 rejects deleted/disabled references; 008a6ce0 rejects
@@ -4581,6 +4705,7 @@ impl<'a> Runner<'a> {
                     return Some(0.0);
                 }
                 self.state.reset_ai.insert(who);
+                crate::ai::flee::end_forced(self.state, who);
             }
             "GetSecondsPassed" => return Some(f64::from(self.seconds_passed)),
             "GetRandomPercent" => return Some((self.state.roll() % 100) as f64),
@@ -4773,6 +4898,10 @@ pub const HANDLED: &[&str] = &[
     "GetIsCurrentPackage",
     "GetMapMarkerVisible",
     "GetUnconscious",
+    "GetFatiguePercentage",
+    "GetGroupMemberCount",
+    "GetGroupTargetCount",
+    "ForceFlee",
     "IsPlayerInRegion",
     "PlayBink",
     "PlayMusic",

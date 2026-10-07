@@ -85,9 +85,11 @@ fn essential_people_go_down_instead_of_dying_and_get_up() {
     assert!(!dead);
     assert!(!state.dead.contains(&who));
     assert!(state.more.down.contains_key(&who));
+    // Down they lie knocked out: `GetKnockedState` (`005a08c0`) is 1 for
+    // knock states 3 and 4 (`world::fatigue`).
     assert_eq!(
         ask(&order, &scripts, &mut state, "PersonRef.GetKnockedState"),
-        2.0
+        1.0
     );
     // Down, they take no more harm while essential.
     assert!(!world::combat::hurt(

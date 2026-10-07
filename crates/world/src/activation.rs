@@ -129,9 +129,14 @@ fn is_actor(order: &LoadOrder, reference: FormId) -> bool {
             .is_some_and(|r| matches!(r.entry.header.kind.as_bytes(), b"ACHR" | b"ACRE"))
 }
 
-/// A base record's type and record.
-fn base_record(order: &LoadOrder, reference: FormId) -> Option<(FormId, FourCC, esm::Record)> {
-    let base = base_of(order, reference)?;
+/// A base record's type and record (a reference scripts or the player
+/// made too: dropped items, ash piles).
+fn base_record(
+    order: &LoadOrder,
+    state: &GameState,
+    reference: FormId,
+) -> Option<(FormId, FourCC, esm::Record)> {
+    let base = crate::more_functions::placed::base_now(order, state, reference)?;
     let rr = order.get(base)?;
     let record = rr.record().ok()?;
     Some((base, rr.entry.header.kind, record))
@@ -152,7 +157,7 @@ pub fn action_class(order: &LoadOrder, state: &GameState, reference: FormId) -> 
     if !actor && state.destroyed.contains(&reference) {
         return class::NONE;
     }
-    let Some((_, kind, record)) = base_record(order, reference) else {
+    let Some((base, kind, record)) = base_record(order, state, reference) else {
         return class::NONE;
     };
     let named = || record.full_name().is_some_and(|n| !n.is_empty());
@@ -206,7 +211,7 @@ pub fn action_class(order: &LoadOrder, state: &GameState, reference: FormId) -> 
         b"TERM" => class::ACTIVATE,
         b"PWAT" => class::DRINK,
         b"FURN" => {
-            let flags = crate::furniture::marker_flags(order, base_of(order, reference).unwrap());
+            let flags = crate::furniture::marker_flags(order, base);
             if flags & crate::furniture::SIT_FURNITURE != 0 {
                 class::SIT
             } else if flags & crate::furniture::BED != 0 {
@@ -222,7 +227,6 @@ pub fn action_class(order: &LoadOrder, state: &GameState, reference: FormId) -> 
             if dead {
                 return class::OPEN;
             }
-            let base = base_of(order, reference).unwrap();
             if actor_flags(order, base) & ALLOW_PC_DIALOGUE == 0 {
                 class::NONE
             } else if state.player_sneaking {
@@ -242,7 +246,12 @@ pub fn action_class(order: &LoadOrder, state: &GameState, reference: FormId) -> 
 /// reference with no base.
 // Translated from 00631d60 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn fuzzy_replaces(order: &LoadOrder, reference: FormId) -> bool {
-    let Some((_, kind, record)) = base_record(order, reference) else {
+    // A reference of the plugins (the view caster's candidates are placed
+    // references; none made in game).
+    let Some((kind, record)) = base_of(order, reference).and_then(|base| {
+        let rr = order.get(base)?;
+        Some((rr.entry.header.kind, rr.record().ok()?))
+    }) else {
         return true;
     };
     match kind.as_bytes() {
@@ -255,6 +264,23 @@ pub fn fuzzy_replaces(order: &LoadOrder, reference: FormId) -> bool {
             flags & 0x2 == 0
         }
         _ => false,
+    }
+}
+
+/// The reference activating `reference` really activates
+/// (`TESObjectREFR::Activate`, `00573170`): an ash or goo pile
+/// (`DefaultAshPile1` / `2`) carrying a link to a corpse
+/// (`ExtraAshPileRef`, `0041e310`; `AttachAshPile` made it) passes the
+/// activation on to that corpse, so the disintegrated are searched
+/// through their pile; anything else is itself.
+// Translated from 00573170 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn stands_for(order: &LoadOrder, state: &GameState, reference: FormId) -> FormId {
+    use crate::more_functions::placed;
+    let pile = placed::base_now(order, state, reference)
+        .is_some_and(|b| b == placed::ASH_PILE || b == placed::GOO_PILE);
+    match state.more.ash_piles.get(&reference) {
+        Some(&corpse) if pile => corpse,
+        _ => reference,
     }
 }
 
@@ -363,7 +389,7 @@ fn holds_nothing(order: &LoadOrder, state: &GameState, holder: FormId) -> bool {
 /// (statics, trees, nameless things without an action).
 // Translated from 00775a00 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn info(order: &LoadOrder, state: &GameState, reference: FormId) -> Option<Info> {
-    let (base, kind, _) = base_record(order, reference)?;
+    let (base, kind, _) = base_record(order, state, reference)?;
     let k = *kind.as_bytes();
     // Statics, static collections and trees: nothing (the type switch's
     // 0x20, 0x21, 0x25 case); a light that can't be carried leaves the
@@ -428,6 +454,16 @@ pub fn info(order: &LoadOrder, state: &GameState, reference: FormId) -> Option<I
         })
     } else if class == class::ACTIVATE && k == *b"CREA" {
         None
+    } else if k == *b"PROJ" && crate::mines::is_mine_reference(order, state, reference) {
+        // A placed projectile (no action class of its own) with a
+        // proximity: "Disarm Mine" (`sDisarmMine`) while armed, the table's
+        // "Take" once disarmed (run-time flag 0x200; `00775a00` at
+        // `007778fe`).
+        Some(if crate::mines::is_armed_mine(order, state, reference) {
+            text(order, "sDisarmMine", "Disarm Mine")
+        } else {
+            text(order, ACTION_TEXT[1].0, ACTION_TEXT[1].1)
+        })
     } else if class == class::READ {
         // Books say "Take" (the table's entry 1).
         Some(text(order, ACTION_TEXT[1].0, ACTION_TEXT[1].1))
@@ -465,6 +501,13 @@ pub fn info(order: &LoadOrder, state: &GameState, reference: FormId) -> Option<I
     // shows.
     let holder = k == *b"CONT" || (actor && dead);
     if holder && out.lock.is_none() && holds_nothing(order, state, reference) {
+        out.empty = Some(text(order, "sEmpty", "Empty"));
+    }
+    // An ash or goo pile standing for a corpse (`ExtraAshPileRef`,
+    // `0041e310`): "Empty" when the corpse holds nothing (`00775a00`,
+    // the test after its call to `0041e310`).
+    let corpse = stands_for(order, state, reference);
+    if corpse != reference && holds_nothing(order, state, corpse) {
         out.empty = Some(text(order, "sEmpty", "Empty"));
     }
     // Weight and value for the item kinds the type switch flags (0xfc):

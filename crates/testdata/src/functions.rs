@@ -233,6 +233,8 @@ pub fn functions(tag: &str) -> TempData {
     rifle_data.push(5);
     rifle.extend(sub(b"DATA", &rifle_data));
     let mut dnam = vec![0u8; 204];
+    // No resist type (-1 at 120), as the game's guns.
+    dnam[120..124].copy_from_slice(&(-1i32).to_le_bytes());
     dnam[0] = 5;
     dnam[104..108].copy_from_slice(&41u32.to_le_bytes());
     rifle.extend(sub(b"DNAM", &dnam));

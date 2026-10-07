@@ -336,6 +336,21 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     for (who, target) in fights {
         line(format!("fight {} {}", id(*who), id(*target)));
     }
+    // Combat groups joined, knock states, `ForceFlee`'s flees ("-" for no
+    // place).
+    let joined: BTreeMap<_, _> = state.combat_groups.joined.iter().collect();
+    for (who, group) in joined {
+        line(format!("joined {} {}", id(*who), id(*group)));
+    }
+    let knocks: BTreeMap<_, _> = state.knocks.state.iter().collect();
+    for (who, knock) in knocks {
+        line(format!("knock {} {knock}", id(*who)));
+    }
+    let flees: BTreeMap<_, _> = state.forced_flee.iter().collect();
+    for (who, f) in flees {
+        let opt = |f: Option<FormId>| f.map_or("-".to_string(), id);
+        line(format!("flee {} {} {}", id(*who), opt(f.cell), opt(f.to)));
+    }
     let equipped: BTreeMap<_, _> = state.equipped.iter().collect();
     for (who, items) in equipped {
         for item in items {
@@ -713,6 +728,22 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
             "fight" => {
                 state.combat.insert(form(1)?, form(2)?);
             }
+            "joined" => {
+                state.combat_groups.joined.insert(form(1)?, form(2)?);
+            }
+            "knock" => {
+                state.knocks.state.insert(form(1)?, num(2)? as u8);
+            }
+            "flee" => {
+                let opt = |i: usize| form(i).ok();
+                state.forced_flee.insert(
+                    form(1)?,
+                    crate::ai::flee::ForcedFlee {
+                        cell: opt(2),
+                        to: opt(3),
+                    },
+                );
+            }
             "relation" => {
                 state
                     .faction_relations
@@ -876,6 +907,29 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
 mod file_tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn knock_states_flees_and_combat_groups_go_through_a_save() {
+        let mut state = GameState::default();
+        state.knocks.state.insert(FormId(0x0010_0001), 3);
+        state.forced_flee.insert(
+            FormId(0x0010_0002),
+            crate::ai::flee::ForcedFlee {
+                cell: None,
+                to: Some(FormId(0x0010_0003)),
+            },
+        );
+        state
+            .combat_groups
+            .joined
+            .insert(FormId(0x0010_0004), FormId(0x0010_0005));
+        let text = save(&state, None);
+        let (back, _) = load(&text).unwrap();
+        assert_eq!(back.knocks, state.knocks);
+        assert_eq!(back.forced_flee, state.forced_flee);
+        assert_eq!(back.combat_groups, state.combat_groups);
+        assert_eq!(save(&back, None), text);
+    }
 
     #[test]
     fn havok_moved_objects_keep_their_pose_through_a_save() {
