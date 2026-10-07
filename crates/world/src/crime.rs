@@ -384,10 +384,12 @@ pub fn witnesses(
 }
 
 /// The player hits someone who isn't fighting them (`008987f0`): a friend
-/// or ally takes a few hits first (`iFriendHitCombatAllowed` 4 /
-/// `iFriendHitNonCombatAllowed` 0 for friends, `iAllyHitCombatAllowed`
-/// 1000 / `iAllyHitNonCombatAllowed` 3 for allies, "combat" meaning the
-/// victim is fighting someone) and only remarks on it; past that, or anyone
+/// or ally takes a few hits first (`iFriendHitCombatAllowed` 4 in
+/// FalloutNV.esm, GMST `00040F09`, exe default 3 / `iFriendHitNonCombatAllowed`
+/// 0 for friends, `iAllyHitCombatAllowed` 1000 / `iAllyHitNonCombatAllowed`
+/// 3 for allies, the last three only the exe's defaults, `00f5a1d0` to
+/// `00f5a260`; "combat" meaning the victim is fighting someone) and only
+/// remarks on it; past that, or anyone
 /// else, it's an assault: a major crime for the player, and if anyone saw
 /// it, +1 major crime (no infamy) for each of the victim's factions that
 /// tracks crime. A friend or ally who ignores friendly hits
@@ -399,6 +401,8 @@ pub fn assault(order: &LoadOrder, state: &mut GameState, victim: FormId) -> bool
     use crate::factions::Reaction;
     let reaction = crate::factions::reaction(order, state, victim, PLAYER_REF);
     let fighting = state.combat.contains_key(&victim);
+    // The data's value, else the exe's default (`00f5a1d0`, `00f5a200`,
+    // `00f5a230`, `00f5a260`).
     let allowed = |name: &str, default: f32| game_setting(order, name).unwrap_or(default) as u32;
     let allowance = match (reaction, fighting) {
         (Reaction::Friend, true) => Some(allowed("iFriendHitCombatAllowed", 3.0)),
