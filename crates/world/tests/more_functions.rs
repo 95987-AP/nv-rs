@@ -1412,6 +1412,52 @@ fn companions_pushes_dispositions_and_causes_of_death() {
 }
 
 #[test]
+fn a_recast_replaces_its_effect_and_a_poison_adds_its_duration() {
+    // 00823210 (CheckAddEffect): an actor effect's identical effect from
+    // the same caster is dispelled (00824400); another caster's stays; a
+    // poison's identical effect gets the new duration added (00824c00).
+    let (_data, order) = order("more-recast");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let from = |state: &GameState, source: u32| -> Vec<(Option<FormId>, f32)> {
+        state
+            .active_effects
+            .iter()
+            .filter(|e| e.target == PLAYER_REF && e.source == FormId(source))
+            .map(|e| (e.caster, e.remaining))
+            .collect()
+    };
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "player.CastImmediateOnSelf TestTick\nplayer.CastImmediateOnSelf TestTick",
+    );
+    assert_eq!(from(&state, TICK), vec![(Some(PLAYER_REF), 10.0)]);
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.Cast TestTick player",
+    );
+    assert_eq!(
+        from(&state, TICK),
+        vec![(Some(PLAYER_REF), 10.0), (Some(FormId(PERSON_REF)), 10.0)]
+    );
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "player.CastImmediateOnSelf TestTickPoison\nplayer.CastImmediateOnSelf TestTickPoison",
+    );
+    assert_eq!(from(&state, TICK_POISON), vec![(Some(PLAYER_REF), 20.0)]);
+    // The caster and the effect item are kept in a save.
+    let saved = world::save::save(&state, None);
+    let (back, _) = world::save::load(&saved).unwrap();
+    assert_eq!(back.active_effects, state.active_effects);
+}
+
+#[test]
 fn dispel_all_spells_leaves_abilities_and_poisons() {
     let (_data, order) = order("more-dispel");
     let scripts = ScriptCache::default();

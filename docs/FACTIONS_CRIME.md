@@ -131,9 +131,15 @@ player.
 What the engine needs, now **done**: `GetEquipped` of a form list
 (`0059da90`); a script's cast reaching the area of touch-range effects,
 `fMagicUnitsPerFoot` (22) × area = 550 units (`00818ce0`, `00816f10`; the
-line-of-sight check `008190d0` isn't done); recasting dispels the same
-spell first and starts the new effects at once
-(`MagicTarget::CheckAddEffect` → `MagicTarget::Dispel`, Xbox PDB).
+line-of-sight check `008190d0` isn't done); each effect a cast adds goes
+through `MagicTarget::CheckAddEffect` (Xbox PDB, `00823210`,
+`magic::cast`): for actor effects, diseases, powers, abilities and
+addictions the identical effect from the same spell and caster is
+dispelled first (`MagicTarget::Dispel` `00824400`, identity
+`004042a0`); a poison's identical effect gets the new duration added
+instead (`00824c00`); the new effects start at once. Potions',
+enchantments' and the Usage Monitor Effect's (`0x14F`) branches aren't
+applied to casts of `ALCH`/`ENCH` sources.
 
 ## Missing / next
 

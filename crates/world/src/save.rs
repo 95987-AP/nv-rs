@@ -452,7 +452,14 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
                 e.resist,
                 e.script.map_or("-".to_string(), id),
                 u8::from(e.started),
-            ) + &if e.part >= 0 {
+            ) + &if e.caster.is_some() || e.item.is_some() {
+                format!(
+                    " {} {} {}",
+                    e.part,
+                    e.caster.map_or("-".to_string(), id),
+                    e.item.map_or("-".to_string(), |i| i.to_string())
+                )
+            } else if e.part >= 0 {
                 format!(" {}", e.part)
             } else {
                 String::new()
@@ -864,10 +871,18 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                     },
                     started: flag(12)?,
                     locals: Locals::default(),
-                    // Older saves have no part.
+                    // Older saves have no part, caster or item.
                     part: match parts.get(13) {
                         Some(_) => num(13)? as i32,
                         None => -1,
+                    },
+                    caster: match parts.get(14) {
+                        Some(&"-") | None => None,
+                        Some(_) => Some(form(14)?),
+                    },
+                    item: match parts.get(15) {
+                        Some(&"-") | None => None,
+                        Some(_) => Some(num(15)? as usize),
                     },
                 });
             }

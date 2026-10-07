@@ -3101,23 +3101,23 @@ impl<'a> Runner<'a> {
 
     /// A spell cast by a script (`CastImmediateOnSelf`, `Cast`) at
     /// `target`, and at whoever its area reaches
-    /// ([`crate::magic::area_targets`]). On each, effects of the same spell
-    /// still working are dispelled first (their `ScriptEffectFinish` runs
-    /// if they had started) and the spell's effects take their place
-    /// (`MagicTarget::CheckAddEffect` → `MagicTarget::Dispel`, Xbox PDB,
-    /// for spells other than poisons, powers and the like).
+    /// ([`crate::magic::area_targets`]). On each, every effect added goes
+    /// through `MagicTarget::CheckAddEffect` (Xbox PDB, `00823210`,
+    /// [`crate::magic::cast`]): by the spell's type, an identical effect
+    /// from the same spell and caster is dispelled first (its
+    /// `ScriptEffectFinish` runs if it had started) or, for a poison, has
+    /// the new duration added.
     pub fn cast(&mut self, spell: FormId, caster: FormId, target: FormId) {
         let mut reached = vec![target];
         reached.extend(crate::magic::area_targets(
             self.order, self.state, spell, caster, target,
         ));
         for who in reached {
-            for mut e in crate::magic::remove(self.state, who, spell) {
+            for mut e in crate::magic::cast(self.order, self.state, who, spell, caster) {
                 if let Some(script) = e.script.filter(|_| e.started) {
                     self.run_effect_script(script, &mut e, "scripteffectfinish", 0.0);
                 }
             }
-            crate::magic::add_spell(self.order, self.state, who, spell, caster, false);
             // Each effect starts as it's added (`CheckAddEffect` calls the
             // new effect's start): a script effect's `ScriptEffectStart`
             // runs now, not at the next update.

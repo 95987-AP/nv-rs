@@ -83,6 +83,11 @@ pub struct ActiveEffect {
     /// it's added while the Pip-Boy's STATS healing mode aims at a limb
     /// (`00823210` → `00589f50`, [`GameState::healing_part`]); -1 none.
     pub part: i32,
+    /// Who cast it (`pCaster`, Xbox PDB, `+0x28`), when known.
+    pub caster: Option<FormId>,
+    /// Which of its source's effects it is (`pEffect`, Xbox PDB, `+0xc`):
+    /// the index among the source's `EFID`s, when known.
+    pub item: Option<usize>,
 }
 
 impl ActiveEffect {
@@ -266,7 +271,7 @@ pub fn apply(
     let mut done = Vec::new();
     let ingestible = crate::items::ingestible_flags(order, source);
     let addiction = spell_type(order, source) == Some(ADDICTION_SPELL_TYPE);
-    for e in crate::items::effects(order, source) {
+    for (item, e) in crate::items::effects(order, source).into_iter().enumerate() {
         let applies = Facts {
             order,
             state,
@@ -326,6 +331,8 @@ pub fn apply(
                 }
                 _ => -1,
             },
+            caster: Some(caster),
+            item: Some(item),
         };
         if active.detrimental && active.resist >= 0 {
             let resisted = Facts {
@@ -567,6 +574,105 @@ pub fn remove(state: &mut GameState, target: FormId, source: FormId) -> Vec<Acti
     gone
 }
 
+/// A source's effect items as `004042a0` compares them: each `EFID`, its
+/// `EFIT` (magnitude, area, duration, range, actor value) and its
+/// conditions (`CTDA`s).
+fn effect_items(order: &LoadOrder, source: FormId) -> Vec<(u32, Vec<u8>, Vec<Vec<u8>>)> {
+    let Some(record) = order.get(source).and_then(|r| r.record().ok()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(u32, Vec<u8>, Vec<Vec<u8>>)> = Vec::new();
+    for sub in &record.subrecords {
+        match sub.kind.as_bytes() {
+            b"EFID" if sub.data.len() >= 4 => {
+                out.push((crate::cell::le_u32(&sub.data, 0), Vec::new(), Vec::new()))
+            }
+            b"EFIT" => {
+                if let Some(last) = out.last_mut() {
+                    last.1 = sub.data.clone();
+                }
+            }
+            b"CTDA" => {
+                if let Some(last) = out.last_mut() {
+                    last.2.push(sub.data.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A script's cast of a spell on `target` (`MagicCaster::CastSpellImmediate`
+/// → `MagicTarget::CheckAddEffect` (Xbox PDB), `00823210`, for each effect
+/// it adds): what was dispelled to make way (their `ScriptEffectFinish`
+/// is the caller's to run). By the spell's type (`MagicSystem::SpellType`,
+/// Xbox PDB; `SPIT`):
+/// - a poison (5) with a duration: an identical effect already working
+///   from the same spell and caster (`00824c00`) gets the new duration
+///   added to its own and the new one isn't added;
+/// - wortcraft (8): added as it is;
+/// - anything else (actor effect, disease, power, lesser power, ability,
+///   leveled, addiction), unless the effect comes from a worn enchantment
+///   (flag 0x100, never for a cast): `MagicTarget::Dispel` (`00824400`)
+///   with the spell, the caster and the effect item ends the first effect
+///   working from the same spell and caster on the same magic effect with
+///   an identical effect item (`004042a0`: its `EFIT` data and
+///   conditions), then the new one is added.
+///
+/// Not translated here: potions' and enchantments' own branches (an
+/// `ALCH` or `ENCH` source is added as before), and the "Usage Monitor
+/// Effect" (`0x14F`, `00408f60`) branch for chems' addictions.
+// Translated from 00823210 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn cast(
+    order: &LoadOrder,
+    state: &mut GameState,
+    target: FormId,
+    spell: FormId,
+    caster: FormId,
+) -> Vec<ActiveEffect> {
+    let before = state.active_effects.len();
+    add_spell(order, state, target, spell, caster, false);
+    let Some(kind) = spell_type(order, spell) else {
+        return Vec::new();
+    };
+    let items = effect_items(order, spell);
+    let same_item = |a: Option<usize>, b: Option<usize>| match (a, b) {
+        (Some(a), Some(b)) => items.get(a).is_some() && items.get(a) == items.get(b),
+        _ => false,
+    };
+    let added: Vec<ActiveEffect> = state.active_effects.drain(before..).collect();
+    let mut dispelled = Vec::new();
+    for new in added {
+        let matches = |e: &ActiveEffect| {
+            e.target == new.target
+                && e.source == spell
+                && e.caster == new.caster
+                && e.effect == new.effect
+                && same_item(e.item, new.item)
+        };
+        match kind {
+            POISON_SPELL_TYPE if new.remaining > 0.0 => {
+                if let Some(e) = state.active_effects.iter_mut().find(|e| matches(e)) {
+                    e.remaining += new.remaining;
+                    continue;
+                }
+            }
+            POISON_SPELL_TYPE | WORTCRAFT_SPELL_TYPE => {}
+            _ => {
+                if let Some(i) = state.active_effects.iter().position(|e| matches(e)) {
+                    dispelled.push(state.active_effects.remove(i));
+                }
+            }
+        }
+        state.active_effects.push(new);
+    }
+    dispelled
+}
+
+/// `MagicSystem::SpellType` (Xbox PDB) 5, poison, and 8, wortcraft.
+const POISON_SPELL_TYPE: u32 = 5;
+const WORTCRAFT_SPELL_TYPE: u32 = 8;
 /// `MGEF` `DATA` flag 0x10000000 ("No Death Dispel", xEdit's name): the
 /// effect keeps working on someone dead (`00804560`).
 pub const NO_DEATH_DISPEL: u32 = 0x1000_0000;
