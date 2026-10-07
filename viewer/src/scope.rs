@@ -224,13 +224,13 @@ type OverlayAssets<'w> = (
 /// Each frame after the player's attack: whether a scope is up
 /// (`viewmodel::Scoped`), the overlay built for the weapon and shown or
 /// hidden, its frustum.
-#[allow(clippy::too_many_arguments)]
 /// The overlay's camera and the HUD's.
 type ScopeCameras<'w, 's> = (
     Query<'w, 's, (&'static mut Projection, &'static mut Camera), With<ScopeCamera>>,
     Query<'w, 's, &'static mut Camera, (With<crate::hud::HudCamera>, Without<ScopeCamera>)>,
 );
 
+#[allow(clippy::too_many_arguments)]
 pub fn update_scope(
     mut commands: Commands,
     game: Res<GameFiles>,
