@@ -379,26 +379,26 @@ fn named_key(name: &str) -> Option<Key> {
 /// `DistortParams`, `Tint`, `Offsets`).
 #[derive(Clone, Copy, Debug, ShaderType)]
 pub struct ScreenUniform {
-    params: Vec4,
-    distort: Vec4,
-    tint: Vec4,
-    offsets: Vec4,
+    pub(crate) params: Vec4,
+    pub(crate) distort: Vec4,
+    pub(crate) tint: Vec4,
+    pub(crate) offsets: Vec4,
 }
 
 /// The screen effect: the menus' picture, the scanlines and the band.
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 pub struct ScreenMaterial {
     #[uniform(0)]
-    u: ScreenUniform,
+    pub(crate) u: ScreenUniform,
     #[texture(1)]
     #[sampler(2)]
-    picture: Handle<Image>,
+    pub(crate) picture: Handle<Image>,
     #[texture(3)]
     #[sampler(4)]
-    scanlines: Handle<Image>,
+    pub(crate) scanlines: Handle<Image>,
     #[texture(5)]
     #[sampler(6)]
-    band: Handle<Image>,
+    pub(crate) band: Handle<Image>,
 }
 
 impl Material2d for ScreenMaterial {
@@ -640,7 +640,7 @@ impl Pipboy {
 }
 
 /// A picture to render into, read as stored values.
-fn target_image(images: &mut Assets<Image>, size: UVec2) -> Handle<Image> {
+pub(crate) fn target_image(images: &mut Assets<Image>, size: UVec2) -> Handle<Image> {
     let mut image = Image::new_uninit(
         Extent3d {
             width: size.x,

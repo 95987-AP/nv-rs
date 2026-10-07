@@ -41,7 +41,7 @@ use bevy::input::ButtonState;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use cellview::{Game, TextureData};
-use ui::draw::{DrawItem, Textures};
+use ui::draw::{DrawItem, DrawKind, Textures};
 use ui::menu::{Effect, Interface, MenuCode};
 use ui::names::{kind, t};
 use ui::TileId;
@@ -88,6 +88,9 @@ pub struct Screen {
     quantity_owner: Option<u32>,
     /// The pointer this frame, in menu units.
     pub pointer: Option<(f32, f32)>,
+    /// The player left a terminal or the hacking game this frame (their
+    /// `Leave`): the rendered terminal fades out (`rendered_terminal`).
+    pub terminal_left: bool,
     sizes: HashMap<String, Option<(u32, u32)>>,
     atlases: HashMap<String, Option<ui::Atlas>>,
     /// `nif` tiles' models (the start menu's pause background).
@@ -415,6 +418,7 @@ impl Screen {
             rest_down: false,
             quantity_owner: None,
             pointer: None,
+            terminal_left: false,
             sizes: HashMap::new(),
             atlases: HashMap::new(),
             models: HashMap::new(),
@@ -635,6 +639,10 @@ pub struct MenuInput<'w, 's> {
     fixed: Res<'w, FixedPointer>,
     clicks: ResMut<'w, FixedClicks>,
     fixed_keys: ResMut<'w, FixedKeys>,
+    /// Terminals drawn on the terminal's screen: the pointer goes through
+    /// it.
+    rendered: ResMut<'w, crate::rendered_terminal::RenderedTerminal>,
+    hud: Option<Res<'w, crate::hud::HudLayer>>,
 }
 
 /// A key as the game's interface turns it into a menu code (`007154b0`):
@@ -714,18 +722,6 @@ pub(crate) fn run_open_menus(
             return;
         };
         let menu = top.tile();
-        // The pointer, in menu units.
-        let k = ui.screen_size.resolution_converter();
-        let pointer = match input.fixed.0 {
-            // A 1920 × 1080 picture's pixels: the screen is 960 units high.
-            Some((x, y)) => Some((x * 960.0 / 1080.0, y * 960.0 / 1080.0)),
-            None => input
-                .windows
-                .single()
-                .ok()
-                .and_then(|w| w.physical_cursor_position().map(|p| (p.x * k, p.y * k))),
-        };
-        *here = pointer;
         // `--menu-click`: pressed this frame, let go the next.
         let release = std::mem::take(&mut input.clicks.release);
         let press = {
@@ -733,6 +729,57 @@ pub(crate) fn run_open_menus(
             due.map(|i| input.clicks.at.remove(i)).is_some()
         };
         input.clicks.release = press;
+        // The pointer, in menu units.
+        let k = ui.screen_size.resolution_converter();
+        let window = input.windows.single().ok();
+        let rendered = matches!(top, OpenMenu::Hacking(_) | OpenMenu::Computers(_))
+            && input.rendered.prepare(&game.0, input.hud.is_some());
+        let mut power_button = false;
+        let pointer = if rendered {
+            // On the terminal's screen (`007fb790`): where the ray through
+            // the pointer meets it; `--menu-pointer` is a 1920 × 1080
+            // picture's pixels, as elsewhere.
+            let size = window.map_or(UVec2::new(1920, 1080), |w| {
+                UVec2::new(w.physical_width(), w.physical_height())
+            });
+            let at = match input.fixed.0 {
+                Some((x, y)) => Some(Vec2::new(
+                    x * size.x as f32 / 1920.0,
+                    y * size.y as f32 / 1080.0,
+                )),
+                None => window.and_then(|w| w.physical_cursor_position()),
+            };
+            let click = input.mouse.just_pressed(MouseButton::Left) || press;
+            at.and_then(|p| input.rendered.hit(&game.0, p, size, click))
+                .map(|hit| {
+                    power_button = click && hit == cellview::rendered_terminal::Hit::Exit;
+                    crate::rendered_terminal::RenderedTerminal::menu_pointer(hit)
+                })
+        } else {
+            match input.fixed.0 {
+                // A 1920 × 1080 picture's pixels: the screen is 960 units
+                // high.
+                Some((x, y)) => Some((x * 960.0 / 1080.0, y * 960.0 / 1080.0)),
+                None => {
+                    window.and_then(|w| w.physical_cursor_position().map(|p| (p.x * k, p.y * k)))
+                }
+            }
+        };
+        *here = pointer;
+        // The terminal's power button (`007ffba0` → `007ffd50`): the
+        // menu leaves and the terminal goes at once.
+        if power_button {
+            use ui::menu::MenuCode;
+            match top {
+                OpenMenu::Hacking(h) => {
+                    h.menu
+                        .special_key(ui, ui::menus::hacking::LEAVE, now * 1000.0);
+                }
+                OpenMenu::Computers(c) => c.menu.close(ui),
+                _ => {}
+            }
+            input.rendered.power_off = true;
+        }
         if let Some((x, y)) = pointer {
             if let OpenMenu::Vigor(v) = top {
                 v.pointer = Some(Vec2::new(x / k, y / k));
@@ -1088,7 +1135,8 @@ pub(crate) fn start_menu_frame(
 }
 
 /// The open menus' pictures and the cursor, for the HUD's layer.
-fn draw_menus(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_menus(
     game: Res<GameFiles>,
     mut menus: ResMut<GameMenus>,
     mut draw: ResMut<MenuDraw>,
@@ -1096,8 +1144,19 @@ fn draw_menus(
     fixed: Res<FixedPointer>,
     time: Res<Time<bevy::time::Real>>,
     pipboy: Option<Res<crate::pipboy::Pipboy>>,
+    mut rendered: ResMut<crate::rendered_terminal::RenderedTerminal>,
+    hud: Option<Res<crate::hud::HudLayer>>,
 ) {
+    let rendered_on = rendered.prepare(&game.0, hud.is_some());
+    let mut terminal_items: Vec<DrawItem> = Vec::new();
+    let terminal_open = menus.screen.as_ref().is_some_and(|s| {
+        s.open
+            .iter()
+            .any(|m| matches!(m, OpenMenu::Hacking(_) | OpenMenu::Computers(_)))
+    });
+    rendered.menu_open = terminal_open;
     let Some(screen) = menus.screen.as_deref_mut() else {
+        rendered.items.clear();
         if !draw.0.is_empty() {
             draw.0.clear();
         }
@@ -1132,19 +1191,37 @@ fn draw_menus(
                 items.extend(ui::draw_list(&mut screen.ui, fader, &mut files, &|_| None));
             }
         }
-        for &menu in &tiles {
-            let first = items.len();
-            items.extend(ui::draw_list(&mut screen.ui, menu, &mut files, &|_| None));
-            // A start menu's `nif` tile (the pause background).
-            start::background_draws(
-                &mut screen.ui,
-                &screen.open,
-                &game.0,
-                &mut screen.models,
-                &mut items,
-                menu,
-                first,
-            );
+        for m in &screen.open {
+            let menu = m.tile();
+            let list = ui::draw_list(&mut screen.ui, menu, &mut files, &|_| None);
+            // The terminal's and the hacking menu's on the terminal's own
+            // screen (`rendered_terminal`).
+            if rendered_on && matches!(m, OpenMenu::Hacking(_) | OpenMenu::Computers(_)) {
+                for item in &list {
+                    if let DrawKind::Text { font, .. } = item.kind {
+                        if let Some(Some(f)) = screen.ui.fonts.get(font.wrapping_sub(1)) {
+                            rendered
+                                .font_paths
+                                .entry(font)
+                                .or_insert_with(|| ui::draw::font_textures(f));
+                        }
+                    }
+                }
+                terminal_items.extend(list);
+            } else {
+                let first = items.len();
+                items.extend(list);
+                // A start menu's `nif` tile (the pause background).
+                start::background_draws(
+                    &mut screen.ui,
+                    &screen.open,
+                    &game.0,
+                    &mut screen.models,
+                    &mut items,
+                    menu,
+                    first,
+                );
+            }
         }
         // The cursor over everything while a menu is open (the Pip-Boy
         // too: it moves over the screen and the model's buttons,
@@ -1175,6 +1252,9 @@ fn draw_menus(
         }
     }
     let _ = kind::IMAGE;
+    if rendered.items != terminal_items {
+        rendered.items = terminal_items;
+    }
     if draw.0 != items {
         draw.0 = items;
     }

@@ -84,6 +84,9 @@ pub mod sound {
     pub const SCROLL: &str = "UIHackingCharScroll";
     pub const ENTER: &str = "UIHackingCharEnter";
     pub const SINGLE: &str = "UIHackingCharSingle";
+    /// Leaving (`007ffe40`, from `00757ea0` and the hacking menu's
+    /// `00766aa0`; the power button's `007ffd50` too).
+    pub const POWER_DOWN: &str = "OBJComputerTerminalPowerDown";
 }
 
 /// The rates (`iComputersDisplayRateMenus`, `…Notes`, `iHackingInputRate`,
@@ -187,6 +190,9 @@ pub enum Request {
         terminal: u32,
     },
     Close,
+    /// The player left (`00757ea0`): [`sound::POWER_DOWN`] plays and the
+    /// rendered terminal fades out (`007ffaf0`); after [`Request::Close`].
+    Leave,
 }
 
 /// Where the menu is (`+0xb0`).
@@ -622,7 +628,7 @@ impl ComputersMenu {
         }
     }
 
-    /// Closes it (`00757ea0`).
+    /// Closes it as the player leaves (`00757ea0`).
     pub fn close(&mut self, ui: &mut Ui) {
         if self.closed {
             return;
@@ -630,6 +636,7 @@ impl ComputersMenu {
         ui.set_number(self.menu, menu::LEAVE_STACK, 1.0);
         self.closed = true;
         self.requests.push(Request::Close);
+        self.requests.push(Request::Leave);
     }
 
     /// Every frame (`00758470`).
@@ -965,7 +972,9 @@ mod tests {
         // Leaving the first screen closes the menu.
         m.special_key(&mut ui, LEAVE, now + 6000.0);
         assert!(m.closed);
-        assert!(m.requests.contains(&Request::Close));
+        let close = m.requests.iter().position(|r| *r == Request::Close);
+        let leave = m.requests.iter().position(|r| *r == Request::Leave);
+        assert!(close.is_some() && leave > close);
     }
 
     /// A sub-menu, then "Back" (`00758a80`).

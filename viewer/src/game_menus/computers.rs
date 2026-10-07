@@ -117,7 +117,12 @@ pub fn after(
     now_ms: f64,
 ) -> Vec<String> {
     let mut notices = Vec::new();
-    let MenuScreen { ui, open, .. } = screen;
+    let MenuScreen {
+        ui,
+        open,
+        terminal_left: left,
+        ..
+    } = screen;
     for m in open.iter_mut() {
         let OpenMenu::Computers(c) = m else {
             continue;
@@ -166,6 +171,14 @@ pub fn after(
                     c.menu.retype(ui, &passing);
                 }
                 Request::Close => sounds.stop_all(),
+                // Leaving (`00757ea0`): the power down (`007ffe40`), the
+                // rendered terminal fading out (`007ffaf0`).
+                Request::Leave => {
+                    if let Some(f) = order.form_by_editor_id(sound::POWER_DOWN) {
+                        sounds.play_at(f, now_ms);
+                    }
+                    *left = true;
+                }
             }
         }
     }
