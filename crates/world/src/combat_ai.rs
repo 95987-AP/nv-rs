@@ -624,6 +624,9 @@ pub fn detection_value(
     motion: Option<(bool, bool)>,
     s: Setting,
 ) -> Option<i32> {
+    if crate::companions::hidden_with_player(facts.state, other) {
+        return Some(crate::companions::HIDDEN_WITH_PLAYER);
+    }
     let inputs = facts.detection_inputs(who, other, line_of_sight, motion)?;
     if other != PLAYER_REF && inputs.distance < 2.0 {
         return Some(100);

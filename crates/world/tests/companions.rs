@@ -374,3 +374,46 @@ fn a_knocked_out_teammate_waits_for_the_fight_to_end() {
     state.living.hardcore = true;
     assert!(!world::more_functions::is_essential(&order, &state, doc));
 }
+
+/// Sneaking with the player (`008a0d10`): a teammate out of a fight
+/// isn't detected while the player sneaks out of one, and sneaks with the
+/// player's skill when it's better.
+#[test]
+fn a_teammate_sneaks_with_the_player() {
+    use world::companions;
+    let (_data, order) = order("companions-sneak");
+    let mut state = GameState::new(&order);
+    let doc = FormId(DOC_REF);
+    let gecko = FormId(GECKO_REF);
+    let player = world::dialogue::PLAYER_REF;
+    state.teammates.insert(doc);
+    assert!(!companions::hidden_with_player(&state, doc));
+    state.player_sneaking = true;
+    assert!(companions::hidden_with_player(&state, doc));
+    let facts = |state: &GameState| {
+        world::scripting::Facts {
+            order: &order,
+            state,
+            speaker: None,
+        }
+        .detection(gecko, doc)
+    };
+    assert_eq!(facts(&state), Some(-100));
+    // Fighting: seen as usual.
+    state.combat.insert(gecko, player);
+    assert!(!companions::hidden_with_player(&state, doc));
+    state.combat.clear();
+    // The player's Sneak, when better.
+    state.player_sneaking = false;
+    state.actor_values.insert((doc, 42), 10.0);
+    state.actor_values.insert((player, 42), 80.0);
+    let f = world::scripting::Facts {
+        order: &order,
+        state: &state,
+        speaker: None,
+    };
+    let i = f
+        .detection_inputs(gecko, doc, true, None)
+        .expect("in one place");
+    assert_eq!(i.sneak, 80.0);
+}

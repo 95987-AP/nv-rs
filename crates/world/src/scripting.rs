@@ -2258,6 +2258,9 @@ impl Facts<'_> {
     /// recent shot, no body armour weight (all guesses until the viewer
     /// supplies them).
     pub fn detection(&self, who: FormId, other: FormId) -> Option<i32> {
+        if crate::companions::hidden_with_player(self.state, other) {
+            return Some(crate::companions::HIDDEN_WITH_PLAYER);
+        }
         let inputs = self.detection_inputs(who, other, true, None)?;
         Some(crate::detection::value(self.order, &inputs))
     }
@@ -2327,7 +2330,13 @@ impl Facts<'_> {
             perception: av(who, 6),
             in_combat: fighting.is_some(),
             fighting_other: fighting.is_some_and(|t| t != other),
-            sneak: av(other, 42),
+            // A teammate sneaks as well as the player does, if better
+            // (`008a0d10`).
+            sneak: if s.teammates.contains(&other) {
+                av(other, 42).max(av(PLAYER_REF, 42))
+            } else {
+                av(other, 42)
+            },
             target_level: f32::from(self.level(other).unwrap_or(1)),
             detector_level: f32::from(self.level(who).unwrap_or(1)),
         })

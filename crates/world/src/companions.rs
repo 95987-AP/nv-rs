@@ -426,6 +426,27 @@ pub fn down_time_runs(state: &GameState, who: FormId) -> bool {
     !(state.teammates.contains(&who) && player_in_combat(state))
 }
 
+/// What detecting a teammate hidden with the player gives (`008a0d10`:
+/// −100).
+pub const HIDDEN_WITH_PLAYER: i32 = -100;
+
+/// Sneaking with the player (`008a0d10`, the detection test's start):
+/// nobody detects the player's teammate while the teammate isn't fighting
+/// (the actor's +0x104) and the player sneaks (`004997b0`) without
+/// fighting either — the test gives [`HIDDEN_WITH_PLAYER`]. (The same
+/// test also gives a teammate the player's Sneak skill when it's higher,
+/// `Facts::detection_inputs`, and counts them invisible when the player
+/// is, actor values 48 and 49, which the detection here doesn't model.)
+///
+/// Translated from 008a0d10 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn hidden_with_player(state: &GameState, who: FormId) -> bool {
+    who != PLAYER_REF
+        && state.teammates.contains(&who)
+        && !state.combat.contains_key(&who)
+        && state.player_sneaking
+        && !player_in_combat(state)
+}
+
 /// The Stimpak (`DOBJ` default object 0).
 pub fn stimpak(order: &LoadOrder) -> Option<FormId> {
     crate::items::default_object(order, 0)
