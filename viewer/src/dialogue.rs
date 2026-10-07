@@ -817,14 +817,14 @@ pub fn talk(
             println!("The pickpocket menu for {name} would open here (not drawn yet).");
             return;
         }
-        Use::Refused(why) => {
+        Use::Refused(why, icon) => {
             // Shown as the game's notice (`world::scripting::Event`).
             println!("{why}");
             state.0.events.push(world::scripting::Event::Message {
                 title: None,
                 text: why,
                 buttons: Vec::new(),
-                icon: None,
+                icon: Some(icon.to_string()),
             });
             return;
         }

@@ -84,6 +84,8 @@ pub struct Challenge {
     pub interval: i32,
     pub values: [u16; 3],
     pub forms: [Option<FormId>; 2],
+    /// Its picture (`ICON`), if it has one.
+    pub icon: Option<String>,
 }
 
 impl Challenge {
@@ -123,6 +125,10 @@ impl Challenge {
             interval: u(12) as i32,
             values: [h(16), h(18), h(20)],
             forms: [form(SNAM), form(XNAM)],
+            icon: record
+                .get(FourCC::new(b"ICON"))
+                .map(|s| s.zstring())
+                .filter(|p| !p.trim().is_empty()),
         })
     }
 
@@ -191,6 +197,9 @@ fn counts(state: &GameState, c: &Challenge) -> bool {
 /// The count's notice: "Name   count\threshold" and the description, on
 /// two lines (`"%s   %d\\%d\n%s"`); only for a challenge with a name and a
 /// description.
+///
+/// Its picture is the challenge's own icon (`0048e730`: its `ICON`; none
+/// in vanilla's, so type 0's neutral Vault Boy).
 fn notice(state: &mut GameState, c: &Challenge, count: i32) {
     if c.name.is_empty() || c.description.is_empty() {
         return;
@@ -199,7 +208,7 @@ fn notice(state: &mut GameState, c: &Challenge, count: i32) {
         title: None,
         text: format!("{}   {}\\{}\n{}", c.name, count, c.threshold, c.description),
         buttons: Vec::new(),
-        icon: None,
+        icon: c.icon.clone(),
     });
 }
 

@@ -1391,13 +1391,16 @@ fn pipboy_keys(
         .filter(|_| b.pipboy.section == Section::Stats);
     let state = &mut state.0;
     state.healing_part = aim;
-    let mut say = |text: String| {
+    // A corner message with its picture (`world::message_icon`).
+    let mut say = |text: String, icon: Option<&str>| {
         if text.is_empty() {
             return;
         }
         println!("{text}");
         if messages.on {
-            messages.queue.push(text.into());
+            messages
+                .queue
+                .push(crate::hud::HudMessage::with_icon(text, icon));
         }
     };
     for action in actions {
@@ -1417,9 +1420,11 @@ fn pipboy_keys(
                 match kind {
                     // A book's own notice (its skill raised) is the
                     // game's.
-                    Some(k) if &k == b"BOOK" => {
-                        say(world::items::read_book(order, state, item).unwrap_or_default())
-                    }
+                    // (`sSkillIncreasedNum`, type 1: very happy.)
+                    Some(k) if &k == b"BOOK" => say(
+                        world::items::read_book(order, state, item).unwrap_or_default(),
+                        world::message_icon::for_setting("sSkillIncreasedNum"),
+                    ),
                     // Aid: no notice (the viewer's own line on the
                     // console only).
                     _ => {
@@ -1442,8 +1447,8 @@ fn pipboy_keys(
                 else {
                     continue;
                 };
-                if let Some(why) = world::map::travel_refused(order, state) {
-                    say(why);
+                if let Some((why, icon)) = world::map::travel_refusal(order, state) {
+                    say(why, Some(icon));
                     continue;
                 }
                 if !world::map::can_travel(state, &m) {
@@ -1507,7 +1512,10 @@ fn pipboy_keys(
                 let in_air = player.walking && !player.character.on_ground;
                 if let Some(setting) = world::items::drop_refusal(order, state, item, false, in_air)
                 {
-                    say(setting_text(pipboy, setting));
+                    say(
+                        setting_text(pipboy, setting),
+                        world::message_icon::for_setting(setting),
+                    );
                     continue;
                 }
                 let count = state.item_count(order, PLAYER_REF, item);
@@ -1541,7 +1549,7 @@ fn pipboy_keys(
                     println!("Hot key {}: {item}.", slot + 1);
                 }
             }
-            Action::Notice(text) => say(text),
+            Action::Notice(text) => say(text, None),
             // `007f8610(0, ±fScrollKnobIncrement, fScrollKnobRate)`.
             Action::ScrollKnob { down } => {
                 if let Some(s) = pipboy.knob_settings {
@@ -2142,12 +2150,17 @@ pub(crate) fn update_pipboy(
         // (`00798a00` hands the marker to the player's travel, `0093be30`).
         if let Some(reference) = pipboy.travel_after_close.take() {
             if let Some(m) = markers.list.iter().find(|m| m.reference.0 == reference) {
+                // A refusal's picture (`0093d660`), looked up before the
+                // trip as `travel` itself refuses.
+                let icon = world::map::travel_refusal(order, &state.0).map(|(_, icon)| icon);
                 match world::map::travel(order, &mut state.0, m) {
                     Ok(_) => println!("Fast travel to {}.", m.name),
                     Err(why) => {
                         println!("{why}");
                         if messages.on {
-                            messages.queue.push(why.into());
+                            messages
+                                .queue
+                                .push(crate::hud::HudMessage::with_icon(why, icon));
                         }
                     }
                 }

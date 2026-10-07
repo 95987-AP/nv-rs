@@ -838,11 +838,12 @@ pub fn damage_item(
         };
         let text = crate::scripting::game_setting_text(order, setting)
             .unwrap_or_else(|| default.to_string());
+        // Type 2: the sad Vault Boy.
         state.events.push(Event::Message {
             title: None,
             text,
             buttons: Vec::new(),
-            icon: None,
+            icon: crate::message_icon::for_setting(setting).map(str::to_string),
         });
         if let Some(sound) = order.form_by_editor_id("WPNBreak") {
             state.events.push(Event::Sound(sound));
@@ -866,7 +867,7 @@ fn break_weapon(order: &LoadOrder, state: &mut GameState, holder: FormId, item: 
             title: None,
             text,
             buttons: Vec::new(),
-            icon: None,
+            icon: Some(crate::message_icon::SAD.to_string()),
         });
         if let Some(sound) = order.form_by_editor_id("WPNBreak") {
             state.events.push(Event::Sound(sound));

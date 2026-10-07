@@ -38,6 +38,22 @@ neutral Vault Boy); `world::message_icon` has the pictures, the table and
 script's `ShowMessage`, the casinos' messages, the lockpicking menu's,
 locked doors, broken equipment (`sCantEquipBrokenItem`), reputation and
 karma, hardcore needs and radiation, the sleep/wait refusals of
-`ShowSleepWaitMenu`. Other messages still have the neutral Vault Boy
-(dialogue and pickpocket refusals, a companion over-encumbered, weapon
-condition and breaking, experience, challenges, discovered places).
+`ShowSleepWaitMenu` and a bed's; weapon and armour condition and a
+weapon breaking (type 2: sad, `00891360`); talking and pickpocketing
+refusals (`world::living::pickpocket::Use::Refused`: surprised for the
+unconscious, sad otherwise) and being caught (`sPickpocketFail`, sad); a
+companion carrying too much (sad); a terminal the player can't hack, used
+(angry, `00501310`); locked containers (the padlock); a lock opened with
+its key: `UILockpickingUnlock` and "Unlocked with <key>." with the key
+(`005180b0` doors, `00516dc0` containers; `world::locks::try_open`); the
+Pip-Boy's book reading (very happy), drop refusals (sad) and fast travel
+refusals (`world::map::travel_refusal`: sad, neutral for carrying too
+much); challenges' counts their record's `ICON` (`0048e730`; vanilla's
+have none: neutral).
+
+Not corner messages in the game, so not given a picture: experience and
+"LEVEL UP" go to the HUD's XP meter (the viewer filters them out of the
+corner); a discovered place is the quest update text (`00779070` →
+`0076b960`, the `QuestUpdateManager`'s custom text "You have discovered" /
+the name, with `UIPopUpQuestNew`), shown in the HUD's quest reminder,
+which isn't drawn here yet: it stays a neutral corner message meanwhile.

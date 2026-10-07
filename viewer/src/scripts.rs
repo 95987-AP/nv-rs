@@ -384,8 +384,9 @@ fn has_on_activate(order: &esm::LoadOrder, cache: &ScriptCache, r: &Interactive)
 
 /// What using an object did.
 enum Used {
-    /// Something to tell the player.
-    Notice(String),
+    /// Something to tell the player, with its picture (`None` the
+    /// neutral Vault Boy).
+    Notice(String, Option<&'static str>),
     /// A container to open on screen: its reference and name.
     Container(FormId, String),
     /// A terminal's screen: its record and the placed terminal.
@@ -451,7 +452,7 @@ fn use_object(
         // "<name> added" / "<n> <name>(s) added" (`004ce380`).
         return Some(
             match world::activation::pickup_message(order, r.base, r.count) {
-                Some(message) => Used::Notice(message),
+                Some(message) => Used::Notice(message, None),
                 None => Used::Taken,
             },
         );
@@ -461,7 +462,9 @@ fn use_object(
         return Some(match locked(order, state, r.reference, &label) {
             None => Used::Container(r.reference, label),
             Some(Locked::Pick) => Used::Lockpick(r.reference),
-            Some(Locked::Says(why)) => Used::Notice(why),
+            // A key needed or too little skill: the padlock (`00516dc0`,
+            // `0078db00`).
+            Some(Locked::Says(why)) => Used::Notice(why, Some(world::message_icon::PADLOCK)),
         });
     }
     // Any furniture while in furniture gets the player up
@@ -475,7 +478,8 @@ fn use_object(
     if r.is_furniture() && world::living::sleep::is_bed(order, r.reference) {
         return match world::living::sleep::may_sleep_in(order, state, r.reference) {
             Ok(()) => Some(Used::Sleep),
-            Err(why) => Some(Used::Notice(why)),
+            // The bed's refusals: the sad Vault Boy (`005095b0`).
+            Err(why) => Some(Used::Notice(why, Some(world::message_icon::SAD))),
         };
     }
     if r.is_furniture() {
@@ -1306,7 +1310,9 @@ pub fn run_scripts(
                 .chain(&dropped)
                 .find(|o| o.reference == r);
             match object.and_then(|o| use_object(order, &scripts.0, state, o)) {
-                Some(Used::Notice(n)) => announce(n.into(), &mut notices),
+                Some(Used::Notice(n, icon)) => {
+                    announce(crate::hud::HudMessage::with_icon(n, icon), &mut notices)
+                }
                 Some(Used::Container(c, name)) => {
                     waiting.push(crate::menus::Menu::Container(c, name));
                 }
@@ -1318,7 +1324,14 @@ pub fn run_scripts(
                             if let Some(s) = order.form_by_editor_id(crate::lockpick::POPUP_SOUND) {
                                 sound_requests.0.push(s);
                             }
-                            announce(why.into(), &mut notices);
+                            // The angry Vault Boy (`00501310`).
+                            announce(
+                                crate::hud::HudMessage::with_icon(
+                                    why,
+                                    Some(world::message_icon::ANGRY),
+                                ),
+                                &mut notices,
+                            );
                         }
                     }
                 }
@@ -1741,6 +1754,7 @@ pub fn run_scripts(
                                 {
                                     sound_requests.0.push(s);
                                 }
+                                notice_icon = Some(world::message_icon::ANGRY.to_string());
                                 Some(why)
                             }
                         }
@@ -1755,7 +1769,10 @@ pub fn run_scripts(
                                 lockpicking.request = Some(what);
                                 None
                             }
-                            Some(Locked::Says(why)) => Some(why),
+                            Some(Locked::Says(why)) => {
+                                notice_icon = Some(world::message_icon::PADLOCK.to_string());
+                                Some(why)
+                            }
                         }
                     }
                     // A talking activator with a voice (Elijah's hologram)

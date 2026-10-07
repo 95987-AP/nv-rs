@@ -999,12 +999,25 @@ fn locks_keys_and_terminals() {
         locks::try_open(&order, &mut state, strongbox),
         Opening::NeedsSkill(50)
     );
-    // With the key it opens, and stays unlocked.
+    // With the key it opens, and stays unlocked: "Unlocked with <key>."
+    // with the key picture (`005180b0`, `00516dc0`).
+    state.events.clear();
     state.items.insert((PLAYER_REF, FormId(KEY)), 1);
     assert_eq!(
         locks::try_open(&order, &mut state, strongbox),
         Opening::WithKey
     );
+    let unlocked: Vec<_> = state
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Message { text, icon, .. } => Some((text.clone(), icon.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(unlocked.len(), 1, "{unlocked:?}");
+    assert!(unlocked[0].0.starts_with("Unlocked with "), "{unlocked:?}");
+    assert_eq!(unlocked[0].1.as_deref(), Some(world::message_icon::KEY));
     assert_eq!(
         ask(&order, &scripts, &mut state, "StrongboxRef.GetLocked"),
         0.0

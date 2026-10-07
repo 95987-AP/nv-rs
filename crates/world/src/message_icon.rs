@@ -32,12 +32,15 @@ pub const KEY: &str = "Interface\\Icons\\Message Icons\\glow_message_key.dds";
 pub const MAP: &str = "Interface\\Icons\\Message Icons\\glow_message_map.dds";
 pub const RADIO_TOWER: &str = "Interface\\Icons\\Message Icons\\glow_message_radio_tower.dds";
 pub const THINKING: &str = "Interface\\Icons\\Message Icons\\glow_message_vaultboy_thinking.dds";
+/// A terminal the player can't hack, activated (`00501310`).
+pub const ANGRY: &str = "Interface\\Icons\\Message Icons\\glow_message_vaultboy_angry.dds";
 
 /// The picture the game's own code passes with a message showing a text
 /// setting: each `QueueUIMessage` call (`007052f0`'s callers) read with
-/// the setting it shows and the picture pushed for it. (Settings the code
-/// shows with no picture of its own, or with different pictures from
-/// different callers, aren't here.)
+/// the setting it shows and the picture pushed for it, or the Vault Boy
+/// its type picks when it pushes none (`00775380`: 1 very happy, 2 sad;
+/// 0 the neutral one, listed where the game's code shows it). (Settings
+/// shown with different pictures by different callers aren't here.)
 pub fn for_setting(name: &str) -> Option<&'static str> {
     const TABLE: &[(&str, &str)] = &[
         // Items (`007284f0`, `004c37d0`, `0088c830`, `008929a0`,
@@ -51,6 +54,22 @@ pub fn for_setting(name: &str) -> Option<&'static str> {
         ("sAnimationCanNotUnequip", SAD),
         ("sCantHotkeyItem", SAD),
         ("sCantHotkeyBrokenItem", SAD),
+        // Type 2 (`00780140`: ITEMS' refusals).
+        ("sDropQuestItemWarning", SAD),
+        ("sDropEquippedItemWarning", SAD),
+        ("sNoJumpWarning", SAD),
+        ("sNotEnoughRoomWarning", SAD),
+        // Books (`00515040`: type 1, type 0) and chems (`00824e70` type
+        // 1, `00823c40` type 0).
+        ("sSkillIncreasedNum", VERY_HAPPY),
+        ("sCanNotReadBook", NEUTRAL),
+        ("sChemsAddicted", VERY_HAPPY),
+        ("sChemsWithdrawal", NEUTRAL),
+        ("sChemsWornOff", NEUTRAL),
+        // Condition (`00891360`: type 2).
+        ("sWeaponLowCond", SAD),
+        ("sArmorLowCond", SAD),
+        ("sWeaponBreak", SAD),
         ("sEquipItemOnPlayer", NEUTRAL),
         ("sUnequipItemOnPlayer", NEUTRAL),
         ("sAddItemtoSpellList", VERY_HAPPY),
@@ -67,6 +86,11 @@ pub fn for_setting(name: &str) -> Option<&'static str> {
         ("sNoTalkUnConscious", SURPRISED),
         ("sNoTalkFleeing", SAD),
         ("sNoPickPocketAgain", SAD),
+        // Type 2: caught (`0075e0b0`), a companion carrying too much
+        // (`0075dc80`); type 0: a calmed person (`00607990`, `00756980`).
+        ("sPickpocketFail", SAD),
+        ("sTeammateOverencumbered", SAD),
+        ("sActivateNPCCalmed", NEUTRAL),
         ("sEssentialCharacterDown", SURPRISED),
         ("sCriticalStrike", VERY_HAPPY),
         ("sSneakAttackCriticalStrike", VERY_HAPPY),
@@ -92,6 +116,9 @@ pub fn for_setting(name: &str) -> Option<&'static str> {
         ("sNoFastTravelScriptBlock", SAD),
         ("sNoFastTravelInAir", SAD),
         ("sNoFastTravelCell", SAD),
+        // Type 0 (`0093d660`) and type 2 (the map, `00796fd0`).
+        ("sNoFastTravelOverencumbered", NEUTRAL),
+        ("sNoFastTravelUndiscovered", SAD),
         ("sPlayerLeavingBorderRegion", SAD),
         ("sMapMarkerAdded", MAP),
         ("sRadioStationDiscovered", RADIO_TOWER),
@@ -209,6 +236,11 @@ mod tests {
         assert_eq!(for_setting("sRadiationIncrease"), Some(IN_PAIN));
         assert_eq!(for_setting("sHungerNotSick"), Some(VERY_HAPPY));
         assert_eq!(for_setting("sGamblingBrokeText"), Some(SURPRISED));
+        // By their type: sad, very happy.
+        assert_eq!(for_setting("sWeaponBreak"), Some(SAD));
+        assert_eq!(for_setting("sPickpocketFail"), Some(SAD));
+        assert_eq!(for_setting("sSkillIncreasedNum"), Some(VERY_HAPPY));
+        assert_eq!(for_setting("sNoFastTravelOverencumbered"), Some(NEUTRAL));
         // Shown with different pictures by different callers.
         assert_eq!(for_setting("sHackIneligible"), None);
         assert!(is_message_icon(KEY) && is_message_icon(RADIO_TOWER));

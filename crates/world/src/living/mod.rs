@@ -340,12 +340,8 @@ pub(crate) fn setting(order: &esm::LoadOrder, name: &str, exe: f32) -> f32 {
     crate::scripting::game_setting(order, name).unwrap_or(exe)
 }
 
-/// A notice on the screen (the game's HUD message, `007052f0`).
-pub(crate) fn notice(state: &mut GameState, text: String) {
-    notice_with(state, text, None);
-}
-
-/// A notice with its picture (`world::message_icon`).
+/// A notice on the screen (the game's HUD message, `007052f0`) with its
+/// picture (`world::message_icon`).
 pub(crate) fn notice_with(state: &mut GameState, text: String, icon: Option<&str>) {
     state.events.push(crate::scripting::Event::Message {
         title: None,

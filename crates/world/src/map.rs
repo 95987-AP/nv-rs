@@ -168,8 +168,17 @@ pub fn can_travel(state: &GameState, m: &MapMarker) -> bool {
 /// `sNoFastTravelCell`). Not checked here: alarms, health damage, being in
 /// the air.
 pub fn travel_refused(order: &LoadOrder, state: &GameState) -> Option<String> {
+    travel_refusal(order, state).map(|(text, _)| text)
+}
+
+/// [`travel_refused`] with the refusal's picture: the sad Vault Boy,
+/// the neutral one for carrying too much (`0093d660`'s types).
+pub fn travel_refusal(order: &LoadOrder, state: &GameState) -> Option<(String, &'static str)> {
     let text = |name: &str, fallback: &str| {
-        crate::scripting::game_setting_text(order, name).unwrap_or_else(|| fallback.into())
+        let text =
+            crate::scripting::game_setting_text(order, name).unwrap_or_else(|| fallback.into());
+        let icon = crate::message_icon::for_setting(name).unwrap_or(crate::message_icon::NEUTRAL);
+        (text, icon)
     };
     if state.enemies_near(order) {
         return Some(text(

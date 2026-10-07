@@ -142,6 +142,33 @@ pub fn try_open(order: &LoadOrder, state: &mut GameState, reference: FormId) -> 
     };
     if opening == Opening::WithKey {
         state.locks.insert(reference, None);
+        if let Some(key) = lock.key {
+            unlocked_with(order, state, key);
+        }
     }
     opening
+}
+
+/// Opened with the key (`005180b0` for doors, `00516dc0` for containers):
+/// `UILockpickingUnlock`, and "Unlocked with <key>." (`sOpenWithKey`, the
+/// key's name for its `%s`) with the key picture.
+fn unlocked_with(order: &LoadOrder, state: &mut GameState, key: FormId) {
+    use crate::scripting::Event;
+    if let Some(sound) = order.form_by_editor_id("UILockpickingUnlock") {
+        state.events.push(Event::Sound(sound));
+    }
+    let name = order
+        .get(key)
+        .and_then(|r| r.record().ok())
+        .and_then(|r| r.full_name())
+        .unwrap_or_default();
+    let text = crate::scripting::game_setting_text(order, "sOpenWithKey")
+        .unwrap_or_else(|| "Unlocked with %s.".to_string())
+        .replacen("%s", &name, 1);
+    state.events.push(Event::Message {
+        title: None,
+        text,
+        buttons: Vec::new(),
+        icon: Some(crate::message_icon::KEY.to_string()),
+    });
 }
