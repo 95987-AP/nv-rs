@@ -133,7 +133,8 @@ OPTIONS:
     --menu-keys S:K[,S:K...]
                             for testing: type key K (a character, or
                             left, right, up, down, enter) into the top menu at
-                            S seconds after starting
+                            S seconds after starting; tab leaves the
+                            hacking and terminal menus, as Tab does
 
 CONTROLS:
     mouse                          look around (walking; flying: hold

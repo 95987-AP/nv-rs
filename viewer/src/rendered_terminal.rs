@@ -350,9 +350,10 @@ fn put_up(
                 target: RenderTarget::from(target.clone()),
                 order,
                 hdr: true,
-                // The rendered menu's background colour (`007faa20`: 0, 0,
-                // 0, 0).
-                clear_color: ClearColorConfig::Custom(Color::NONE),
+                // The rendered menu's background colour (`007faa20`: black;
+                // its alpha of 0 is opaque here, as the game's screen is
+                // drawn opaque whatever its texture's alpha).
+                clear_color: ClearColorConfig::Custom(Color::BLACK),
                 ..default()
             },
             Tonemapping::None,

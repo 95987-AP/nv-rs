@@ -918,6 +918,24 @@ pub(crate) fn run_open_menus(
         // `--menu-keys`: the ones due.
         while let Some(i) = input.fixed_keys.0.iter().position(|(t, _)| *t <= now) {
             let (_, k) = input.fixed_keys.0.remove(i);
+            // "tab": what Tab and Escape do in the hacking and terminal
+            // menus (their code 10, leaving).
+            if k.eq_ignore_ascii_case("tab") {
+                use ui::menu::MenuCode;
+                println!("--menu-keys: {k}");
+                match top {
+                    OpenMenu::Hacking(h) => {
+                        h.menu
+                            .special_key(ui, ui::menus::hacking::LEAVE, now * 1000.0);
+                    }
+                    OpenMenu::Computers(c) => {
+                        c.menu
+                            .special_key(ui, ui::menus::computers::LEAVE, now * 1000.0);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             let code = match k.to_ascii_lowercase().as_str() {
                 "left" => Some(ui::menu::key::LEFT),
                 "right" => Some(ui::menu::key::RIGHT),

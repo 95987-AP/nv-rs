@@ -106,6 +106,20 @@ the SoftLock welcome, "> Disengage Lock"), and opened directly
 (`--open-menu terminal:REF`) with a click on its item: "Clearance granted,
 Unlocking..." beside the prompt and the list typed again (flag 0x02).
 
+Rendered (the default): `cellview::rendered_terminal`'s tests (the
+model's turn, the 4:3 zoom, the INI over the exe's defaults with the
+misspelt fade-in, the camera's share, the pointer meeting the screen and
+the power button, the pointer in menu units, the lights with the model,
+the fade in and out, the platform texture folder) and the `ui` tests'
+`Leave`. Live at 1920 × 1080 (`--screenshot`): `GSSchoolTerminal01Ref`
+logging on and `V21MartinaTerminalREF` (Vault 21, cell `0010FDEB`) on its
+screen, on the model in front of the room with the world beside it; the
+hacking game there (`NV_HACKING_SEED=7`, `--menu-pointer 745,508`: the
+word SPOTTED under the pointer highlighted, ">SPOTTED" on the entry
+line); the power button (`--menu-pointer 1265,985 --menu-click 4`): the
+terminal gone at once; leaving (`--menu-keys 4:tab`): the model a second
+into its 2 s fade out.
+
 Not compared with the running original game.
 
 ## The rendered terminal (the PC default)
