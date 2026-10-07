@@ -1201,7 +1201,7 @@ fn body_of(
 /// by their bounds included: who or what, how far, the body part; and the
 /// world's collision met, if any.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn met_first(
+pub(crate) fn met_first(
     order: &LoadOrder,
     state: &GameState,
     caches: &mut crate::combat::PlayerAttack,
@@ -1367,6 +1367,13 @@ pub(crate) fn resolve_shots(
             let (u_r, u_turn) = (unit(state.roll()), unit(state.roll()));
             let (h, p) = world::npc_aim::deviate(heading, pitch, cone, u_r, u_turn);
             let dir = world::npc_aim::direction(h, p);
+            // A plasma bolt flies and strikes on its way (`bolts`, which
+            // says what it struck; no miss is told here).
+            if crate::bolts::flies(order, &pellet) {
+                crate::bolts::fire(order, state, me, &pellet, (origin, dir));
+                struck_any = true;
+                continue;
+            }
             let (victim, wall) = met_first(
                 order,
                 state,

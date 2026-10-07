@@ -8,6 +8,7 @@ mod actors;
 mod ai;
 mod anim_library;
 mod args;
+mod bolts;
 mod caravan_table;
 mod chatter;
 mod clutter;
@@ -361,6 +362,7 @@ fn main() {
         ))
         .add_plugins(hiteffects::HitEffectsPlugin)
         .add_plugins(explosives::ExplosivesPlugin)
+        .add_plugins(bolts::BoltsPlugin)
         .add_plugins(clutter::ClutterPlugin)
         .add_plugins(lockpick::LockpickPlugin)
         .add_plugins(caravan_table::CaravanTablePlugin)

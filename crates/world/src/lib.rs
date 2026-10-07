@@ -82,6 +82,7 @@ pub mod perks;
 mod placement;
 pub mod player_camera;
 pub mod player_death;
+pub mod projectiles;
 pub mod quest;
 pub mod quest_targets;
 pub mod radio;

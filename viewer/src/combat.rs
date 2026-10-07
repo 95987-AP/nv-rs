@@ -364,6 +364,29 @@ pub(crate) fn meetable(
         && world::enabled_now(order, r.reference, &state.disabled)
 }
 
+/// The player's critical on someone alive (`0089a760`): "Sneak Attack
+/// Critical on <name>" (hit flag 0x400) or "Critical Strike on <name>",
+/// with the very happy Vault Boy.
+pub(crate) fn critical_message(
+    order: &esm::LoadOrder,
+    state: &world::scripting::GameState,
+    messages: &mut crate::hud::HudMessages,
+    target: FormId,
+    sneak_attack: bool,
+) {
+    let (setting, exe) = if sneak_attack {
+        ("sSneakAttackCriticalStrike", "Sneak Attack Critical on")
+    } else {
+        ("sCriticalStrike", "Critical Strike on")
+    };
+    let words =
+        world::scripting::game_setting_text(order, setting).unwrap_or_else(|| exe.to_string());
+    let name = world::script_functions::full_name(order, state, target).unwrap_or_default();
+    messages
+        .with_icon
+        .push((format!("{words} {name}"), CRITICAL_ICON.to_string()));
+}
+
 /// Says what a hit did, as the attacks print it.
 pub(crate) fn tell_hit(
     order: &esm::LoadOrder,
@@ -1024,6 +1047,15 @@ pub fn player_attack(
         let theta = std::f32::consts::TAU * unit(state.roll());
         let (h, p) = (heading + r * theta.cos(), pitch + r * theta.sin());
         let dir = [h.sin() * p.cos(), h.cos() * p.cos(), p.sin()];
+        // A plasma bolt (a missile that isn't hitscan) flies from the eye
+        // and strikes on its way (`bolts`); beams and bullets strike now.
+        if let Some(bolt) = pellet
+            .as_ref()
+            .filter(|w| !melee && crate::bolts::flies(order, w))
+        {
+            crate::bolts::fire(order, state, PLAYER_REF, bolt, (eye, dir));
+            continue;
+        }
         // The nearest thing met: how far, who, and the body part.
         let met = first_met(
             order,
@@ -1098,17 +1130,7 @@ pub fn player_attack(
         // Critical on <name>" (hit flag 0x400) or "Critical Strike on
         // <name>", with the very happy Vault Boy.
         if hit.as_ref().is_some_and(|h| h.critical) && alive {
-            let (setting, exe) = if sneak_attack {
-                ("sSneakAttackCriticalStrike", "Sneak Attack Critical on")
-            } else {
-                ("sCriticalStrike", "Critical Strike on")
-            };
-            let words = world::scripting::game_setting_text(order, setting)
-                .unwrap_or_else(|| exe.to_string());
-            let name = world::script_functions::full_name(order, state, target).unwrap_or_default();
-            messages
-                .with_icon
-                .push((format!("{words} {name}"), CRITICAL_ICON.to_string()));
+            critical_message(order, state, &mut messages, target, sneak_attack);
         }
         let Some(hit) = hit else {
             // An object (a scripted bottle): its impact where the shot
