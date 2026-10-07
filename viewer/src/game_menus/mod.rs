@@ -1299,12 +1299,11 @@ fn draw_menus(
                 items.extend(ui::draw_list(&mut screen.ui, fader, &mut files, &|_| None));
             }
         }
-        // The tutorial box sizes its Vault-Tec symbol from the picture's
-        // own size (`filewidth`, set as the game's tile refresh does).
-        for m in &screen.open {
-            if let OpenMenu::Tutorial(t) = m {
-                ui::draw::update_file_sizes(&mut screen.ui, t.menu, &mut files);
-            }
+        // Every picture's own size (`filewidth` / `fileheight`), as the
+        // game's tile refresh sets it for any picture: the tutorial box's
+        // Vault-Tec symbol and the start menu's title are sized from it.
+        for &menu in &tiles {
+            ui::draw::update_file_sizes(&mut screen.ui, menu, &mut files);
         }
         for &menu in &tiles {
             let first = items.len();
