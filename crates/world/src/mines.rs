@@ -372,11 +372,21 @@ pub fn take(order: &LoadOrder, state: &mut GameState, placed: &Placed) -> Option
     let MineUse::PickUp(Some(item)) = activation(&placed.mine) else {
         return None;
     };
-    state.stock(order, PLAYER_REF);
-    *state.items.entry((PLAYER_REF, item)).or_insert(0) += 1;
-    state.more.mines.gone.insert(placed.reference);
-    state.more.mines.disarmed.remove(&placed.reference);
+    state.pick_up(order, placed.reference, item, 1);
+    gone(state, placed.reference);
     Some(item)
+}
+
+/// A placed mine is gone (exploded or taken): kept out of the place (its
+/// reference off, as a taken item's, so its model goes) and saved so.
+pub fn gone(state: &mut GameState, reference: FormId) {
+    state.more.mines.gone.insert(reference);
+    state.more.mines.disarmed.remove(&reference);
+    if state.disabled.insert(reference, true) != Some(true) {
+        state
+            .events
+            .push(crate::scripting::Event::Enable(reference, false));
+    }
 }
 
 /// Saved lines: `minedisarmed <ref>`, `minegone <ref>`.
@@ -420,4 +430,87 @@ pub fn is_mine_reference(order: &LoadOrder, state: &GameState, reference: FormId
         && base_of(order, reference)
             .and_then(|b| ProjectileRecord::load(order, b))
             .is_some_and(|p| p.proximity != 0.0)
+}
+
+/// The placed mines in a place as things the crosshair can pick
+/// ([`crate::scripting::Interactive`], kind `PROJ`, with the projectile's
+/// bounds and name).
+pub fn interactive_in(
+    order: &LoadOrder,
+    state: &GameState,
+    space: FormId,
+) -> Vec<crate::scripting::Interactive> {
+    placed_in(order, state, space)
+        .into_iter()
+        .filter_map(|p| {
+            let base = base_of(order, p.reference)?;
+            let record = order.get(base)?.record().ok()?;
+            let bounds = record
+                .get(FourCC::new(b"OBND"))
+                .filter(|s| s.data.len() >= 12)
+                .map(|s| {
+                    let v = |i: usize| {
+                        f32::from(i16::from_le_bytes([s.data[i * 2], s.data[i * 2 + 1]]))
+                    };
+                    ([v(0), v(1), v(2)], [v(3), v(4), v(5)])
+                });
+            let rotation = order
+                .get(p.reference)
+                .and_then(|r| r.record().ok())
+                .and_then(|r| r.get(esm::sig::DATA).map(|d| d.data.clone()))
+                .filter(|d| d.len() >= 24)
+                .map_or([0.0; 3], |d| {
+                    [3, 4, 5].map(|i| crate::cell::le_f32(&d, i * 4))
+                });
+            Some(crate::scripting::Interactive {
+                reference: p.reference,
+                base,
+                script: None,
+                count: 1,
+                position: p.mine.position,
+                rotation,
+                scale: 1.0,
+                trigger: None,
+                bounds,
+                name: record.full_name(),
+                kind: FourCC::new(b"PROJ"),
+            })
+        })
+        .collect()
+}
+
+/// What E on a placed mine did.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MineUsed {
+    /// Disarmed: the record's disable sound plays (`009c43e0`).
+    Disarmed(Option<FormId>),
+    /// Taken: the item's "added" message, when the game shows one.
+    Taken(FormId, Option<String>),
+}
+
+/// E on a placed mine (`BGSProjectile::Activate`): an armed one is
+/// disarmed ([`disarm`]; whether its fuse was running isn't known here, so
+/// the credit goes by whether it reacts to the player), a disarmed one
+/// taken ([`take`]).
+pub fn use_placed(order: &LoadOrder, state: &mut GameState, reference: FormId) -> Option<MineUsed> {
+    let space = state.place(order, reference)?.0;
+    let mut placed = placed_in(order, state, space)
+        .into_iter()
+        .find(|p| p.reference == reference)?;
+    let s = MineSettings::read(order);
+    match activation(&placed.mine) {
+        MineUse::Disarm => {
+            disarm(order, state, &s, &mut placed.mine, PLAYER_REF, false, false);
+            state.more.mines.disarmed.insert(reference);
+            Some(MineUsed::Disarmed(placed.mine.projectile.disable_sound))
+        }
+        MineUse::PickUp(Some(_)) => {
+            let item = take(order, state, &placed)?;
+            Some(MineUsed::Taken(
+                item,
+                crate::activation::pickup_message(order, item, 1),
+            ))
+        }
+        _ => None,
+    }
 }

@@ -606,6 +606,19 @@ and plasma bolts flying at their speed (player and NPCs). Generated-data
 tests; live check in Doc Mitchell's house; not compared with the
 original. Evidence, gaps and next action: [ENERGY_WEAPONS.md](ENERGY_WEAPONS.md).
 
+M4 weapon class batch `claude/launchers-mines` (2026-10-07): launchers,
+explosive projectiles, thrown weapons and mines. Traced and implemented:
+missiles falling under their record's gravity (the projectile's character
+controller), the ammunition's own projectile (HE/HV missiles), explosions'
+object effects (EMP, fire) and knockdown rules, the AI holding explosives
+that would catch its own side, mines (proximity, owners, Light Step, the
+fuse and blink, disarming with XP, taking the mine, placed `PGRE` mines
+saved), and E on ash piles; worn armour's DR read in hundredths.
+Generated-data tests; live checks (grenade rifle and rocket in
+Goodsprings, the mined corridor in `NorthVegasHouseTools`); not compared
+with the original. Evidence, gaps and next action:
+[EXPLOSIVES.md](EXPLOSIVES.md).
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

@@ -73,13 +73,17 @@ static QUEUE: Mutex<Vec<Launch>> = Mutex::new(Vec::new());
 /// Projectiles that went off where they struck (`bolts`: a missile with
 /// an explosion and no alt. trigger explodes at its impact, `009c3190`):
 /// who fired, with what, the projectile and where.
-type Detonation = (FormId, Weapon, ProjectileRecord, [f32; 3]);
+type Detonation = (Cause, Option<Weapon>, ProjectileRecord, [f32; 3]);
+
+/// An explosion's actor cause (none for a placed mine) and whom its hit
+/// reports name as the attacker.
+type Cause = (Option<FormId>, FormId);
 static DETONATIONS: Mutex<Vec<Detonation>> = Mutex::new(Vec::new());
 
 /// Queues an explosion at an impact for [`fly_thrown`].
 pub(crate) fn detonate(by: FormId, weapon: Weapon, projectile: ProjectileRecord, at: [f32; 3]) {
     if let Ok(mut q) = DETONATIONS.lock() {
-        q.push((by, weapon, projectile, at));
+        q.push(((Some(by), by), Some(weapon), projectile, at));
     }
 }
 
@@ -90,29 +94,45 @@ pub(crate) fn throw(launch: Launch) {
     }
 }
 
-/// A projectile in flight, and who threw it with what.
+/// A projectile in flight, and who threw it with what; a mine laid keeps
+/// what its proximity test remembers (`world::mines::Mine`).
 struct InFlight {
     thrower: FormId,
     weapon: Weapon,
     flight: Flight,
     settings: FlightSettings,
+    mine: Option<world::mines::Mine>,
 }
 
 /// What's in flight.
 #[derive(Resource, Default)]
 pub struct Thrown(Vec<InFlight>);
 
+/// A placed mine with its fuse once set off and the time to its next
+/// blink.
+type LiveMine = (world::mines::Placed, Option<f32>, f32);
+
+/// The placed mines (`PGRE`) of the place the player is in
+/// (`world::mines::placed_in`).
+#[derive(Resource, Default)]
+pub struct PlacedMines {
+    space: Option<FormId>,
+    mines: Vec<LiveMine>,
+}
+
 pub struct ExplosivesPlugin;
 
 impl Plugin for ExplosivesPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Thrown>().add_systems(
-            Update,
-            fly_thrown
-                .after(crate::combat::player_attack)
-                .after(crate::ai::move_actors)
-                .before(crate::hiteffects::play_hits),
-        );
+        app.init_resource::<Thrown>()
+            .init_resource::<PlacedMines>()
+            .add_systems(
+                Update,
+                fly_thrown
+                    .after(crate::combat::player_attack)
+                    .after(crate::ai::move_actors)
+                    .before(crate::hiteffects::play_hits),
+            );
     }
 }
 
@@ -209,7 +229,7 @@ pub fn fly_thrown(
     (collision, talkers, player): (Res<CellCollision>, Res<Talkers>, Res<Player>),
     mut sounds: ResMut<SoundRequests>,
     mut hits: ResMut<crate::hiteffects::HitReports>,
-    mut thrown: ResMut<Thrown>,
+    (mut thrown, mut placed): (ResMut<Thrown>, ResMut<PlacedMines>),
 ) {
     let order = &game.0.order;
     let state = &mut state.0;
@@ -263,21 +283,44 @@ pub fn fly_thrown(
             projectile.timer
         );
         let settings = FlightSettings::read(order, &projectile);
+        let mine = projectile.is_mine().then(|| world::mines::Mine {
+            projectile: projectile.clone(),
+            shooter: Some(l.thrower),
+            owner: None,
+            position: l.origin,
+            exterior: false,
+            spares_player: false,
+            disarmed: false,
+        });
         thrown.0.push(InFlight {
             thrower: l.thrower,
             weapon: l.weapon,
             flight: Flight::launch(projectile, l.origin, dir, speed),
             settings,
+            mine,
         });
     }
     let mut going_off: Vec<Detonation> = DETONATIONS
         .lock()
         .map(|mut q| std::mem::take(&mut *q))
         .unwrap_or_default();
+    let dt = time.delta_secs();
+    let feet = player.character.feet;
+    // Mines wait for the player to be placed (the first frames start
+    // them elsewhere).
+    if player.ready {
+        tend_mines(
+            order,
+            state,
+            (&talkers, feet, time.elapsed_secs(), dt),
+            (&mut placed, &mut thrown),
+            &mut sounds,
+            &mut going_off,
+        );
+    }
     if thrown.0.is_empty() && going_off.is_empty() {
         return;
     }
-    let dt = time.delta_secs();
     let mut cast = |from: [f32; 3], dir: [f32; 3], len: f32| {
         collider
             .raycast(from, dir, len)
@@ -289,18 +332,22 @@ pub fn fly_thrown(
             FlightEvent::Flying => true,
             FlightEvent::Expired => false,
             FlightEvent::Explode { at } => {
-                going_off.push((f.thrower, f.weapon.clone(), f.flight.projectile.clone(), at));
+                going_off.push((
+                    (Some(f.thrower), f.thrower),
+                    Some(f.weapon.clone()),
+                    f.flight.projectile.clone(),
+                    at,
+                ));
                 false
             }
         });
-    for (thrower, weapon, projectile, at) in going_off {
+    for (cause, weapon, projectile, at) in going_off {
         let Some(e) = projectile
             .explosion
             .and_then(|e| ExplosionRecord::load(order, e))
         else {
             continue;
         };
-        let feet = player.character.feet;
         explode(
             order,
             &scripts.0,
@@ -308,10 +355,104 @@ pub fn fly_thrown(
             collider,
             &talkers,
             feet,
-            (thrower, &weapon, &e, at),
+            (cause, weapon.as_ref(), &e, at),
             &mut sounds,
             &mut hits,
         );
+    }
+}
+
+/// The mines (`world::mines`): the place's placed ones (read again when
+/// the player's place changes) and the laid ones in flight or lying go
+/// off for whoever comes near; a set-off fuse counts down, blinking
+/// faster, and plays the countdown sound; at 0 it's queued to explode.
+/// Placed mines disarmed or taken (`scripts`) stop.
+fn tend_mines(
+    order: &esm::LoadOrder,
+    state: &mut world::scripting::GameState,
+    (talkers, feet, now, dt): (&Talkers, [f32; 3], f32, f32),
+    (placed, thrown): (&mut PlacedMines, &mut Thrown),
+    sounds: &mut SoundRequests,
+    going_off: &mut Vec<Detonation>,
+) {
+    let space = state.place(order, PLAYER_REF).map(|p| p.0);
+    if placed.space != space {
+        placed.space = space;
+        placed.mines = space
+            .map(|s| world::mines::placed_in(order, state, s))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| (p, None, 0.0))
+            .collect();
+        if !placed.mines.is_empty() {
+            println!("{} mines lie here.", placed.mines.len());
+        }
+    }
+    let gone = &state.more.mines.gone;
+    placed.mines.retain(|(p, ..)| !gone.contains(&p.reference));
+    let thrown_mines = thrown.0.iter().any(|f| f.mine.is_some());
+    if placed.mines.is_empty() && !thrown_mines {
+        return;
+    }
+    let exterior = space
+        .and_then(|s| order.get(s))
+        .is_some_and(|r| r.entry.header.kind == esm::FourCC::new(b"WRLD"));
+    let people: Vec<(FormId, [f32; 3])> = talkers
+        .0
+        .iter()
+        .filter(|t| !state.dead.contains(&t.reference))
+        .map(|t| (t.reference, t.position))
+        .collect();
+    let player = (!state.dead.contains(&PLAYER_REF)).then_some(feet);
+    let s = world::mines::MineSettings::read(order);
+    for (p, fuse, blink) in &mut placed.mines {
+        if state.more.mines.disarmed.contains(&p.reference) && !p.mine.disarmed {
+            p.mine.disarmed = true;
+            *fuse = None;
+        }
+        let Some(f) = fuse.as_mut() else {
+            let roll = state.roll();
+            let set =
+                world::mines::check_proximity(order, state, &s, &mut p.mine, &people, player, roll);
+            if let Some(f) = set {
+                println!("{now:.1} s: mine {} is set off ({f:.2} s).", p.reference);
+                sounds.0.extend(p.mine.projectile.countdown_sound);
+                *fuse = Some(f);
+                *blink = world::mines::blink_interval(&s, f);
+            }
+            continue;
+        };
+        *f -= dt;
+        *blink -= dt;
+        if *blink <= 0.0 {
+            // Each blink starts the countdown sound again (`009c3190`).
+            *blink = world::mines::blink_interval(&s, f.max(0.0));
+            sounds.0.extend(p.mine.projectile.countdown_sound);
+        }
+        if *f <= 0.0 {
+            world::mines::gone(state, p.reference);
+            going_off.push((
+                (None, p.reference),
+                None,
+                p.mine.projectile.clone(),
+                p.mine.position,
+            ));
+        }
+    }
+    for f in &mut thrown.0 {
+        let Some(m) = f.mine.as_mut().filter(|_| f.flight.fuse.is_none()) else {
+            continue;
+        };
+        m.position = f.flight.position;
+        m.exterior = exterior;
+        let roll = state.roll();
+        if let Some(fuse) =
+            world::mines::check_proximity(order, state, &s, m, &people, player, roll)
+        {
+            println!("{now:.1} s: {}'s mine is set off ({fuse:.2} s).", f.thrower);
+            sounds.0.extend(m.projectile.countdown_sound);
+            f.flight.set_off(fuse);
+        }
     }
 }
 
@@ -324,14 +465,17 @@ fn explode(
     collider: &physics::Collider,
     talkers: &Talkers,
     player_feet: [f32; 3],
-    (thrower, weapon, e, at): (FormId, &Weapon, &ExplosionRecord, [f32; 3]),
+    (cause, weapon, e, at): (Cause, Option<&Weapon>, &ExplosionRecord, [f32; 3]),
     sounds: &mut SoundRequests,
     hits: &mut crate::hiteffects::HitReports,
 ) {
     sounds.0.extend(e.sound);
     sounds.0.extend(e.sound2);
-    let radius = explosions::blast_radius(order, state, Some(thrower), Some(weapon.form_id), e);
-    let damage = explosions::base_damage(order, state, Some(thrower), Some(weapon), e);
+    // The actor that caused it (none for a placed mine) and what the hit
+    // reports name as its attacker.
+    let (thrower, reporter) = cause;
+    let radius = explosions::blast_radius(order, state, thrower, weapon.map(|w| w.form_id), e);
+    let damage = explosions::base_damage(order, state, thrower, weapon, e);
     // It pushes the clutter in its sphere (`clutter`).
     crate::clutter::blast(e, at, radius);
     println!(
@@ -349,8 +493,25 @@ fn explode(
         candidates.push((PLAYER_REF, player_feet));
     }
     let buffer = world::scripting::game_setting(order, "fExplosionLOSBuffer").unwrap_or(6.0);
-    let mut cast =
-        |from: [f32; 3], dir: [f32; 3], len: f32| collider.raycast(from, dir, len).map(|(d, _)| d);
+    // The line of sight passes the source's own body (`009b1810`): a
+    // placed mine's collision, where it went off. A surface the ray starts
+    // on (a hit at 0: the mine lies on the floor) doesn't block it either
+    // (the collider's triangles are two-sided).
+    let mut cast = |from: [f32; 3], dir: [f32; 3], len: f32| {
+        let mut along = 0.0;
+        loop {
+            let start = [0, 1, 2].map(|k| from[k] + dir[k] * along);
+            let (d, tri) = collider.raycast(start, dir, len - along)?;
+            let own = collider.owner(tri) == reporter.0 && thrower.is_none();
+            if !own && (d > 0.01 || along > 0.0) {
+                return Some(along + d);
+            }
+            along += d + 0.5;
+            if along >= len {
+                return None;
+            }
+        }
+    };
     for t in explosions::blast_targets(at, radius, &candidates) {
         let Some(&(_, position)) = candidates.iter().find(|c| c.0 == t.reference) else {
             continue;
@@ -368,16 +529,16 @@ fn explode(
             continue;
         }
         let Some(hit) = Runner::new(order, scripts, state).explosion_hit(
-            Some(thrower),
+            thrower,
             t.reference,
-            Some(weapon),
+            weapon,
             damage * t.share,
         ) else {
             continue;
         };
         // Its object effect (`EMP`, fire), then whether it knocks them
         // down (`009b00a0`; the fall itself is the physics').
-        for said in explosions::cast_enchantment(order, state, e, Some(thrower), t.reference) {
+        for said in explosions::cast_enchantment(order, state, e, thrower, t.reference) {
             println!("  {}: {said}", t.reference);
         }
         let roll = state.roll();
@@ -395,9 +556,9 @@ fn explode(
             if down { ", knocked down" } else { "" }
         );
         hits.0.push(crate::hiteffects::HitReport {
-            attacker: thrower,
+            attacker: reporter,
             target: Some(t.reference),
-            weapon: Some(weapon.form_id),
+            weapon: weapon.map(|w| w.form_id),
             point: position,
             havok: None,
             damage: hit.dealt,

@@ -979,7 +979,11 @@ fn blast_is_safe(
             if near(walker.position) {
                 n.own += 1;
             }
-            for o in c.others.iter().filter(|o| o.reference != me && near(o.position)) {
+            for o in c
+                .others
+                .iter()
+                .filter(|o| o.reference != me && near(o.position))
+            {
                 if state.dead.contains(&o.reference) || walker.targets.list.contains(&o.reference) {
                     continue;
                 }
