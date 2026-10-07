@@ -216,11 +216,10 @@ untraced guess): Ringo offers two extra replies. Trace or gate it.
 ### In progress
 
 - B6 bullet impacts: branch `claude/b6-impacts`.
-- B16 local map: branch `claude/b16-local-map`.
 
 Landed on the integration branch 2026-10-07: death into ragdoll, one
 radio state and the 2 key, Chazm's PRs #11 and #12 (docs/CONTRIB_CHAZM.md),
-B3, B4, B5, B10, B11, B12, B13.
+B3, B4, B5, B10, B11, B12, B13, B16.
 
 Follow-ups found: creatures without a ragdoll tip onto their side (a
 stand-in, `ai::fallen_transform`, from the original baseline) instead of

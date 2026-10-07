@@ -39,13 +39,13 @@ Next session: start with [HANDOFF.md](HANDOFF.md). Open tasks:
 Overnight 2026-10-06 → 07 (integration branch, play builds 12 onward):
 radio unification and the 2 key, death into ragdoll, Chazm's PRs #11 and
 #12 ([CONTRIB_CHAZM.md](CONTRIB_CHAZM.md)), and maintainer's-list fixes
-B3, B4, B5, B10, B11, B12, B13. Each was traced in FalloutNV.exe, checked live
+B3, B4, B5, B10, B11, B12, B13, B16. Each was traced in FalloutNV.exe, checked live
 in the release viewer (what was and wasn't is in each topic page) and
 passed all three acceptance routes after merging. None has been compared
 side by side with the original game. The twelve major systems are open
 as GitHub issues #13–#24. A shared read-only Ghidra server now serves
 agents' queries ([RESEARCH_WORKFLOW.md](RESEARCH_WORKFLOW.md)).
-**Next action:** finish B6 and B16 (branches in TASKS.md), then play
+**Next action:** finish B6 (branches in TASKS.md), then play
 build 19+ in the play copy and file F12 reports.
 
 Overnight batches, 2026-10-06 (local session; integration branch
