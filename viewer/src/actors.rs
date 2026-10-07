@@ -140,8 +140,6 @@ pub struct ActorRig {
     package_flags: Option<(esm::FormId, u32)>,
     /// Reloading last frame (`world::npc_combat::reloading`).
     reloading: bool,
-    /// The 3D's plain `Death` group's sequence, if it has one.
-    pub death: Option<Arc<nif::Sequence>>,
     /// Whether the spine node faces up in the last pose (`IsFacingUp`;
     /// `None` without the node): see [`spine_up`].
     pub spine_up: Option<bool>,
@@ -202,7 +200,6 @@ impl ActorRig {
             draw: 0,
             package_flags: None,
             reloading: false,
-            death: None,
             spine_up: None,
             weapon_parent: None,
             weapon_attached: false,
@@ -384,33 +381,30 @@ impl ActorRig {
     }
 
     /// Goes limp as the game's dead do, if its skeleton has a ragdoll:
-    /// from the pose it's in now, placed by `placement`, thrown as the
-    /// game throws the dead (`throw`: from where, and the speed every body
-    /// gains, × its part's share: `world::combat::death_push_share`).
-    /// A 3D with a plain `Death` group (creatures' `mtdeath.kf`) takes its
-    /// first frame at once first, everything else stopped (`00888070` →
-    /// `004955c0(0x14, 0xe0, −1)` and an update of no time). False if it
-    /// can't.
+    /// from the pose it's in now (no death animation: the death routine
+    /// `0089d900` makes a ragdoll's bodies dynamic at once; the `Death`
+    /// group is played only by `UpdateAnimation` `00888070` for a death
+    /// put off until the 3D loads, and then only for a creature without a
+    /// ragdoll, `HasRagDoll` vtable +0x38c false), placed by `placement`;
+    /// every body gains `nudge` (`world::combat::death_nudge`), then is
+    /// thrown as the game throws the dead by a killing hit (`throw`: from
+    /// where, and the speed every body gains, × its part's share:
+    /// `world::combat::death_push_share`). False if it can't.
     pub fn go_limp(
         &mut self,
         now: f32,
         placement: nif::Transform,
+        nudge: Option<[f32; 3]>,
         throw: Option<([f32; 3], f32)>,
     ) -> bool {
         let Some(rig) = &self.skeleton.ragdoll else {
             return false;
         };
-        if let Some(seq) = self.death.clone() {
-            let bones = self.skeleton.bones.clone();
-            self.player.skip_next_blend();
-            self.player.stop_section(0x14);
-            self.player.skip_next_blend();
-            self.player
-                .play(world::animation::groups::group_of(DEATH), &seq, 0, &bones);
-            self.player.update(0.0);
-        }
         let died = self.pose_now(now);
         let mut sim = rig.start(&died, &placement);
+        if let Some(v) = nudge {
+            sim.add_velocity(v);
+        }
         if let Some((origin, speed)) = throw {
             let shares: Vec<f32> = rig
                 .ragdoll
@@ -430,9 +424,6 @@ impl ActorRig {
         true
     }
 }
-
-/// The plain `Death` group's id (`00888070` asks the 3D for 0xe0 itself).
-pub const DEATH: u16 = 0xe0;
 
 /// Shrinks the `Weapon` bone to nothing, so the weapon skinned to it isn't
 /// seen.
@@ -669,6 +660,19 @@ pub fn animate_actors(
             if let Some(c) = &collision {
                 dead.sim.update(&c.0, time.delta_secs());
             }
+            if dead.sim.asleep {
+                // The game takes settled bodies out of the world here
+                // (`FinishDying` `008f7350` → `DetachHavok`).
+                let (_, at) = dead.sim.frame(0);
+                println!(
+                    "{:.1} s: {} comes to rest, its first body at ({:.1}, {:.1}, {:.1})",
+                    now,
+                    walker.map_or(PLAYER, |w| w.reference),
+                    at[0],
+                    at[1],
+                    at[2]
+                );
+            }
             let Some(r) = &rig.skeleton.ragdoll else {
                 continue;
             };
@@ -686,10 +690,6 @@ pub fn animate_actors(
                         None => {
                             let set = library.set_for(&game.0, &rig.skeleton);
                             rig.anims = Some(set.clone());
-                            rig.death = set
-                                .file(DEATH, 0)
-                                .map(str::to_string)
-                                .and_then(|f| library.sequence_at(&game.0, &f));
                             set
                         }
                     };

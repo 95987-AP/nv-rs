@@ -127,7 +127,7 @@ Branch `claude/m2-npc-anims-2`, 2026-10-06. Private exports in
 | `008eeec0`, `009da7c0`, `0067a460` | weapon out: in combat the combat's equip action draws; out of combat a running package with flag 0x800000 ("weapon drawn") or `GetAlert` draws, otherwise a drawn, wanted weapon is put away (not the player's) | `pick::want_weapon_out`, `package_draws` |
 | `00888b50`, `0067a4f0`, actor +0x125 (`bForceSneak`, Xbox PDB) | an NPC sneaks when forced or its package has flag 0x20000 | `pick::npc_sneaks` |
 | `009e2aa0` (`DetailedActorPathHandler`, Xbox PDB) | walking a path while facing a point: within 1° the mover's (forward); > 135° back (if the 3D has `Backward`); ≤ 45° forward; else left/right by the sign; after 0.25 s | `pick::facing_direction` (viewer: fighters stepping while they move) |
-| `00888070` → `004955c0(0x14, 0xe0, −1)` | a 3D with a plain `Death` group takes its first frame before the ragdoll (robots: `mtdeath.kf`) | `ActorRig::go_limp` |
+| `00888070` → `004955c0(0x14, 0xe0, −1)` | corrected 2026-10-06 (`claude/m2-death-ragdoll`): the `Death` group (0xe0) plays only for a death put off until the 3D loads (actor +0x118, set by `0089d900` without a high process or 3D) and only for a creature (`CREA`) whose `HasRagDoll` (vtable +0x38c, Xbox +0x388; creature +0x1b4, set at 3D load by `008d4ab0`) is false; characters always have one. A ragdoll's bodies go dynamic at death from the pose they're in (see [PHYSICS.md](PHYSICS.md), "Death → ragdoll") | `ActorRig::go_limp` (no death frame) |
 
 ### Idles in their sections
 

@@ -192,7 +192,10 @@ pub fn change(
 ) -> bool {
     if value == av::HEALTH {
         if amount < 0.0 {
-            return crate::combat::hurt(order, state, who, -amount, by);
+            let died = crate::combat::hurt(order, state, who, -amount, by);
+            // Effects and scripts' damage aren't hits (no `008ae000` push).
+            crate::combat::not_a_hit(state, who);
+            return died;
         }
         let lost = state.damage.entry(who).or_insert(0.0);
         *lost = (*lost - amount).max(0.0);

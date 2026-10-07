@@ -226,6 +226,50 @@ Batch 3 runs (`physics3-2026-10-06`, release viewer, installed data):
   passed; vms16 failed once (Trudy killed by a ganger, no "XP +50") and
   passed on the second run.
 
+## Death → ragdoll (`claude/m2-death-ragdoll`, 2026-10-06)
+
+Private exports: `%USERPROFILE%\nv-re\work\death-2026-10-06` (decompiles
+in `dec\`, disassembly in `dis\`, runs). Traced in FalloutNV.exe
+1.4.0.525; names from the Xbox PDB (PC actor vtable slots from +0x22c on
+are the Xbox ones + 4; the process's and `TESForm`'s match).
+
+| What | Where | Rule |
+| --- | --- | --- |
+| Who goes limp at once | `Actor::Kill` (Xbox PDB) `0089d900`, from `KillActor` `005be2a0` and the damage paths | with a high process (`0045cd60` = 0) and a 3D; otherwise actor +0x118 is set and the death waits for the 3D (`00888070`) |
+| No death animation for ragdolls | `00888070` (`UpdateAnimation`) | the `Death` group (0xe0) plays only on that delayed path, and only for a `CREA` whose `HasRagDoll` (vtable +0x38c; creature +0x1b4 from `008d4ab0` at 3D load: the root or its first child, 4 deep, has a `bhkNiCollisionObject`) is false; characters always have one. Cheyenne's `creatures\dog` has no death `.kf` anyway |
+| Bodies dynamic | `0089d900` at `0089efee`: `00c6a350(root, 1, 1, 1, 1)` → visitor `00c66280` (`bhkBlendCollisionObject::SetMotionType` `00c823b0`) | knock state (process +0x40c) 0 or 6 and actor +0x1b0 clear (set by `CreateRagdollInstance` `0087e130` when there is no ragdoll): every body of the tree dynamic; biped-layer blend gains (hierarchy/velocity) go to 0 for dynamic bodies (table `011b06d8`, all 1.0), so nothing pulls them back to the animation |
+| The nudge | `0089ee31`…`0089f05c`; `00630b40`, `004a0c10`, `004a0c90`/`004b4500` (turning `011a9478` = (0, 1, 0)), `00439180`, `0062b8d0` → `0062b930` | the controller's velocity is read before it's removed (`RemoveCharController`, +0x2a0); direction: that velocity made a unit vector (nothing under 1e-6), or standing still the heading's forward (sin h, cos h, 0); killed by the player (not the player): victim − player controller positions, a unit vector. × `fDeathForceForceMin` (`011cf724`; FalloutNV.esm 20, exe 35), game units/s turned into Havok's (`004a3e90`) and **added** to every dynamic body's velocity (mass-independent). Then `AddChange(4)` (Havok moved) |
+| Paralysed instead | `0089f073` | knock state other than 0/6 and paralysed (+0x234): (0, 5, 0) turned by the heading added instead (not done: nv-rs has no paralysis) |
+| Killing hit's push after | `0089a760` → `008ae000` | only after a hit that killed with an attacker (existing `death_push`); `KillActor` deals no hit, and with no actor named passes no attacker |
+| Bodies alive | `bhkBlendCollisionObject` (vtable `010c53dc`) update `00c81e30`; `00c823b0` sets its blend (+0x18) and velocity gain (+0x1c) | keyframed (blend 1, motion type 4): `00c65b00` either places the body (vtable +0xe8) or hard-keyframes it, `00c8e160`: velocity = (animation's next pose − now) ÷ step, turned into a teleport above the most speed. Which branch the living biped takes (`0047b470`, flag 0x20) isn't traced. Dynamic with gains 0 (the dead): `00c65a80`, the node follows the body only |
+| Not the AI | `0089d900` from `Kill`/damage | the death routine isn't the AI's update: under `tai` or in the dialogue menu the dead go limp too (the world, Havok included, waits for the menu) |
+| Dying → dead | `FinishDying` (`HighProcess`, process +0x354) `008f7350`, from the actor updates `00882b90`/`00883240`/`00883800` while `IsDying` (+0x2e8, life state 1) | still dying while any ragdoll body is active (`00c6a440` → `00c67260`) and the process ran within `TimeScale` × 0.0005 game hours (1.8 s at 30) (`fHourLastProcessed`, process +0x20); then `008b01c0` (life state 2), `DetachHavok` (+0x1c0, `00930870`: bodies taken out of the world, `00c69ee0` → `bhkWorldObject::Remove`), `SetHavokDeath(1)`. `fDyingTimer` (exe 2, not in the ESM) goes to process +0x330 (`SetGreetingTimer` slot); its use isn't traced |
+
+Implemented: `world::combat::DeathStart` and `GameState::deaths` (how
+each death began: killer, hit; `KillActor` none/no hit; fall damage and
+effects no hit), `world::combat::death_nudge` (translated), `physics::
+ragdoll::Ragdoll::add_velocity`; viewer `ai::fall` takes the death,
+gives every body the nudge, then the hit's push (only for a killing
+hit), and leaves the dead at load lying (no more pushes from a saved
+killer); `ActorRig::go_limp` no longer poses a `Death` group's first
+frame. The dead go limp with the AI held still (`--freeze-ai`, the
+dialogue menu): before, `ai::move_actors` skipped them and they stood
+in their last pose (`ai::dies_while_frozen`). [G] The bodies' own
+velocity as they go dynamic (see "Bodies alive") is the actor's, added
+only with `NV_GUESSES=1`. The ragdoll stops being stepped once still
+for a second (this solver's), which stands where the game detaches the
+settled bodies.
+
+Seen live (release viewer, `death-2026-10-06`, WastelandNV at
+(−67845, 3000, 8400), `--freeze-ai`, Easy Pete and Cheyenne moved in
+front and `Kill`ed from the console): `before.png` both standing,
+`after.png` 10 s on: Pete on his back, Cheyenne on her back against the
+sign post, each given only the nudge (20 units/s, the way they faced).
+The same kill with the earlier binary printed no "goes limp" and left
+her standing (`still2.log`). Walking, unfrozen (`still1`, `dbg3`) she
+falls as before. Neither comes to rest within 10 s (this solver's
+jitter, below).
+
 ## Not compared / gaps
 
 - Nothing compared with the original game: how far bottles fly, how they
@@ -235,10 +279,14 @@ Batch 3 runs (`physics3-2026-10-06`, release viewer, installed data):
   simulated: joined or constrained clutter bodies stay solid (ragdolls'
   joints are, in `physics::ragdoll`). Inertia under a reference's
   scale isn't traced (scaled by s², mass kept).
-- Dying creatures: how the game drives a ragdoll with the death
-  animation (`bhkBlendController`, the blend to dynamic) isn't traced; a
-  console-killed dog stands in her death pose. Ragdoll self-contacts are
-  frictionless positional pushes.
+- Dying: the living bodies' velocity handed over at death (which branch
+  of `00c65b00` the biped takes) isn't traced; the `Death` group's
+  post-animation action (`0089d900` asks the 3D for 0xe0 and, when it
+  has one, adds process post-animation action 0x20, `00903180`) isn't
+  followed; creatures without a ragdoll still tip over as a stand-in
+  (`ai::fallen_transform`) instead of playing `Death`. Ragdolls jitter
+  instead of settling (the dog's still moves at 10–30 units/s after
+  10 s). Ragdoll self-contacts are frictionless positional pushes.
 - The wind listener's call each frame follows `00c6ae70`; the wind
   direction stays 1 rad (no other writer of the sky's `+0xd0` was found
   in the sky's code). Which slot of a multi-slot armour holds its model

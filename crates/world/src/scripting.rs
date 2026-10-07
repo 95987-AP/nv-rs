@@ -380,6 +380,11 @@ pub struct GameState {
     /// The last blow each person took: who struck it and how much damage
     /// (for how the dead fall; not saved).
     pub last_blow: HashMap<FormId, (FormId, f64)>,
+    /// Deaths whose bodies haven't been handed to their ragdolls yet: how
+    /// each began (`world::combat::DeathStart`). Taken by whoever drops the
+    /// body; the dead at load have none and already lie where they fell
+    /// (not saved).
+    pub deaths: HashMap<FormId, crate::combat::DeathStart>,
     /// What other actor values have been damaged by, (person, number) →
     /// amount (`DamageActorValue`, harmful effects; restoring takes it
     /// back off). For rads and the hardcore needs it's the value itself.
@@ -3315,12 +3320,23 @@ impl<'a> Runner<'a> {
                 // `OnDeath` runs as for any death here (where in that
                 // routine the event is raised isn't pinned down).
                 if crate::combat::hurt(self.order, self.state, who, full.max(1.0) * 10.0, by) {
+                    // No hit, and an attacker only when one is given
+                    // (`005be2a0` reads it from its first parameter, none
+                    // by default).
+                    self.state.deaths.insert(
+                        who,
+                        crate::combat::DeathStart {
+                            killer: args.first().map(Value::form),
+                            hit: false,
+                        },
+                    );
                     self.run_event(who, "ondeath", by);
                 }
             }
             "ResurrectActor" => {
                 let who = target?;
                 self.state.dead.remove(&who);
+                self.state.deaths.remove(&who);
                 self.state.damage.remove(&who);
             }
             "StartCombat" => {
