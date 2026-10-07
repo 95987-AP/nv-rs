@@ -119,6 +119,32 @@ fn bucket(v: f32) -> i32 {
     (v / BUCKET).floor() as i32
 }
 
+/// Whether a triangle's box is further than `reach` (and a margin, for
+/// rounding) from a segment's box along some axis: then no point of it is
+/// within `reach` of the segment, and the exact test can be skipped.
+fn surely_beyond(t: [Vec3; 3], a: Vec3, b: Vec3, reach: f32) -> bool {
+    const MARGIN: f32 = 0.05;
+    (0..3).any(|k| {
+        let (t0, t1) = (
+            t[0][k].min(t[1][k]).min(t[2][k]),
+            t[0][k].max(t[1][k]).max(t[2][k]),
+        );
+        let (s0, s1) = (a[k].min(b[k]), a[k].max(b[k]));
+        t0 - s1 > reach + MARGIN || s0 - t1 > reach + MARGIN
+    })
+}
+
+/// [`bucket_keys`] without making a list: each key in the same order.
+fn for_bucket(a: Vec3, b: Vec3, c: Vec3, mut f: impl FnMut((i32, i32))) {
+    let (x0, x1) = (a[0].min(b[0]).min(c[0]), a[0].max(b[0]).max(c[0]));
+    let (y0, y1) = (a[1].min(b[1]).min(c[1]), a[1].max(b[1]).max(c[1]));
+    for bx in bucket(x0)..=bucket(x1) {
+        for by in bucket(y0)..=bucket(y1) {
+            f((bx, by));
+        }
+    }
+}
+
 /// The buckets a triangle's x-y box overlaps.
 fn bucket_keys(a: Vec3, b: Vec3, c: Vec3) -> Vec<(i32, i32)> {
     let (x0, x1) = (a[0].min(b[0]).min(c[0]), a[0].max(b[0]).max(c[0]));
@@ -253,14 +279,32 @@ impl Collider {
         let Some(owned) = self.live.owned.get(&owner) else {
             return;
         };
-        // Out of their old buckets first.
+        // Out of their old buckets first: each bucket they're in looked
+        // through once (a triangle is only in its own buckets, so the lists
+        // come out as taking them out one at a time leaves them).
         let owned: Vec<u32> = owned.clone();
+        let lo = owned.iter().copied().min().unwrap_or(0);
+        let hi = owned.iter().copied().max().unwrap_or(0);
+        // An owner's triangles are added together: when they're one run
+        // of numbers, being in the run is being one of them.
+        let run = (hi - lo) as usize + 1 == owned.len();
+        let leaving: HashSet<u32> = if run {
+            HashSet::new()
+        } else {
+            owned.iter().copied().collect()
+        };
+        let mut buckets: Vec<(i32, i32)> = Vec::new();
         for &t in &owned {
             let [a, b, c] = self.triangle(t);
-            for key in bucket_keys(a, b, c) {
-                if let Some(list) = self.grid.get_mut(&key) {
-                    list.retain(|&i| i != t);
+            for_bucket(a, b, c, |key| {
+                if !buckets.contains(&key) {
+                    buckets.push(key);
                 }
+            });
+        }
+        for key in &buckets {
+            if let Some(list) = self.grid.get_mut(key) {
+                list.retain(|&i| i < lo || i > hi || (!run && !leaving.contains(&i)));
             }
         }
         for &(i, p) in rest {
@@ -271,11 +315,20 @@ impl Collider {
             ];
             self.vertices[i as usize] = add(r, translation);
         }
+        // Into their new ones: each bucket's in the owner's order, as
+        // putting them in one at a time does.
+        let mut arriving: Vec<((i32, i32), Vec<u32>)> = Vec::new();
         for &t in &owned {
             let [a, b, c] = self.triangle(t);
-            for key in bucket_keys(a, b, c) {
-                self.grid.entry(key).or_default().push(t);
-            }
+            for_bucket(a, b, c, |key| {
+                match arriving.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, list)) => list.push(t),
+                    None => arriving.push((key, vec![t])),
+                }
+            });
+        }
+        for (key, list) in arriving {
+            self.grid.entry(key).or_default().extend(list);
         }
     }
 
@@ -1096,13 +1149,16 @@ impl Character {
         let steps = (distance / INCREMENT).ceil().max(1.0) as usize;
         let piece = distance / steps as f32;
         let mut feet = self.feet;
+        // The triangles near it are the same at every step (the grid is
+        // across x and y, which the sweep keeps): found once.
+        let candidates = self.touch_candidates(collider, shape);
         for _ in 0..steps {
             let next = [feet[0], feet[1], feet[2] - piece];
             if let Some(support) = (Character {
                 feet: next,
                 ..*self
             })
-            .touching(collider, shape)
+            .touching_among(collider, shape, &candidates)
             {
                 return (feet, Some(support));
             }
@@ -1111,8 +1167,8 @@ impl Character {
         (feet, None)
     }
 
-    /// The face the capsule overlaps most, turned toward it, if any.
-    fn touching(&self, collider: &Collider, shape: &CharacterShape) -> Option<Support> {
+    /// The triangles near enough for [`Character::touching_among`] to look at.
+    fn touch_candidates(&self, collider: &Collider, shape: &CharacterShape) -> Vec<u32> {
         let r = shape.radius;
         let lo = [
             self.feet[0] - r - 1.0,
@@ -1124,10 +1180,25 @@ impl Character {
             self.feet[1] + r + 1.0,
             self.feet[2] + shape.lift + shape.height + 1.0,
         ];
+        collider.near(lo, hi)
+    }
+
+    /// The face the capsule overlaps most among `candidates` (in their
+    /// order), turned toward it, if any.
+    fn touching_among(
+        &self,
+        collider: &Collider,
+        shape: &CharacterShape,
+        candidates: &[u32],
+    ) -> Option<Support> {
+        let r = shape.radius;
         let (bottom, top) = shape.axis(self.feet);
         let mut best: Option<Support> = None;
-        for t in collider.near(lo, hi) {
+        for &t in candidates {
             let [a, b, c] = collider.triangle(t);
+            if surely_beyond([a, b, c], bottom, top, r + collider.shell(t)) {
+                continue;
+            }
             let (on_axis, on_triangle) = segment_triangle_closest(bottom, top, a, b, c);
             let gap = sub(on_axis, on_triangle);
             let d = length(gap);
@@ -1191,6 +1262,9 @@ impl Character {
             let mut deepest: Option<(f32, Vec3, Support)> = None;
             for &t in &candidates {
                 let [a, b, c] = collider.triangle(t);
+                if surely_beyond([a, b, c], bottom, top, r + collider.shell(t)) {
+                    continue;
+                }
                 let (on_axis, on_triangle) = segment_triangle_closest(bottom, top, a, b, c);
                 let gap = sub(on_axis, on_triangle);
                 let d = length(gap);
@@ -1861,6 +1935,194 @@ mod tests {
         all.extend(&c);
         all.move_owner(0x904, &turn, [0.0, 1000.0, 0.0]);
         assert!(north(&all).is_none());
+    }
+
+    /// The box test only skips triangles the exact test finds out of reach.
+    #[test]
+    fn surely_beyond_never_skips_a_triangle_within_reach() {
+        let mut seed = 12345u64;
+        let mut unit = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 33) as f32) / (1u64 << 31) as f32 * 2.0 - 1.0
+        };
+        let mut skipped = 0;
+        for _ in 0..200_000 {
+            let mut p = || [unit() * 120.0, unit() * 120.0, unit() * 120.0];
+            let (a, b, c) = (p(), p(), p());
+            let bottom = [unit() * 60.0, unit() * 60.0, unit() * 60.0];
+            let top = add(bottom, [0.0, 0.0, unit().abs() * 80.0]);
+            let reach = 20.0 + unit().abs() * 20.0;
+            if surely_beyond([a, b, c], bottom, top, reach) {
+                skipped += 1;
+                let (on_axis, on_triangle) = segment_triangle_closest(bottom, top, a, b, c);
+                let d = length(sub(on_axis, on_triangle));
+                assert!(
+                    d.is_nan() || d >= reach,
+                    "{a:?} {b:?} {c:?} {bottom:?} {top:?} {reach} {d}"
+                );
+            }
+        }
+        assert!(skipped > 10_000);
+    }
+
+    /// A seeded number from -1 to 1 (the tests' own, no library).
+    fn lcg(seed: &mut u64) -> f32 {
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((*seed >> 33) as f32) / (1u64 << 31) as f32 * 2.0 - 1.0
+    }
+
+    /// Where the outdoor numbers are largest (Goodsprings, about -68000,
+    /// 5800, 8480; f32 steps of 1/128 there) and just past the margin, the
+    /// box test still only skips what both exact tests (the touch's and
+    /// the push's, the stricter) leave out.
+    #[test]
+    fn surely_beyond_never_skips_a_triangle_within_reach_outdoors() {
+        let mut seed = 777u64;
+        let origin = [-68250.0, 5800.0, 8480.0];
+        let reach = CharacterShape::PLAYER.radius + 0.7;
+        let mut skipped = 0;
+        for i in 0..200_000 {
+            let mut u = || lcg(&mut seed);
+            let bottom = add(origin, [u() * 40.0, u() * 40.0, u() * 40.0]);
+            let top = add(bottom, [0.0, 0.0, 87.0]);
+            // A triangle whose box starts just beyond reach along one axis.
+            let k = i % 3;
+            let gap = reach + 0.05 + u().abs() * 0.02;
+            let mut corner = |_| {
+                let mut p = add(bottom, [u() * 60.0, u() * 60.0, u() * 60.0]);
+                let start = if k == 2 { top[k] } else { bottom[k] };
+                p[k] = start + gap + u().abs() * 30.0;
+                p
+            };
+            let (a, b, c) = (corner(0), corner(1), corner(2));
+            if surely_beyond([a, b, c], bottom, top, reach) {
+                skipped += 1;
+                let (on_axis, on_triangle) = segment_triangle_closest(bottom, top, a, b, c);
+                let d = length(sub(on_axis, on_triangle));
+                assert!(
+                    d.is_nan() || d >= reach - 1e-4,
+                    "{a:?} {b:?} {c:?} {bottom:?} {top:?} {reach} {d}"
+                );
+            }
+        }
+        assert!(skipped > 100_000);
+    }
+
+    /// The downward sweep with its candidates found once gives what
+    /// finding them again at every step (the way before) gives: the grid
+    /// is across x and y, which the sweep keeps.
+    #[test]
+    fn one_candidate_list_sweeps_as_one_per_step() {
+        let mut seed = 4242u64;
+        let origin = [-68250.0, 5800.0, 8480.0];
+        let shape = CharacterShape::PLAYER;
+        for _ in 0..40 {
+            let mut c = Collider::new();
+            let mut vertices = Vec::new();
+            let mut triangles = Vec::new();
+            for _ in 0..300 {
+                let mut u = || lcg(&mut seed);
+                let middle = add(origin, [u() * 400.0, u() * 400.0, u() * 150.0]);
+                let base = vertices.len() as u32;
+                for _ in 0..3 {
+                    let mut u = || lcg(&mut seed);
+                    vertices.push(add(middle, [u() * 60.0, u() * 60.0, u() * 20.0]));
+                }
+                triangles.push([base, base + 1, base + 2]);
+            }
+            c.add(&vertices, &triangles);
+            for _ in 0..50 {
+                let mut u = || lcg(&mut seed);
+                let feet = add(origin, [u() * 300.0, u() * 300.0, 200.0 + u() * 100.0]);
+                let distance = 50.0 + u().abs() * 400.0;
+                let walker = Character::new(feet);
+                let found = walker.swept_down(&c, &shape, distance);
+                // The way before: the triangles near looked up at each step.
+                let steps = (distance / 0.5).ceil().max(1.0) as usize;
+                let piece = distance / steps as f32;
+                let mut at = feet;
+                let mut expected = (at, None);
+                for _ in 0..steps {
+                    let next = [at[0], at[1], at[2] - piece];
+                    let there = Character {
+                        feet: next,
+                        ..walker
+                    };
+                    let near = there.touch_candidates(&c, &shape);
+                    if let Some(s) = there.touching_among(&c, &shape, &near) {
+                        expected = (at, Some(s));
+                        break;
+                    }
+                    at = next;
+                    expected = (at, None);
+                }
+                assert_eq!(found, expected, "{feet:?} {distance}");
+            }
+        }
+    }
+
+    /// Moving an owner leaves every bucket's list as taking its triangles
+    /// out one at a time and putting them back does (the order queries see
+    /// them in).
+    #[test]
+    fn moving_an_owner_leaves_the_buckets_as_one_at_a_time() {
+        let mut c = Collider::new();
+        // Ground under everything, and an object of many triangles on it.
+        let mut ground = Vec::new();
+        let mut tris = Vec::new();
+        for i in 0..20 {
+            let x = i as f32 * 50.0 - 500.0;
+            let b = ground.len() as u32;
+            ground.extend([[x, -500.0, 0.0], [x + 60.0, -500.0, 0.0], [x, 500.0, 0.0]]);
+            tris.push([b, b + 1, b + 2]);
+        }
+        c.add(&ground, &tris);
+        let mut body = Vec::new();
+        let mut body_tris = Vec::new();
+        for i in 0..12 {
+            let a = i as f32 * 0.5;
+            let b = body.len() as u32;
+            body.extend([
+                [a.cos() * 40.0, a.sin() * 40.0, 10.0],
+                [a.cos() * 90.0, a.sin() * 90.0, 30.0],
+                [0.0, 0.0, 60.0],
+            ]);
+            body_tris.push([b, b + 1, b + 2]);
+        }
+        c.add_solid_surface(&body, &body_tris, (0.0, 0x77, NO_MATERIAL), None);
+        let one_at_a_time = |c: &mut Collider, r: &[[f32; 3]; 3], t: Vec3| {
+            let owned = c.live.owned[&0x77].clone();
+            for &tri in &owned {
+                let [a, b, cc] = c.triangle(tri);
+                for key in bucket_keys(a, b, cc) {
+                    if let Some(list) = c.grid.get_mut(&key) {
+                        list.retain(|&i| i != tri);
+                    }
+                }
+            }
+            for &(i, p) in &c.live.rest[&0x77].clone() {
+                let q = [0, 1, 2].map(|k| r[k][0] * p[0] + r[k][1] * p[1] + r[k][2] * p[2]);
+                c.vertices[i as usize] = add(q, t);
+            }
+            for &tri in &owned {
+                let [a, b, cc] = c.triangle(tri);
+                for key in bucket_keys(a, b, cc) {
+                    c.grid.entry(key).or_default().push(tri);
+                }
+            }
+        };
+        let mut expected = c.clone();
+        let turn = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        for (r, t) in [(turn, [300.0, 20.0, 0.0]), (turn, [-280.0, 500.0, 5.0])] {
+            c.move_owner(0x77, &r, t);
+            one_at_a_time(&mut expected, &r, t);
+            assert_eq!(c.grid, expected.grid);
+            assert_eq!(c.vertices, expected.vertices);
+        }
     }
 
     #[test]

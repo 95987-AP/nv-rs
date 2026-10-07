@@ -1796,10 +1796,12 @@ fn wander_to(ctx: &mut Ctx, walker: &mut Walker, center: [f32; 3], radius: f32) 
         return None;
     }
     let flat = |p: [f32; 3]| (p[0] - center[0]).hypot(p[1] - center[1]);
-    let corners = |t: &world::ai::NavTriangle| t.vertices.map(|v| mesh.vertices[v]);
+    let corners = |t: usize| mesh.triangles[t].vertices.map(|v| mesh.vertices[v]);
+    // Those near the middle (the grid's, in the mesh's order), then the
+    // ones reaching the ring.
     let reaching: Vec<[[f32; 3]; 3]> = mesh
-        .triangles
-        .iter()
+        .triangles_near(center, far)
+        .into_iter()
         .map(corners)
         .filter(|c| c.iter().any(|p| flat(*p) <= far) || holds(c, center))
         .collect();

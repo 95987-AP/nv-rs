@@ -662,14 +662,14 @@ pub fn is_child(order: &LoadOrder, actor: FormId) -> bool {
         return false;
     };
     let race = order.get(base).and_then(|rr| {
-        let record = rr.record().ok()?;
+        let record = rr.record_shared().ok()?;
         let s = record
             .get(FourCC::new(b"RNAM"))
             .filter(|s| s.data.len() >= 4)?;
         Some(rr.plugin.to_global(FormId(le_u32(&s.data, 0))))
     });
     race.and_then(|r| order.get(r))
-        .and_then(|rr| rr.record().ok())
+        .and_then(|rr| rr.record_shared().ok())
         .and_then(|record| {
             let d = record.get(esm::sig::DATA).filter(|s| s.data.len() >= 36)?;
             Some(le_u32(&d.data, 32) & 0x04 != 0)

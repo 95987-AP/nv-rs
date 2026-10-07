@@ -671,8 +671,10 @@ pub fn enabled_now(order: &LoadOrder, reference: FormId, disabled: &Disabled) ->
     let Some(rr) = order.get(reference) else {
         return true;
     };
-    match rr.record() {
-        Ok(record) => enabled_with(order, &rr, &record, 0, disabled),
+    // Only its enable parent is read (not the whole record): this is asked
+    // for many references every frame.
+    match enable_parent_of(&rr) {
+        Ok(parent) => enabled_given(order, &rr, parent, 0, disabled),
         Err(_) => true,
     }
 }
@@ -706,16 +708,27 @@ fn enabled_with(
     depth: u8,
     disabled: &Disabled,
 ) -> bool {
+    enabled_given(order, rr, enable_parent(rr, record), depth, disabled)
+}
+
+/// [`enabled_with`], given the reference's enable parent.
+fn enabled_given(
+    order: &LoadOrder,
+    rr: &RecordRef<'_>,
+    parent: Option<(FormId, bool)>,
+    depth: u8,
+    disabled: &Disabled,
+) -> bool {
     if let Some(&d) = disabled.get(&rr.form_id) {
         return !d;
     }
-    match enable_parent(rr, record) {
+    match parent {
         Some((parent, opposite)) if depth < MAX_PARENT_DEPTH => {
             let parent_enabled = match disabled.get(&parent) {
                 Some(&d) => !d,
                 None => match order.get(parent) {
-                    Some(prr) => match prr.record() {
-                        Ok(precord) => enabled_with(order, &prr, &precord, depth + 1, disabled),
+                    Some(prr) => match enable_parent_of(&prr) {
+                        Ok(grand) => enabled_given(order, &prr, grand, depth + 1, disabled),
                         Err(_) => true,
                     },
                     None => true,
@@ -725,6 +738,14 @@ fn enabled_with(
         }
         _ => rr.entry.header.flags & flags::INITIALLY_DISABLED == 0,
     }
+}
+
+/// A reference's enable parent read from its `XESP` alone.
+fn enable_parent_of(rr: &RecordRef<'_>) -> esm::Result<Option<(FormId, bool)>> {
+    Ok(rr
+        .subrecord(XESP)?
+        .filter(|d| d.len() >= 5)
+        .map(|d| (rr.plugin.to_global(FormId(le_u32(&d, 0))), d[4] & 1 != 0)))
 }
 
 fn enable_parent(rr: &RecordRef<'_>, record: &Record) -> Option<(FormId, bool)> {

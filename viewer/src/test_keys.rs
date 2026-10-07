@@ -16,6 +16,9 @@ pub enum Press {
     Mouse(MouseButton),
     /// The mouse moved sideways this many counts every frame it's held.
     MouseX(f32),
+    /// The mouse moved up or down this many counts every frame it's held
+    /// (positive down).
+    MouseY(f32),
     /// The wheel turned this many notches every frame it's held (negative
     /// toward the player: out).
     Wheel(f32),
@@ -31,7 +34,8 @@ pub struct TimedPress {
 }
 
 /// Parses `KEY` or `KEY:HOLD` (a letter A–Z, a digit, `mouse-left`,
-/// `mouse-right`, `mouse-x=COUNTS`: the mouse moved sideways that much
+/// `mouse-right`, `mouse-x=COUNTS` / `mouse-y=COUNTS`: the mouse moved
+/// sideways / down that much
 /// each frame; `wheel=NOTCHES`: the wheel turned that much each frame;
 /// HOLD in seconds, 0.1 by default).
 pub fn parse(at: f32, v: &str) -> Result<TimedPress, String> {
@@ -48,17 +52,17 @@ pub fn parse(at: f32, v: &str) -> Result<TimedPress, String> {
     let what = match name.to_ascii_lowercase().as_str() {
         "mouse-left" => Press::Mouse(MouseButton::Left),
         "mouse-right" => Press::Mouse(MouseButton::Right),
-        n if n.starts_with("mouse-x=") || n.starts_with("wheel=") => {
+        n if n.starts_with("mouse-x=") || n.starts_with("mouse-y=") || n.starts_with("wheel=") => {
             let (kind, amount) = n.split_once('=').unwrap_or_default();
             let amount = amount
                 .parse::<f32>()
                 .ok()
                 .filter(|c| c.is_finite())
                 .ok_or_else(|| format!("--key-at: {kind}= expects a number, got '{v}'"))?;
-            if kind == "wheel" {
-                Press::Wheel(amount)
-            } else {
-                Press::MouseX(amount)
+            match kind {
+                "wheel" => Press::Wheel(amount),
+                "mouse-y" => Press::MouseY(amount),
+                _ => Press::MouseX(amount),
             }
         }
         n if n.len() == 1 => {
@@ -185,12 +189,13 @@ pub fn press_test_keys(
         match p {
             Press::Key(k) => keys.press(k),
             Press::Mouse(b) => mouse.press(b),
-            Press::MouseX(_) | Press::Wheel(_) => {}
+            Press::MouseX(_) | Press::MouseY(_) | Press::Wheel(_) => {}
         }
     }
     for (p, _) in &tests.held {
         match p {
             Press::MouseX(dx) => motion.delta.x += dx,
+            Press::MouseY(dy) => motion.delta.y += dy,
             Press::Wheel(notches) => {
                 scroll.unit = bevy::input::mouse::MouseScrollUnit::Line;
                 scroll.delta.y += notches;
@@ -202,7 +207,7 @@ pub fn press_test_keys(
         match p {
             Press::Key(k) => keys.release(k),
             Press::Mouse(b) => mouse.release(b),
-            Press::MouseX(_) | Press::Wheel(_) => {}
+            Press::MouseX(_) | Press::MouseY(_) | Press::Wheel(_) => {}
         }
     }
 }

@@ -42,6 +42,7 @@ mod pipboy;
 mod player_body;
 mod player_camera;
 mod player_idle;
+mod present;
 mod radio;
 mod report;
 mod scope;
@@ -309,6 +310,7 @@ fn main() {
         .insert_resource(player)
         .insert_resource(walk::CellCollision(physics::Collider::new()))
         .insert_resource(walk::Doors(Vec::new()))
+        .init_resource::<UploadedTextures>()
         .insert_resource(PendingScene(scene))
         .insert_resource(PendingExterior(outdoors))
         .insert_resource(grading)
@@ -344,6 +346,7 @@ fn main() {
         .insert_resource(game_menus::FixedKeys(args.menu_keys.clone()))
         .add_plugins((GradePlugin, GameLightingPlugin, TerrainPlugin, LodPlugin))
         .add_plugins(shared_light::SharedLightPlugin)
+        .add_plugins(present::PresentPlugin)
         // After the default plugins: they load shaders.
         .add_plugins((hud::HudPlugin, pipboy::PipboyPlugin))
         .add_plugins(game_menus::GameMenusPlugin)
@@ -1456,6 +1459,10 @@ fn setup(mut commands: Commands) {
         // The game clips what's too bright rather than rolling it off, and
         // the lighting shader already gives the game's brightness.
         Tonemapping::None,
+        // No light clusters: every surface is lit by the game's lights in
+        // its own shader, never Bevy's (there are none), so working out
+        // which of them reach each cluster is wasted.
+        bevy::pbr::ClusterConfig::None,
         Projection::from(PerspectiveProjection {
             // The game's: its 75° setting is the width of a 4:3 picture,
             // and wider windows keep that height.
@@ -1517,9 +1524,49 @@ pub struct Spawner<'w, 's> {
     place_lighting: ResMut<'w, viewmodel::PlaceLighting>,
     water: water::WaterSpawn<'w>,
     particle_materials: ResMut<'w, Assets<particles::ParticleMaterial>>,
+    uploaded: ResMut<'w, UploadedTextures>,
 }
 
+/// The places' textures on the GPU by what they are (the file, read as
+/// data or colour, its layers, compressed or not, the anisotropy), so a
+/// texture another loaded place already has isn't converted and sent
+/// again (outdoor squares share most of theirs). Only ids: a texture
+/// goes when no place holds it any more, as before, and is sent again
+/// if it's wanted after.
+#[derive(Resource, Default)]
+pub struct UploadedTextures(
+    std::collections::HashMap<(String, bool, u32, bool, u16), AssetId<Image>>,
+);
+
 impl Spawner<'_, '_> {
+    /// A place's texture: the one already on the GPU when a loaded place
+    /// has it, else sent now.
+    fn texture(
+        &mut self,
+        texture: &TextureData,
+        compressed: bool,
+        anisotropy: u16,
+    ) -> Option<Handle<Image>> {
+        let key = (
+            texture.path.clone(),
+            texture.linear,
+            texture.layers,
+            compressed,
+            anisotropy,
+        );
+        if let Some(handle) = self
+            .uploaded
+            .0
+            .get(&key)
+            .and_then(|&id| self.images.get_strong_handle(id))
+        {
+            return Some(handle);
+        }
+        let handle = upload_texture(&mut self.images, texture, compressed, anisotropy)?;
+        self.uploaded.0.insert(key, handle.id());
+        Some(handle)
+    }
+
     /// Puts a loaded place's textures, models and terrain on screen, and
     /// returns what it spawned (so an outdoor square can be dropped later).
     fn spawn(&mut self, scene: &ViewerScene) -> Vec<Entity> {
@@ -1583,7 +1630,7 @@ impl Spawner<'_, '_> {
         let textures: Vec<Option<Handle<Image>>> = scene
             .textures
             .iter()
-            .map(|t| upload_texture(&mut self.images, t, compressed, anisotropy))
+            .map(|t| self.texture(t, compressed, anisotropy))
             .collect();
         if scene.lights.len() > MAX_LIGHTS {
             println!(
@@ -1615,6 +1662,10 @@ impl Spawner<'_, '_> {
         // Blended pieces are built around the point the game sorts them by
         // (see `sort_center`).
         let centers: Vec<Option<[f32; 3]>> = scene.meshes.iter().map(sort_center).collect();
+        // Pieces with the same material (its data, and whether a normal map
+        // can be used) share one, so their draws can go together.
+        let mut same_material: std::collections::HashMap<String, Handle<GameLitMaterial>> =
+            std::collections::HashMap::new();
         for (data, center) in scene.meshes.iter().zip(&centers) {
             let (mesh, bind) = match actors::skinned_mesh(data) {
                 Some((mesh, bind)) => (
@@ -1627,9 +1678,14 @@ impl Spawner<'_, '_> {
                     None,
                 ),
             };
-            let material = self
-                .lit_materials
-                .add(lit_material(data, &textures, lighting));
+            let key = format!("{:?} {}", data.material, data.tangents.is_some());
+            let material = same_material
+                .entry(key)
+                .or_insert_with(|| {
+                    self.lit_materials
+                        .add(lit_material(data, &textures, lighting))
+                })
+                .clone();
             pieces.push((mesh, material));
             binds.push(bind);
         }
@@ -1837,7 +1893,7 @@ impl Spawner<'_, '_> {
         let textures: Vec<Option<Handle<Image>>> = scene
             .textures
             .iter()
-            .map(|t| upload_texture(&mut self.images, t, compressed, anisotropy))
+            .map(|t| self.texture(t, compressed, anisotropy))
             .collect();
         let root = self
             .commands
@@ -1932,7 +1988,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
-            shared: crate::shared_light::BUFFER,
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -1961,7 +2017,10 @@ impl Spawner<'_, '_> {
         self.commands
             .spawn((
                 Mesh3d(self.meshes.add(mesh)),
-                MeshMaterial3d(self.lit_materials.add(GameLitMaterial { base, extension })),
+                MeshMaterial3d(self.lit_materials.add(GameLitMaterial {
+                    base,
+                    extension: extension.into(),
+                })),
                 Transform::from_scale(Vec3::splat(scale)),
                 bevy::render::view::NoFrustumCulling,
                 daylight::SkyWeights(dome.weights.clone()),
@@ -2045,7 +2104,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
-            shared: crate::shared_light::BUFFER,
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2073,7 +2132,10 @@ impl Spawner<'_, '_> {
         self.commands
             .spawn((
                 Mesh3d(self.meshes.add(mesh)),
-                MeshMaterial3d(self.lit_materials.add(GameLitMaterial { base, extension })),
+                MeshMaterial3d(self.lit_materials.add(GameLitMaterial {
+                    base,
+                    extension: extension.into(),
+                })),
                 Transform::from_scale(Vec3::splat(scale * 0.99)),
                 bevy::render::view::NoFrustumCulling,
                 daylight::SunDisk { half_size, glare },
@@ -2125,7 +2187,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
-            shared: crate::shared_light::BUFFER,
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2152,7 +2214,10 @@ impl Spawner<'_, '_> {
         self.commands
             .spawn((
                 Mesh3d(self.meshes.add(mesh)),
-                MeshMaterial3d(self.lit_materials.add(GameLitMaterial { base, extension })),
+                MeshMaterial3d(self.lit_materials.add(GameLitMaterial {
+                    base,
+                    extension: extension.into(),
+                })),
                 Transform::from_scale(Vec3::splat(scale)),
                 bevy::render::view::NoFrustumCulling,
                 daylight::Stars { fade },
@@ -2191,7 +2256,7 @@ impl Spawner<'_, '_> {
             ..default()
         };
         let extension = GameLit {
-            shared: crate::shared_light::BUFFER,
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 ambient: Vec4::ZERO,
                 directional_color: Vec4::ZERO,
@@ -2219,7 +2284,10 @@ impl Spawner<'_, '_> {
         self.commands
             .spawn((
                 Mesh3d(self.meshes.add(mesh)),
-                MeshMaterial3d(self.lit_materials.add(GameLitMaterial { base, extension })),
+                MeshMaterial3d(self.lit_materials.add(GameLitMaterial {
+                    base,
+                    extension: extension.into(),
+                })),
                 Transform::from_scale(Vec3::splat(scale * 0.98)),
                 bevy::render::view::NoFrustumCulling,
                 CloudScroll {
@@ -2454,7 +2522,7 @@ fn lit_material(
             _ => 0.0,
         };
         GameLit {
-            shared: crate::shared_light::BUFFER,
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 emissive: Vec4::new(ur, ug, ub, 0.0),
                 surface: Vec4::new(0.0, 0.0, 1.0, fog_mode),
@@ -2488,7 +2556,7 @@ fn lit_material(
             .and_then(|(e, _)| e.mask)
             .and_then(|i| textures[i].clone());
         GameLit {
-            shared: crate::shared_light::BUFFER,
+            shared: crate::shared_light::TEXTURE,
             lighting: GameLighting {
                 emissive: Vec4::new(er, eg, eb, flag(glow.is_some())),
                 specular,
@@ -2525,7 +2593,10 @@ fn lit_material(
         }
     };
     extension.lighting.draw = draw;
-    GameLitMaterial { base, extension }
+    GameLitMaterial {
+        base,
+        extension: extension.into(),
+    }
 }
 
 /// Where decals sort among blended surfaces (Bevy's depth bias, added to

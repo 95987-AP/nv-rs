@@ -57,7 +57,7 @@ impl Lock {
 /// The lock a reference was placed with (`XLOC`), if any.
 pub fn placed_lock(order: &LoadOrder, reference: FormId) -> Option<Lock> {
     let rr = order.get(reference)?;
-    let record = rr.record().ok()?;
+    let record = rr.record_shared().ok()?;
     let s = record.get(XLOC).filter(|s| !s.data.is_empty())?;
     let key = (s.data.len() >= 8)
         .then(|| rr.plugin.to_global(FormId(le_u32(&s.data, 4))))

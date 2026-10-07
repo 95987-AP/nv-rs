@@ -175,6 +175,11 @@ pub fn station_refs(order: &LoadOrder) -> Vec<StationRef> {
         return out;
     }
     for rr in order.records_of_type(REFR) {
+        // Every reference in the game is looked at: only those with radio
+        // data are read whole.
+        if !matches!(rr.subrecord(XRDO), Ok(Some(_))) {
+            continue;
+        }
         let Ok(record) = rr.record() else {
             continue;
         };

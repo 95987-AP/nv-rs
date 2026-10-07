@@ -64,6 +64,9 @@ pub struct LoadedPlugin {
     /// Maps a local mod index (position in this plugin's master list, or the
     /// list's length for the plugin itself) to a load-order index.
     index_map: Vec<u8>,
+    /// Records decoded once and kept ([`RecordRef::record_shared`]), by
+    /// their index in the plugin.
+    decoded: Vec<std::sync::OnceLock<std::sync::Arc<Record>>>,
 }
 
 impl LoadedPlugin {
@@ -84,6 +87,8 @@ pub struct RecordRef<'a> {
     pub entry: &'a RecordEntry,
     /// The load-order form ID.
     pub form_id: FormId,
+    /// Its index among the plugin's records.
+    pub index: usize,
 }
 
 impl RecordRef<'_> {
@@ -93,6 +98,26 @@ impl RecordRef<'_> {
 
     pub fn editor_id(&self) -> Result<Option<String>> {
         self.plugin.plugin.editor_id_of(self.entry)
+    }
+}
+
+impl<'a> RecordRef<'a> {
+    /// The record decoded once and kept for the load order's life: for
+    /// what's asked for every frame (the same as [`RecordRef::record`];
+    /// records don't change once loaded).
+    pub fn record_shared(&self) -> Result<std::sync::Arc<Record>> {
+        let slot = &self.plugin.decoded[self.index];
+        if let Some(r) = slot.get() {
+            return Ok(r.clone());
+        }
+        let record = std::sync::Arc::new(self.record()?);
+        Ok(slot.get_or_init(|| record).clone())
+    }
+
+    /// The data of the record's first subrecord of a type, without decoding
+    /// the rest ([`crate::Plugin::subrecord_of`]).
+    pub fn subrecord(&self, kind: FourCC) -> Result<Option<std::borrow::Cow<'a, [u8]>>> {
+        self.plugin.plugin.subrecord_of(self.entry, kind)
     }
 }
 
@@ -134,7 +159,11 @@ impl LoadOrder {
         let load_index = masters.len() as u8;
         let mut slot_names = masters;
         slot_names.push(name.clone());
+        let decoded = (0..plugin.records().len())
+            .map(|_| std::sync::OnceLock::new())
+            .collect();
         let loaded = LoadedPlugin {
+            decoded,
             name,
             path,
             plugin,
@@ -166,7 +195,11 @@ impl LoadOrder {
             }
             index_map.push(i as u8);
             slot_names.push(name.clone());
+            let decoded = (0..plugin.records().len())
+                .map(|_| std::sync::OnceLock::new())
+                .collect();
             loaded.push(LoadedPlugin {
+                decoded,
                 name,
                 path,
                 plugin,
@@ -305,6 +338,7 @@ impl LoadOrder {
             plugin,
             entry: &plugin.plugin.records()[ri as usize],
             form_id,
+            index: ri as usize,
         }
     }
 

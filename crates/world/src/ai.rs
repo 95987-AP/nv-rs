@@ -209,7 +209,7 @@ pub struct Package {
 impl Package {
     pub fn load(order: &LoadOrder, id: FormId) -> Option<Package> {
         let rr = order.get(id).filter(|r| r.entry.header.kind == PACK)?;
-        let record = rr.record().ok()?;
+        let record = rr.record_shared().ok()?;
         let pkdt = record.get(PKDT).filter(|s| s.data.len() >= 5)?;
         let location = record
             .get(PLDT)
@@ -1331,13 +1331,14 @@ pub struct NavMesh {
 /// cache of the mesh: never compared): the triangles by the squares of a
 /// grid ([`GRID_SQUARE`] units across) their outline overlaps, seen from
 /// above (grown by [`GRID_MARGIN`], as [`height_in`] takes points a hair
-/// outside a triangle), each square's in the mesh's order; and each
+/// outside a triangle), each square's in the mesh's order; each
 /// triangle's island, the triangles joined to it through their neighbours
-/// (no path leaves one).
+/// (no path leaves one); and the squares' extent.
 #[derive(Debug, Clone, Default)]
 pub struct TriangleIndex(
     std::sync::OnceLock<HashMap<(i32, i32), Vec<usize>>>,
     std::sync::OnceLock<Vec<usize>>,
+    std::sync::OnceLock<((i32, i32), (i32, i32))>,
 );
 
 impl PartialEq for TriangleIndex {
@@ -1717,6 +1718,75 @@ impl NavMesh {
         (near <= OFF_MESH * OFF_MESH).then_some(t)
     }
 
+    /// The triangles whose outline (seen from above, grown by the grid's
+    /// margin) comes within `reach` of a point across, in the mesh's order:
+    /// every triangle with a corner within `reach` of it, or holding it,
+    /// is among them (others nearby may be too).
+    pub fn triangles_near(&self, p: [f32; 3], reach: f32) -> Vec<usize> {
+        let index = self.index();
+        let lo = grid_square(p[0] - reach, p[1] - reach);
+        let hi = grid_square(p[0] + reach, p[1] + reach);
+        let mut found: Vec<usize> = (lo.0..=hi.0)
+            .flat_map(|x| (lo.1..=hi.1).map(move |y| (x, y)))
+            .filter_map(|square| index.get(&square))
+            .flatten()
+            .copied()
+            .collect();
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
+
+    /// The triangle whose middle is nearest a point (the first of those as
+    /// near), looking at the grid's squares ring by ring out from the
+    /// point's until no square left can hold a nearer one: a triangle is
+    /// in the square of its middle, and a square `r` rings out is at least
+    /// `r - 1` squares away across.
+    fn nearest_middle(&self, p: [f32; 3]) -> Option<usize> {
+        let index = self.index();
+        if index.is_empty() {
+            return None;
+        }
+        let ((x0, y0), (x1, y1)) = *self.index.2.get_or_init(|| {
+            index.keys().fold(
+                ((i32::MAX, i32::MAX), (i32::MIN, i32::MIN)),
+                |((ax, ay), (bx, by)), &(x, y)| ((ax.min(x), ay.min(y)), (bx.max(x), by.max(y))),
+            )
+        });
+        let (cx, cy) = grid_square(p[0], p[1]);
+        let rings = [x0 - cx, cx - x1, y0 - cy, cy - y1]
+            .iter()
+            .map(|d| d.unsigned_abs())
+            .max()
+            .unwrap_or(0) as i32;
+        let mut best: Option<(f32, usize)> = None;
+        let consider = |best: &mut Option<(f32, usize)>, t: usize| {
+            let d = distance2(self.centroid(t), p);
+            if best.map_or(true, |(bd, bt)| d.total_cmp(&bd).then(t.cmp(&bt)).is_lt()) {
+                *best = Some((d, t));
+            }
+        };
+        for r in 0..=rings {
+            if let Some((d, _)) = best {
+                let gap = (r - 1).max(0) as f32 * GRID_SQUARE;
+                if gap * gap > d {
+                    break;
+                }
+            }
+            for x in cx - r..=cx + r {
+                for y in cy - r..=cy + r {
+                    if (x - cx).abs() != r && (y - cy).abs() != r {
+                        continue;
+                    }
+                    for &t in index.get(&(x, y)).into_iter().flatten() {
+                        consider(&mut best, t);
+                    }
+                }
+            }
+        }
+        best.map(|(_, t)| t)
+    }
+
     /// The triangle a point stands on: one whose outline (seen from above)
     /// holds it, nearest in height; else the one whose middle is nearest.
     pub fn triangle_at(&self, p: [f32; 3]) -> Option<usize> {
@@ -1737,9 +1807,7 @@ impl NavMesh {
                 return Some(t);
             }
         }
-        (0..self.triangles.len()).min_by(|&x, &y| {
-            distance2(self.centroid(x), p).total_cmp(&distance2(self.centroid(y), p))
-        })
+        self.nearest_middle(p)
     }
 
     /// A path from one point to another over the navmesh: the points to
@@ -2253,9 +2321,42 @@ mod tests {
                     }
                 }
             }
+            // Far from the mesh (the nearest middle by the grid's rings).
+            for x in (-3000..=3500).step_by(97) {
+                for y in (-3000..=3500).step_by(89) {
+                    for z in [0.0, 150.0, 400.0, -2000.0] {
+                        let p = [x as f32, y as f32, z];
+                        assert_eq!(mesh.triangle_at(p), every(p), "{p:?}");
+                    }
+                }
+            }
             // On the corners and edges themselves.
             for v in &mesh.vertices {
                 assert_eq!(mesh.triangle_at(*v), every(*v));
+            }
+        }
+    }
+
+    /// Near a point, the grid gives every triangle with a corner within
+    /// reach or holding the point, in the mesh's order.
+    #[test]
+    fn triangles_near_holds_every_one_within_reach() {
+        for mesh in [corridor_mesh(), four_squares()] {
+            for x in (-300..=700).step_by(37) {
+                for y in (-300..=700).step_by(41) {
+                    for reach in [0.0, 10.0, 90.0, 300.0, 1000.0] {
+                        let p = [x as f32, y as f32, 0.0];
+                        let near = mesh.triangles_near(p, reach);
+                        assert!(near.windows(2).all(|w| w[0] < w[1]));
+                        for t in 0..mesh.triangles.len() {
+                            let c = [0, 1, 2].map(|i| mesh.corner(t, i));
+                            let close = c.iter().any(|v| (v[0] - p[0]).hypot(v[1] - p[1]) <= reach);
+                            if close || height_in(c[0], c[1], c[2], p).is_some() {
+                                assert!(near.contains(&t), "{p:?} {reach} {t}");
+                            }
+                        }
+                    }
+                }
             }
         }
     }

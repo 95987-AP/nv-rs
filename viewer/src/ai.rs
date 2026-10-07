@@ -3093,7 +3093,15 @@ pub fn move_offstage(
             }
         }
     };
+    // Whether someone could be due at all: at the shorter interval (a
+    // level's `due` implies the shorter one's), before the checks that read
+    // their records.
+    let maybe_due =
+        |off: &Offstage, who: FormId| ProcessLevel::MiddleLow.due(off.last.get(&who).copied(), now);
     for who in middle {
+        if !maybe_due(&off, who) {
+            continue;
+        }
         if !eligible(state, who) || off.persistent.binary_search(&who).is_ok() {
             continue;
         }
@@ -3112,7 +3120,7 @@ pub fn move_offstage(
         let who = off.persistent[off.cursor % count];
         off.cursor = (off.cursor + 1) % count;
         done += 1;
-        if eligible(state, who) {
+        if maybe_due(&off, who) && eligible(state, who) {
             if let Some(level) = level_of(state, who) {
                 step(state, &mut off, who, level);
             }
