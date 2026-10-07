@@ -102,7 +102,7 @@ pub struct GlobalData<'a> {
 
 /// A change form's reference to a form (`00853570` / `00853500`): an
 /// index into the form id array (from 1), or a created form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct RefId(pub u32);
 
 impl RefId {
@@ -628,3 +628,5 @@ pub mod write;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_refs;

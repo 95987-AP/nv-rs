@@ -4,9 +4,11 @@ M7 research (docs/TASKS.md): the layout of Fallout: New Vegas's own save
 files, what nv-rs needs from them to continue a game, and what nv-rs is
 missing to take it. Branch `claude/fos-saves`.
 
-Status: **format researched and checked** against real saves; a
-read-only reader (`crates/fos`) and inspector (`nvinspect fos`) are
-implemented and tested. No import into nv-rs state yet.
+Status: **format researched and checked** against real saves: every
+change form in all nine files decodes to its exact length, references,
+actors, their AI processes and the player included. A read-only reader
+(`crates/fos`) and inspector (`nvinspect fos`) are implemented and
+tested. No import into nv-rs state yet.
 
 - Every structure below was read from the writer (and, where it matters, the
   reader) in FalloutNV.exe 1.4.0.525 (addresses are PC unless marked) and
@@ -15,8 +17,11 @@ implemented and tested. No import into nv-rs state yet.
   1.4.0.525 game (five named saves, the autosave and quicksave and their two
   `.bak` copies; 1.65 to 1.87 MB, all early game, plugin list `FalloutNV.esm`
   only). All nine walk from the first byte to the last with no byte left over,
-  and every change form of the types marked "decoded" below decodes to its
-  exact length. The saves themselves stay private.
+  and every one of their 3,585 to 4,509 change forms decodes to its exact
+  length (36,322 in all). The saves themselves stay private.
+- Parts no file holds were read from the code alone and are marked so
+  ("from code"); the decoder reads them, but only a save that has them
+  can confirm them.
 - Community pages (UESP's save format pages) were not needed; nothing below
   is taken from them.
 - The `.nvse` files next to the saves are the script extender's co-saves, a
@@ -117,13 +122,13 @@ switch `0084bcd0`, loader `0084be40`):
 | 1 | `GLOBAL_DATA_LOCATION` | `SaveLocationData` `0084c490` | `u32|` next created form id (`TESDataHandler::iNextID`, +0x208), refID `|` of the current worldspace (`TES::pWorldSpace`, +0x88), `i32|` `i32|` current grid x, y (`TES` +0x24, +0x28), refID `|` of the player's worldspace (or parent cell when inside), `3 × f32` player position `|`, then `LoadingMenu::SaveGame` `0078d6b0` (refID `|`, three 4-byte values `|`, `u8|`; not interpreted). **Decoded** except the loading-menu part's meaning. |
 | 2 | `GLOBAL_DATA_TES` | `TES::SaveGame` `00459490` | vsval count, each refID `|` + `u16|`; then `u32 n|` and `n × n` refIDs `|` (n = 5 in every file, apparently the loaded cell grid). Not interpreted further. |
 | 3 | `GLOBAL_DATA_GLOBALS` | `SaveGlobals` `0084cc90` | vsval count, each refID `|` (a `GLOB`) and `f32|` value. Constant globals (form flag 0x40) are skipped. Game time lives here (`GameHour`, `GameDaysPassed`, `GameDay`, `GameMonth`, `GameYear`, `TimeScale`). **Decoded.** |
-| 4 | `GLOBAL_DATA_PROCESS_LISTS` | `ProcessLists::SaveGame` `00975840` | Four `u32|` then five vsval-counted lists. Not decoded. |
+| 4 | `GLOBAL_DATA_PROCESS_LISTS` | `ProcessLists::SaveGame` `00975840` | Four `u32|` then five vsval-counted lists. Not decoded (nv-rs rebuilds its process lists). |
 | 5 | `GLOBAL_DATA_COMBAT` | `CombatManager::SaveGame` `009932d0` | Not decoded. |
 | 6 | `GLOBAL_DATA_INTERFACE` | `Interface::SaveGame` `007066d0` | Not decoded. |
 | 7 | `GLOBAL_DATA_EFFECTS` | `SaveEffects` `0084cf30` | vsval count, each `f32|` `f32|` refID `|`. Not interpreted. |
-| 8 | `GLOBAL_DATA_WEATHER` | `Sky::SaveGame` `0063eb70` | Four refIDs `|` (`Sky` +0x10 to +0x1C) and eleven 4-byte values `|`. nv-rs's `world::weather` already models the sky's saved state; not mapped here. |
+| 8 | `GLOBAL_DATA_WEATHER` | `Sky::SaveGame` `0063eb70` | refIDs `|` of `pCurrentWeather`, `pLastWeather`, `pDefaultWeather`, `pOverrideWeather` (`Sky` +0x10 to +0x1C), then `fCurrentGameHour`, `fLastWeatherUpdate`, `fCurrentWeatherPct`, `uiFlags`, `fAccelBeginPct`, `WaterFogColor` (3 × `f32`), `fFogHeight`, `fFogPower`, `eMode`, each `|` (names: Xbox `Sky`, same offsets). **Decoded.** |
 | 9 | `GLOBAL_DATA_ACTOR_CAUSES` | `ActorCause::SaveActorCausesList` `0066e6d0` | Not decoded. |
-| 10 | `GLOBAL_DATA_RADIO` | `FalloutRadio::SaveGame` `008366e0` | Not decoded. |
+| 10 | `GLOBAL_DATA_RADIO` | `FalloutRadio::SaveGame` `008366e0` | `u32|` (`011dd428`), `u8|` radio on (`011dd434`), `wstr` (`011dd448`); vsval count of station states (`00835f10`: refID `|`, four `u8|`); vsval count of stations playing (`00836600`: refID `|`, then `00836110`: four values, the lines left as a vsval-counted refID list, `u8|` and, if set, a dialogue list as in the high process); refID `|` tuned (`011dd42c`), refID `|` lost (`011dd430`); vsval count of discovered stations, refIDs `|` (`011dd59c`). **Decoded.** |
 | 11 | `GLOBAL_DATA_AUDIO` | `FalloutAudio::SaveGame` `0082ec40` | One refID `|`. |
 | 1000 | `GLOBAL_DATA_TEMP_EFFECTS` | `004534f0` (empty on PC) | Always size 0 on PC. |
 
@@ -182,24 +187,25 @@ Change flag names are `CHANGE_TYPE` (Xbox PDB). Bit 0x1
 | 9 | `QUST` | `0060e810` | 0x2 `QUEST_FLAGS`: `u8|` (`QuestFlag`: 0x01 enabled/running, 0x02 completed, 0x04 allow repeats, 0x08 allow repeated stages, 0x10 starts enabled, 0x20 shown in the HUD, 0x40 failed). 0x4 `QUEST_SCRIPT_DELAY`: `f32|`. 0x80000000 `QUEST_STAGES`: vsval stage count; per stage `u8 index|`, `u8 done|`, vsval item count, per item `u8 index|`, `u8 has log date|`, if so a `Date` (`u16` day of year, `u16` year) `|`. 0x40000000 `QUEST_SCRIPT`: script locals (below). 0x20000000 `QUEST_OBJECTIVES`: vsval count; per objective `u32 index|`, `u32 state|` (`QUEST_OBJECTIVE_STATE`: 0 dormant, 1 displayed, 2 completed, 3 completed and displayed). | **Decoded** |
 | 7 | `CELL` | `00555630` | 0x2 `CELL_FLAGS`: `u8|` (cell flags & 0x60 \| flags2). 0x80000000 `CELL_SEENDATA`: exterior 32 bytes `|` (`SeenData` `0087a0c0`); interior vsval count, per part two `u8|` and 32 bytes `|` (`IntSeenData` `0087a4e0`). 0x4 `CELL_FULLNAME`: `wstr`. 0x8 `CELL_OWNERSHIP`: refID `|`. 0x40000000 `CELL_DETACHTIME`, 0x20000000 / 0x10000000: initial data only. | **Decoded** |
 | 8 | `INFO` | `00484d60` | Flags only: 0x80000000 `TOPIC_SAIDONCE` has no data. | **Decoded** |
-| 10, 11 | `NPC_`, `CREA` | `00608f00`, `005fb330` | Actor base (`005f1f30`): 0x2 `ACTOR_BASE_DATA`: 24 bytes `|` (the `ACBS` data, level included); 0x10 `ACTOR_BASE_SPELLLIST`: two vsval-counted refID lists; 0x4 `ACTOR_BASE_ATTRIBUTES`: 7 bytes `|` (S.P.E.C.I.A.L.); 0x8 `ACTOR_BASE_AIDATA`: 20 bytes `|`; 0x20 `ACTOR_BASE_FULLNAME`: `wstr`. `NPC_` then: 0x200 `NPC_SKILLS`: 28 bytes `|`; 0x400 `NPC_CLASS`: refID `|`; 0x2000000 `NPC_RACE`: two refIDs `|`; 0x800 `NPC_FACE`: face data (`00608f00`, not decoded); 0x1000000 `NPC_GENDER`: `u8|`. | **Decoded** but `NPC_FACE` and `CREA` |
+| 10, 11 | `NPC_`, `CREA` | `00608f00`, `005fb330` | Actor base (`005f1f30`): 0x2 `ACTOR_BASE_DATA`: 24 bytes `|` (the `ACBS` data, level included); 0x10 `ACTOR_BASE_SPELLLIST`: two vsval-counted refID lists; 0x4 `ACTOR_BASE_ATTRIBUTES`: 7 bytes `|` (S.P.E.C.I.A.L.); 0x8 `ACTOR_BASE_AIDATA`: 20 bytes `|`; 0x20 `ACTOR_BASE_FULLNAME`: `wstr`. `NPC_` then: 0x200 `NPC_SKILLS`: 28 bytes `|`; 0x400 `NPC_CLASS`: refID `|`; 0x2000000 `NPC_RACE`: two refIDs `|`; 0x800 `NPC_FACE`: `u8|`, the FaceGen coefficients as `f32|` (geometry symmetric and asymmetric, texture symmetric and asymmetric; the counts are the NPC's own arrays at run time, the record's `FGGS`/`FGGA`/`FGTS` sizes 50, 30, 50, 0), two refIDs `|`, two 4-byte values `|`, a vsval-counted refID list; 0x1000000 `NPC_GENDER`: `u8|`. `CREA` 0x200: three `u8|`. | **Decoded**; `NPC_FACE` from code (no file has it) |
 | 34 | `FACT` | `005fd690` | 0x4 `FACTION_REACTIONS`: vsval count, per entry refID `|`, `i32|` modifier, `i32|` group reaction (`0048c9d0`). 0x2 `FACTION_FLAGS`: `u32|`. 0x80000000 `FACTION_CRIME_COUNTS`: `i32|` major, `i32|` minor (`iMajorCrime`, `iMinorCrime`). | **Decoded** |
 | 33 | `CLAS` | `005f7150` | 0x2 `CLASS_TAG_SKILLS`: `4 × i32|` actor values (−1 unused). | **Decoded** |
 | 50 | `CHAL` | `005f5780` | Always `i32|` `iProgress`, `i32|` `nProgressFlags` (`CHALLENGE_PROGRESS`). | **Decoded** |
 | 43 | `REPU` | `00616660` | Always `f32|` fame (`fPositiveValue`), `f32|` infamy (`fNegativeValue`). | Read from code; no file has one yet |
-| 37 | `FLST` | `00590080` | 0x80000000 `FORM_LIST_ADDED_FORM`: `u32 count|` then `count` refIDs `|` (the forms added in game). | Read from code |
-| 38 to 40 | `LVLC`, `LVLN`, `LVLI` | `0050adb0` | 0x80000000 `LEVELED_LIST_ADDED_OBJECT`. | Located |
-| 16, 22, 28, 27, 47, 53 | `BOOK`, `MISC`, `KEYM`, `AMMO`, `CHIP`, `CMNY` | `00515340`, `0051b0d0`, `00504450` | 0x2 `BASE_OBJECT_VALUE`: `u32|` (`0048ea40`); `BOOK` 0x20 `BOOK_TEACHES_SKILL`: `u8|`. | Read from code |
-| 15, 17, 21, 26, 42 | `ARMO`, `CLOT`, `LIGH`, `WEAP`, `IMOD` | `005144c0`, `0050e5c0`, `005230f0`, `0051a600` | Not looked into. | Located |
-| 12, 25, 13, 14 | `ACTI`, `FURN`, `TACT`, `TERM` | `00511860`, `004ff800`, `00501b90` | `TACT` 0x800000 `TALKING_ACTIVATOR_SPEAKER`. | Located |
-| 32 | `ECZN` | `00526410` | 0x2 `ENCOUNTER_ZONE_FLAGS`, 0x80000000 `ENCOUNTER_ZONE_GAME_DATA`. | Located |
-| 35 | `PACK` | `006797c0` | 0x80000000 `PACKAGE_NEVER_RUN`, 0x40000000 `PACKAGE_WAITING`. | Located |
-| 41 | `WATR` | `005806e0` | 0x80000000 `WATER_REMAPPED`. | Located |
-| 31 | `NOTE` | `00484d60` | Flags only: 0x80000000 `NOTE_READ`. | Read from code |
-| 18 to 20, 23, 24, 29, 30, 36, 44 to 46, 48, 49, 51, 52, 54 | `CONT`, `DOOR`, `INGR`, `STAT`, `MSTT`, `ALCH`, `IDLM`, `NAVM`, `PCBE`, `RCPE`, `RCCT`, `CSNO`, `LSCT`, `AMEF`, `CCRD`, `CDCK` | `00484d60` or small | Form flags (`LSCT`, `CCRD`: `0059add0`). | Located |
-| 0 | `REFR` | `00562230` | 0x10 `REFR_SCALE`: `f32|`. Extra data list (`ExtraDataList::SaveGame` `00426a30`) when any of 0xA4021C40 is set (0xA4061840 for actors): 0x40 `EXTRA_OWNERSHIP`, 0x400 `OBJECT_EXTRA_ITEM_DATA`, 0x800 `OBJECT_EXTRA_AMMO`, 0x1000 `OBJECT_EXTRA_LOCK`, 0x20000 `DOOR_EXTRA_TELEPORT`, 0x4000000 `EXTRA_ACTIVATING_CHILDREN`, 0x20000000 `EXTRA_ENCOUNTER_ZONE`, 0x80000000 `EXTRA_GAME_ONLY` (actors: 0x800 `ACTOR_EXTRA_PACKAGE_DATA`, 0x1000 `MERCHANT_CONTAINER`, 0x20000 `DISMEMBERED_LIMBS`, 0x40000 `LEVELED_ACTOR`). 0x20 `REFR_INVENTORY` or 0x8000000 `REFR_LEVELED_INVENTORY`: inventory (`004d4090`, `InventoryChanges::SaveGame`). 0x10000000 `REFR_ANIMATION` (not actors): vsval length and animation data (`00563650`). 0x2 `REFR_MOVE`, 0x4 `REFR_HAVOK_MOVE`, 0x8 `REFR_CELL_CHANGED` are initial data. 0x400000 / 0x800000 `OBJECT_OPEN_DEFAULT_STATE` / `OBJECT_OPEN_STATE`, 0x200000 `OBJECT_EMPTY` and 0x40000000 `EXTRA_CREATED_ONLY` are outside this function's masks; where (if anywhere) they add data is not traced. | Header and initial data decoded; extra data, inventory, animation not decoded |
-| 1, 2 | `ACHR`, `ACRE` | `008d33a0`, `008aaf40` | `Actor::SaveGame` (`008aaf40`) starts with `MobileObject::SaveGame` (`00932880`): `u8|` process level (0xFF none), the `REFR` data above, twelve `u8`/`u32` fields `|`, two refIDs `|`, then the process's own `SaveGame` (process vtable +0x54C). The actor part then writes a fixed run of fields `|` and three refIDs `|` whatever the flags, then 0x400 `ACTOR_LIFESTATE`: `u8|`; 0x80000 `ACTOR_DISPOSITION_MODIFIERS`: vsval count, per entry refID `|`, 4 bytes `|`; 0x800000 `ACTOR_PERMANENT_MODIFIERS` and 0x400000 `ACTOR_OVERRIDE_MODIFIERS`: a modifier list each (`00937b50`); then the `SaveGame` of the object at +0x190. `Character` (`008d33a0`) adds two `u8|`; the player has `PlayerCharacter::SaveGame` `009590f0` (4.8 KB; its Xbox counterpart calls `CharacterProgression::SaveGame`). | Initial data decoded; the rest not decoded |
-| 3 to 6 | `PMIS`, `PGRE`, `PBEA`, `PFLA` | `009baaa0`, `00979bb0`, `009b3eb0` | Projectiles in flight. | Located |
+| 37 | `FLST` | `00590080` | 0x80000000 `FORM_LIST_ADDED_FORM`: `u32 count|` (not a vsval) then `count` refIDs `|` (the forms added in game). | From code |
+| 38 to 40 | `LVLC`, `LVLN`, `LVLI` | `0050adb0` | 0x80000000 `LEVELED_LIST_ADDED_OBJECT` (`00488c50`): vsval count; per entry refID `|`, `u16|` level, `u16|` count, `f32|` health (−1 none). | From code |
+| 16, 22, 28, 27, 47, 53 | `BOOK`, `MISC`, `KEYM`, `AMMO`, `CHIP`, `CMNY` | `00515340`, `0051b0d0`, `00504450` | 0x2 `BASE_OBJECT_VALUE`: `u32|` (`0048ea40`); `BOOK` 0x20 `BOOK_TEACHES_SKILL`: `u8|`. | From code |
+| 15, 17, 21, 26, 42 | `ARMO`, `CLOT`, `LIGH`, `WEAP`, `IMOD` | `005144c0`, `0050e5c0`, `005230f0`, `0051a600` | Form flags and 0x2 `BASE_OBJECT_VALUE` `u32|` only. | From code |
+| 12, 25, 13, 14 | `ACTI`, `FURN`, `TACT`, `TERM` | `00511860` (`ACTI`, `FURN`, `TERM` through `00501b90`), `004ff800` (`TACT`) | 0x4 `BASE_OBJECT_FULLNAME`: `wstr`; `TACT` then 0x800000 `TALKING_ACTIVATOR_SPEAKER`: refID `|`. | From code |
+| 32 | `ECZN` | `00526410` | 0x2 `ENCOUNTER_ZONE_FLAGS`: `u8|`; 0x80000000 `ENCOUNTER_ZONE_GAME_DATA`: 16 bytes `|`. | From code |
+| 35 | `PACK` | `006797c0` | Nothing for a package from a plugin (the writer only saves packages made in game, as in [Packages](#packages)). | From code |
+| 41 | `WATR` | `005806e0` | 0x80000000 `WATER_REMAPPED`: refID `|`. | From code |
+| 31 | `NOTE` | `00484d60` | Flags only: 0x80000000 `NOTE_READ`. | From code |
+| 18 to 20, 23, 29, 30, 36, 45, 46, 48, 49, 51, 52, 54 | `CONT`, `DOOR`, `INGR`, `STAT`, `ALCH`, `IDLM`, `NAVM`, `RCPE`, `RCCT`, `CSNO`, `LSCT`, `AMEF`, `CCRD`, `CDCK` | `00484d60` (`LSCT`, `CCRD`: `0059add0`) | Form flags only. | From code |
+| 24, 44 | `MSTT`, `PCBE` | ? | Their classes' `SaveGame` wasn't found; the reader reports them as not decoded. | Not decoded |
+| 0 | `REFR` | `00562230` | Form flags, then 0x10 `REFR_SCALE`: `f32|`; the [extra data list](#extra-data) when any of 0xA4021C40 is set (0xA4061840 for actors; the table there says which extra types each flag brings); 0x20 `REFR_INVENTORY` or 0x8000000 `REFR_LEVELED_INVENTORY`: the [inventory](#inventories); 0x10000000 `REFR_ANIMATION` (not actors): vsval length and the animation's own data (`00563650`), kept whole. 0x2 `REFR_MOVE`, 0x4 `REFR_HAVOK_MOVE`, 0x8 `REFR_CELL_CHANGED` are initial data. 0x400000 / 0x800000 `OBJECT_OPEN_DEFAULT_STATE` / `OBJECT_OPEN_STATE` and 0x200000 `OBJECT_EMPTY` add no data. | **Decoded** |
+| 1, 2 | `ACHR`, `ACRE` | `008d33a0`, `008aaf40` | [Mobile object, actor and mover](#actors); the player's reference adds [its own data](#the-player). `ACHR` (`Character`, `008d33a0`) ends with two `u8|`; `ACRE` (`Creature`) uses `Actor::SaveGame` itself. | **Decoded** |
+| 3 to 6 | `PMIS`, `PGRE`, `PBEA`, `PFLA` | `009baaa0`, `00979bb0`, `00979bb0`, `009b3eb0` | [Projectiles](#projectiles) in flight. | **Decoded** (`PMIS`, `PGRE`); `PBEA`, `PFLA` from code |
 
 **Script locals** (`ScriptLocals` (Xbox PDB), `005a9db0`; read by
 `005a9f20`): vsval count; per variable `u32 id|` and either `f64|` (a
@@ -212,6 +218,190 @@ decoded types; the other loaders read the version-27 layout written above.
 On loading a quest, its current stage is not read from the file: it is set
 to the highest stage marked done (`0060d670`).
 
+### Extra data
+
+`ExtraDataList::SaveGame` (Xbox PDB), `00426a30`: a vsval count, then
+per entry `u8|` the extra type (`EXTRA_DATA_TYPE` (Xbox PDB)) and its
+data. An entry is written only if the change flags meet the type's mask
+in the table at `01183d30` (one `u32` per type); a mask with 0x40000000
+is for created references only, and `EXTRA_ASHPILE_REF` is skipped for
+one kind of buffer. Inside an inventory the flags are forced to 0x400.
+The switch's jump table is at `00427ef0` (index `00427fe4`).
+
+| Type | Name | Saved under | Data |
+| --- | --- | --- | --- |
+| 0x0D | `SCRIPT` | 0x80000400 | refID `|` script, then [script locals](#change-flags-and-data-by-type) |
+| 0x16 | `WORN` | 0x400 | none |
+| 0x18 | `PACKAGESTARTLOC` | 0x800 | refID `|`, 12 bytes `|` position, `f32|` |
+| 0x19 | `PACKAGE` | 0x80000000 | two refIDs `|`, `u32|`, three `u8|` |
+| 0x1A | `TRESPASS_PACKAGE` | 0x80000000 | refID `|`; if not 0, the trespass package's `SaveGame` (`009f9790`) — from code |
+| 0x1B | `RUN_ONCE_PACKAGES` | 0x80000000 | vsval count, per entry refID `|`, `u8|` |
+| 0x1C | `REFERENCE_POINTER` | 0x400 | refID `|` |
+| 0x1D | `FOLLOWER` | 0x800 | vsval count of refIDs `|` |
+| 0x1E | `LEVCREA_MOD` | 0x40000000 | `u32|` |
+| 0x1F | `GHOST` | 0x80000000 | none |
+| 0x21, 0x22 | `OWNERSHIP`, `GLOBAL` | 0x440 | refID `|` |
+| 0x23 | `RANK` | 0x440 | `i32|` |
+| 0x24 | `COUNT` | 0x400 | `i16|` |
+| 0x25, 0x27, 0x28 | `HEALTH`, `TIMELEFT`, `CHARGE` | 0x400 | `f32|` |
+| 0x26 | `USES` | 0x400 | `u8|` |
+| 0x29 | `LIGHT` | 0x400 | none: the switch has no case for it (it logs "Unknown extra data type") |
+| 0x2A | `LOCK` | 0x1000 | `REFR_LOCK` (Xbox PDB): `u8|` `cBaseLevel`, `u8|` `cFlags` (0x1 locked), refID `|` key, `u32|` `uiNumTries`, `u32|` `uiTimesUnlocked` |
+| 0x2B | `TELEPORT` | 0x20000 | `DoorTeleportData` (`0043aa40`): 12 bytes `|` position, 12 bytes `|` rotation, `u8|` flags, refID `|` linked door |
+| 0x2C | `MAPMARKER` | 0x80000000 | `u8|` `MapMarkerData::cFlags` (0x1 visible, 0x2 can travel to) |
+| 0x2E | `LEVELEDCREATURE` | 0x40000 | refID `|` leveled base, refID `|` the base made from it, `u32|` that base's change flags, then that base's change data as an `NPC_` (for `ACHR`) or `CREA` change form with those flags |
+| 0x2F | `LEVELITEM` | 0x400 | `u32|`, `u8|` |
+| 0x30 | `SCALE` | 0x400 | `f32|` |
+| 0x32 | `MAGICCASTER` | 0x80000000 | three refIDs `|` |
+| 0x33 | `MAGICTARGET` | 0x80000000 | refID `|`, then an [active effect list](#actors) |
+| 0x35 | `PLAYERCRIMELIST` | 0x80000000 | vsval count, per entry two 4-byte values `|` |
+| 0x39, 0x3C, 0x3F, 0x46, 0x49, 0x55, 0x6C, 0x74, 0x89 | `ITEMDROPPER`, `MERCHANTCONTAINER`, `POISON`, `HEAD_TRACK_TARGET`, `STARTINGWORLDORCELL`, `TALKING_ACTOR`, `OPENCLOSEACTIVATE_REF`, `ENCOUNTERZONE`, `ASHPILE_REF` | 0x80000000; `MERCHANTCONTAINER` 0x1000; `POISON`, `STARTINGWORLDORCELL` 0x400; `ENCOUNTERZONE` 0x20000000 | refID `|` |
+| 0x3E | `CANNOTWEAR` | 0x400 | none |
+| 0x45 | `FRIEND_HITS` | 0x80000000 | vsval count of 4-byte times `|` (`009a5f90`) |
+| 0x4A, 0x4E, 0x8D | `HOT_KEY`, `NO_RUMORS`, `WEAPON_MOD_SLOTS` | 0x400; `NO_RUMORS` 0x80000000 | `u8|` |
+| 0x4D | `INFO_GENERAL_TOPIC` | 0x80000000 | `wstr`, five `u8|`, four refIDs `|` (`0083fb10`) |
+| 0x50 | `TERMINALSTATE` | 0x80000000 | `u8|` flags, `u8|` lock level |
+| 0x54, 0x56, 0x5C, 0x5D, 0x60 | `ACTIVATE_REF_CHILDREN`, `OBJECT_HEALTH`, `RADIUS`, `RADIATION`, `ACTOR_CAUSE` | 0x4000000; 0x80000000; 0x40000000; 0x40000000; 0x80000000 | a 4-byte value `|` |
+| 0x5B | `MODEL_SWAP` | 0x80000000 | refID `|`, `u32|` |
+| 0x5E | `FACTION_CHANGES` | 0x80000000 | vsval count, per entry refID `|` faction, `i8|` rank |
+| 0x5F | `DISMEMBERED_LIMBS` | 0x20000 | `u16|`, two 4-byte values `|`, `u8|`, refID `|`, vsval count of entries: four `u8|` and a vsval-counted refID list |
+| 0x6E | `AMMO` | 0x800 | refID `|`, `i32|` count |
+| 0x70 | `PACKAGE_DATA` | 0x80000000 | `u8|` package type (0xFF none), then that [actor package data](#packages) |
+| 0x73 | `SAY_ONCE_A_DAY_TOPIC_INFO` | 0x80000000 | vsval count, per entry refID `|`, two 4-byte values `|` |
+| 0x75 | `SAY_TO_TOPIC_INFO` | 0x80000000 | two refIDs `|`, `u8|` |
+| 0x7C | `GUARDED_REF_DATA` | 0x80000000 | vsval count of refIDs `|` |
+| 0x8B | `FOLLOWER_SWIM_BREADCRUMBS` | 0x80000000 | 12 bytes `|`, refID `|`, `u32|`, vsval count of (12 bytes, refID, 12 bytes, refID, `u8`, each `|`) |
+| 0x8F | `SECURITRON_FACE` | 0x80000000 | two `wstr` |
+| 0x92 | `SPECIAL_RENDER_FLAGS` | 0x80000000 | two 4-byte values `|` |
+
+Seen in the nine files: `SCRIPT`, `COUNT`, `HEALTH`, `LEVELITEM`, `LOCK`,
+`MAPMARKER`, `ENCOUNTERZONE`, `GUARDED_REF_DATA`, `SPECIAL_RENDER_FLAGS`,
+`LEVELEDCREATURE` (some 20,000 times) and `PACKAGE_DATA`; the rest from
+code.
+
+### Inventories
+
+`InventoryChanges::SaveGame` (Xbox PDB), `004d4090`: a vsval count of
+item changes; each (`ItemChange::SaveGame`, `004bed60`) is refID `|` of
+the item, `i32|` how many more (or fewer) than the base record holds, and
+a vsval count of extra data lists, one per stack that has extra data
+(`COUNT`, `HEALTH`, `WORN`, `SCRIPT`, ...), each written with the change
+flags set to 0x400.
+
+### Actors
+
+`MobileObject::SaveGame` (`00932880`), for actors and projectiles:
+
+1. `u8|` the process level (`PROCESS_LEVEL`: 0 high, 1 middle high,
+   2 middle low, 3 low; 0xFF no process).
+2. The `REFR` data (form flags, scale, extra data, inventory; no
+   animation for actors).
+3. Eight `u8|`, two 4-byte values `|`, two `u8|`, two refIDs `|`.
+4. The process's `SaveGame` (vtable +0x54C), each level calling the one
+   below first:
+   - `BaseProcess` (`008d0f30`): three 4-byte values `|`, then the
+     running package (`ActorPackage`, `008c65d0`): refID `|` of the
+     package; if not 0: for a package made in game `u8|` its type and,
+     unless 0xFF, its [`SaveGame`](#packages); `u8|` the per-actor
+     package data's type and, unless 0xFF, that data; three 4-byte
+     values `|` and a refID `|`.
+   - `LowProcess` (`00910450`): `u8|`, `u32|`, refID `|`, three 4-byte
+     values `|`, `u8|`, `u16|`, a time and value (`009a5eb0`, two 4-byte
+     values `|`), five refIDs `|`, a vsval-counted refID list, and with
+     0x200000 `ACTOR_DAMAGE_MODIFIERS` a modifier list.
+   - `MiddleLowProcess` (`0092ea30`): `u32|`; with 0x100000
+     `ACTOR_TEMP_MODIFIERS` a modifier list.
+   - `MiddleHighProcess` (`00926a20`): 37 fixed values `|`, four refIDs
+     `|`, `u32|`, a vsval-counted refID list, a second running package
+     (as above), with `REFR_ANIMATION` a vsval-sized animation block, the
+     active effects (`00806a10`: vsval count; per effect refID `|` of
+     the magic item, `u8|` effect index, vsval effect type and a
+     vsval-sized block of the effect's own data, `00806840`), three
+     refIDs `|`, a vsval count of (refID, two 4-byte values, six `u8`,
+     each `|`) (`00913d60`).
+   - `HighProcess` (`008fc4f0`): 64 fixed values `|`, seven refIDs `|`,
+     six (refID, `u8`) `|`, three vsval-counted refID lists, `u8|` and if
+     set a dialogue list (`0083ce40`: vsval count of items, each two
+     `wstr`, two 4-byte values, `u8`, three refIDs; then `u16|` and four
+     refIDs `|`), a vsval count of path avoid nodes with two values and
+     two refIDs, two vsval-counted lists of queued items (`008d7070`),
+     `u8|` and if set five values and a refID (`008d7270`), and a
+     vsval-sized block (`00928880`).
+
+`Actor::SaveGame` (`008aaf40`) then writes 31 fixed values `|` and three
+refIDs `|`; 0x400 `ACTOR_LIFESTATE`: `u8|` (`ACTOR_LIFE_STATE`: 0
+alive, 1 dying, 2 dead, 3 unconscious, ...); 0x80000
+`ACTOR_DISPOSITION_MODIFIERS`: vsval count, per entry refID `|` and 4
+bytes `|`; 0x800000 `ACTOR_PERMANENT_MODIFIERS` and 0x400000
+`ACTOR_OVERRIDE_MODIFIERS`: a modifier list each (`ModifierList`,
+`00937b50`: vsval count, per entry `u8|` actor value and `f32|`); then
+the mover (`pActorMover`, +0x190 on PC, vtable +0x28):
+
+- `ActorMover::SaveGame` (`009df100`): 19 fixed values `|`, the failed
+  path destination (`PathingLocation::SaveGame`, `006def40`: 12 bytes
+  `|`, three refIDs `|`, `u32|`, `u16|`, two `u8|`), refID `|` of the
+  detection door, and `u8|` parts: 0x1 a pathing request (`u8|` its
+  type, then `PathingRequest::SaveGame` `006e3230` — two pathing
+  locations, 24 fixed values, a vsval count of avoid nodes (`006dc890`:
+  `u8|` kind, two 4-byte values, 12 bytes, and 12 more for kind 1) — and
+  the subclass's part: types 0 and 1 none, 2 and 7 two 4-byte values, 3
+  one, 4 a pathing location and a value, 5 a list of points and three
+  values, 6 two values and a refID, 8 nine values and two lists); 0x2 a
+  pathing solution (`006e8b10`); 0x4 a virtual path handler (three
+  values, `009eb390`) or, with 0x8, a detailed one (`009e8f80`). The
+  player's `PlayerMover` (`009ea5a0`) adds 12 bytes and three values.
+
+Member names come from the Xbox prototype; for `MobileObject`, `Actor`
+and `PlayerCharacter` a PC offset is the Xbox one less 0x10.
+
+### Packages
+
+nv-rs re-evaluates AI on loading, so these are only read past. The per-
+actor package data (`ActorPackageData` subclasses, type vtable +0x8,
+saved by vtable +0xC) by package type: 2 escort (`009f0bb0`), 12 sandbox
+(`009f5a60`), 13 patrol (`009f33d0`), 14 guard (`009f2850`), 16 use
+weapon (nothing). A package made in game is saved by its class's
+`SaveGame`, the class `TESPackage::CreatePackage` (`00670b90`) makes for
+the type (`PTYPE` (Xbox PDB)): 18 `CombatController` (`009819f0`: the
+package, two refIDs, a value, the combat state `009a17a0`, two combat
+procedures and a list of them — `CombatProcedure` subclasses, type
+vtable +0x34, saved by vtable +0x38 — and the planner `009948f0`), 21
+`AlarmPackage` (`009ecec0`), 22 `FleePackage` (`009f2380`), 23
+`TrespassPackage` (`009f9790`), 24 `SpectatorPackage` (`009f87d0`), 15
+and 28 `DialoguePackage` (`009f01d0`), 39 `BackUpPackage` (`009edb60`),
+others `TESPackage` (`006797c0`: 12 bytes, `u8|` parts — location
+`0067fb60`, target `00680720`, data by type — and a value). The files
+hold combat controllers (three, in the quicksave); the others are from
+code.
+
+### The player
+
+`PlayerCharacter::SaveGame` (`009590f0`) writes, before
+`Character::SaveGame`, three lists of 77 `f32|` actor values
+(`TemporaryActorValueModifiers`, `ScriptActorValueModifiers`,
+`DamageActorValueModifiers`) and `fHealthModifier`; after it, with
+`REFR_ANIMATION` a vsval-sized block, then 55 fixed values, the five
+`pCrimeCounts`, `u8|` and `u32|` (`008d56c0`), eleven refIDs `|`
+(`pActiveQuest` first), and vsval-counted lists: `listTopics` (refIDs),
+`listNotes` (refIDs), `RockItLauncherAmmoList` (item changes),
+perceived actors (refID, two `u8`), **`Perks`** (refID `|`, `u8|`
+rank), actions (two values, refID), casino data (two values, `u16`),
+inactive and active caravan cards (refIDs), then five caravan totals,
+`listQuestLog` (refID, two `u8`), `listObjectives` (refID, `u32`), the
+active effects, three values, `CompanionPerks` (refID, `u8`), three
+`u8|`, the eight hot keys as plain `u32|` form ids, and four refID lists
+kept outside the player (`005aa930`).
+
+### Projectiles
+
+`Projectile::SaveGame` (`009c4ff0`): the mobile object (no process in
+any file seen), nine 4-byte values `|`, three refIDs `|`, twelve more
+values `|` (a 16-byte one from `00865ee0` among them), `u8|` and if set
+an item change, a vsval count of impacts (two 12-byte values, two
+4-byte, `u8`, two `u16`, refID, each `|`), `u8|`. `MissileProjectile`
+(`009baaa0`) adds `u32|`, `FlameProjectile` (`009b3eb0`) two;
+`GrenadeProjectile` and `BeamProjectile` (`00979bb0`) nothing.
+
 ### What the nine files hold
 
 Per save (first named save as the example): 3,898 change forms, of which
@@ -219,6 +409,9 @@ Per save (first named save as the example): 3,898 change forms, of which
 `NPC_`, 2 `CHAL`, 1 `CLAS`, 1 `FACT`; 8,225 form ids; 172 globals; 43 misc
 stats. Other saves add `PMIS`/`PGRE` (projectiles in flight). All 301 quest
 change forms have `QUEST_SCRIPT`; 6 or 7 have stages and 3 have objectives.
+Of the actors, most have a low process (level 3) or none; a few dozen per
+file have middle or high processes, and the quicksave has three running
+combat controllers.
 
 ## Scope: what nv-rs needs to continue a game
 
@@ -243,18 +436,21 @@ it is in a `.fos`, and how far this research got.
 | Reputations (`reputations`) | `REPU` (fame, infamy) | Layout read from code, untested (no file has one) |
 | Challenges (`more` challenge progress) | `CHAL` | Decoded |
 | Local map fog (`seen`) | `CELL` 0x80000000 | Decoded (bits not mapped onto `local_map::Seen` yet) |
-| Weather (`weather`) | Global data 8 | Located (nv-rs already reads `0063e9f0`'s format for its own save) |
+| Weather (`weather`) | Global data 8 | Decoded |
 | References moved (`positions`, `spaces`), Havok-moved (`havok_moved`) | Initial data 4 / 6, Havok block | Decoded (initial data); Havok block located |
 | References disabled (`disabled`), deleted | The form flags word of `CHANGE_FORM_FLAGS` | Decoded (the word); which bit means disabled or deleted at run time is not traced yet |
 | Scale (`scales`) | `REFR` 0x10 | Decoded |
-| Inventory and container contents (`items`, `stocked`), equipped (`equipped`), weapon condition (`weapon_health`) | `REFR`/`ACHR` 0x20 / 0x8000000 (`InventoryChanges::SaveGame`, `ItemChange::SaveGame`) | **Not decoded** |
-| Locks (`locks`, `broken_locks`), door teleports, ownership (`set_by_scripts`), open state | Extra data list (`00426a30`) | **Not decoded** |
-| Dead, health lost, actor values (`dead`, `damage`, `actor_values`, `value_damage`) | `ACHR`/`ACRE` `Actor::SaveGame`: life state, modifier lists | **Not decoded** |
-| Perks and ranks, skill points, experience (`perks`, `perk_ranks`, `skill_points`), map markers found (`discovered`, `map_markers`), active quest, hot keys, karma, radio (`radio`) | `PlayerCharacter::SaveGame` `009590f0`; global data 10 (radio) | **Not decoded** |
-| Active effects (`active_effects`) | Global data 7 and actors' process data | **Not decoded** |
-| Packages, combat, AI process state | Process data in `ACHR`/`ACRE`, global data 4, 5 | **Not decoded**; nv-rs re-evaluates packages on load anyway |
+| Inventory and container contents (`items`, `stocked`), equipped (`equipped`), weapon condition (`weapon_health`) | `REFR`/`ACHR` 0x20 / 0x8000000 (`InventoryChanges::SaveGame`, `ItemChange::SaveGame`): count changes and stacks' `COUNT`, `HEALTH`, `WORN` | Decoded |
+| Locks (`locks`, `broken_locks`), door teleports, ownership (`set_by_scripts`), open state | Extra data `LOCK`, `TELEPORT`, `OWNERSHIP`; the open state is the change flag 0x800000 itself | Decoded |
+| Dead, health lost, actor values (`dead`, `damage`, `actor_values`, `value_damage`) | `ACHR`/`ACRE` `Actor::SaveGame`: life state, permanent and override modifiers, the processes' damage and temporary modifiers; the player's three actor value lists | Decoded |
+| Perks and ranks, active quest, hot keys, notes (`perks`, `perk_ranks`, `active_quest`, `hotkeys`, `notes`) | `PlayerCharacter::SaveGame` `009590f0` | Decoded |
+| Map markers found (`discovered`, `map_markers`) | Each marker reference's `MAPMARKER` extra data (flags 0x1 visible, 0x2 can travel) | Decoded |
+| Radio (`radio`) | Global data 10 | Decoded |
+| Skill points, experience, karma | Actor values: the player's base (`NPC_` data) and modifier lists | Decoded as values; which actor value each is comes from `world` |
+| Active effects (`active_effects`) | Global data 7 and actors' process data (per effect its magic item, index and type; the effect's own data is a sized block) | Located (blocks not interpreted) |
+| Packages, combat, AI process state | Process data in `ACHR`/`ACRE`, global data 4, 5 | Decoded (read past); global data 4 and 5 not decoded. nv-rs re-evaluates packages on load anyway |
 | Created references (`more` made references) | Initial data 5 (base object, place); their own extra data | Initial data decoded |
-| Form lists and leveled lists changed by scripts (`set_by_scripts`) | `FLST`, `LVLx` 0x80000000 | Located |
+| Form lists and leveled lists changed by scripts (`set_by_scripts`) | `FLST`, `LVLx` 0x80000000 | Decoded from code (no file has them) |
 
 What nv-rs is missing to take a `.fos` at all:
 
@@ -275,15 +471,13 @@ What nv-rs is missing to take a `.fos` at all:
 
 ## Next steps
 
-1. `ExtraDataList::SaveGame` (`00426a30`) and `InventoryChanges::SaveGame`
-   (`004d4090`, `ItemChange::SaveGame` (Xbox PDB)): containers, locks,
-   ownership, inventories. With them every `REFR` change form decodes to its
-   length (the inspector's check).
-2. `Actor::SaveGame` (`008aaf40`), `MobileObject::SaveGame` (`00932880`),
-   the process `SaveGame`s and `PlayerCharacter::SaveGame` (`009590f0`).
-3. An importer from the decoded parts into `GameState` (quests, globals,
-   stats, player place, faction crimes, challenges), checked by loading a
-   real save in the viewer and comparing with the original game.
+1. An importer from the decoded parts into `GameState`, checked by loading
+   a real save in the viewer.
+2. Global data 4 to 7 and 9 (process lists, combat, interface, effects,
+   actor causes) if anything in nv-rs comes to need them.
+3. A save that has the parts read from code only (`NPC_FACE`, created
+   packages other than combat, form and leveled list additions,
+   reputations) to confirm them.
 
 ## Reader and inspector
 
@@ -293,9 +487,12 @@ location table says and the history block ends the file, so a parsed save
 accounts for every byte. `fos::decode` reads quests (stages, log dates,
 script locals, objectives), globals, misc statistics, the location data,
 initial data and the Havok block of references, cells (both seen data
-layouts), topics, notes, actor bases (not `NPC_FACE`), factions, classes,
-challenges and reputations; `decode::coverage` says whether a change form
-decodes to exactly its length, is not decoded yet, or fails. Tests build
+layouts), topics, notes, actor bases, factions, classes, challenges and
+reputations, references' extra data and inventories, actors with their
+processes and movers, the player, projectiles, the small base form types,
+the weather and the radio; `decode::coverage_of` says whether a change
+form decodes to exactly its length, is not decoded (`MSTT`, `PCBE`), or
+fails. Tests build
 synthetic saves with the test-only writer `fos::write` (feature `write`);
 no real save is in the repository.
 
@@ -303,14 +500,12 @@ no real save is in the repository.
 table, the global data, the change forms counted by type and by change
 flag (with the Xbox names) and how many decode exactly, the quests with
 stages or objectives (current stage, stages done, objectives), the
-globals, the misc statistics, the player's place, and the file's bytes
-part by part. With a plugin (`FalloutNV.esm`) forms from it get their
+globals, the misc statistics, the player's place, active quest, perks
+and inventory, the weather and the radio, and the file's bytes part by
+part. With a plugin (`FalloutNV.esm`) forms from it get their
 editor IDs. It exits with an error if any decodable change form doesn't
 decode to its length.
 
 Run on all nine real saves (2026-10-07): every one parses with every byte
-accounted for, no change form fails, and between 438 and 732 change forms
-per save decode exactly (all quests, cells, topics, actor bases, factions,
-classes and challenges, and the references with no extra data, inventory
-or animation); the rest are references, actors and projectiles whose
-extra data, inventory and actor state aren't decoded yet.
+accounted for, and every change form decodes to exactly its length (3,585
+to 4,509 per file; none not decoded, none failed).

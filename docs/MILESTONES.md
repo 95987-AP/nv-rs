@@ -595,11 +595,17 @@ byte-for-byte against nine real saves: [FOS_SAVES.md](FOS_SAVES.md). Header,
 plugins, location table, all global data tables, change form records,
 form id and worldspace arrays decoded; quests, globals, misc stats, cells,
 topics, actor bases, factions, classes and challenges decode to their exact
-lengths. References' extra data, inventories and actor/player state are
-located, not decoded. Read-only reader `crates/fos` and `nvinspect fos
-<SAVE> [PLUGIN]`, run on all nine saves. **Next action:** decode
-`ExtraDataList::SaveGame` (`00426a30`) and inventories, then import the
-decoded parts into `GameState`.
+lengths. Read-only reader `crates/fos` and `nvinspect fos <SAVE> [PLUGIN]`,
+run on all nine saves.
+
+Part 2 (`claude/fos-import`): references' extra data (`00426a30`, the
+saved-under table `01183d30`), inventories (`004d4090`), mobile objects,
+actors, all four AI process levels, movers and pathing, packages made in
+game (the combat controller and its procedures), the player
+(`009590f0`: perks, active quest, hot keys, notes), projectiles, the
+small base form types, the weather and the radio decoded: every change
+form in all nine saves (36,322) decodes to its exact length, none skipped.
+**Next action:** import the decoded parts into `GameState`.
 
 ## Deferred
 

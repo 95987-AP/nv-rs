@@ -316,12 +316,15 @@ fn references_start_with_their_initial_data() {
     assert_eq!(start.havok, Some(&[1, 2, 3, b'|'][..]));
     assert_eq!(decode::coverage(cf), Coverage::Exact);
 
-    // Inventory isn't decoded.
+    // An empty inventory decodes; one cut short fails.
     let (bytes, _) = form(t::REFR, 0x20, vec![0, b'|']).build();
+    let save = Save::parse(&bytes).unwrap();
+    assert_eq!(decode::coverage(&save.change_forms[0]), Coverage::Exact);
+    let (bytes, _) = form(t::REFR, 0x20, vec![4, b'|']).build();
     let save = Save::parse(&bytes).unwrap();
     assert!(matches!(
         decode::coverage(&save.change_forms[0]),
-        Coverage::Skipped(_)
+        Coverage::Failed(_)
     ));
 }
 
@@ -385,12 +388,13 @@ fn small_types_decode() {
             .as_deref(),
         Some("Name")
     );
+    // A face cut short fails (`tests_refs` has a whole one).
     let (bytes, _) = form(t::NPC_, 0x800, vec![0, b'|']).build();
     let save = Save::parse(&bytes).unwrap();
-    assert_eq!(
+    assert!(matches!(
         decode::coverage(&save.change_forms[0]),
-        Coverage::Skipped("NPC_FACE")
-    );
+        Coverage::Failed(_)
+    ));
 
     // FACT: reactions, flags, crimes (major, minor).
     let mut p = PipeWriter::new();

@@ -68,6 +68,112 @@ impl PipeWriter {
         self
     }
 
+    /// Zero values of these sizes (each with its `|`).
+    pub fn zeros(&mut self, sizes: &[usize]) -> &mut Self {
+        for &n in sizes {
+            self.bytes(&vec![0; n]);
+        }
+        self
+    }
+
+    /// A pathing location with nothing set (`006def40`).
+    pub fn pathing_location(&mut self) -> &mut Self {
+        self.zeros(&[12])
+            .ref_id(0)
+            .ref_id(0)
+            .ref_id(0)
+            .zeros(&[4, 2, 1, 1])
+    }
+
+    /// What `MobileObject::SaveGame` writes after the reference's own data
+    /// for an object with no process (`00932880`).
+    pub fn mobile_tail(&mut self) -> &mut Self {
+        self.zeros(&[1, 1, 1, 1, 1, 1, 1, 1, 4, 4, 1, 1])
+            .ref_id(0)
+            .ref_id(0)
+    }
+
+    /// The fixed part of `Actor::SaveGame` before its flagged parts
+    /// (`008aaf40`).
+    pub fn actor_fixed(&mut self) -> &mut Self {
+        self.zeros(&[
+            4, 1, 1, 1, 1, 4, 1, 4, 1, 1, 1, 1, 1, 1, 4, 4, 4, 1, 1, 1, 4, 4, 1, 1, 4, 1, 4, 1, 4,
+            4, 4,
+        ])
+        .ref_id(0)
+        .ref_id(0)
+        .ref_id(0)
+    }
+
+    /// A mover standing still with no path (`009df100`; the player's
+    /// `PlayerMover` adds four values).
+    pub fn still_mover(&mut self, player: bool) -> &mut Self {
+        self.zeros(&[2, 2, 1, 4, 1, 4, 1, 1, 12, 12, 4, 1, 1, 1, 1, 1, 4, 4, 4])
+            .pathing_location()
+            .ref_id(0)
+            .u8(0);
+        if player {
+            self.zeros(&[12, 4, 4, 4]);
+        }
+        self
+    }
+
+    /// The player's data before `Character::SaveGame` (`009590f0`): three
+    /// lists of 77 actor value modifiers and the health modifier.
+    pub fn player_head(&mut self, script_values: &[(usize, f32)]) -> &mut Self {
+        for list in 0..3 {
+            for av in 0..77 {
+                let v = if list == 1 {
+                    script_values
+                        .iter()
+                        .find(|(i, _)| *i == av)
+                        .map_or(0.0, |v| v.1)
+                } else {
+                    0.0
+                };
+                self.f32(v);
+            }
+        }
+        self.f32(0.0)
+    }
+
+    /// The player's data after `Character::SaveGame` (`009590f0`), with
+    /// these perks (refID, rank), active quest and hot keys.
+    pub fn player_tail(
+        &mut self,
+        perks: &[(u32, u8)],
+        active_quest: u32,
+        hotkeys: [u32; 8],
+    ) -> &mut Self {
+        self.zeros(&[
+            1, 1, 1, 1, 4, 4, 4, 4, 1, 1, 4, 4, 1, 4, 1, 1, 1, 1, 4, 12, 4, 4, 4, 1, 4, 4, 4, 1, 4,
+            4, 1, 1, 4, 4, 4, 4, 1, 1, 1, 4, 4, 4, 4, 4, 4, 4, 4, 1, 1, 1, 1, 1, 1, 4, 4,
+        ]);
+        self.zeros(&[4, 4, 4, 4, 4]).zeros(&[1, 4]);
+        self.ref_id(active_quest);
+        for _ in 0..10 {
+            self.ref_id(0);
+        }
+        // Topics, notes, Rock-It ammo, perceived actors.
+        self.vsval(0).vsval(0).vsval(0).vsval(0);
+        self.vsval(perks.len() as u32);
+        for &(perk, rank) in perks {
+            self.ref_id(perk).u8(rank);
+        }
+        // Actions, casino data, caravan cards.
+        self.vsval(0).vsval(0).vsval(0).vsval(0);
+        self.zeros(&[4, 4, 4, 4, 4]);
+        // Quest log, objectives, effects.
+        self.vsval(0).vsval(0).vsval(0);
+        self.zeros(&[4, 4, 4]);
+        self.vsval(0);
+        self.zeros(&[1, 1, 1]);
+        for h in hotkeys {
+            self.u32(h);
+        }
+        self.vsval(0).vsval(0).vsval(0).vsval(0)
+    }
+
     pub fn finish(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.buf)
     }

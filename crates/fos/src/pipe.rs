@@ -58,6 +58,13 @@ impl<'a> Pipe<'a> {
         }
     }
 
+    /// `n` bytes with no `|` after them: a block whose size was written
+    /// before it (a vsval the writer filled in afterwards, `00865ff0`),
+    /// made of the inner writer's own values and bars.
+    pub fn raw(&mut self, n: usize) -> Result<&'a [u8]> {
+        self.take(n)
+    }
+
     /// `n` raw bytes and their `|`.
     pub fn bytes(&mut self, n: usize) -> Result<&'a [u8]> {
         let b = self.take(n)?;

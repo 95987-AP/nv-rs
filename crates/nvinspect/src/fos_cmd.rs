@@ -244,7 +244,7 @@ fn change_forms(out: &mut impl Write, save: &Save<'_>) -> Result<usize, CliError
         for bit in (0..32).map(|b| 1u32 << b).filter(|b| cf.flags & b != 0) {
             *c.flags.entry(bit).or_default() += 1;
         }
-        match decode::coverage(cf) {
+        match decode::coverage_of(cf, save.form_id(cf.ref_id)) {
             Coverage::Exact => c.exact += 1,
             Coverage::Skipped(_) => c.skipped += 1,
             Coverage::Failed(e) => {
@@ -459,6 +459,51 @@ fn player(out: &mut impl Write, save: &Save<'_>, names: Option<&Names>) -> Resul
         },
         Err(e) => writeln!(out, "  PlayerRef: FAILED: {e}")?,
     }
+    if let Ok(form) = decode::actor_form(cf, true) {
+        if let Some(p) = &form.player {
+            writeln!(
+                out,
+                "  active quest {}",
+                describe(save, names, p.active_quest)
+            )?;
+            let perks: Vec<String> = p
+                .perks
+                .iter()
+                .map(|(perk, rank)| format!("{} rank {rank}", describe(save, names, *perk)))
+                .collect();
+            writeln!(out, "  perks ({}): {}", perks.len(), perks.join(", "))?;
+            writeln!(out, "  notes {}, topics {}", p.notes.len(), p.topics.len())?;
+        }
+        let items = form
+            .actor
+            .mobile
+            .data
+            .inventory
+            .as_ref()
+            .map_or(0, Vec::len);
+        writeln!(out, "  inventory changes: {items}")?;
+    }
+    if let Some(Ok(sky)) = save.global_data(8).map(decode::sky) {
+        writeln!(
+            out,
+            "
+Weather: {} (fading out {}), default {}, override {}, {:.0}% in",
+            describe(save, names, sky.current),
+            describe(save, names, sky.last),
+            describe(save, names, sky.default),
+            describe(save, names, sky.override_weather),
+            sky.weather_pct * 100.0
+        )?;
+    }
+    if let Some(Ok(radio)) = save.global_data(10).map(decode::radio) {
+        writeln!(
+            out,
+            "Radio: {}, tuned to {}, {} stations discovered",
+            if radio.on { "on" } else { "off" },
+            describe(save, names, radio.active),
+            radio.discovered.len()
+        )?;
+    }
     Ok(())
 }
 
@@ -481,7 +526,16 @@ mod tests {
         for v in [10.0f32, 20.0, 30.0, 0.0, 0.0, 1.0] {
             place.extend_from_slice(&v.to_le_bytes());
         }
-        player.bytes(&place).u8(0xFF);
+        player
+            .bytes(&place)
+            .player_head(&[])
+            .u8(0xFF)
+            .mobile_tail()
+            .actor_fixed()
+            .still_mover(true)
+            .u8(0)
+            .u8(0)
+            .player_tail(&[(3, 1)], 1, [0; 8]);
         let mut globals = PipeWriter::new();
         globals.vsval(1).ref_id(4).f32(7.5);
         let mut stats = PipeWriter::new();
@@ -490,8 +544,8 @@ mod tests {
             global_data_1: vec![(0, stats.finish()), (3, globals.finish())],
             forms: vec![
                 Form::new(1, 0x2 | 0x4000_0000 | 0x8000_0000, t::QUST, quest),
-                // The player: moved, with actor data that isn't decoded.
-                Form::new(2, 0x2 | 0x800, t::ACHR, player.finish()),
+                // The player: moved, with one perk and an active quest.
+                Form::new(2, 0x2, t::ACHR, player.finish()),
             ],
             form_ids: vec![0x0010_4C1C, 0x14, 0x3C, 0x38],
             ..SaveWriter::default()
@@ -523,6 +577,9 @@ mod tests {
             text.contains("PlayerRef (moved): in 0000003C at 10.0 20.0 30.0"),
             "{text}"
         );
+        assert!(text.contains("  ACHR      1"), "{text}");
+        assert!(text.contains("perks (1): 0000003C rank 1"), "{text}");
+        assert!(text.contains("active quest 00104C1C"), "{text}");
         let total = format!("{} of {}", thousands(bytes.len()), thousands(bytes.len()));
         assert!(text.contains(&total), "{text}");
     }
