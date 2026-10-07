@@ -81,6 +81,10 @@ OPTIONS:
     --no-hud                leave out the game's HUD (health, compass,
                             crosshair, messages); screenshots then show
                             the scene alone
+    --background            a test run out of the way: the window opens
+                            behind the others without the focus, and the
+                            mouse is never held in it (with --screen-size,
+                            at that size)
     --freeze-ai             people and creatures stand where they are and
                             do nothing but their idle, as after the game's
                             console command tai (for lining up with a
@@ -245,6 +249,10 @@ pub struct Args {
     pub cloud_time: Option<f32>,
     /// Hold everyone's AI still (the console's `tai`).
     pub freeze_ai: bool,
+    /// `--background`: a test run that stays out of the way: the window
+    /// opens behind the others without taking the focus, and the mouse
+    /// is never held in it.
+    pub background: bool,
     /// Raise the Pip-Boy once loaded: its menu and page (stats:1).
     pub pipboy: Option<String>,
     /// `--pipboy-keys`: keys to press in the Pip-Boy once it's up.
@@ -331,6 +339,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut vats = None;
     let mut cloud_time = None;
     let mut freeze_ai = false;
+    let mut background = false;
     let mut pipboy = None;
     let mut pipboy_keys = Vec::new();
     let mut pad = false;
@@ -424,6 +433,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             "--movies" => movies = Some(true),
             "--no-movies" => movies = Some(false),
             "--freeze-ai" => freeze_ai = true,
+            "--background" => background = true,
             "--lockpick" => lockpick = Some(value("--lockpick")?),
             "--pipboy" => {
                 let v = value("--pipboy")?;
@@ -556,6 +566,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             vats,
             cloud_time,
             freeze_ai,
+            background,
             pipboy,
             pipboy_keys,
             pad,

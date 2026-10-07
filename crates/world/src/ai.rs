@@ -1523,7 +1523,12 @@ impl NavMesh {
                 if rr.entry.header.kind != NAVM || rr.entry.header.is_deleted() {
                     continue;
                 }
-                let Ok(record) = rr.record() else { continue };
+                // Decoded once and kept (`record_shared`): outdoors the
+                // squares' navmeshes are joined again whenever the player
+                // crosses into another square.
+                let Ok(record) = rr.record_shared() else {
+                    continue;
+                };
                 let (Some(vx), Some(tr)) = (record.get(NVVX), record.get(NVTR)) else {
                     continue;
                 };
@@ -2290,6 +2295,52 @@ mod tests {
         let islands = mesh.islands();
         assert_eq!(islands[0], islands[1]);
         assert_ne!(islands[0], islands[mesh.triangles.len() - 1]);
+    }
+
+    /// The smoother's triangle under a point, by the grid, is the one
+    /// looking at every triangle found: the first of the nearest in height
+    /// whose outline holds the point, within 200.
+    #[test]
+    fn the_triangle_under_a_point_by_the_grid_is_the_one_every_triangle_gives() {
+        for mesh in [corridor_mesh(), four_squares()] {
+            let every = |p: [f32; 3]| {
+                let mut best: Option<(f32, usize, f32)> = None;
+                for t in 0..mesh.triangles.len() {
+                    let [a, b, c] = [0, 1, 2].map(|i| mesh.corner(t, i));
+                    if let Some(z) = height_in(a, b, c, p) {
+                        let dz = (z - p[2]).abs();
+                        if best.map_or(true, |(d, ..)| dz < d) {
+                            best = Some((dz, t, z));
+                        }
+                    }
+                }
+                best.filter(|(dz, ..)| *dz < 200.0).map(|(_, t, z)| (t, z))
+            };
+            for x in (-120..=520).step_by(7) {
+                for y in (-120..=520).step_by(9) {
+                    for z in [0.0, 150.0, 199.0, 201.0, 400.0] {
+                        let p = [x as f32, y as f32, z];
+                        assert_eq!(mesh.triangle_under(p), every(p), "{p:?}");
+                    }
+                }
+            }
+            // On the corners and edges themselves, and a hair off them.
+            for v in &mesh.vertices {
+                for d in [0.0, 0.001, -0.001, 0.5, -0.5] {
+                    let p = [v[0] + d, v[1] - d, v[2]];
+                    assert_eq!(mesh.triangle_under(p), every(p), "{p:?}");
+                }
+            }
+            for t in 0..mesh.triangles.len() {
+                for e in 0..3 {
+                    let (a, b) = (mesh.corner(t, e), mesh.corner(t, e + 1));
+                    for k in [0.25f32, 0.5, 0.75] {
+                        let p = [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2]];
+                        assert_eq!(mesh.triangle_under(p), every(p), "{p:?}");
+                    }
+                }
+            }
+        }
     }
 
     /// The grid finds the triangle that looking at every one finds: on,

@@ -21,6 +21,11 @@ pub struct Game {
     keep_root_transforms: bool,
     /// The game's INI settings (`assets::default_settings_files`).
     pub settings: assets::IniSettings,
+    /// Every folder's sound files ([`Game::sound_path`]), listed in one
+    /// pass the first time it's needed ([`Game::warm_sound_folders`]):
+    /// looking through every archived path for one folder took ~10 ms, once
+    /// per gunshot.
+    sound_folders: std::sync::OnceLock<HashMap<String, std::sync::Arc<[String]>>>,
 }
 
 /// One quarter of a cell's terrain, ready to draw (see
@@ -261,6 +266,31 @@ pub fn sky_color(vertex: [f32; 4], sky: [[f32; 3]; 3]) -> [f32; 4] {
     [c[0], c[1], c[2], vertex[3]]
 }
 
+/// Every `.wav` and `.ogg` path by its folder (up to and with its last
+/// backslash), each folder's sorted.
+fn sound_files_by_folder<'a>(
+    paths: impl Iterator<Item = &'a str>,
+) -> HashMap<String, std::sync::Arc<[String]>> {
+    let mut by: HashMap<String, Vec<String>> = HashMap::new();
+    for p in paths {
+        if !(p.ends_with(".wav") || p.ends_with(".ogg")) {
+            continue;
+        }
+        let Some(i) = p.rfind('\\') else {
+            continue;
+        };
+        by.entry(p[..=i].to_string())
+            .or_default()
+            .push(p.to_string());
+    }
+    by.into_iter()
+        .map(|(folder, mut files)| {
+            files.sort();
+            (folder, files.into())
+        })
+        .collect()
+}
+
 impl Game {
     pub fn open(data_dir: &Path, options: &Options) -> Result<Game, Error> {
         let order = LoadOrder::from_data_dir(data_dir, &active_plugins(options)?)?;
@@ -279,6 +309,7 @@ impl Game {
             assets,
             keep_root_transforms: options.keep_root_transforms,
             settings,
+            sound_folders: Default::default(),
         })
     }
 
@@ -666,34 +697,48 @@ impl Game {
     /// plays one of the files in it; `pick` chooses which (the game picks at
     /// random).
     pub fn sound_file(&self, sound: &world::sound::Sound, pick: u64) -> Option<(String, Vec<u8>)> {
+        let path = self.sound_path(sound, pick)?;
+        let bytes = self.assets.read(&path).ok()??;
+        Some((path, bytes))
+    }
+
+    /// The file [`Game::sound_file`] plays for a sound record: one of a
+    /// folder's files, picked by `pick`, else the file named, else the
+    /// `.ogg` of the same name (many records name a `.wav` that the game
+    /// ships as an `.ogg`: Goodsprings' interior loop,
+    /// `amb_gsinteriorloop.wav`, and the game plays that).
+    pub fn sound_path(&self, sound: &world::sound::Sound, pick: u64) -> Option<String> {
         let path = if sound.is_folder() {
             let folder = format!("{}\\", sound.file.trim_end_matches('\\'));
-            let mut files: Vec<&str> = self
-                .assets
-                .paths()
-                .filter(|p| {
-                    p.starts_with(&folder)
-                        && !p[folder.len()..].contains('\\')
-                        && (p.ends_with(".wav") || p.ends_with(".ogg"))
-                })
-                .collect();
-            files.sort();
+            let files = self.sound_folder(&folder);
             if files.is_empty() {
                 return None;
             }
-            files[(pick % files.len() as u64) as usize].to_string()
+            files[(pick % files.len() as u64) as usize].clone()
         } else {
             sound.file.clone()
         };
-        if let Some(bytes) = self.assets.read(&path).ok().flatten() {
-            return Some((path, bytes));
+        if self.assets.contains(&path) {
+            return Some(path);
         }
-        // Many records name a `.wav` that the game ships as an `.ogg` of the
-        // same name (Goodsprings' interior loop,
-        // `amb_gsinteriorloop.wav`), and the game plays that.
         let ogg = format!("{}.ogg", path.strip_suffix(".wav")?);
-        let bytes = self.assets.read(&ogg).ok()??;
-        Some((ogg, bytes))
+        self.assets.contains(&ogg).then_some(ogg)
+    }
+
+    /// The `.wav` and `.ogg` files directly in a sound folder (`folder`
+    /// ends with its backslash), sorted.
+    fn sound_folder(&self, folder: &str) -> std::sync::Arc<[String]> {
+        self.sound_folders
+            .get_or_init(|| sound_files_by_folder(self.assets.paths()))
+            .get(folder)
+            .cloned()
+            .unwrap_or_else(|| std::sync::Arc::from(Vec::new()))
+    }
+
+    /// Lists every folder's sound files now (a background thread can do it
+    /// before the first sound plays).
+    pub fn warm_sound_folders(&self) {
+        self.sound_folder("");
     }
 
     /// The worldspace a cell belongs to, if it's an exterior one.
@@ -954,6 +999,45 @@ fn triangles(indices: &[u16]) -> Vec<[u32; 3]> {
 
 #[cfg(test)]
 mod tests {
+    /// The folder index lists what scanning every path for one folder
+    /// listed: the folder's own sound files, sorted, none from subfolders
+    /// or of other kinds.
+    #[test]
+    fn sound_folders_list_what_a_scan_finds() {
+        let paths = [
+            "sound\\fx\\wpn\\9mm\\fire\\b.wav",
+            "sound\\fx\\wpn\\9mm\\fire\\a.wav",
+            "sound\\fx\\wpn\\9mm\\fire\\c.ogg",
+            "sound\\fx\\wpn\\9mm\\fire\\old\\d.wav",
+            "sound\\fx\\wpn\\9mm\\fire\\notes.txt",
+            "sound\\fx\\wpn\\9mm\\e.wav",
+            "readme.wav",
+        ];
+        let index = super::sound_files_by_folder(paths.iter().copied());
+        let scan = |folder: &str| -> Vec<String> {
+            let mut v: Vec<String> = paths
+                .iter()
+                .filter(|p| {
+                    p.starts_with(folder)
+                        && !p[folder.len()..].contains('\\')
+                        && (p.ends_with(".wav") || p.ends_with(".ogg"))
+                })
+                .map(|p| p.to_string())
+                .collect();
+            v.sort();
+            v
+        };
+        for folder in [
+            "sound\\fx\\wpn\\9mm\\fire\\",
+            "sound\\fx\\wpn\\9mm\\",
+            "sound\\fx\\wpn\\9mm\\fire\\old\\",
+            "sound\\nothing\\",
+        ] {
+            let got: Vec<String> = index.get(folder).map(|f| f.to_vec()).unwrap_or_default();
+            assert_eq!(got, scan(folder), "{folder}");
+        }
+    }
+
     use super::*;
 
     #[test]

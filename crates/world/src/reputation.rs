@@ -245,8 +245,7 @@ fn changed(
         "sRepPositiveGain" | "sRepNegativeLoss" => VERY_HAPPY,
         _ => SAD,
     };
-    let icon =
-        crate::message_icon::from_setting(order, &format!("{}Icon", words.0), default_icon);
+    let icon = crate::message_icon::from_setting(order, &format!("{}Icon", words.0), default_icon);
     let name = reputation_name(order, rep);
     let text = game_setting_text(order, words.0).unwrap_or_else(|| words.1.into());
     state.events.push(Event::Message {

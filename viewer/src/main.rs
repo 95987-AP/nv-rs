@@ -8,6 +8,7 @@ mod actors;
 mod ai;
 mod anim_library;
 mod args;
+mod background;
 mod bolts;
 mod caravan_table;
 mod casino_scene;
@@ -28,6 +29,7 @@ mod exterior;
 mod faces;
 mod fighting;
 mod fos_start;
+mod frame_work;
 mod game_menus;
 mod grade;
 mod grass;
@@ -210,6 +212,20 @@ fn main() {
         window.resolution =
             WindowResolution::new(w as f32, h as f32).with_scale_factor_override(1.0);
     }
+    // The window in front before this one opens (`--background` gives the
+    // focus back to it).
+    let user_window = background::foreground();
+    if args.background {
+        // A test run out of the way: behind the other windows and without
+        // the focus (and the mouse never held: `grab_cursor`), at
+        // `--screen-size` when given.
+        window.focused = false;
+        window.window_level = bevy::window::WindowLevel::AlwaysOnBottom;
+        if let (None, Some((w, h))) = (&args.screenshot, args.screen_size) {
+            window.resolution =
+                WindowResolution::new(w as f32, h as f32).with_scale_factor_override(1.0);
+        }
+    }
     // Walking, except for screenshots, which keep the exact eye given.
     let player = walk::Player::new(args.screenshot.is_none() || args.walk);
     // A ready-made test character, set up before the first frame.
@@ -267,7 +283,13 @@ fn main() {
         .insert_resource(look::LookSettings(world::look_ik::Settings::read(
             |section, key| game.settings.float(section, key),
         )))
-        .insert_resource(GameFiles(game))
+        .insert_resource(GameFiles({
+            // The sound folders listed in the background, so the first
+            // gunshot doesn't wait for it (`Game::sound_path`).
+            let warm = game.clone();
+            std::thread::spawn(move || warm.warm_sound_folders());
+            game
+        }))
         .insert_resource(movie::Movies::new(data.clone(), args.movies))
         .init_resource::<scripts::Scripts>()
         .init_resource::<player_idle::PlayerIdle>()
@@ -365,6 +387,14 @@ fn main() {
         })
         .insert_resource(hud::ShowHud(args.hud))
         .insert_resource(ai::FrozenAi(args.freeze_ai))
+        .insert_resource(Background(args.background))
+        .insert_resource(background::UserWindow(if args.background {
+            user_window
+        } else {
+            0
+        }))
+        .add_systems(Update, background::give_focus_back)
+        .add_plugins(frame_work::FrameWorkPlugin)
         .insert_resource(game_menus::StartMenu(args.open_menu.clone()))
         .insert_resource(scripts::StartUse(args.use_on.clone()))
         .insert_resource(game_menus::FixedPointer(args.menu_pointer))
@@ -2532,7 +2562,11 @@ struct FrameCounter {
     longest: f32,
 }
 
-fn report_fps(time: Res<Time>, mut counter: ResMut<FrameCounter>) {
+fn report_fps(
+    time: Res<Time>,
+    mut counter: ResMut<FrameCounter>,
+    work: Res<frame_work::FrameWork>,
+) {
     if !counter.on {
         return;
     }
@@ -2540,11 +2574,19 @@ fn report_fps(time: Res<Time>, mut counter: ResMut<FrameCounter>) {
     counter.seconds += time.delta_secs();
     counter.longest = counter.longest.max(time.delta_secs());
     if counter.seconds >= 2.0 {
+        // The frames' own work on each thread (`frame_work`), apart from
+        // waiting for the display.
+        let (main, main_longest) = work.main.lock().map(|mut t| t.take()).unwrap_or_default();
+        let (render, render_longest) = work.render.lock().map(|mut t| t.take()).unwrap_or_default();
         println!(
-            "{:.0} frames per second ({:.1} ms a frame, longest {:.1} ms)",
+            "{:.0} frames per second ({:.1} ms a frame, longest {:.1} ms; work: main {:.1} ms, longest {:.1}; render {:.1} ms, longest {:.1})",
             counter.frames as f32 / counter.seconds,
             1000.0 * counter.seconds / counter.frames as f32,
-            1000.0 * counter.longest
+            1000.0 * counter.longest,
+            main,
+            main_longest,
+            render,
+            render_longest,
         );
         counter.frames = 0;
         counter.seconds = 0.0;
@@ -2967,10 +3009,15 @@ fn look_around(
     transform.rotation = Quat::from_euler(EulerRot::YXZ, camera.yaw, camera.pitch, 0.0);
 }
 
+/// `--background`: a test run that leaves the mouse alone.
+#[derive(Resource)]
+struct Background(bool);
+
 /// Walking outside menus the pointer is hidden and held in the window, as
-/// the game holds it for its mouse look; in menus, flying or with the
-/// window in the background it's free.
+/// the game holds it for its mouse look; in menus, flying, with the
+/// window in the background or in a `--background` test run it's free.
 fn grab_cursor(
+    background: Res<Background>,
     player: Res<walk::Player>,
     menus: Option<Res<menus::Menus>>,
     conversation: Option<Res<dialogue::Conversation>>,
@@ -2980,7 +3027,8 @@ fn grab_cursor(
     let Ok(mut window) = windows.single_mut() else {
         return;
     };
-    let grab = player.walking
+    let grab = !background.0
+        && player.walking
         && window.focused
         && !mouse_in_menus(menus.as_deref(), conversation.as_deref(), vats.as_deref());
     // Windows can't lock the pointer: there it's confined and put back in
