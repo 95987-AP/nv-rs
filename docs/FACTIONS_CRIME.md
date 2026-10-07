@@ -130,8 +130,11 @@ player.
 
 What the engine needs, now **done**: `GetEquipped` of a form list
 (`0059da90`); a script's cast reaching the area of touch-range effects,
-`fMagicUnitsPerFoot` (22) × area = 550 units (`00818ce0`, `00816f10`; the
-line-of-sight check `008190d0` isn't done); each effect a cast adds goes
+`fMagicUnitsPerFoot` (22) × area = 550 units (`00818ce0`, `00816f10`):
+the loaded actors and the player, not the caster, not ghosts, each with a
+line of sight from the target unless the spell's `SPIT` flag 0x10 says
+area effects ignore it (`008190d0`: to their position raised by half
+their height; through the viewer's `Sight`, untested headless); each effect a cast adds goes
 through `MagicTarget::CheckAddEffect` (Xbox PDB, `00823210`,
 `magic::cast`): for actor effects, diseases, powers, abilities and
 addictions the identical effect from the same spell and caster is

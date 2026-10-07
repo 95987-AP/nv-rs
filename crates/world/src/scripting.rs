@@ -3110,7 +3110,7 @@ impl<'a> Runner<'a> {
     pub fn cast(&mut self, spell: FormId, caster: FormId, target: FormId) {
         let mut reached = vec![target];
         reached.extend(crate::magic::area_targets(
-            self.order, self.state, spell, caster, target,
+            self.order, self.state, spell, caster, target, self.sight,
         ));
         for who in reached {
             for mut e in crate::magic::cast(self.order, self.state, who, spell, caster) {

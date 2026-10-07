@@ -523,21 +523,30 @@ fn touch_area(order: &LoadOrder, spell: FormId) -> u32 {
         .unwrap_or(0)
 }
 
-/// Whom a cast at `target` reaches besides it: with an area on the spell's
-/// touch-range effects, the living, enabled people in the player's cell
-/// other than the caster and the target within `fMagicUnitsPerFoot` (22)
-/// × that area of the target, at the effectiveness 1 a script's cast has
-/// (`MagicCaster::FindTargets` `00815d00`, its gathering `00818ce0` and
-/// `FindTargetsInArea` `00816f10`, Xbox PDB). The disguise pulse's area 25
-/// reaches 550 units. (The game also asks for a line of sight unless the
-/// spell's flag 0x10 says area effects ignore it, `008190d0`; not here.)
-// Translated from 00818ce0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whom a cast at `target` reaches besides it (`MagicCaster::FindTargets`
+/// `00815d00`, its gathering `00818ce0`, Xbox PDB): with an area on the
+/// spell's touch-range effects, the actors loaded around (here: placed in
+/// the player's cell, and the player) other than the caster, with 3D (not
+/// disabled), not ghosts (`008ace90`), within `fMagicUnitsPerFoot` (22) ×
+/// that area of the target, at the effectiveness 1 a script's cast has;
+/// unless the spell's flag 0x10 (`SPIT` flags byte, "area effect ignores
+/// LOS", `0040e210(0x10)`) says otherwise, each needs a line of sight
+/// (`008190d0`: a ray on layer 0x27 from the target's position to theirs
+/// raised by half their height, `008853a0`, that leaves out their own
+/// collision and meets nothing). Without the viewer's [`Sight`] (headless)
+/// the line of sight isn't tested. The target itself is cast on by the
+/// caller and left out here. The disguise pulse's area 25 reaches 550
+/// units.
+///
+/// [`Sight`]: crate::sight::Sight
+// Translated from 00818ce0 and 008190d0 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn area_targets(
     order: &LoadOrder,
     state: &GameState,
     spell: FormId,
     caster: FormId,
     target: FormId,
+    sight: Option<&dyn crate::sight::Sight>,
 ) -> Vec<FormId> {
     let area = touch_area(order, spell);
     if area == 0 {
@@ -549,21 +558,60 @@ pub fn area_targets(
     else {
         return Vec::new();
     };
-    order
+    let ignores_los = spell_flags(order, spell) & AREA_IGNORES_LOS != 0;
+    let mut out: Vec<FormId> = order
         .references_in_cell(cell)
         .into_iter()
         .filter(|rr| matches!(rr.entry.header.kind.as_bytes(), b"ACHR" | b"ACRE"))
         .map(|rr| rr.form_id)
-        .filter(|&w| w != caster && w != target && !state.dead.contains(&w))
-        .filter(|&w| state.disabled.get(&w) != Some(&true))
-        .filter(|&w| {
-            state.place(order, w).is_some_and(|(s, _, p, _)| {
-                s == space && (0..3).map(|i| (p[i] - at[i]).powi(2)).sum::<f32>().sqrt() <= radius
-            })
-        })
-        .collect()
+        .collect();
+    // The player last (`00818ce0` asks them after the process lists).
+    out.push(crate::dialogue::PLAYER_REF);
+    out.retain(|&w| {
+        if w == caster || w == target || state.disabled.get(&w) == Some(&true) {
+            return false;
+        }
+        if crate::more_functions::is_ghost(state, w) {
+            return false;
+        }
+        let Some((s, _, p, _)) = state.place(order, w) else {
+            return false;
+        };
+        if s != space || (0..3).map(|i| (p[i] - at[i]).powi(2)).sum::<f32>().sqrt() > radius {
+            return false;
+        }
+        if ignores_los {
+            return true;
+        }
+        let Some(sight) = sight else {
+            return true;
+        };
+        let base = crate::scripting::base_of(order, w).unwrap_or(w);
+        let scale = order
+            .get(w)
+            .and_then(|rr| rr.record().ok())
+            .and_then(|r| r.get(esm::FourCC::new(b"XSCL")).map(|s| s.data.clone()))
+            .filter(|d| d.len() >= 4)
+            .map_or(1.0, |d| crate::cell::le_f32(&d, 0));
+        let height = crate::npc_aim::actor_height(order, base, scale).unwrap_or(0.0);
+        sight.ray(at, [p[0], p[1], p[2] + height * 0.5]).is_none()
+    });
+    out
 }
 
+/// `SPIT` flags (byte 12; the spell's `+0x40`): 0x10, area effects ignore
+/// the line of sight (`00818ce0`).
+const AREA_IGNORES_LOS: u8 = 0x10;
+
+fn spell_flags(order: &LoadOrder, spell: FormId) -> u8 {
+    order
+        .get(spell)
+        .filter(|r| r.entry.header.kind.as_bytes() == b"SPEL")
+        .and_then(|r| r.record().ok())
+        .and_then(|r| r.get(esm::FourCC::new(b"SPIT")).map(|s| s.data.clone()))
+        .filter(|d| d.len() >= 13)
+        .map_or(0, |d| d[12])
+}
 /// Takes an item's or spell's effects off someone (`RemoveSpell`,
 /// `Dispel`): what was taken off (script effects still to finish).
 pub fn remove(state: &mut GameState, target: FormId, source: FormId) -> Vec<ActiveEffect> {

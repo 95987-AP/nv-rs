@@ -427,3 +427,45 @@ fn ncr_armour_disguises_the_player_until_a_sniffer_comes_near() {
     );
     assert_eq!(reputation::get(&state, FormId(REP_NCR), INFAMY), 50.0);
 }
+
+/// A viewer stand-in: every ray blocked, or none.
+struct Walls(bool);
+
+impl world::sight::Sight for Walls {
+    fn bound(&self, _: FormId) -> Option<([f32; 3], [f32; 3])> {
+        None
+    }
+    fn camera(&self) -> Option<[f32; 3]> {
+        None
+    }
+    fn in_view(&self, _: [f32; 3], _: [f32; 3]) -> bool {
+        false
+    }
+    fn ray(&self, _: [f32; 3], _: [f32; 3]) -> Option<f32> {
+        self.0.then_some(1.0)
+    }
+}
+
+#[test]
+fn an_area_cast_reaches_the_player_and_needs_a_line_of_sight() {
+    // 00818ce0: the player is asked after the loaded actors; each needs
+    // a line of sight (008190d0) unless the spell ignores it.
+    let (_data, order) = order("factions-area");
+    let mut state = at_outpost(&order);
+    let sniffer = FormId(SNIFFER_REF);
+    let legionary = FormId(LEGIONARY_REF);
+    let (_, _, at, _) = state.place(&order, sniffer).unwrap();
+    state.player_position = Some([at[0], at[1] + 100.0, at[2]]);
+    let spell = FormId(PULSE_SPELL);
+    let reached = |state: &GameState, sight: Option<&dyn world::sight::Sight>| {
+        world::magic::area_targets(&order, state, spell, legionary, sniffer, sight)
+    };
+    assert!(reached(&state, None).contains(&PLAYER_REF));
+    assert!(reached(&state, Some(&Walls(false))).contains(&PLAYER_REF));
+    assert!(!reached(&state, Some(&Walls(true))).contains(&PLAYER_REF));
+    // The caster is never reached; a ghost isn't either (008ace90).
+    let by_player = world::magic::area_targets(&order, &state, spell, PLAYER_REF, sniffer, None);
+    assert!(!by_player.contains(&PLAYER_REF));
+    state.more.ghosts.insert(PLAYER_REF);
+    assert!(!reached(&state, None).contains(&PLAYER_REF));
+}
