@@ -113,7 +113,7 @@ pub fn track_x(c: &CaravanScreen) -> Option<f32> {
 
 /// The camera's Bevy transform from its place in the game's space
 /// (Gamebryo cameras look along their +x with +y up).
-fn camera_transform(t: &NifTransform) -> Transform {
+pub(crate) fn camera_transform(t: &NifTransform) -> Transform {
     let origin = t.apply_point([0.0; 3]);
     let along = |v: [f32; 3]| {
         let p = t.apply_point(v);

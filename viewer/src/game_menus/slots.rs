@@ -71,8 +71,14 @@ fn index(model: Model) -> usize {
     }
 }
 
-/// Opens the menu (`SlotMachineMenu::Create` after its checks).
-pub fn open(screen: &mut Screen, game: &Game, state: &mut GameState, request: crate::menus::Menu) {
+/// Opens the menu (`SlotMachineMenu::Create` after its checks); returns
+/// the sounds it starts with (`GAMESlotsActivate`).
+pub fn open(
+    screen: &mut Screen,
+    game: &Game,
+    state: &mut GameState,
+    request: crate::menus::Menu,
+) -> Vec<FormId> {
     let crate::menus::Menu::Casino {
         casino,
         min_bet,
@@ -80,11 +86,11 @@ pub fn open(screen: &mut Screen, game: &Game, state: &mut GameState, request: cr
         ..
     } = request
     else {
-        return;
+        return Vec::new();
     };
     let order = &game.order;
     let Some(casino) = Casino::load(order, casino) else {
-        return;
+        return Vec::new();
     };
     let models = cellview::slots::load(
         &game.assets,
@@ -93,7 +99,7 @@ pub fn open(screen: &mut Screen, game: &Game, state: &mut GameState, request: cr
     );
     let Some(models) = models else {
         println!("The slot machine can't be read.");
-        return;
+        return Vec::new();
     };
     let chips = state.item_count(order, PLAYER_REF, casino.chip);
     let luck = world::scripting::Facts {
@@ -115,14 +121,14 @@ pub fn open(screen: &mut Screen, game: &Game, state: &mut GameState, request: cr
     ) else {
         let text = "Casino Form is not setup properly. # of stops for the slot reels must sum to 14. Exiting out of Slot machine menu.";
         println!("{text}");
-        return;
+        return Vec::new();
     };
     let mut code = SlotsMenu::new(0);
     let tile = match screen.load(game, FILE, &mut code) {
         Ok(t) => t,
         Err(e) => {
             println!("MENUS: Slot Machine Menu Creation Failed... ({e})");
-            return;
+            return Vec::new();
         }
     };
     code.menu = tile;
@@ -155,6 +161,7 @@ pub fn open(screen: &mut Screen, game: &Game, state: &mut GameState, request: cr
     }
     s.fill(&mut screen.ui, order);
     screen.open.push(OpenMenu::Slots(Box::new(s)));
+    sounds
 }
 
 impl SlotsScreen {

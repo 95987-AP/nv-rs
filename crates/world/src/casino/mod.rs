@@ -29,6 +29,8 @@ use esm::{FormId, FourCC, LoadOrder};
 use crate::dialogue::PLAYER_REF;
 use crate::scripting::GameState;
 
+pub mod blackjack;
+pub mod roulette;
 pub mod slots;
 
 const CSNO: FourCC = FourCC::new(b"CSNO");

@@ -5,6 +5,7 @@
 //! `%USERPROFILE%\nv-re\findings\menus.md`.
 
 pub mod barter;
+pub mod blackjack;
 pub mod caravan;
 pub mod chargen;
 pub mod companion_wheel;
@@ -17,6 +18,7 @@ pub mod message;
 pub mod quantity;
 pub mod recipe;
 pub mod repair_services;
+pub mod roulette;
 pub mod sleepwait;
 pub mod slots;
 pub mod start;

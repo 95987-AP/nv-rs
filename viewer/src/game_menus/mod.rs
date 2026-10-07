@@ -16,6 +16,7 @@
 
 pub mod asks;
 pub mod barter;
+pub mod blackjack;
 pub mod caravan;
 pub mod casino;
 pub mod chargen;
@@ -28,6 +29,7 @@ pub mod levelup;
 pub(crate) mod message;
 pub mod recipe;
 pub mod repair;
+pub mod roulette;
 pub mod sleepwait;
 pub mod slots;
 pub mod start;
@@ -38,7 +40,7 @@ pub mod vigor;
 use std::collections::HashMap;
 
 use bevy::input::keyboard::{Key, KeyboardInput};
-use bevy::input::mouse::{AccumulatedMouseScroll, MouseScrollUnit};
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::input::ButtonState;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -90,6 +92,8 @@ pub struct Screen {
     quantity_owner: Option<u32>,
     /// The pointer this frame, in menu units.
     pub pointer: Option<(f32, f32)>,
+    /// The mouse's movement this frame, in pixels (roulette's cursor).
+    pub mouse_move: (f32, f32),
     sizes: HashMap<String, Option<(u32, u32)>>,
     atlases: HashMap<String, Option<ui::Atlas>>,
     /// `nif` tiles' models (the start menu's pause background).
@@ -107,6 +111,8 @@ pub enum OpenMenu {
     CompanionWheel(Box<companion_wheel::WheelScreen>),
     Caravan(Box<caravan::CaravanScreen>),
     Slots(Box<slots::SlotsScreen>),
+    Blackjack(Box<blackjack::BlackjackScreen>),
+    Roulette(Box<roulette::RouletteScreen>),
     Quantity(ui::menus::quantity::QuantityMenu),
     LevelUp(Box<ui::menus::levelup::LevelUpMenu>),
     Traits(Box<ui::menus::traits::TraitMenu>),
@@ -131,6 +137,8 @@ impl OpenMenu {
             OpenMenu::CompanionWheel(w) => &mut w.menu,
             OpenMenu::Caravan(c) => &mut c.menu,
             OpenMenu::Slots(s) => &mut s.menu,
+            OpenMenu::Blackjack(b) => &mut b.menu,
+            OpenMenu::Roulette(r) => &mut r.menu,
             OpenMenu::Quantity(m) => m,
             OpenMenu::LevelUp(m) => &mut **m,
             OpenMenu::Traits(m) => &mut **m,
@@ -155,6 +163,8 @@ impl OpenMenu {
             OpenMenu::CompanionWheel(w) => w.menu.menu,
             OpenMenu::Caravan(c) => c.menu.menu,
             OpenMenu::Slots(s) => s.menu.menu,
+            OpenMenu::Blackjack(b) => b.menu.menu,
+            OpenMenu::Roulette(r) => r.menu.menu,
             OpenMenu::Quantity(m) => m.menu,
             OpenMenu::LevelUp(m) => m.menu,
             OpenMenu::Traits(m) => m.menu,
@@ -179,6 +189,8 @@ impl OpenMenu {
             OpenMenu::CompanionWheel(w) => w.menu.closed,
             OpenMenu::Caravan(c) => c.closed,
             OpenMenu::Slots(s) => s.closed,
+            OpenMenu::Blackjack(b) => b.closed,
+            OpenMenu::Roulette(r) => r.closed,
             OpenMenu::Quantity(m) => m.closed,
             OpenMenu::LevelUp(m) => m.closed,
             OpenMenu::Traits(m) => m.closed,
@@ -422,6 +434,7 @@ impl Screen {
             rest_down: false,
             quantity_owner: None,
             pointer: None,
+            mouse_move: (0.0, 0.0),
             sizes: HashMap::new(),
             atlases: HashMap::new(),
             models: HashMap::new(),
@@ -526,13 +539,19 @@ fn screen<'a>(menus: &'a mut GameMenus, game: &Game, size: UVec2) -> Option<&'a 
 }
 
 /// Whether a menu with a 3D scene drawn under the menus' pictures is open
-/// (Caravan's table, the slot machine): the HUD's camera then blends its
+/// (Caravan's table, the casino games'): the HUD's camera then blends its
 /// pictures over the scene's (`caravan_table`).
 pub fn scene_open(menus: &GameMenus) -> bool {
     menus.screen.as_deref().is_some_and(|s| {
-        s.open
-            .iter()
-            .any(|m| matches!(m, OpenMenu::Caravan(_) | OpenMenu::Slots(_)))
+        s.open.iter().any(|m| {
+            matches!(
+                m,
+                OpenMenu::Caravan(_)
+                    | OpenMenu::Slots(_)
+                    | OpenMenu::Blackjack(_)
+                    | OpenMenu::Roulette(_)
+            )
+        })
     })
 }
 
@@ -547,6 +566,8 @@ pub fn takes(m: &crate::menus::Menu) -> bool {
         || companion_wheel::takes(m)
         || caravan::takes(m)
         || slots::takes(m)
+        || blackjack::takes(m)
+        || roulette::takes(m)
         || levelup::takes(m)
         || traits::takes(m)
         || chargen::takes(m)
@@ -627,7 +648,17 @@ fn open_menus(
         } else if caravan::takes(&request) {
             caravan::open(screen, &game.0, &mut state.0, request);
         } else if slots::takes(&request) {
-            slots::open(screen, &game.0, &mut state.0, request);
+            sounds
+                .0
+                .extend(slots::open(screen, &game.0, &mut state.0, request));
+        } else if blackjack::takes(&request) {
+            sounds
+                .0
+                .extend(blackjack::open(screen, &game.0, &mut state.0, request));
+        } else if roulette::takes(&request) {
+            sounds
+                .0
+                .extend(roulette::open(screen, &game.0, &mut state.0, request));
         } else {
             sounds
                 .0
@@ -650,6 +681,7 @@ pub struct MenuInput<'w, 's> {
     windows: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
     mouse: Res<'w, ButtonInput<MouseButton>>,
     scroll: Res<'w, AccumulatedMouseScroll>,
+    motion: Res<'w, AccumulatedMouseMotion>,
     keys: ResMut<'w, ButtonInput<KeyCode>>,
     typed: EventReader<'w, 's, KeyboardInput>,
     time: Res<'w, Time<bevy::time::Real>>,
@@ -730,8 +762,11 @@ pub(crate) fn run_open_menus(
             open,
             rest_down,
             pointer: here,
+            mouse_move,
             ..
         } = &mut *screen;
+        // The mouse's raw movement (roulette's cursor, `00a239e0`).
+        *mouse_move = (input.motion.delta.x, input.motion.delta.y);
         let Some(top) = open.last_mut() else {
             return;
         };
@@ -890,9 +925,19 @@ pub(crate) fn run_open_menus(
                 }
             }
         }
-        // `--menu-keys`: the ones due.
+        // `--menu-keys`: the ones due (`mDX/DY` moves the mouse).
         while let Some(i) = input.fixed_keys.0.iter().position(|(t, _)| *t <= now) {
             let (_, k) = input.fixed_keys.0.remove(i);
+            if let Some((dx, dy)) = k
+                .strip_prefix('m')
+                .and_then(|m| m.split_once('/'))
+                .and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?)))
+            {
+                println!("--menu-keys: the mouse moved {dx}, {dy}");
+                mouse_move.0 += dx;
+                mouse_move.1 += dy;
+                continue;
+            }
             let code = match k.to_ascii_lowercase().as_str() {
                 "left" => Some(ui::menu::key::LEFT),
                 "right" => Some(ui::menu::key::RIGHT),
@@ -961,17 +1006,34 @@ pub(crate) fn run_open_menus(
     sounds
         .0
         .extend(caravan::after(screen, &game.0, &mut state.0, now * 1000.0));
-    let (played, said) = slots::after(
-        screen,
-        &game.0,
-        &mut state.0,
-        &mut casino_lock.0,
-        now * 1000.0,
-    );
-    sounds.0.extend(played);
-    for m in said {
-        println!("{m}");
-        hud_messages.queue.push(m);
+    for (played, said) in [
+        slots::after(
+            screen,
+            &game.0,
+            &mut state.0,
+            &mut casino_lock.0,
+            now * 1000.0,
+        ),
+        blackjack::after(
+            screen,
+            &game.0,
+            &mut state.0,
+            &mut casino_lock.0,
+            now * 1000.0,
+        ),
+        roulette::after(
+            screen,
+            &game.0,
+            &mut state.0,
+            &mut casino_lock.0,
+            now * 1000.0,
+        ),
+    ] {
+        sounds.0.extend(played);
+        for m in said {
+            println!("{m}");
+            hud_messages.queue.push(m);
+        }
     }
     sounds
         .0
@@ -1197,7 +1259,9 @@ fn draw_menus(
                     .ok()
                     .and_then(|w| w.physical_cursor_position()),
             };
-            match (at, wanted) {
+            // Roulette hides the pointer while it's on top (`007bd2a0`).
+            let hidden = matches!(screen.open.last(), Some(OpenMenu::Roulette(_)));
+            match (at, wanted && !hidden) {
                 (Some(p), true) => {
                     screen.ui.set_number(cursor, t::X, p.x * k);
                     screen.ui.set_number(cursor, t::Y, p.y * k);
