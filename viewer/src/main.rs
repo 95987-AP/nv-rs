@@ -16,6 +16,7 @@ mod controls;
 mod daylight;
 mod dialogue;
 mod doors;
+mod dress;
 mod effects;
 mod emittance;
 mod explosives;
@@ -498,6 +499,15 @@ fn main() {
                 report_fps,
             )
                 .chain(),
+        )
+        // People redrawn where what they wear or hold changed, once posed
+        // (their new face pieces then get their faces).
+        .init_resource::<dress::StartWorn>()
+        .add_systems(
+            Update,
+            dress::redress
+                .after(actors::animate_actors)
+                .before(faces::start_lines),
         )
         // Faces: lines' lip sync and blinking, once lines have started and
         // the bones have moved.
@@ -1665,6 +1675,10 @@ impl Spawner<'_, '_> {
                     bevy::render::view::NoFrustumCulling,
                     ChildOf(*root),
                 ));
+                // Which part of its look it is, for redrawing (`dress`).
+                if let Some(part) = scene.meshes[draw.mesh].actor_part {
+                    piece.insert(dress::Piece(part));
+                }
                 // Head parts talk and blink (`faces`).
                 if let Some(face) = faces::FacePiece::of(&scene.meshes[draw.mesh]) {
                     piece.insert(face);
@@ -3036,6 +3050,7 @@ mod tests {
             motion: None,
             billboard: None,
             local_map: false,
+            actor_part: None,
         }
     }
 

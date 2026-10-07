@@ -126,6 +126,8 @@ Here: `world::companions` (`wheel_allowed`, `switches`, `variable` /
 
 - The companion choosing what to wear after trading (`00606540`: their
   outfit and best gear worked out again); a thing given stays unworn.
+  What they are made to wear (`EquipItem`) or lose (trading it away) is
+  drawn: [NPC_GEAR.md](NPC_GEAR.md).
 - The line on the container menu's own subtitle (`CM_Subtitle`); the line
   is said as a `SayTo` would say it.
 - The wheel's Back Up (`008a7760`: default package 0x27 put on them); it

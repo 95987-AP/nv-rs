@@ -211,6 +211,10 @@ pub struct ModelMesh {
     /// `HairTint` (already laid into the vertex colours, see
     /// `preview::actor`).
     pub hair_tint: Option<[f32; 3]>,
+    /// Actor pieces: which of the look's parts (`world::ActorLook::parts`)
+    /// the piece comes from, so a part can be rebuilt on its own (the
+    /// game's biped slots, `BipedAnim::LoadBipedParts`, Xbox PDB).
+    pub actor_part: Option<u16>,
 }
 
 /// A piece that turns toward the camera with the `NiBillboardNode` above
@@ -998,6 +1002,7 @@ impl Loader<'_> {
             billboard: Billboard::of(mesh),
             shading,
             hair_tint: None,
+            actor_part: None,
         })
     }
 
