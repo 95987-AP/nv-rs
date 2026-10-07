@@ -48,7 +48,8 @@ branch green.
     and "no light clusters" don't change what's drawn (screenshots of
     Doc's house and Goodsprings before and after). Measure frame times
     before and after on the acceptance routes and record them in the
-    pull request's merge notes and docs/MILESTONES.md.  Resume each as a new agent in the same worktree: tell it to inspect
+    pull request's merge notes and docs/MILESTONES.md.
+  Resume each as a new agent in the same worktree: tell it to inspect
   `git status`/`git log`/`git diff`, keep the work already there, and
   finish the original task (each needs live verification, full checks
   and `scripts/acceptance.ps1`). Then merge into integration, run
@@ -115,6 +116,7 @@ branch green.
    physics (large; split), B7, B8, B9, B16, B17, B18–B21.
 5. At most 3–4 agents at once (memory: builds with `-j 2`, the lead's
    with `-j 3`; more agents run out of memory and disk).
+
 ## Agent workflow (what worked today)
 
 - One worktree and branch per task, created by the lead from the
