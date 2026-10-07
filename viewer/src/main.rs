@@ -489,6 +489,7 @@ fn main() {
                     ai::move_actors,
                     // People's shots fly once everyone has moved.
                     fighting::resolve_shots.after(ai::move_actors),
+                    ai::ground_log.after(ai::move_actors),
                     scripts::save_and_load,
                     report::report_key,
                     sounds::play_sounds,

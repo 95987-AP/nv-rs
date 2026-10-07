@@ -100,10 +100,10 @@ on B1 for the solver, but the spring itself can land first.
 pick"); left: drawn-triangle picking, placeable water, comparison with the
 game.
 
-**B4. NPCs fall through or sink into the ground.** NPCs phase into the
-terrain or fall through it. Trace the character controller's support
-(`bhkCharacterController`, the step and fall states, which layers it
-stands on) and fix NPCs (and check the player).
+**B4. NPCs fall through or sink into the ground.** Done on
+`claude/b4-npc-ground` (docs/PHYSICS.md, "People on the ground"):
+`MobileObject::Move`'s land and far-from-camera rules; left: a ragdoll
+sunk into the land (B1's solver), comparison with the game.
 
 ### Combat effects and damage
 

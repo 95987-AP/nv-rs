@@ -603,6 +603,8 @@ objects, HUD and Grab; live in Doc's house and the Prospector Saloon
 ([PLAYER_ACTIONS.md](PLAYER_ACTIONS.md)). **Next action:** compare the
 pick's fuzzy cases with the original game.
 
+B4 (`claude/b4-npc-ground`, 2026-10-07): people back from a walk out of sight (Ringo in the gunfight, 64-75 under the land) had no controller and walked under the ground for good; `MobileObject::Move`'s two rules are now followed (`0092f260`: outdoors, feet more than 30 under the land are put on it, the player's too; further than `fCharControllerWarpDistSqr` (2449.5) from the camera people walk on the navmesh's height without their controller). Verified live (gunfight, Back in the Saddle, the player started under the land); not compared with the original ([PHYSICS.md](PHYSICS.md)). **Next action:** a ragdoll seen sunk to the waist after the gunfight (B1's solver).
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

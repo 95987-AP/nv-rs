@@ -199,12 +199,14 @@ pub fn eye_offset(heights: Option<(f32, f32)>, blend: f32) -> f32 {
 }
 
 /// What walking needs for sneaking: the weapon's state (its animation
-/// action, the sights), sounds, the blend time, the camera node's heights.
+/// action, the sights), sounds, the blend time, the camera node's heights;
+/// and the attached squares' land, which keeps the player on it.
 type SneakParts<'w, 's> = (
     ResMut<'w, crate::combat::PlayerAttack>,
     ResMut<'w, crate::sounds::SoundRequests>,
     Option<Res<'w, crate::actors::AnimSettings>>,
     Local<'s, Option<Option<(f32, f32)>>>,
+    Option<Res<'w, crate::ai::CellNav>>,
 );
 
 /// Walking: the keys set the wanted speed, the character moves through the
@@ -223,7 +225,7 @@ pub fn walk(
     mut cameras: Query<(&mut Transform, &FlyCamera)>,
     walkers: Query<&crate::ai::Walker>,
     mut settings: Local<Option<SpeedSettings>>,
-    (mut attack, mut sounds, anim, mut heights): SneakParts,
+    (mut attack, mut sounds, anim, mut heights, nav): SneakParts,
     (mouse, controls): (
         Res<ButtonInput<MouseButton>>,
         Option<Res<crate::controls::Controls>>,
@@ -382,6 +384,17 @@ pub fn walk(
         locomotion::air_gain(locomotion::AIR_CONTROL),
         dt,
     );
+    // Outdoors, feet more than 30 under the land are put on it, the player's
+    // too (`MobileObject::Move`, `0092f260` at `0093012a`; `world::ground`).
+    let feet = player.character.feet;
+    let land = nav
+        .as_deref()
+        .and_then(|n| n.land_height(state.0.player_world, feet));
+    let lifted = world::ground::kept_above_land(feet[2], land);
+    if lifted != feet[2] {
+        player.character.feet[2] = lifted;
+        player.character.ground = lifted;
+    }
     if let Some(fell) = player.character.fell.take() {
         if !std::mem::take(&mut player.from_camera) {
             let hurt = world::combat::land(
