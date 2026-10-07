@@ -722,6 +722,10 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
             "radio" => {
                 state.radio.on = num(1)? != 0.0;
                 state.radio.active = form(2).ok();
+                // The tuned station's state, so it plays again.
+                if let Some(r) = state.radio.active.filter(|_| state.radio.on) {
+                    state.radio.restore_station(r);
+                }
             }
             "radiofound" => state.radio.discovered.push(form(1)?),
             "seen" => {

@@ -32,12 +32,31 @@
 //!   `UIRadioSignalLost` / "%s signal lost." and comes back on by itself
 //!   when the station does (`008331c0`, `00833d00`).
 //!
+//! * Script functions act on this same radio (`world::more_functions::
+//!   radio`): `PipboyRadio` / `PipBoyRadioOff` switch and tune it as the
+//!   Pip-Boy's list does (`008324e0`, `00832240(station, 1)`, which also
+//!   asks for a range pass now), `StartRadioConversation` (`00835be0`)
+//!   replaces a station's programme with one from the topic given, 50 ms
+//!   on, and `SetNPCRadio` (`EnableNPCRadio` (Xbox PDB), `00835810`) adds a
+//!   receiver (`FORadioReceiver` (Xbox PDB)) to a station: the station then
+//!   runs although the Pip-Boy isn't tuned to it (`00834260` skips a
+//!   station only when it's neither the Pip-Boy's nor has receivers), and
+//!   each receiver starts the line playing when the player is within its
+//!   hearing distance (a creature `fCreatureRadioMax` × 1.1, else the
+//!   station's `SNAM` sound's, or `AMLRadio`'s, largest attenuation
+//!   distance × 1.1, else 3000), in step with the line's start; a song as
+//!   its `_mono` file. A receiver in another worldspace or interior than
+//!   the player stops for good (`bShouldBePlaying` cleared).
+//!
 //! Labelled guesses: the path-finding range tests (range type 0 seen from
 //! an interior, types 2 and 3 across doors, `006d4d20` / `006d4eb0`) aren't
 //! traced: an interior player is out of range of a type 0 station in
 //! another place, in range of a type 2 or 3 station only in its own cell;
 //! a voice line ends when its file's length has passed (the game's sound
-//! calls back at its end).
+//! calls back at its end), and a receiver's sound with the station's line;
+//! script functions take the audio clock of the last frame as now; the
+//! receivers' loudness as the Pip-Boy's (the 3D sound's category, flags
+//! 0x500102, isn't traced); vfunc +0x21c read as "is a creature".
 
 use std::collections::HashMap;
 
@@ -69,8 +88,17 @@ pub const SIGNAL_FOUND: &str = "UIRadioSignalFound";
 pub const SIGNAL_LOST: &str = "UIRadioSignalLost";
 pub const STATIC_LOOP: &str = "UIRadioStaticLP";
 pub const TOWER_ICON: &str = "Interface\\Icons\\Message Icons\\glow_message_radio_tower.dds";
+/// The receivers' attenuation model (`pRadioAttenuationModel` (Xbox
+/// PDB), `011dd440`, looked up by `00832ad0`).
+pub const ATTENUATION_MODEL: &str = "AMLRadio";
+/// `fCreatureRadioMax:Audio` (exe `01013970`).
+pub const CREATURE_RADIO_MAX: f32 = 2000.0;
+/// A receiver's hearing distance without a sound (`0104fca0`).
+pub const DEFAULT_HEARING: f32 = 3000.0;
 
 const XRDO: FourCC = FourCC::new(b"XRDO");
+const SNAM: FourCC = FourCC::new(b"SNAM");
+const CREA: FourCC = FourCC::new(b"CREA");
 const NAME: FourCC = FourCC::new(b"NAME");
 const TACT: FourCC = FourCC::new(b"TACT");
 const REFR: FourCC = FourCC::new(b"REFR");
@@ -304,6 +332,26 @@ pub struct Station {
     pub target: u8,
     pub lost: bool,
     pub running: bool,
+    /// Its receivers (`StationUsers` (Xbox PDB), `+0x1c`).
+    pub users: Vec<Receiver>,
+    /// The topic a script started (`StartRadioConversation`; `None` the
+    /// default) while the programme made from it plays.
+    pub started: Option<Option<FormId>>,
+    /// That conversation, loaded from a save, starts at the next frame.
+    pub pending_start: bool,
+}
+
+/// Someone playing a station through their own speaker
+/// (`FalloutRadio::FORadioReceiver` (Xbox PDB), made by `00835810`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Receiver {
+    pub reference: FormId,
+    /// `bShouldBePlaying` (`+0x1c`).
+    pub playing: bool,
+    /// The line it started last: (item, the line's start).
+    pub line: Option<(usize, u64)>,
+    /// Its static loop is on.
+    pub static_on: bool,
 }
 
 /// What the radio asks the game to do.
@@ -337,6 +385,22 @@ pub enum RadioEvent {
     },
     /// The tuned station changed or the radio went off (for the list).
     Changed,
+    /// A receiver starts the station's line `offset` ms in: a song (its
+    /// mono `.ogg` file, [`mono_song`]) or the DJ's voice file.
+    Receiver {
+        reference: FormId,
+        path: String,
+        song: bool,
+        volume: f32,
+        offset: u64,
+    },
+    /// A receiver's sound stopped (`00ad88f0` on its handle).
+    ReceiverStop(FormId),
+    /// A receiver's static loop at a volume, or off.
+    ReceiverStatic {
+        reference: FormId,
+        volume: Option<f32>,
+    },
 }
 
 /// The game's side the radio needs: files and lengths.
@@ -373,6 +437,17 @@ pub struct Radio {
     voice_playing: bool,
     static_on: bool,
     rng: u64,
+    /// The audio clock at the last frame (ms): now, for the script
+    /// functions, which run between frames.
+    pub clock: u64,
+    /// What script functions asked for since the last frame.
+    pub pending: Vec<RadioEvent>,
+    /// A range pass is due at the next frame (`ForceRadioStationUpdate`,
+    /// `00832ad0(1)`; a script's tune, `00833d00(1)`).
+    pub force_update: bool,
+    /// `fCreatureRadioMax` from the INI ([`CREATURE_RADIO_MAX`] when
+    /// `None`).
+    pub creature_radio_max: Option<f32>,
 }
 
 impl Radio {
@@ -462,20 +537,212 @@ impl Radio {
         if !self.on {
             return;
         }
-        if !self.stations.iter().any(|s| s.reference == reference) {
-            let back = self.rand() % 30_000;
-            self.stations.push(Station {
-                reference,
-                start: now.saturating_sub(back),
-                duration: 1,
-                power: 100,
-                target: 100,
-                ..Station::default()
-            });
-        }
+        self.station_index(reference, now);
         self.active = Some(reference);
         self.lost_station = None;
         events.push(RadioEvent::Changed);
+    }
+
+    /// A station's state, made the first time (`00832cb0`: its start
+    /// somewhere in the last 30 s, `00944460(0, 30000)`).
+    // Translated from 00832cb0 (decompiled, FalloutNV.exe 1.4.0.525)
+    fn station_index(&mut self, reference: FormId, now: u64) -> usize {
+        if let Some(i) = self.stations.iter().position(|s| s.reference == reference) {
+            return i;
+        }
+        let back = self.rand() % 30_000;
+        self.stations.push(Station {
+            reference,
+            start: now.saturating_sub(back),
+            duration: 1,
+            power: 100,
+            target: 100,
+            ..Station::default()
+        });
+        self.stations.len() - 1
+    }
+
+    /// A saved station state back: a fresh programme at the first frame.
+    pub fn restore_station(&mut self, reference: FormId) -> usize {
+        self.station_index(reference, 0)
+    }
+
+    /// `PipboyRadio on` / `off`, `PipBoyRadioOff` (`008324e0`).
+    pub fn script_enable(&mut self, on: bool) {
+        let mut events = std::mem::take(&mut self.pending);
+        self.enable(on, &mut events);
+        self.pending = events;
+    }
+
+    /// `PipboyRadio tune` with a station (`00832240(station, 1)`): the lost
+    /// station forgotten and a range pass now (`00833d00(1)`, here at the
+    /// next frame), then tuned as a click tunes.
+    // Translated from 00832240 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn script_tune(&mut self, reference: FormId) {
+        if !self.on {
+            return;
+        }
+        self.lost_station = None;
+        self.force_update = true;
+        let mut events = std::mem::take(&mut self.pending);
+        self.tune(reference, self.clock, &mut events);
+        self.pending = events;
+    }
+
+    /// The stations in range of the player now, first found first
+    /// (`004ff1a0` with the player): what `PipboyRadio tune` without a
+    /// station tunes to.
+    pub fn first_in_range(&mut self, order: &LoadOrder, state: &GameState) -> Option<FormId> {
+        let placed = self.placed(order).to_vec();
+        let disabled = |r: FormId| disabled(order, state, r);
+        in_range(&placed, &place_of(state), &disabled, &|r| {
+            position_of(order, r)
+        })
+        .first()
+        .map(|&(r, _)| r)
+    }
+
+    /// `StartRadioConversation` (`00835be0`) on a station: what it played
+    /// stopped (the Pip-Boy's voice and the radio's decks when it's the
+    /// tuned one, its receivers' sounds), and a programme from `topic`
+    /// (`None`: the default, `0061a2d0(7, 0)`, `RadioHello`) made now,
+    /// starting in 50 ms; no line: over at once.
+    // Translated from 00835be0 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn start_conversation(
+        &mut self,
+        order: &LoadOrder,
+        scripts: &crate::scripting::ScriptCache,
+        state: &mut GameState,
+        station: FormId,
+        topic: Option<FormId>,
+    ) {
+        self.placed(order);
+        let now = self.clock;
+        let i = self.station_index(station, now);
+        let mut events = std::mem::take(&mut self.pending);
+        if self.on && self.active == Some(station) {
+            self.stop_output(&mut events);
+        }
+        for u in &mut self.stations[i].users {
+            u.line = None;
+            events.push(RadioEvent::ReceiverStop(u.reference));
+        }
+        let items = topic
+            .or_else(|| order.form_by_editor_id(RADIO_HELLO))
+            .map(|t| self.programme(order, scripts, state, station, t))
+            .unwrap_or_default();
+        let st = &mut self.stations[i];
+        st.started = Some(topic);
+        st.items = items;
+        st.start = now + GAP_MS;
+        if st.items.is_empty() {
+            st.current = None;
+            st.duration = 1;
+        } else {
+            st.current = Some(0);
+            st.duration = 0;
+            let info = &st.items[0].info;
+            if info.flags & dialogue::RUN_IMMEDIATELY == 0 {
+                if let Some(s) = info.begin_script.clone() {
+                    events.push(RadioEvent::Script {
+                        source: s,
+                        speaker: station,
+                    });
+                }
+            }
+        }
+        self.pending = events;
+    }
+
+    /// `SetNPCRadio 1` (`EnableNPCRadio` (Xbox PDB), `00835810`): the
+    /// station with that base already playing (`GetActiveStation`,
+    /// `00832830`), else the placed one of that base in range of `who`
+    /// (`InitStation`, `00832cb0` → `008356e0`), gets `who` as a receiver,
+    /// playing. False when there's no such station.
+    // Translated from 00835810 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn enable_npc_radio(
+        &mut self,
+        order: &LoadOrder,
+        state: &GameState,
+        who: FormId,
+        base: FormId,
+    ) -> bool {
+        let placed = self.placed(order).to_vec();
+        let base_of = |r: FormId| placed.iter().find(|s| s.reference == r).map(|s| s.base);
+        let i = match self
+            .stations
+            .iter()
+            .position(|s| base_of(s.reference) == Some(base))
+        {
+            Some(i) => i,
+            None => {
+                let Some((space, cell, position, _)) = state.place(order, who) else {
+                    return false;
+                };
+                let around = Place {
+                    cell: Some(cell),
+                    world: (space != cell).then_some(space),
+                    position,
+                };
+                let disabled = |r: FormId| disabled(order, state, r);
+                let found = in_range(&placed, &around, &disabled, &|r| position_of(order, r))
+                    .into_iter()
+                    .find(|&(r, _)| base_of(r) == Some(base));
+                let Some((reference, _)) = found else {
+                    return false;
+                };
+                self.station_index(reference, self.clock)
+            }
+        };
+        self.add_receiver(i, who);
+        true
+    }
+
+    /// `who` as station `i`'s receiver, playing (one receiver a person
+    /// here: the game lists the same receiver again on the new station).
+    fn add_receiver(&mut self, i: usize, who: FormId) {
+        for s in &mut self.stations {
+            s.users.retain(|u| u.reference != who);
+        }
+        self.stations[i].users.push(Receiver {
+            reference: who,
+            playing: true,
+            line: None,
+            static_on: false,
+        });
+    }
+
+    /// A saved receiver back.
+    pub fn restore_receiver(&mut self, who: FormId, station: FormId) {
+        let i = self.restore_station(station);
+        self.add_receiver(i, who);
+    }
+
+    /// `SetNPCRadio 0` (`DisableNPCRadio` (Xbox PDB), `00835980`): `who`'s
+    /// receiver silenced and let go.
+    // Translated from 00835980 (decompiled, FalloutNV.exe 1.4.0.525)
+    pub fn disable_npc_radio(&mut self, who: FormId) {
+        let mut found = false;
+        for s in &mut self.stations {
+            let before = s.users.len();
+            s.users.retain(|u| u.reference != who);
+            found |= s.users.len() != before;
+        }
+        if found {
+            self.pending.push(RadioEvent::ReceiverStop(who));
+            self.pending.push(RadioEvent::ReceiverStatic {
+                reference: who,
+                volume: None,
+            });
+        }
+    }
+
+    /// The people playing a station, by person (for saves and the
+    /// viewer).
+    pub fn receivers(&self) -> impl Iterator<Item = (FormId, FormId)> + '_ {
+        self.stations
+            .iter()
+            .flat_map(|s| s.users.iter().map(move |u| (u.reference, s.reference)))
     }
 
     /// A click on a DATA › Radio row (`00796fd0` case 0x19): only in-range
@@ -513,7 +780,8 @@ impl Radio {
         radio_volume: f32,
         files: &mut dyn RadioFiles,
     ) -> Vec<RadioEvent> {
-        let mut events = Vec::new();
+        self.clock = now;
+        let mut events = std::mem::take(&mut self.pending);
         if self.last_find == 0 {
             self.last_find = now;
         }
@@ -528,6 +796,18 @@ impl Radio {
         } else {
             self.interior_pass = None;
         }
+        // `00832ad0(1)`: asked for by a script.
+        if std::mem::take(&mut self.force_update) {
+            find = true;
+        }
+        // Conversations a script started, from a save.
+        for i in 0..self.stations.len() {
+            if std::mem::take(&mut self.stations[i].pending_start) {
+                let (r, topic) = (self.stations[i].reference, self.stations[i].started);
+                self.start_conversation(order, scripts, state, r, topic.flatten());
+            }
+        }
+        events.append(&mut self.pending);
         // A station enabled or disabled since (`Enable` resets the interior
         // pass, `005743f0`): looked at with each interval.
         if find || interval < now.saturating_sub(self.last_enable_check) {
@@ -572,15 +852,7 @@ impl Radio {
         events: &mut Vec<RadioEvent>,
     ) {
         let disabled = |r: FormId| !crate::placement::enabled_now(order, r, &state.disabled);
-        let position_of = |r: FormId| {
-            let rr = order.get(r)?;
-            let record = rr.record().ok()?;
-            let d = record.get(esm::sig::DATA).filter(|s| s.data.len() >= 12)?;
-            Some((
-                order.world_of(&rr),
-                [le_f32(&d.data, 0), le_f32(&d.data, 4), le_f32(&d.data, 8)],
-            ))
-        };
+        let position_of = |r: FormId| position_of(order, r);
         let mut found: Vec<(FormId, f32)> = Vec::new();
         if find {
             let placed = self.placed(order).to_vec();
@@ -653,11 +925,18 @@ impl Radio {
     ) {
         let r = self.stations[i].reference;
         let active = self.on && self.active == Some(r);
-        if !active {
+        // Neither the Pip-Boy's nor played by anyone: left alone.
+        if !active && self.stations[i].users.is_empty() {
             return;
         }
         if !crate::placement::enabled_now(order, r, &state.disabled) {
-            self.enable(false, events);
+            for u in &mut self.stations[i].users {
+                u.line = None;
+                events.push(RadioEvent::ReceiverStop(u.reference));
+            }
+            if active {
+                self.enable(false, events);
+            }
             return;
         }
         let st = &mut self.stations[i];
@@ -686,13 +965,22 @@ impl Radio {
                 st.current = None;
                 st.start = 0;
                 st.duration = 0;
+                st.started = None;
             }
-            self.stop_output(events);
+            for u in &mut self.stations[i].users {
+                if u.line.take().is_some() {
+                    events.push(RadioEvent::ReceiverStop(u.reference));
+                }
+            }
+            if active {
+                self.stop_output(events);
+            }
             if self.stations[i].current.is_none() {
                 let broadcasting = self.broadcasting(order, state, r);
                 self.stations[i].running = broadcasting;
-                if broadcasting {
-                    let items = self.programme(order, scripts, state, r);
+                let topic = order.form_by_editor_id(RADIO_HELLO);
+                if let Some(topic) = topic.filter(|_| broadcasting) {
+                    let items = self.programme(order, scripts, state, r, topic);
                     let st = &mut self.stations[i];
                     st.items = items;
                     if !st.items.is_empty() {
@@ -714,7 +1002,144 @@ impl Radio {
         }
         let st = &mut self.stations[i];
         st.power = st.target;
-        self.pipboy_update(order, i, now, radio_volume, files, events);
+        if active {
+            self.pipboy_update(order, i, now, radio_volume, files, events);
+        }
+        self.receivers_update(order, state, i, now, radio_volume, files, events);
+    }
+
+    /// `00834260`'s receivers: each playing one in the player's worldspace
+    /// (outdoors) or interior, its static bed by the station's strength,
+    /// and the line started when it hasn't been and the player is within
+    /// hearing (`00834c3d` … `008352c4`).
+    // Translated from 00834260 (disassembly, FalloutNV.exe 1.4.0.525)
+    #[allow(clippy::too_many_arguments)]
+    fn receivers_update(
+        &mut self,
+        order: &LoadOrder,
+        state: &GameState,
+        i: usize,
+        now: u64,
+        radio_volume: f32,
+        files: &mut dyn RadioFiles,
+        events: &mut Vec<RadioEvent>,
+    ) {
+        if self.stations[i].users.is_empty() {
+            return;
+        }
+        let r = self.stations[i].reference;
+        let power = self.stations[i].power;
+        let player_space = state.player_world.or(state.player_cell);
+        let player_at = state.player_position.unwrap_or([0.0; 3]);
+        let line = self.line_file(order, i);
+        let hearing_sound = self.hearing_sound(order, r);
+        let creature_max = self.creature_radio_max.unwrap_or(CREATURE_RADIO_MAX);
+        for k in 0..self.stations[i].users.len() {
+            let u = self.stations[i].users[k].clone();
+            if !u.playing {
+                continue;
+            }
+            let place = state.place(order, u.reference);
+            let elsewhere = place.map_or(true, |(space, ..)| Some(space) != player_space);
+            if elsewhere {
+                let u = &mut self.stations[i].users[k];
+                u.playing = false;
+                u.line = None;
+                events.push(RadioEvent::ReceiverStop(u.reference));
+                if std::mem::take(&mut u.static_on) {
+                    events.push(RadioEvent::ReceiverStatic {
+                        reference: u.reference,
+                        volume: None,
+                    });
+                }
+                continue;
+            }
+            let at = place.map_or([0.0; 3], |p| p.2);
+            if power < 100 {
+                self.stations[i].users[k].static_on = true;
+                events.push(RadioEvent::ReceiverStatic {
+                    reference: u.reference,
+                    volume: Some(static_volume(power)),
+                });
+            } else if std::mem::take(&mut self.stations[i].users[k].static_on) {
+                events.push(RadioEvent::ReceiverStatic {
+                    reference: u.reference,
+                    volume: None,
+                });
+            }
+            let st = &self.stations[i];
+            let Some(current) = st.current else {
+                continue;
+            };
+            if now < st.start || u.line == Some((current, st.start)) {
+                continue;
+            }
+            let Some((path, song)) = line.clone() else {
+                continue;
+            };
+            let creature = crate::more_functions::placed::base_now(order, state, u.reference)
+                .and_then(|b| order.get(b))
+                .is_some_and(|b| b.entry.header.kind == CREA);
+            let hearing = if !creature {
+                hearing_sound.map_or(DEFAULT_HEARING, |far| far * 1.1)
+            } else {
+                creature_max * 1.1
+            };
+            let d = [
+                player_at[0] - at[0],
+                player_at[1] - at[1],
+                player_at[2] - at[2],
+            ];
+            if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() > hearing {
+                continue;
+            }
+            let start = st.start;
+            if st.duration == 0 {
+                let ms = if song {
+                    files.song_ms(&path)
+                } else {
+                    files.voice_ms(&path)
+                };
+                self.stations[i].duration = ms.map_or(1, i64::from).max(1);
+            }
+            events.push(RadioEvent::Receiver {
+                reference: u.reference,
+                path: if song { mono_song(&path) } else { path },
+                song,
+                volume: radio_volume * f32::from(power) / 100.0,
+                offset: now - start,
+            });
+            self.stations[i].users[k].line = Some((current, start));
+        }
+    }
+
+    /// The line playing's file: a song (`sound\…`, relative to `Data`) or
+    /// the DJ's voice file, and whether it's a song.
+    fn line_file(&self, order: &LoadOrder, i: usize) -> Option<(String, bool)> {
+        let st = &self.stations[i];
+        let item = st.items.get(st.current?)?;
+        if let Some(path) = item.sound().and_then(|snd| sound_file(order, snd)) {
+            return Some((format!("sound\\{}", path.to_ascii_lowercase()), true));
+        }
+        let v = self.station_ref(st.reference)?.voice?;
+        let resp = item.info.responses.first()?;
+        Some((dialogue::voice_path(order, &item.info, resp, v)?, false))
+    }
+
+    /// The largest attenuation distance of the sound a station's receivers
+    /// are heard by: its base's own (`SNAM`, `TESObjectACTI` +0x7c), else
+    /// [`ATTENUATION_MODEL`] (`00553b90`: the byte × 100, here
+    /// `Sound::max_distance`).
+    fn hearing_sound(&self, order: &LoadOrder, r: FormId) -> Option<f32> {
+        let own = self.station_ref(r).and_then(|s| {
+            let rr = order.get(s.base)?;
+            let record = rr.record().ok()?;
+            let id = record.get(SNAM).filter(|d| d.data.len() >= 4)?;
+            Some(rr.plugin.to_global(FormId(le_u32(&id.data, 0))))
+        });
+        own.or_else(|| order.form_by_editor_id(ATTENUATION_MODEL))
+            .and_then(|id| crate::sound::Sound::load(order, id))
+            .map(|s| s.max_distance)
     }
 
     /// Whether a station broadcasts: `SetBroadcastState`'s word for its
@@ -740,9 +1165,10 @@ impl Radio {
         events.push(RadioEvent::HoldMusic(true));
     }
 
-    /// `0061b440`: a programme from `RadioHello`: the line picked
-    /// (`0061a7d0`), run-immediately lines' scripts run, then a random
-    /// untried link that gives a line, until none does or there are 100.
+    /// `0061b440`: a programme from a topic (`RadioHello`, or the one a
+    /// script started): the line picked (`0061a7d0`), run-immediately
+    /// lines' scripts run, then a random untried link that gives a line,
+    /// until none does or there are 100.
     // Translated from 0061b440 (decompiled, FalloutNV.exe 1.4.0.525)
     fn programme(
         &mut self,
@@ -750,10 +1176,8 @@ impl Radio {
         scripts: &crate::scripting::ScriptCache,
         state: &mut GameState,
         r: FormId,
+        topic: FormId,
     ) -> Vec<Item> {
-        let Some(topic) = order.form_by_editor_id(RADIO_HELLO) else {
-            return Vec::new();
-        };
         let Some(s) = self.station_ref(r).cloned() else {
             return Vec::new();
         };
@@ -951,6 +1375,39 @@ pub fn place_of(state: &GameState) -> Place {
     }
 }
 
+/// The file a receiver plays a song from: `_mono` put before the
+/// extension (`00834260`, unless the name has `_mono.` already), and, as a
+/// streamed sound, the extension made `.ogg` (`00af1e00` turns `.mp3` and
+/// `.wav` into `.ogg`; the games' mono songs are `.ogg` files).
+// Translated from 00834260 / 00af1e00 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn mono_song(path: &str) -> String {
+    let mut p = path.to_string();
+    if !p.contains("_mono.") {
+        if let Some(dot) = p.rfind('.') {
+            p.insert_str(dot, "_mono");
+        }
+    }
+    for ext in [".mp3", ".wav"] {
+        if let Some(at) = p.find(ext) {
+            p.replace_range(at..at + ext.len(), ".ogg");
+            break;
+        }
+    }
+    p
+}
+
+/// A reference's worldspace and position as placed (a station's position
+/// reference, `XRDO`).
+fn position_of(order: &LoadOrder, r: FormId) -> Option<(Option<FormId>, [f32; 3])> {
+    let rr = order.get(r)?;
+    let record = rr.record().ok()?;
+    let d = record.get(esm::sig::DATA).filter(|s| s.data.len() >= 12)?;
+    Some((
+        order.world_of(&rr),
+        [le_f32(&d.data, 0), le_f32(&d.data, 4), le_f32(&d.data, 8)],
+    ))
+}
+
 /// Whether the player is the listener a condition asks about (unused by
 /// the radio: both ends are the station).
 pub const LISTENER: FormId = PLAYER_REF;
@@ -966,6 +1423,17 @@ mod tests {
             static_pct,
             position: None,
         }
+    }
+
+    /// A receiver's song: the `_mono` file, streamed as `.ogg`.
+    #[test]
+    fn a_receivers_song_is_its_mono_ogg() {
+        assert_eq!(
+            mono_song("sound\\songs\\radionv\\mus_lazy_day_blues.mp3"),
+            "sound\\songs\\radionv\\mus_lazy_day_blues_mono.ogg"
+        );
+        assert_eq!(mono_song("sound\\a_mono.ogg"), "sound\\a_mono.ogg");
+        assert_eq!(mono_song("sound\\b.wav"), "sound\\b_mono.ogg");
     }
 
     /// `00833d00`: clear to 0.9 of the radius (the default static), then

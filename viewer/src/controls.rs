@@ -11,7 +11,11 @@
 //! key. Every control is looked up on its own (`00a24660` reads the
 //! control's key from the keyboard map at the input manager's `+0x1b94`,
 //! then that key's state), so two controls bound to one key both act on
-//! it; each user of a control decides what it does.
+//! it; each user of a control decides what it does. The 2 key (control
+//! 0x12) is read by both the player's controls (`0093e860`: going down,
+//! the ammunition swap) and the HUD's hot keys (`0077da60`: slot 1, which
+//! the Pip-Boy never lets anything onto, so it does nothing; held, it
+//! never shows the wheel), tap or hold alike.
 
 use bevy::prelude::*;
 

@@ -5,10 +5,17 @@
 //! voice files, the songs on the music decks (type 7), the static loop,
 //! the line's result scripts. DATA › Radio's rows click through
 //! `pipboy` into [`click`]. The Pip-Boy being put away doesn't touch it.
+//! Script functions (`PipboyRadio`, `StartRadioConversation`,
+//! `SetNPCRadio` …) act on the same radio; a person playing a station
+//! (a receiver) plays its lines here too, not placed in the world (as the
+//! viewer's other voices: no distance falloff or direction).
+
+use std::collections::HashMap;
 
 use bevy::audio::{AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackSettings, Volume};
 use bevy::prelude::*;
 use bevy::time::Real;
+use esm::FormId;
 use world::radio::{RadioEvent, RadioFiles};
 
 use crate::dialogue::DialogueState;
@@ -31,6 +38,17 @@ pub struct RadioOut {
     static_loop: Option<(Entity, f32)>,
     /// Events from a click, done next frame.
     pending: Vec<RadioEvent>,
+    /// What each receiver plays now, and its static loop.
+    receivers: HashMap<FormId, Entity>,
+    receiver_static: HashMap<FormId, (Entity, f32)>,
+}
+
+fn despawn(commands: &mut Commands, e: Option<Entity>) {
+    if let Some(e) = e {
+        if let Ok(mut c) = commands.get_entity(e) {
+            c.despawn();
+        }
+    }
 }
 
 /// A DATA › Radio row clicked (`00796fd0` case 0x19).
@@ -105,6 +123,13 @@ pub fn run_radio(
     {
         let state = &mut state.0;
         let mut radio = std::mem::take(&mut state.radio);
+        // `fCreatureRadioMax:Audio` (the INI's, else the exe's).
+        radio.creature_radio_max.get_or_insert_with(|| {
+            game.settings
+                .get("Audio", "fCreatureRadioMax")
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .unwrap_or(world::radio::CREATURE_RADIO_MAX)
+        });
         let mut files = Files {
             game,
             music: &mut music,
@@ -196,10 +221,77 @@ pub fn run_radio(
                 }
             }
             RadioEvent::Changed => {}
+            RadioEvent::Receiver {
+                reference,
+                path,
+                song: _,
+                volume,
+                offset,
+            } => {
+                despawn(&mut commands, out.receivers.remove(&reference));
+                // The file (a song's mono OGG or a voice file) decoded and
+                // started `offset` ms in, in step with the station.
+                let playing = game
+                    .assets
+                    .read(&path)
+                    .ok()
+                    .flatten()
+                    .and_then(|b| crate::sounds::read_sound(&path, &b).ok())
+                    .map(|mut pcm| {
+                        let skip = (offset as f64 / 1000.0
+                            * f64::from(pcm.rate)
+                            * f64::from(pcm.channels)) as usize;
+                        let skip = skip - skip % usize::from(pcm.channels.max(1));
+                        pcm.samples.drain(..skip.min(pcm.samples.len()));
+                        let handle = wavs.add(crate::sounds::pcm_sound(pcm));
+                        let settings =
+                            PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume * master));
+                        commands.spawn((AudioPlayer(handle), settings)).id()
+                    });
+                match playing {
+                    Some(e) => {
+                        println!("Radio: {reference} plays {path}.");
+                        out.receivers.insert(reference, e);
+                    }
+                    None => println!("Radio: {reference} can't play {path} (not found)."),
+                }
+            }
+            RadioEvent::ReceiverStop(reference) => {
+                despawn(&mut commands, out.receivers.remove(&reference));
+            }
+            RadioEvent::ReceiverStatic {
+                reference,
+                volume: Some(v),
+            } => match out.receiver_static.get_mut(&reference) {
+                Some((_, have)) => *have = v,
+                None => {
+                    let sound = order
+                        .form_by_editor_id(world::radio::STATIC_LOOP)
+                        .and_then(|id| world::sound::Sound::load(order, id));
+                    if let Some(e) = sound.and_then(|s| {
+                        crate::sounds::play(&mut commands, game, &mut wavs, &s, 0, true)
+                    }) {
+                        commands
+                            .entity(e)
+                            .insert(PlaybackSettings::LOOP.with_volume(Volume::Linear(v * master)));
+                        out.receiver_static.insert(reference, (e, v));
+                    }
+                }
+            },
+            RadioEvent::ReceiverStatic {
+                reference,
+                volume: None,
+            } => {
+                despawn(
+                    &mut commands,
+                    out.receiver_static.remove(&reference).map(|(e, _)| e),
+                );
+            }
         }
     }
-    // The static loop's volume follows the strength.
-    if let Some((e, v)) = out.static_loop {
+    // The static loops' volumes follow the strength.
+    let loops = out.static_loop.iter().chain(out.receiver_static.values());
+    for &(e, v) in loops {
         if let Ok(mut sink) = sinks.get_mut(e) {
             sink.set_volume(Volume::Linear(v * master));
         }

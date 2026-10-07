@@ -230,6 +230,20 @@ game. Details and gaps: [START_MENU.md](START_MENU.md),
 [PIPBOY.md](PIPBOY.md). **Next action:** compare the local map and
 pause menu with the game; Radio New Vegas's news live.
 
+Radio and 2 key batch, 2026-10-06 (`claude/m2-radio-unify`): one radio
+state. The Dead Money contributor's radio script functions now act on the
+Pip-Boy's radio (`world::radio`): `PipboyRadio` / `PipBoyRadioOff` tune
+and stop what DATA › Radio shows and plays, `StartRadioConversation`
+replaces a station's programme, `SetNPCRadio` makes a person a receiver
+playing the station's lines (mono songs) near the player (`00835810`,
+`00834260`); old `scriptradio` saves load. The 2 key traced
+(`0077da60`, `00781ba0`): it swaps ammunition, and as hot key slot 1
+(which nothing can be put on) does nothing, tap or hold. Seen live in the
+viewer (script tune / off, Sunny's radio, the 2 key's swap); tested; not
+compared with the game. Gaps (falloff, lip-synced receivers, radio
+templates): [PIPBOY.md](PIPBOY.md). **Next action:** compare a receiver
+(Dead Money's Starlet at the fountain) in the original game.
+
 Dialogue batch, 2026-10-06 (`claude/m1-dialogue`): Doc's farewell at the
 front door could not be left because line follow-ups (`TCFU`) were not
 read. Follow-ups, Goodbye states, random runs and Intelligence classes are

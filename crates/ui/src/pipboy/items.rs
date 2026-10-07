@@ -57,8 +57,10 @@ pub struct ItemsMenu {
 
 /// How many hot keys there are (`006e4ba0`: 8), the controls they are
 /// (0x11 + n: Hotkey1 .. Hotkey8), and the one that isn't a hot key on the
-/// wheel (n 1: the "2" key, the pad's ammunition swap; `00701bd0`,
-/// `007017b0`, `0077da60` all skip it).
+/// wheel (n 1: the "2" key, Ammo Swap's control; the Pip-Boy's wheel never
+/// shows or fills it, `00781ba0`, `00701bd0`, `007017b0`, so nothing is
+/// ever put on it; `0077da60` still uses slot 1 when the key comes up, which
+/// does nothing).
 pub const HOTKEYS: usize = 8;
 pub const NOT_A_HOTKEY: usize = 1;
 

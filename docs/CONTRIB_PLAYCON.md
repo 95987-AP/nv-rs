@@ -23,7 +23,7 @@ off. Dead Money test runs that need Dog to follow (Act 2) set it.
 | Branch | What it adds | What we already had | Traced? | Result |
 | --- | --- | --- | --- | --- |
 | `dlc-dead-money` | DLC research pass (`DEAD_MONEY.md`), `scripts/dlc-data-pass.ps1` | nothing | data-only | merged (`.gitignore` both kept) |
-| `dm-radio` | radio script functions (`PipboyRadio`, `SetNPCRadio`, ...) as state only | names listed only; our radio/start menu/local map agent works on `claude/m2-startmenu-radio-map` | addresses given | merged, kept in `world::more_functions::radio`, not wired to the Pip-Boy; overlap noted for the radio agent |
+| `dm-radio` | radio script functions (`PipboyRadio`, `SetNPCRadio`, ...) as state only | names listed only; our radio/start menu/local map agent works on `claude/m2-startmenu-radio-map` | addresses given | merged; since `claude/m2-radio-unify` the handlers in `world::more_functions::radio` act on the Pip-Boy's own radio (`world::radio`), one state |
 | `dm-los-anim` | `IsAnimPlaying` on objects, `GetLineOfSight` with a viewer `Sight` | Runner without sight | traced (`0059c990`, `0088b880`) | merged; `Runner` keeps our `references_changed` and their `sight` |
 | `dm-shaders` | `PlayMagicShaderVisuals` / `Stop...` | no | traced | merged |
 | `dm-terminal-back` | `ForceTerminalBack` | no | traced | merged |

@@ -88,6 +88,13 @@ pub mod ids {
     pub const SAYER_SCRIPT: u32 = 0xE21;
     pub const SAYER: u32 = 0xE22;
     pub const SAYER_REF: u32 = 0xE3C;
+    /// A quest running from the start, whose line of `TestRadioTopic`
+    /// (`RADIO_LINE`) is a song (`TestSong`, `radio\testsong.mp3`).
+    pub const RADIO_QUEST: u32 = 0xE23;
+    pub const RADIO_LINE: u32 = 0xE24;
+    pub const SONG: u32 = 0xE25;
+    /// `AMLRadio`: largest attenuation distance 20 (× 100 units).
+    pub const RADIO_MODEL: u32 = 0xE26;
 }
 
 /// The world, written as `FalloutNV.esm` into a temporary Data folder.
@@ -165,9 +172,10 @@ pub fn more(tag: &str) -> TempData {
         &named(b"CSTY", STYLE, "TestStyle", &sub(b"CSTD", &[0; 92])),
     ));
 
-    // Talking activators: the radio's record flag 0x40000000.
+    // Talking activators: the radio's record flags 0x40000000
+    // (broadcasting) and 0x20000 (a radio station; placed with `XRDO`).
     let mut radio = named(b"TACT", RADIO, "TestRadio", &sub(b"FULL", &zstr("Radio")));
-    radio[8..12].copy_from_slice(&0x4000_0000u32.to_le_bytes());
+    radio[8..12].copy_from_slice(&0x4002_0000u32.to_le_bytes());
     radio.extend(named(
         b"TACT",
         TALKER,
@@ -224,11 +232,35 @@ pub fn more(tag: &str) -> TempData {
         0,
         &named(b"EFSH", SHADER, "TestShader", &sub(b"DATA", &[0; 4])),
     ));
-    plugin.extend(group(
-        *b"DIAL",
-        0,
-        &named(b"DIAL", RADIO_TOPIC, "TestRadioTopic", &topic_data),
+    let mut quest = edid("TestRadioQuest");
+    let mut qdata = vec![0x01, 50, 0, 0];
+    qdata.extend(1.0f32.to_le_bytes());
+    quest.extend(sub(b"DATA", &qdata));
+    plugin.extend(group(*b"QUST", 0, &record(b"QUST", RADIO_QUEST, &quest)));
+    let mut sounds = named(
+        b"SOUN",
+        SONG,
+        "TestSong",
+        &sub(b"FNAM", &zstr("radio\\testsong.mp3")),
+    );
+    let mut model = sub(b"FNAM", &zstr("fx\\radio.wav"));
+    model.extend(sub(b"SNDD", &[1, 20, 0, 0, 0, 0, 0, 0]));
+    sounds.extend(named(b"SOUN", RADIO_MODEL, "AMLRadio", &model));
+    plugin.extend(group(*b"SOUN", 0, &sounds));
+    // The topic's one line: a song (`TRDT` bytes 16..20).
+    let mut trdt = [0u8; 24];
+    trdt[16..20].copy_from_slice(&SONG.to_le_bytes());
+    let mut line = sub(b"DATA", &[0, 0, 0, 0]);
+    line.extend(sub(b"QSTI", &RADIO_QUEST.to_le_bytes()));
+    line.extend(sub(b"TRDT", &trdt));
+    line.extend(sub(b"NAM1", &zstr("A song.")));
+    let mut topic = named(b"DIAL", RADIO_TOPIC, "TestRadioTopic", &topic_data);
+    topic.extend(group(
+        RADIO_TOPIC.to_le_bytes(),
+        7,
+        &record(b"INFO", RADIO_LINE, &line),
     ));
+    plugin.extend(group(*b"DIAL", 0, &topic));
 
     let mut cup = sub(b"FULL", &zstr("Cup"));
     let mut v = 1i32.to_le_bytes().to_vec();
@@ -420,7 +452,14 @@ pub fn more(tag: &str) -> TempData {
         [200.0, 0.0, 0.0],
         [0.0; 3],
         "RadioRef",
-        &[],
+        // Radio data: heard everywhere (range type 1).
+        &sub(b"XRDO", &{
+            let mut x = 0.0f32.to_le_bytes().to_vec();
+            x.extend(1u32.to_le_bytes());
+            x.extend(0.0f32.to_le_bytes());
+            x.extend(0u32.to_le_bytes());
+            x
+        }),
     ));
     refs.extend(thing(
         b"REFR",
