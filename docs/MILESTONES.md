@@ -595,11 +595,14 @@ quests` from the compiled scripts and nv-rs's own function tables (rerun it afte
 changing either; the played status and the system gaps are two small hand-kept tables
 in `crates/nvinspect/src/quest_played.rs`). 436 quests: 7 PARTIAL (the opening,
 Goodsprings and the gunfight, from the recorded routes), 402 NOT PLAYED, 27 NEVER
-STARTED, none PLAYED. 25 of the 290 functions the quests' scripts call aren't carried
-out (most quests held back: `ForceFlee`, `ShowRepairMenu`, `GetGroupMemberCount` in
-conditions); missing systems: casino games, the face editor, movies. Static only: no
-quest was played for it. **Next action:** carry out `ForceFlee` and the repair menu,
-then play a NOT PLAYED quest with nothing listed against it and record it in the table.
+STARTED, none PLAYED. Regenerated on the integration branch with Chazm's pull request
+#11 (repair, Caravan, item scripts, the Bink intro): 20 of the 290 functions the quests'
+scripts call aren't carried out (most quests held back: `ForceFlee`, then
+`GetGroupMemberCount` in conditions); 388 quests have nothing listed against them;
+missing systems: the casino screens (rules done, screens on `claude/casino-slots`) and
+the face editor. Static only: no quest was played for it. **Next action:** carry out
+`ForceFlee`, then play a NOT PLAYED quest with nothing listed against it and record it in
+the table.
 
 ## Deferred
 

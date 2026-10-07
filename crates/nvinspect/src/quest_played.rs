@@ -66,8 +66,10 @@ pub const ENTRIES: &[Entry] = &[
         "The opening. Nothing in the scripts or the exe's data was found to start it (the two \
          packages that set its stages belong to its own scene); the viewer's `--new-game` sets its \
          stage 0, whose script asks for the intro movie and moves on to Doc Mitchell's quest. The \
-         movie isn't played (log only). [C] How the original starts it.",
-        "docs/OPENING.md (observed baseline), docs/CLAUDE_REFERENCE.md",
+         movie plays (`--new-game --movies`: `FNVIntro.bik`, seen in the maintainer's merge check). \
+         [C] How the original starts it.",
+        "docs/OPENING.md (observed baseline), docs/MOVIES.md, docs/CONTRIB_CHAZM.md, \
+         docs/CLAUDE_REFERENCE.md",
     ),
     e(
         "VCG01",
@@ -166,9 +168,9 @@ pub const SYSTEM_GAPS: &[SystemGap] = &[
             "ShowRouletteMenuParams",
         ],
         records: &["CSNO"],
-        note: "the slot machine, blackjack and roulette screens aren't built: the functions only \
-               hand over the casino and the menu's number",
-        source: "crates/world/src/more_functions/menus.rs, docs/HANDOFF_DEAD_MONEY.md",
+        note: "the games' rules are in `world::casino` but their screens aren't shown: the \
+               viewer only prints the script's request (`Event::Casino`)",
+        source: "viewer/src/scripts.rs, docs/CASINO.md, docs/CONTRIB_CHAZM.md",
     },
     SystemGap {
         system: "face editor",
@@ -176,13 +178,6 @@ pub const SYSTEM_GAPS: &[SystemGap] = &[
         records: &[],
         note: "the race and face menu isn't built: it accepts itself and the face is kept",
         source: "docs/TASKS.md B15, viewer/src/scripts.rs",
-    },
-    SystemGap {
-        system: "movies",
-        functions: &["PlayBink"],
-        records: &[],
-        note: "Bink videos aren't played: the viewer only logs the file",
-        source: "viewer/src/scripts.rs, docs/OPENING.md",
     },
 ];
 
