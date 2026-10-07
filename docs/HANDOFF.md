@@ -13,15 +13,17 @@ Updated 2026-10-07 morning (overnight session 2026-10-06 → 07).
 
 - Integration branch: `claude/overnight-integration` (pushed). `main` is
   untouched; merging integration into `main` is the user's decision.
-- Published: play builds 12 to 19 (and later) in `Desktop\nv-rs-play`.
+- Published: play builds 12 to 23 in `Desktop\nv-rs-play` (23 has everything).
   Every merge was checked with the full root and viewer checks and
   `scripts/acceptance.ps1` before publishing.
 - Landed overnight: one radio state and the 2 key (`claude/m2-radio-unify`),
   death into ragdoll (`claude/m2-death-ragdoll`), Chazm's PR #11
   (`claude/contrib-chazm`) and PR #12 (`claude/contrib-chazm-perf`; both in
-  docs/CONTRIB_CHAZM.md), B3 crosshair pick, B4 NPCs on the ground, B5 firing sounds and muzzle
-  flashes, B6 impact decals and sounds, B10 greetings, B11 voice file names, B12 Doc's door loop, B13
-  barter over dialogue, B16 local map panning (its zoom scale was found to match the game already). Details and what each left are in TASKS.md.
+  docs/CONTRIB_CHAZM.md), B3 crosshair pick, B4 NPCs on the ground, B5
+  firing sounds and muzzle flashes, B6 impact decals and sounds, B10
+  greetings, B11 voice file names, B12 Doc's door loop, B13 barter over
+  dialogue, B16 local map panning (its zoom scale was found to match the
+  game already). Details and what each left are in TASKS.md.
 - Every overnight branch is merged; nothing is running. Worktrees stay in
   `%USERPROFILE%\nv-re\work\wt-b<n>-*` (their build folders were cleared).
 - GitHub: issues #13–#24 are the twelve `[task] M<n>` major systems
