@@ -127,7 +127,10 @@ Everything else is open through the `[task]` issues.
    ([ADR-0002](docs/adr/0002-xbox-prototype-symbols.md)), read from the
    game's data, or recorded from the original game. No stand-ins, no
    "close enough" constants. Anything you couldn't trace is listed in the
-   pull request and must not change the base-game routes.
+   pull request and must not change the base-game routes. The
+   executable's own built-in default strings (for example the reputation
+   titles' descriptions) may be committed, each marked with its address
+   (the maintainer's decision of 2026-10-07).
 4. **Evidence of play.** Say what you checked by playing (keys, mouse or
    pad) and what you only checked by script (`--run`, `--say`, `--use`,
    `--key-at`) or unit test. Keep logs and screenshots private, or check
