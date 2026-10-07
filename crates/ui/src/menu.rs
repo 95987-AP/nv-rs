@@ -1088,6 +1088,64 @@ mod tests {
         assert_eq!(ui.number(knob, drag::X), 47.0);
     }
 
+    /// The DATA maps' `x` adds `dragdeltax` (`map_menu.xml`) and stays in
+    /// its limits: a drag moves the map by what the pointer moved, once,
+    /// and nothing moves it after (the delta stays set but nothing sets it
+    /// again, as in the game, which works `x` out when a source is set).
+    #[test]
+    fn a_drag_moves_a_map_once() {
+        let mut ui = test_support::ui();
+        let mut code = Recorder::default();
+        let xml = "<menu name=\"M\"><class>&MessageMenu;</class>
+            <hotrect name=\"Win\"><locus>&true;</locus><clipwindow>&true;</clipwindow><width>855</width><height>500</height>
+              <hotrect name=\"Map\"><id>2</id><target>&true;</target><draggable>&true;</draggable><locus>&true;</locus>
+                <width>4608</width><height>3000</height>
+                <x><add src=\"me()\" trait=\"dragdeltax\"/>
+                  <max><copy>427.5</copy><sub src=\"me()\" trait=\"width\"/></max><min>427.5</min></x>
+                <y><add src=\"me()\" trait=\"dragdeltay\"/>
+                  <max><copy>250</copy><sub src=\"me()\" trait=\"height\"/></max><min>250</min></y>
+              </hotrect></hotrect></menu>";
+        let menu = test_support::load(&mut ui, xml, &mut code);
+        ui.set_number(menu, t::VISIBLE, 1.0);
+        let map = ui.find(menu, "Map").unwrap();
+        ui.set_base(map, t::X, -1000.0);
+        ui.set_base(map, t::Y, -500.0);
+        ui.refresh();
+        assert_eq!(ui.number(map, t::X), -1000.0);
+        let mut i = Interface::default();
+        let at =
+            |ui: &mut Ui, i: &mut Interface, code: &mut Recorder, x, down, pressed, released| {
+                i.pointer(ui, menu, code, x, 200.0, down, pressed, released, 0.0);
+            };
+        at(&mut ui, &mut i, &mut code, 300.0, false, false, false);
+        at(&mut ui, &mut i, &mut code, 300.0, true, true, false);
+        at(&mut ui, &mut i, &mut code, 290.0, true, false, false);
+        at(&mut ui, &mut i, &mut code, 270.0, true, false, false);
+        assert_eq!(ui.number(map, t::X), -1030.0);
+        // Many passes with the same delta still set add nothing.
+        for _ in 0..5 {
+            ui.refresh();
+            assert_eq!(ui.number(map, t::X), -1030.0);
+        }
+        // The same delta set again (the pointer moved as much again) is a
+        // move again.
+        at(&mut ui, &mut i, &mut code, 250.0, true, false, false);
+        assert_eq!(ui.number(map, t::X), -1050.0);
+        at(&mut ui, &mut i, &mut code, 250.0, false, false, true);
+        for _ in 0..5 {
+            ui.refresh();
+            assert_eq!(ui.number(map, t::X), -1050.0);
+        }
+        // The limits hold: dragged far right, the map's left edge stops at
+        // the window's middle.
+        at(&mut ui, &mut i, &mut code, 100.0, false, false, false);
+        at(&mut ui, &mut i, &mut code, 100.0, true, true, false);
+        at(&mut ui, &mut i, &mut code, 3000.0, true, false, false);
+        assert_eq!(ui.number(map, t::X), 427.5);
+        at(&mut ui, &mut i, &mut code, 3000.0, false, false, true);
+        assert_eq!(ui.number(map, t::X), 427.5);
+    }
+
     #[test]
     fn clip_windows_and_clipping_children() {
         let mut ui = test_support::ui();

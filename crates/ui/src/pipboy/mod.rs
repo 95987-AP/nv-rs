@@ -462,6 +462,8 @@ pub struct Pipboy {
     /// The interface's pointer state over the shown menu (the tile under
     /// the pointer, the one the button went down on, a drag).
     pub interface: Interface,
+    /// Where the pointer last was on the screen.
+    last_at: Option<[f32; 2]>,
 }
 
 /// The menu classes' numbers (`Menu` vtable slot `+0x34`): StatsMenu
@@ -557,6 +559,7 @@ impl Pipboy {
             blinking: None,
             section: Section::Stats,
             interface: Interface::default(),
+            last_at: None,
             repair,
             repairing: false,
             item_mod,
@@ -608,6 +611,9 @@ impl Pipboy {
             self.data.cursor_hidden = false;
         }
         self.section = section;
+        if section == Section::Data {
+            self.data.shown();
+        }
         for (menu, on) in [
             (self.stats.menu, section == Section::Stats),
             (self.items.menu, section == Section::Items),
@@ -903,8 +909,16 @@ impl Pipboy {
             self.data.pressed(ui);
         }
         let before = self.list_index();
-        // Off the screen nothing is picked: a point no tile covers.
-        let [x, y] = at.unwrap_or([-1.0e6, -1.0e6]);
+        // Off the screen nothing is picked: a point no tile covers. A tile
+        // being dragged keeps the last point on the screen meanwhile (the
+        // map stops where the pointer left it, not flung off by a point
+        // far away); nothing is known of the game's own, which follows its
+        // cursor.
+        if at.is_some() {
+            self.last_at = at;
+        }
+        let held = at.or(self.last_at.filter(|_| self.interface.dragging.is_some()));
+        let [x, y] = held.unwrap_or([-1.0e6, -1.0e6]);
         let ((), mut out) = self.with_code(ui, input, |interface, code, menu, ui| {
             interface.pointer(
                 ui,
@@ -948,6 +962,18 @@ impl Pipboy {
         });
         out.extend(self.interface_sounds());
         let out = self.route(out, before);
+        ui.refresh();
+        out
+    }
+
+    /// The pad's sticks (left stick up / down, right stick x / y, as the
+    /// 360 pad's -32767 .. 32767) over the Pip-Boy: DATA's maps zoom and
+    /// pan with them (`00799790`).
+    pub fn sticks(&mut self, ui: &mut Ui, left_y: i32, right: [i32; 2]) -> Vec<Action> {
+        if self.repairing || self.modding || self.section != Section::Data {
+            return Vec::new();
+        }
+        let out = self.data.sticks(ui, left_y, right);
         ui.refresh();
         out
     }
@@ -1404,6 +1430,37 @@ pub(crate) mod tests {
             (target(&mut ui, &p, 19), target(&mut ui, &p, 8)),
             (0.0, 0.0)
         );
+    }
+
+    /// Dragging a map with the pointer leaving the screen: the map is not
+    /// flung off by the point far away that "off the screen" is; it keeps
+    /// the last point on the screen, and goes on from the pointer's return.
+    #[test]
+    fn a_drag_goes_on_when_the_pointer_leaves_the_screen() {
+        let (mut ui, mut p) = load();
+        let input = input();
+        p.fill(&mut ui, &input);
+        p.show(&mut ui, Section::Data);
+        ui.refresh();
+        let world = by_id(&ui, p.data.menu, 4).unwrap();
+        let delta = |ui: &mut Ui| ui.number(world, crate::menu::drag::DELTA_X);
+        const HELD: Button = Button {
+            down: true,
+            pressed: false,
+            released: false,
+        };
+        p.pointer(&mut ui, Some([300.0, 300.0]), UP, 0.0, &input);
+        p.pointer(&mut ui, Some([300.0, 300.0]), PRESS, 0.0, &input);
+        assert!(p.interface.dragging.is_some());
+        p.pointer(&mut ui, Some([280.0, 300.0]), HELD, 0.0, &input);
+        assert_eq!(delta(&mut ui), -20.0);
+        p.pointer(&mut ui, None, HELD, 0.0, &input);
+        assert_eq!(delta(&mut ui), 0.0);
+        assert!(p.interface.dragging.is_some());
+        p.pointer(&mut ui, Some([260.0, 300.0]), HELD, 0.0, &input);
+        assert_eq!(delta(&mut ui), -20.0);
+        p.pointer(&mut ui, None, RELEASE, 0.0, &input);
+        assert!(p.interface.dragging.is_none());
     }
 
     /// The right button going down (`00781ba0`, `0079a130`): on ITEMS it

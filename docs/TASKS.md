@@ -171,6 +171,11 @@ Build the real menu.
 
 **B16. Local map.** Too zoomed in, and panning/looking around doesn't
 work like the game. Trace the local map's scale, zoom steps and drag.
+Done on `claude/b16-local-map` (2026-10-07, [PIPBOY.md](PIPBOY.md)): the
+drag no longer runs the map off to its limits, the map is centred again
+when the tab is shown, the pad's sticks pan and zoom. The scale (0.9 at the
+start, 1.1 a wheel step, 0.1 .. 0.9) matches the exe's code; if it still
+feels too close next to the original, compare screenshots of the same place.
 
 **B17. White ball flashing outdoors.** A white sphere sometimes flashes
 outdoors. Find which object or effect it is (likely an untextured

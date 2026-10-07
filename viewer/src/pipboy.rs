@@ -912,6 +912,8 @@ pub struct Mouse<'w, 's> {
     /// Pip-Boy reads the presses and releases themselves.
     events: EventReader<'w, 's, bevy::input::mouse::MouseButtonInput>,
     scroll: ResMut<'w, bevy::input::mouse::AccumulatedMouseScroll>,
+    /// A connected pad, for its sticks on DATA's maps.
+    pads: Query<'w, 's, &'static Gamepad>,
     /// The keys' own events, for the number keys (hot keys), which the
     /// Pip-Boy clears from `ButtonInput` while it's up.
     keyboard: EventReader<'w, 's, bevy::input::keyboard::KeyboardInput>,
@@ -1316,6 +1318,19 @@ fn pipboy_keys(
     );
     if notches != 0 {
         actions.extend(b.pipboy.wheel(&mut b.ui, notches, &input));
+    }
+    // A pad's sticks zoom and pan DATA's maps (`00799790`: the left stick's
+    // up and down, the right stick), as the 360 pad's -32767 .. 32767.
+    if let Some(pad) = mouse.pads.iter().next() {
+        let axis = |a: GamepadAxis| (pad.get(a).unwrap_or(0.0) * 32767.0).round() as i32;
+        actions.extend(b.pipboy.sticks(
+            &mut b.ui,
+            axis(GamepadAxis::LeftStickY),
+            [
+                axis(GamepadAxis::RightStickX),
+                axis(GamepadAxis::RightStickY),
+            ],
+        ));
     }
     b.pipboy.hotkey_keys(&mut b.ui, pipboy.hotkeys_held, &input);
     if let Some(i) = model_button {
