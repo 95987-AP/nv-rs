@@ -1,10 +1,10 @@
-# Weapon fire effects: firing sounds, muzzle flashes, tracers (B5)
+# Weapon fire effects and impacts (B5, B6)
 
 Batch `claude/b5-weapon-effects`, 2026-10-07. Code: `crates/world/src/weapon_fx.rs`
 (rules), `viewer/src/weapon_fx.rs` (sounds and flashes on screen), reports from
 `viewer/src/combat.rs` (the player, `FireWeapon` objects) and
 `viewer/src/fighting.rs` (people). Executable: `FalloutNV.exe` 1.4.0.525. Impacts
-(decals, particles, impact sounds) are B6 and `hiteffects`.
+(decals, effect models, impact sounds) are B6: see [Impacts (B6)](#impacts-b6).
 
 ## What the game does (traced)
 
@@ -136,4 +136,155 @@ Batch `claude/b5-weapon-effects`, 2026-10-07. Code: `crates/world/src/weapon_fx.
 - Thrown weapons still play their `SNAM` when thrown (pre-existing; `00523150`
   doesn't).
 - The anim-action check (9, 15–17) on lighting a flash.
+- Nothing compared with the original game.
+
+# Impacts (B6)
+
+Batch `claude/b6-impacts`, 2026-10-07. Code: `crates/world/src/decals.rs` (decal
+rules), `crates/world/src/impacts.rs` (which impact), `crates/cellview/src/impacts.rs`
+(effect models), `nif::Nif::own_controllers`, `viewer/src/hiteffects.rs` (what a hit
+asks for), `viewer/src/impact_fx.rs` (drawing), `weapon_fx::play_at` (sounds). The
+choice of impact (set by weapon, material by Havok material / `NAM4` / power armour,
+blood, body part spatter set) was already traced: `world::impacts` and
+`nv-re\findings\hiteffects.md`.
+
+## What the game does (traced)
+
+### A shot on the world (`009c20e0`)
+
+- Impact = the projectile's weapon set at the struck sub-shape's material.
+- **Decal**, when the impact has a texture set (`006733e0`): its size U(min width,
+  max width) of the impact's own `DODT` (the record's `+0x54`: `004a40c0`,
+  `004a40a0`, `00476b70`), chosen once per projectile and used for both sides; the
+  `DecalCaster` query (`00622a70`: a shape of 32, or 256 for decals over 32 wide;
+  layer 0x27) at the point; for each collision object found whose struck sub-shape
+  has the impact's material, its scene graph (the land's geometry, or a reference's
+  3D when its base takes decals, `004a1060`: not placeable water, people, creatures
+  or projectiles) gets a decal (`004a3fe0` → `004a1a70`) with: the point, the hit
+  normal, the size, the `DODT` depth (`008aff10`), a turn U(0, 1) (`004a4240`), a
+  picture `trunc(U(0, 4))` (`00ec62c0`), the impact's angle threshold (`009a9350`),
+  the colour's bytes 0–2 ÷ 255 (`004a4220`), the `DODT` flags and parallax values,
+  and "glass" for material 3.
+- `004a1a70` walks the node: skips "Decal Node", "Decal", "FaceGen", "BSFaceGen",
+  "Bip01" and "Debug Decal Box" nodes, recurses through children, and only
+  `NiTriStrips` (`011f4a20`) whose shader isn't itself a decal (`004a2020(0x1a)`)
+  get one; at most `iMaxDecalsPerFrame` (`[Display]`, exe 10, `00f3d5a0`) a frame.
+  One `BSTempEffectSimpleDecal` per piece (`0068ad20`), lifetime `fDecalLifetime`
+  (`[Display]`, exe 10 s, `00f3d570`).
+- **Effect model** (only within `fGunParticleCameraDistance`, 2048, of the camera
+  and in view: `004b61d0` / `004b5ff0`, a sphere of 32 not outside any frustum
+  plane; not while `[011dea2a]`): the impact's model at the point, its Z along the
+  surface normal, back along the shot, or the reflection (`005f36f0`), for the
+  impact's duration (`00508100`, `006890b0`).
+- **Sounds**: `SNAM` and `NAM1` at the point, flags 0x4102, no distance test.
+
+### The decal's geometry (`BSTempEffectSimpleDecal`, `0068b4c0`)
+
+- Frame: `00c4b600` (the effect frame of `00c4b8a0`, rows X, Y, D) turned about D
+  by the turn (`004a0c90`, `0043f8d0`): U = cos·X + sin·Y, V = −sin·X + cos·Y.
+- Six planes (`0068d660`, `NiPlane`s at `+0x64`…`+0xb4`): |U·(p−o)| ≤ w/2,
+  |V·(p−o)| ≤ h/2, |D·(p−o)| ≤ depth; worked in the piece's own space (sizes ÷
+  its world scale).
+- Triangles (`0068d230`, the strip's triangles with alternating winding,
+  degenerate ones skipped): taken when the face normal n has n·D > |n| ×
+  max(0.01, cos(threshold°)) (`0068b050`, global `0119c29c`); clipped
+  Sutherland–Hodgman (`0068d820`, side 2 = outside, the cut's t clamped to 0..1
+  with a log line); added as a fan (`0068cb60`) unless that would reach 512
+  vertices (then the decal stops taking triangles); the piece's vertices are
+  shared by index, new ones within 0.01 of an earlier new one.
+- Vertex colour: the decal colour; alpha max(0, (n̂·D − c) / (1 − c)) by the
+  (interpolated) vertex normal (`0068cb60`).
+- Texture coordinates: u = (U·(p−o)/w + 0.5)/2, v likewise; +0.5 on u for
+  pictures 1, 3, on v for 2, 3; a picture past 3 the whole texture (the decal
+  textures are 2 × 2 grids).
+- Drawn (`0068be90`): the texture set's textures, alpha blending (`DODT` flag
+  0x02) and testing (0x04) from the decal data (`0049ed90`, `004393c0`; test
+  function and reference `004393e0(4)`, `0094db80(0x80)`), parallax (0x01) with
+  its scale and passes, a glass property for glass.
+- Life (`0068c8e0`): full until its lifetime, then alpha 1 → 0 over one second,
+  then removed. At most `uMaxDecals` (`[Decals]`, exe 100, `00f3d600`), the oldest
+  removed (`0068be90`).
+
+### A hit on someone (`0088e8d0`; sounds `0088e1e0`)
+
+- Blood: the blood impact's model at the point, Z along −S (S = normalize(2 × hit
+  direction + U(−0.8, 0.8)³)), lifetime 1 s or its animation; spatter: with chance
+  `fCombatEnvironmentBloodChance` (0.75) a ray 512 units along normalize(S − 0.5 z)
+  (layer 0x27); on the land, or a reference that takes decals, a decal of the body
+  part's own impact, size U(min, max) (×1.5 under Bloody Mess), depth 48, the ray's
+  hit normal.
+
+### Effect models (`006890b0`, `00689310`, `00689840`)
+
+- Lifetime = the longest controller span (at least 0.1 s), else what was given.
+- The ballistic models carry their own `NiTransformController` (on an
+  `NiBillboardNode` in mode 1, `ROTATE_ABOUT_UP`) and `NiAlphaController`.
+
+## Implemented
+
+- `world::decals`: `DecalBox` (frame, planes, triangle test, clipping, UVs, angle
+  alpha), `DecalMesh` (fans, sharing, 512-vertex budget), `fade`, the limits; 6
+  tests on generated triangles.
+- `nif::Nif::own_controllers`: a model's direct transform and material-alpha
+  controllers as one sequence (test on a generated NIF);
+  `cellview::Game::effect_model` / `effect_piece_at`: the model's pieces posed by
+  them from the effect's start, billboards turned, opacity (test).
+- `preview` / `cellview`: `ModelMesh::strips` / `MeshData::strips` (which pieces
+  are `NiTriStrips`).
+- Viewer: decal receivers marked at spawn (strip pieces that aren't decals, the
+  land's quarters); a shot on the world requests the decal on the objects whose
+  collision near the point has the impact's material (the decal box is what's
+  searched, since the clip keeps nothing outside it), the effect model (distance
+  and frustum test) and the two sounds at the point (`weapon_fx::play_at`: the
+  sound's own distances, re-attenuated every frame as B5's are). Hits on people:
+  sounds at the point, blood model and wall/ground spatter where the hit met the
+  body (player shots and people's shots; the struck part is now passed so the
+  part's spatter set is found). Decal pieces are drawn lit with the texture set's
+  diffuse and normal map, vertex colour and alpha, the decal depth pull; they fade
+  and go as the game's do. `NV_SHOT_ON_IMPACT=1` makes `--screenshot` wait for an
+  effect model on screen. Log lines: `impact sound <EDID> at <d> units: <dB>`,
+  `impact effect <model> at x,y,z for <s> s`, `decal <texture> (<IPCT>) <size>
+  wide on <n> piece(s) at x,y,z`.
+- Guesses (`NV_GUESSES=1` only, [G] in the code): billboard mode 1 turns about the
+  node's y toward the camera (Gamebryo's description of the mode; the exe's update
+  isn't traced); no-lighting shaders fade by angle only with shader flag 0x40 (the
+  impact models store a falloff of all zeros, which the viewer's rule hides; which
+  technique the exe picks isn't traced).
+
+## Seen live (release viewer, Goodsprings, `--weapon WeapNV9mmPistol`, `NV_GUESSES=1`, 2026-10-07)
+
+- Ground (dirt, `-68233,1551,8500,195,35`): `BalisticDirtImpact`, sound
+  `FXBulletImpactEarth` −8.4 dB at ~455 units, effect `ImpactBallisticDirt01.NIF`
+  0.10 s, decal 25–31 wide on the land; the decal shows in a pixel difference with
+  a shot-less picture at the crosshair (dirt on dirt: faint), and drawn flat red
+  (a debugging build) as a quad on the ground.
+- Wooden post (`…,159,6`): wood impact, −12.8 dB at 383 units, decal on the post
+  (a narrow strip: the post is round and only faces within 15° take it).
+- Metal water tower: metal impact, −14.3 dB at 670 units, decal made on one strip
+  piece but not seen (it went on a piece the tank's visible surface hides).
+- Boulder (stone, layer 13): concrete impact −26.9 dB at 1129 units; concrete wall
+  at 2309 / glass at 1726 units: decals made, too far to make out.
+- Sunny Smiles (moved in front, `--freeze-ai`): `FXBulletImpactFlesh` −10.1 dB at
+  197 units, her hurt line, blood model spawned, and a blood spatter decal
+  (`FXBloodSplatterDecals01.dds`, `BloodSpoutRedData`, 90 wide) clearly visible on
+  the ground beside her.
+- Effect models: spawned, posed by their controllers (scale 1 → 2, alpha 0.95 →
+  0.08 over the wood model's 0.13 s, from the logs), placed and turned as
+  intended (checked by drawing them opaque); drawn normally they are not visible
+  in the pictures: the dust textures average alpha 0.1 in grey, the dirt puff
+  skims along the ground, and head-on hits leave the quad edge-on; the blood model
+  sits inside the body (the hit point is on the body's capsules).
+- Heard: not checked by ear.
+
+## Not done (B6)
+
+- Decals on people (skinned decals, `004a2070`) and on the attacker's weapon
+  (`0088fb00`); screen blood (B7); Bloody Mess's ×1.5 (actor value 55 is never
+  raised here); parallax; the glass decal property.
+- The `DecalCaster` query's own shape and layer (the viewer looks through the
+  collision in the decal's box); the spatter ray meets every surface (layer 0x27's
+  filter not applied).
+- Blood models following the struck bone; effect models' particle systems; the
+  `[011dea2a]` state.
+- The exe's billboard mode 1 and no-lighting technique choice (guesses above).
 - Nothing compared with the original game.

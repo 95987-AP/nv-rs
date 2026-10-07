@@ -327,6 +327,118 @@ impl Nif {
         Ok(out)
     }
 
+    /// The controllers a model carries itself, outside any
+    /// `NiControllerSequence`, as one sequence (named `""`): each node's
+    /// `NiTransformController` (its interpolator's keys move that node) and
+    /// each shape's material's `NiAlphaController` (its keys set that
+    /// shape's opacity). The game's impact effects animate this way
+    /// (`Effects\ImpactBallistic*01.NIF`: the billboard node and the
+    /// material's alpha). Start and stop are the controllers' earliest start
+    /// and latest stop; it loops when the first controller's cycle type
+    /// (flags bits 1–2) is 0. `None` without such controllers.
+    ///
+    /// A controller (`NiTimeController`, 20.2.0.7): next controller, flags
+    /// (u16), frequency, phase, start, stop, target, then (single
+    /// interpolator controllers) the interpolator.
+    pub fn own_controllers(&self) -> Result<Option<Sequence>> {
+        let mut tracks = Vec::new();
+        let mut materials = Vec::new();
+        let mut span: Option<(f32, f32)> = None;
+        let mut looping = None;
+        // The controllers hanging off one object, in chain order.
+        let chain = |first: i32| -> Result<Vec<ChainLink>> {
+            let mut out: Vec<ChainLink> = Vec::new();
+            let mut next = first;
+            while let Some(c) = self.reference(next) {
+                if out.len() > 64 || out.iter().any(|&(i, ..)| i == c) {
+                    break;
+                }
+                let mut r = self.reader(c);
+                next = r.i32("the next controller")?;
+                let flags = r.u16("the controller flags")?;
+                r.f32("the frequency")?;
+                r.f32("the phase")?;
+                let start = r.f32("the start time")?;
+                let stop = r.f32("the stop time")?;
+                r.i32("the target")?;
+                let interpolator = r.i32("the interpolator").unwrap_or(-1);
+                out.push((c, start, stop, flags, interpolator));
+            }
+            Ok(out)
+        };
+        let mut note = |start: f32, stop: f32, flags: u16| {
+            span = Some(span.map_or((start, stop), |(a, b)| (a.min(start), b.max(stop))));
+            looping.get_or_insert((flags >> 1) & 3 == 0);
+        };
+        for index in 0..self.blocks().len() {
+            let (name, controller, properties) = match self.block(index) {
+                Ok(Block::Node(n)) => (n.av.net.name, n.av.net.controller, Vec::new()),
+                Ok(Block::Geometry(g)) => (g.av.net.name, g.av.net.controller, g.av.properties),
+                _ => continue,
+            };
+            for (c, start, stop, flags, interpolator) in chain(controller)? {
+                if self.block_type(c) != "NiTransformController" {
+                    continue;
+                }
+                let Some(i) = self
+                    .reference(interpolator)
+                    .filter(|&i| self.block_type(i) == "NiTransformInterpolator")
+                else {
+                    continue;
+                };
+                tracks.push(Track {
+                    node: name.clone(),
+                    motion: self.transform_interpolator(i)?,
+                    priority: 0,
+                });
+                note(start, stop, flags);
+            }
+            // The shape's material property: an `NiObjectNET` (name, extra
+            // data list, controller).
+            for p in properties.iter().filter_map(|&p| self.reference(p)) {
+                if self.block_type(p) != "NiMaterialProperty" {
+                    continue;
+                }
+                let mut r = self.reader(p);
+                r.i32("the property name")?;
+                let extras = r.u32("the extra data count")? as usize;
+                for _ in 0..extras.min(1024) {
+                    r.i32("an extra data")?;
+                }
+                let first = r.i32("the property's controller")?;
+                for (c, start, stop, flags, interpolator) in chain(first)? {
+                    if self.block_type(c) != "NiAlphaController" {
+                        continue;
+                    }
+                    let Some(i) = self.reference(interpolator) else {
+                        continue;
+                    };
+                    if let Some(keys) = self.material_keys(i)? {
+                        materials.push(MaterialTrack {
+                            node: name.clone(),
+                            target: MaterialTarget::Alpha,
+                            keys,
+                        });
+                        note(start, stop, flags);
+                    }
+                }
+            }
+        }
+        let Some((start, stop)) = span else {
+            return Ok(None);
+        };
+        Ok(Some(Sequence {
+            name: String::new(),
+            start,
+            stop,
+            looping: looping.unwrap_or(false),
+            tracks,
+            accum_root: None,
+            materials,
+            text_keys: Vec::new(),
+        }))
+    }
+
     fn string_at(&self, r: &mut Reader, what: &str) -> Result<String> {
         let i = r.i32(what)?;
         Ok(usize::try_from(i)
@@ -614,6 +726,9 @@ fn read_quat(r: &mut Reader) -> Result<Quat> {
         r.f32("a rotation")?,
     ])
 }
+
+/// A controller in a chain: its block, start, stop, flags and interpolator.
+type ChainLink = (usize, f32, f32, u16, i32);
 
 type Keyframes = (
     Vec<(f32, Vec3)>,

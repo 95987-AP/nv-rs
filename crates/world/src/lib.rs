@@ -36,6 +36,7 @@ pub mod combat_ai;
 pub mod companions;
 pub mod crafting;
 pub mod crime;
+pub mod decals;
 pub mod detection;
 pub mod dialogue;
 pub mod dialogue_view;

@@ -59,6 +59,12 @@ original game**.
   audio does), muzzle flashes on the player's (both views) and people's
   guns, melee swing-miss sounds; traced, unit-tested, seen live; not
   compared with the original ([WEAPON_EFFECTS.md](WEAPON_EFFECTS.md)).
+- B6 (`claude/b6-impacts`, 2026-10-07): impacts: world decals clipped onto
+  struck `NiTriStrips` pieces and the land (lifetime, fade, limits), blood
+  spatter decals, impact effect models with their own controllers, impact
+  sounds placed and attenuated; traced, unit-tested; decals seen live,
+  effect models placed but too faint to see in screenshots
+  ([WEAPON_EFFECTS.md](WEAPON_EFFECTS.md)).
 - Acceptance evidence ([GOODSPRINGS_ROUTE.md](GOODSPRINGS_ROUTE.md)): with
   dialogue choices replayed by `--run` lines, Ghost Town Gunfight reaches
   stage 100 (XP +50) on the integration build; Back in the Saddle completes

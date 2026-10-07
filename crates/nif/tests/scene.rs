@@ -1572,3 +1572,31 @@ fn finds_a_placed_node_by_name() {
     );
     assert!(nif.placed_node("##ProjectileNode").is_none());
 }
+
+#[test]
+fn a_models_own_controllers_play_as_one_sequence() {
+    // The impact effects' way: a transform controller on the root node and
+    // an alpha controller on the shape's material, outside any sequence.
+    let nif = Nif::parse(testdata::impacts::controlled_effect_nif()).unwrap();
+    assert!(nif.sequences().unwrap().is_empty());
+    let s = nif.own_controllers().unwrap().expect("its controllers");
+    assert_eq!((s.start, s.stop), (0.0, 0.3));
+    assert!(!s.looping, "cycle type 2 clamps");
+    let [grow] = &s.tracks[..] else {
+        panic!("{:?}", s.tracks);
+    };
+    assert_eq!(grow.node, "Root");
+    let scale = grow.sample(0.15).scale.unwrap();
+    assert!((scale - 2.0).abs() < 1e-5, "{scale}");
+    let [fade] = &s.materials[..] else {
+        panic!("{:?}", s.materials);
+    };
+    assert_eq!(
+        (fade.node.as_str(), fade.target),
+        ("Quad", nif::MaterialTarget::Alpha)
+    );
+    assert!((fade.float_at(0.15).unwrap() - 0.5).abs() < 1e-5);
+    // A model without controllers has none.
+    let still = Nif::parse(testdata::impacts::animated_effect_nif(&[])).unwrap();
+    assert!(still.own_controllers().unwrap().is_none());
+}
