@@ -588,6 +588,18 @@ hit's push only after a hit; the dead go limp with the AI held still
 **Next action:** trace which `00c65b00` branch the living biped takes
 (the bodies' velocity handed to the ragdoll).
 
+## Original `.fos` saves (M7 research, `claude/fos-saves`, 2026-10-07)
+
+Format and scope written down from the exe's writer and reader and checked
+byte-for-byte against nine real saves: [FOS_SAVES.md](FOS_SAVES.md). Header,
+plugins, location table, all global data tables, change form records,
+form id and worldspace arrays decoded; quests, globals, misc stats, cells,
+topics, actor bases, factions, classes and challenges decode to their exact
+lengths. References' extra data, inventories and actor/player state are
+located, not decoded. **Next action:** a read-only `nvinspect fos`, then decode
+`ExtraDataList::SaveGame` (`00426a30`) and inventories, then import the
+decoded parts into `GameState`.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,
