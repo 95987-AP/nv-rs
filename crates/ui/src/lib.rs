@@ -18,6 +18,7 @@ pub mod controls;
 pub mod draw;
 pub mod font;
 pub mod game;
+pub mod html;
 pub mod hud;
 pub mod list;
 pub mod listbox;

@@ -54,6 +54,9 @@ pub struct Font {
     /// glyphs (the font object's `+0x2c`): text sits `2 × (line height -
     /// this)` above a text tile's origin.
     pub descent: f32,
+    /// The loader's smallest "baseline - height" (at most 0; the font
+    /// object's `+0x30`): how far the lowest glyph reaches below its line.
+    pub lowest: f32,
 }
 
 /// What can go wrong reading a font.
@@ -164,6 +167,7 @@ impl Font {
             textures,
             glyphs,
             descent,
+            lowest,
         })
     }
 
