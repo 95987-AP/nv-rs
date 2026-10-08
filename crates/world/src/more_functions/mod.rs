@@ -165,6 +165,11 @@ pub struct State {
     /// People's critical stage (actor +0x10c: 1 goo start, 2 goo end, 3
     /// disintegrate start, 4 disintegrate end).
     pub critical_stage: HashMap<FormId, i32>,
+    /// Ash and goo piles `AttachAshPile` made, and the corpse each stands
+    /// for (the `ExtraAshPileRef` both carry, `0041e340`), by pile.
+    pub ash_piles: HashMap<FormId, FormId>,
+    /// Placed mines disarmed or gone (`crate::mines`).
+    pub mines: crate::mines::MineStates,
     /// Limbs gone (extra data 0x5f): nothing dismembers here yet.
     pub limbs_gone: HashSet<(FormId, u8)>,
     /// People told to sneak (`SetForceSneak`, actor +0x125) and whose AI is
@@ -401,6 +406,7 @@ pub const CHANGES: &[&str] = &[
     "SetTalkingActivatorActor",
     "SetBroadcastState",
     "SetCriticalStage",
+    "AttachAshPile",
     "SetForceSneak",
     "SetActorsAI",
     "SetInChargen",
@@ -512,6 +518,63 @@ pub fn combat_style(
 /// flag (`ACBS` 0x02, as `SetEssential` left it; a leveled actor's
 /// original base, extra data 0x2e, isn't kept here), or the reference's own
 /// (`SetActorRefEssential`).
+/// A critical stage's number by its name, as scripts write it
+/// (`SetCriticalStage DisintegrateStart`; the game's names at `0119bbb0`:
+/// None, GooStart, GooEnd, DisintegrateStart, DisintegrateEnd).
+pub fn critical_stage_number(name: &str) -> Option<u8> {
+    [
+        "None",
+        "GooStart",
+        "GooEnd",
+        "DisintegrateStart",
+        "DisintegrateEnd",
+    ]
+    .iter()
+    .position(|n| n.eq_ignore_ascii_case(name))
+    .map(|i| i as u8)
+}
+
+/// The goo's and the disintegration's end (critical stages 2 and 4),
+/// when the body's 3D is culled.
+pub const GOO_END: i32 = 2;
+pub const DISINTEGRATE_END: i32 = 4;
+
+/// Whether someone's body is gone (critical stage [`GOO_END`] or
+/// [`DISINTEGRATE_END`]: `008a1a70` takes its collision out of the Havok
+/// world, `0057b520(0)`, and culls its 3D), for the viewer to stop
+/// drawing it and letting shots, swings and the crosshair meet it.
+pub fn body_gone(state: &GameState, who: FormId) -> bool {
+    matches!(
+        state.more.critical_stage.get(&who),
+        Some(&GOO_END) | Some(&DISINTEGRATE_END)
+    )
+}
+
+/// `SetCriticalStage` on an actor (`008a1a40`: actor +0x10c, then
+/// `008a1a70`). Stages 2 and 4 (the goo's and the disintegration's end)
+/// cull the body's 3D (`00450f90(1)`; the viewer stops drawing it,
+/// [`body_gone`]) and, when the one disintegrated isn't the player and
+/// their killer (actor +0xc0, which `Actor::Kill` `0089d900` writes) is,
+/// count a Disintegration (miscellaneous statistic 29, `004d5c60(0x1d)`).
+/// Stage 1's shader (`00c80ce0`, `00c803a0`) and stages 2 and 4's
+/// `0057b520(0)` and vtable +0x1c0 aren't done here. The game warns
+/// about an actor who isn't dead and carries on.
+// Translated from 008a1a70 (decompiled, FalloutNV.exe 1.4.0.525).
+pub fn set_critical_stage(state: &mut GameState, who: FormId, stage: i32) {
+    state.more.critical_stage.insert(who, stage);
+    if !matches!(stage, GOO_END | DISINTEGRATE_END) {
+        return;
+    }
+    let killer = state
+        .dead
+        .contains(&who)
+        .then(|| state.last_blow.get(&who).map(|b| b.0))
+        .flatten();
+    if who != PLAYER_REF && killer == Some(PLAYER_REF) {
+        crate::stats::bump(state, crate::stats::DISINTEGRATIONS, 1);
+    }
+}
+
 pub fn is_essential(order: &LoadOrder, state: &GameState, who: FormId) -> bool {
     if !is_actor(order, state, who) {
         return false;
@@ -1115,13 +1178,18 @@ fn carry_out(
             let on = arg(0).number() > 0.0;
             st(runner).broadcasting.insert(base, on);
         }
-        // `005dc010` → `008a1a40`: the actor's critical stage (the goo and
-        // disintegration effects of the 3D aren't shown here).
+        // `005dc010` → `008a1a40`: the actor's critical stage, and what it
+        // does (`008a1a70`, [`set_critical_stage`]).
         "SetCriticalStage" => {
             if let Some(who) = actor_target(runner) {
-                let stage = arg(0).number() as i32;
-                st(runner).critical_stage.insert(who, stage);
+                set_critical_stage(runner.state, who, arg(0).number() as i32);
             }
+        }
+        // `005db870`: an ash pile (or, given 2, a goo pile) under an
+        // actor, standing for its corpse ([`placed::attach_ash_pile`]).
+        "AttachAshPile" => {
+            let who = actor_target(runner)?;
+            placed::attach_ash_pile(runner, who, arg(0).number() as i32)?;
         }
         // `005ce910` → `005ce9d0`: actor +0x125 (whether it makes them
         // sneak isn't traced: not applied to their movement).
@@ -1321,6 +1389,11 @@ pub(crate) fn save_lines(state: &GameState, line: &mut dyn FnMut(String)) {
     for (who, s) in v {
         line(format!("criticalstage {} {s}", id(*who)));
     }
+    let mut v: Vec<_> = m.ash_piles.iter().collect();
+    v.sort_by_key(|(k, _)| **k);
+    for (pile, corpse) in v {
+        line(format!("ashpile {} {}", id(*pile), id(*corpse)));
+    }
     let mut v: Vec<_> = m.limbs_gone.iter().collect();
     v.sort();
     for (who, limb) in v {
@@ -1357,6 +1430,7 @@ pub(crate) fn save_lines(state: &GameState, line: &mut dyn FnMut(String)) {
     radio::save_lines(state, line);
     actors::save_lines(state, line);
     traps::save_lines(state, line);
+    crate::mines::save_lines(state, line);
 }
 
 /// A saved line back: `None` if the word isn't one of these.
@@ -1368,6 +1442,7 @@ pub(crate) fn load_line(state: &mut GameState, raw: &str) -> Option<Result<(), S
         .or_else(|| radio::load_line(state, &parts))
         .or_else(|| actors::load_line(state, &parts))
         .or_else(|| traps::load_line(state, &parts))
+        .or_else(|| crate::mines::load_line(state, &parts))
     {
         return Some(r);
     }
@@ -1426,6 +1501,9 @@ pub(crate) fn load_line(state: &mut GameState, raw: &str) -> Option<Result<(), S
             }
             "criticalstage" => {
                 m.critical_stage.insert(form(1)?, num(2)? as i32);
+            }
+            "ashpile" => {
+                m.ash_piles.insert(form(1)?, form(2)?);
             }
             "limbgone" => {
                 m.limbs_gone.insert((form(1)?, num(2)? as u8));

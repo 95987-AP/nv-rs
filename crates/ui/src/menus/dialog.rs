@@ -41,8 +41,9 @@
 //!   calls `007640a0`: `+0x138` cleared and the menu faded back in
 //!   (`00a1db20`).
 
+use crate::fade::Fades;
 use crate::list::{set_keeping_operators, ListBox};
-use crate::menu::{special, Fade, MenuCode, Showing};
+use crate::menu::{special, MenuCode};
 use crate::names::t;
 use crate::tile::{TileId, Ui};
 
@@ -121,8 +122,6 @@ pub struct DialogMenu {
     /// The line being said was cut short when the service menu opened
     /// (`00763ff0`), for the conversation to take.
     pub cut_line: bool,
-    /// Faded out under a service menu and back (`+0x24`).
-    pub fade: Fade,
 }
 
 impl DialogMenu {
@@ -140,7 +139,6 @@ impl DialogMenu {
             closed: false,
             in_service: false,
             cut_line: false,
-            fade: Fade::default(),
         }
     }
 
@@ -246,9 +244,10 @@ impl DialogMenu {
     /// A service menu (barter, recipes, ...) opens over the conversation
     /// (`00763ff0`): unless it is ending (`+0x2c`; here zooming out), the
     /// menu is marked in service, the line being said is cut short
-    /// ([`DialogMenu::cut_line`]) and the menu fades out, staying open.
-    /// True when it did.
-    pub fn service_opened(&mut self, ui: &mut Ui) -> bool {
+    /// ([`DialogMenu::cut_line`]) and the menu fades out, staying open
+    /// (`Menu::StartFadeOut`, `00a1d910`, on the interface's fades as every
+    /// menu's: [`crate::fade`]; `dt` the frame's seconds). True when it did.
+    pub fn service_opened(&mut self, ui: &mut Ui, fades: &mut Fades, dt: f32) -> bool {
         if self.state == State::Closing || self.closed {
             return false;
         }
@@ -256,25 +255,26 @@ impl DialogMenu {
         if self.state == State::Line {
             self.cut_line = true;
         }
-        self.fade.fade_out(ui, self.menu);
+        fades.start_fade_out(ui, self.menu, dt);
         true
     }
 
     /// The service menu closed (`007640a0`): no longer in service, and the
-    /// menu fades back in (`00a1db20`).
-    pub fn service_closed(&mut self, ui: &mut Ui) {
+    /// menu fades back in (`Menu::StartFadeIn`, `00a1db20`).
+    pub fn service_closed(&mut self, ui: &mut Ui, fades: &mut Fades, dt: f32) {
         if !self.in_service {
             return;
         }
         self.in_service = false;
-        self.fade.fade_in(ui, self.menu);
+        fades.start_fade_in(ui, self.menu, dt);
     }
 
-    /// Whether the menu is under a service menu or faded out of sight, so
-    /// nothing can be chosen in it (the input goes to the top menu shown
-    /// and not closing, `00720e60`: the service menu).
+    /// Whether the menu is under a service menu (fading out or faded out:
+    /// only a service menu fades it while it stays open), so nothing can
+    /// be chosen in it (the input goes to the top menu shown and not
+    /// closing, `00720e60`: the service menu).
     pub fn hidden(&self) -> bool {
-        self.in_service || matches!(self.fade.showing, Showing::FadingOut | Showing::Hidden)
+        self.in_service
     }
 
     /// One frame (`00762950`): the zoom in or out, and `_DialogVisible`.
@@ -379,6 +379,7 @@ impl MenuCode for DialogMenu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fade::State as FadeState;
     use crate::menus::test_support;
 
     fn opened() -> (Ui, DialogMenu) {
@@ -471,11 +472,22 @@ mod tests {
         assert!(!m.special_key(&mut ui, special::UP, 21.0));
     }
 
+    /// The menu opened as the screen opens every menu (`00a1dc20`: fading
+    /// in) and shown by the end of the frame (`00711ea0`).
+    fn shown(ui: &mut Ui, m: &DialogMenu) -> Fades {
+        let mut fades = Fades::default();
+        fades.show(ui, m.menu, false, 1.0);
+        fades.frame(ui, &[m.menu]);
+        assert_eq!(fades.state(m.menu), FadeState::Shown);
+        fades
+    }
+
     /// `00763ff0`: a service menu opening over the topics fades the menu
     /// out over `menufade` (0.25 by default) and leaves it open but hidden,
     /// taking no clicks; `007640a0` on the service menu's close fades it
     /// back in (`00a1db20`), the topics still there (`00711ea0`: alpha
-    /// 1 − t out, t in).
+    /// 1 − t out, t in). The fade is the interface's, as every menu's
+    /// (`crate::fade`).
     #[test]
     fn a_service_menu_hides_the_conversation_until_it_closes() {
         let (mut ui, mut m) = opened();
@@ -483,15 +495,23 @@ mod tests {
             m.update(&mut ui, 0.1, ZOOM_IN_SECONDS, ZOOM_OUT_SECONDS);
         }
         m.show_topics(&mut ui, &topics(), 10.0);
+        let mut fades = shown(&mut ui, &m);
         assert_eq!(ui.number(m.menu, t::MENUFADE), 0.25);
-        assert!(m.service_opened(&mut ui));
+        assert!(m.service_opened(&mut ui, &mut fades, 0.0));
         assert!(m.in_service && m.hidden() && !m.cut_line);
-        assert_eq!(m.fade.showing, Showing::FadingOut);
-        let half = m.fade.frame(&mut ui, m.menu, 0.125);
-        assert!((half - 0.5).abs() < 1e-6);
+        assert_eq!(fades.state(m.menu), FadeState::FadingOut);
+        fades.update(0.125);
+        assert!(fades.frame(&mut ui, &[m.menu]).is_empty());
+        assert!((fades.value(m.menu) - 0.5).abs() < 1e-6);
         assert_eq!(ui.number(m.menu, t::VISIBLE), 1.0);
-        assert_eq!(m.fade.frame(&mut ui, m.menu, 0.2), 0.0);
-        assert_eq!(m.fade.showing, Showing::Hidden);
+        fades.update(0.2);
+        // Not marked to leave the stack: kept, hidden.
+        assert_eq!(
+            fades.frame(&mut ui, &[m.menu]),
+            vec![(m.menu, crate::fade::Ended::Hidden)]
+        );
+        assert_eq!(fades.value(m.menu), 0.0);
+        assert_eq!(fades.state(m.menu), FadeState::Hidden);
         assert_eq!(ui.number(m.menu, t::VISIBLE), 0.0);
         assert!(!m.closed);
         // No choosing while it's hidden.
@@ -499,14 +519,17 @@ mod tests {
         m.click(&mut ui, -1, Some(first), 20.0);
         assert_eq!(m.answer, None);
         // The service menu closes: back in, the same topics.
-        m.service_closed(&mut ui);
+        m.service_closed(&mut ui, &mut fades, 0.0);
         assert!(!m.in_service && !m.hidden());
-        assert_eq!(m.fade.showing, Showing::FadingIn);
-        let quarter = m.fade.frame(&mut ui, m.menu, 0.0625);
-        assert!((quarter - 0.25).abs() < 1e-6);
+        assert_eq!(fades.state(m.menu), FadeState::FadingIn);
+        fades.update(0.0625);
+        fades.frame(&mut ui, &[m.menu]);
+        assert!((fades.value(m.menu) - 0.25).abs() < 1e-6);
         assert_eq!(ui.number(m.menu, t::VISIBLE), 1.0);
-        assert_eq!(m.fade.frame(&mut ui, m.menu, 0.25), 1.0);
-        assert_eq!(m.fade.showing, Showing::Shown);
+        fades.update(0.25);
+        fades.frame(&mut ui, &[m.menu]);
+        assert_eq!(fades.value(m.menu), 1.0);
+        assert_eq!(fades.state(m.menu), FadeState::Shown);
         assert_eq!(m.list.items.len(), 2);
         m.click(&mut ui, -1, Some(first), 21.0);
         assert_eq!(m.answer, Some(Answer::Topic(0)));
@@ -521,12 +544,14 @@ mod tests {
             m.update(&mut ui, 0.1, ZOOM_IN_SECONDS, ZOOM_OUT_SECONDS);
         }
         m.show_line(&mut ui, "Let's see what you've got.");
-        assert!(m.service_opened(&mut ui));
+        let mut fades = shown(&mut ui, &m);
+        assert!(m.service_opened(&mut ui, &mut fades, 0.0));
         assert!(m.cut_line);
         let (mut ui, mut m) = opened();
+        let mut fades = shown(&mut ui, &m);
         m.end();
-        assert!(!m.service_opened(&mut ui));
+        assert!(!m.service_opened(&mut ui, &mut fades, 0.0));
         assert!(!m.in_service && !m.hidden());
-        assert_eq!(m.fade.showing, Showing::Shown);
+        assert_eq!(fades.state(m.menu), FadeState::Shown);
     }
 }

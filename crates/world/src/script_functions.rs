@@ -379,6 +379,9 @@ pub fn ignores_friendly_hits(order: &LoadOrder, state: &GameState, who: FormId) 
 /// off is allowed again, unless the script asked to keep it off (bit 1)
 /// (or the player's flag 0x02 at +0x244 is set, not modelled).
 pub fn player_moved(state: &mut GameState) {
+    // Its last step brings followers and teammates along (`0093c200` →
+    // `00973de0`, `world::companions::come_along`).
+    state.player_placed = true;
     let ft = &mut state.set_by_scripts.fast_travel;
     if !ft.keep {
         ft.enabled = true;
@@ -937,6 +940,8 @@ pub fn set_objective(runner: &mut Runner, quest: FormId, index: i32, new: u8) {
                 text,
                 completed: false,
             });
+            // The first shown announces its quest ("Quest added").
+            crate::quest_text::objective_shown(runner.state, quest);
         }
         2 => {
             runner.state.objectives.remove(&key);
@@ -945,7 +950,9 @@ pub fn set_objective(runner: &mut Runner, quest: FormId, index: i32, new: u8) {
         _ => {
             runner.state.objectives.insert(key, true);
             runner.state.set_by_scripts.hidden_completed.remove(&key);
-            if shown {
+            // Only for an objective that was shown, of a quest not
+            // completed (`005ec5d0`).
+            if shown && !runner.state.completed.contains(&quest) {
                 let text = objective_text(runner, quest, index);
                 runner.state.events.push(Event::Objective {
                     quest,
@@ -1332,6 +1339,7 @@ fn carry_out(
                 runner.state.stocked.remove(&r);
                 runner.state.items.retain(|(h, _), _| *h != r);
                 runner.state.equipped.remove(&r);
+                runner.state.taken_off.remove(&r);
             }
             // `005c05f0` / `005c0740`: one coordinate of the position.
             "SetPos" => {
@@ -1385,6 +1393,7 @@ fn carry_out(
                 st.variables.remove(&quest);
                 st.completed.remove(&quest);
                 st.failed.remove(&quest);
+                st.quests_announced.remove(&quest);
                 st.quest_timers.remove(&quest);
                 let starts = order
                     .get(quest)
@@ -1749,9 +1758,9 @@ pub(crate) fn load_line(state: &mut GameState, raw: &str) -> Option<Result<(), S
 }
 
 /// A reference's name now: as `SetActorFullName` renamed its base, else
-/// the base's `FULL`.
+/// the base's `FULL` (for references made at run time too).
 pub fn full_name(order: &LoadOrder, state: &GameState, reference: FormId) -> Option<String> {
-    let base = base_of(order, reference)?;
+    let base = crate::more_functions::placed::base_now(order, state, reference)?;
     if let Some(n) = state.set_by_scripts.names.get(&base) {
         return Some(n.clone());
     }

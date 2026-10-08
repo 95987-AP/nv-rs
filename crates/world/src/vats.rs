@@ -57,6 +57,7 @@ const DNAM: FourCC = FourCC::new(b"DNAM");
 const VATS: FourCC = FourCC::new(b"VATS");
 const OBND: FourCC = FourCC::new(b"OBND");
 const DAT2: FourCC = FourCC::new(b"DAT2");
+const VANM: FourCC = FourCC::new(b"VANM");
 
 /// The action points actor value.
 pub const ACTION_POINTS: u16 = 12;
@@ -602,8 +603,9 @@ pub struct WeaponVats {
     pub special: Option<WeaponSpecial>,
 }
 
-/// A weapon's special V.A.T.S. attack (`VATS`, 20 bytes; the machete's
-/// "Machete Gladius": skill 0, damage × 0.7… as stored).
+/// A weapon's special V.A.T.S. attack (`VATS`, 20 bytes; the machete's:
+/// no spell, skill 0, damage × 0.7, 16 action points; its name is the
+/// weapon's `VANM`, [`attack_name`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WeaponSpecial {
     /// Form at 0: the effect it casts.
@@ -693,13 +695,15 @@ pub struct Special {
 }
 
 /// The special attacks the player can make (`007eb920`): a weapon whose
-/// `VATS` record costs more than 0 once the player's skill with it is at
-/// least the record's (its cost through perk entry 40; its label a string
-/// the weapon gives, `00522be0` → `00559450`, taken to be its name:
-/// inferred); unarmed (no weapon, or one using Unarmed) with Unarmed above
-/// `fUpperCutThreshold` (50): Stomp on someone down, else Uppercut
-/// (`fUpperCutAPCost` 20), and above `fCrossThreshold` (75) Cross
-/// (`fCrossAPCost` 20) when not stomping.
+/// `VATS` record costs more than 0 once the player's skill with it (whole
+/// points, the actor value owner's `+8`) is at least the record's (its
+/// cost through perk entry 40; its label the weapon's V.A.T.S. attack
+/// name, `VANM`, the form's `+0x368` that `00522be0` reads: the super
+/// sledge's "Mauler", the machete's "Back Slash"); unarmed (no weapon, or
+/// one using Unarmed) with Unarmed at least `fUpperCutThreshold` (50):
+/// Stomp on someone down, else Uppercut (`fUpperCutAPCost` 20), and at
+/// least `fCrossThreshold` (75) Cross (`fCrossAPCost` 20) when not
+/// stomping.
 pub fn specials(
     order: &LoadOrder,
     state: &GameState,
@@ -712,7 +716,12 @@ pub fn specials(
         state,
         speaker: None,
     };
-    let av = |a: u16| facts.current_actor_value(PLAYER_REF, a).unwrap_or(0.0) as f32;
+    let av = |a: u16| {
+        facts
+            .current_actor_value(PLAYER_REF, a)
+            .unwrap_or(0.0)
+            .trunc() as f32
+    };
     let cost = |c: f32| {
         perks::apply_with(
             order,
@@ -728,7 +737,7 @@ pub fn specials(
             if sp.ap > 0.0 && av(w.skill) >= sp.skill {
                 out.push(Special {
                     kind: kind::SPECIAL,
-                    name: w.name.clone(),
+                    name: attack_name(order, w.form_id).unwrap_or_default(),
                     cost: cost(sp.ap),
                 });
             }
@@ -736,7 +745,7 @@ pub fn specials(
     }
     let unarmed = weapon.map_or(true, |w| w.skill == crate::combat::av::UNARMED);
     let skill = av(crate::combat::av::UNARMED);
-    if unarmed && skill > s.uppercut_threshold {
+    if unarmed && skill >= s.uppercut_threshold {
         let (k, name) = if target_down {
             (kind::STOMP, "Stomp")
         } else {
@@ -747,7 +756,7 @@ pub fn specials(
             name: name.into(),
             cost: cost(s.uppercut_cost),
         });
-        if !target_down && skill > s.cross_threshold {
+        if !target_down && skill >= s.cross_threshold {
             out.push(Special {
                 kind: kind::CROSS,
                 name: "Cross".into(),
@@ -756,6 +765,57 @@ pub fn specials(
         }
     }
     out
+}
+
+/// A weapon's V.A.T.S. attack name (`VANM`, the form's `+0x368`): the
+/// label of its special (`007eb920`).
+pub fn attack_name(order: &LoadOrder, weapon: FormId) -> Option<String> {
+    let rr = order
+        .get(weapon)
+        .filter(|r| r.entry.header.kind.as_bytes() == b"WEAP")?;
+    let record = rr.record().ok()?;
+    record.get(VANM).map(|s| s.zstring())
+}
+
+/// The animation group a queued melee attack plays (`00948310`, the
+/// player's attack in V.A.T.S.): a weapon's special its forward power
+/// attack (`AttackForwardPower`; the weapon's own forward power attack
+/// when it names one, `0094a0a0`, and `AttackPower` when the group isn't
+/// there, are the animation's); Uppercut `Attack6` unless sneaking; Cross
+/// `Attack7`; Stomp `stomp` (0xa9). Others keep the ordinary attack.
+// Translated from 00948310 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn attack_group(k: u8, sneaking: bool) -> Option<u8> {
+    use crate::melee::group;
+    match k {
+        kind::SPECIAL => Some(group::ATTACK_FORWARD_POWER),
+        kind::UPPERCUT if !sneaking => Some(group::ATTACK6),
+        kind::CROSS => Some(group::ATTACK7),
+        kind::STOMP => Some(group::STOMP),
+        _ => None,
+    }
+}
+
+/// The spell a queued special casts on the one it strikes (`0089a760`,
+/// after the damage): for the player's weapon special or Uppercut while
+/// a queued hit plays (as [`attack_damage_mult`] asks), the effect of the
+/// weapon's `VATS` record (the form's `+0x370`, `0051f510`), cast by the
+/// one struck on themselves (`00815b00`, `00824110`): the Mauler's
+/// `MaulerKnockdownSpell`, Grand Slam's `VictoryRifleKnockdownSpell`.
+// Translated from 0089a760 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn special_effect(
+    order: &LoadOrder,
+    state: &GameState,
+    attacker: FormId,
+    weapon: Option<&Weapon>,
+) -> Option<FormId> {
+    let a = state.vats.attack.as_ref().filter(|a| a.hit)?;
+    if attacker != PLAYER_REF || state.vats.mode != mode::PLAYBACK {
+        return None;
+    }
+    if !matches!(a.kind, kind::SPECIAL | kind::UPPERCUT) {
+        return None;
+    }
+    WeaponVats::load(order, weapon?.form_id)?.special?.effect
 }
 
 /// Shots in one attack (`007f5050`): an automatic weapon's (`DNAM` flags

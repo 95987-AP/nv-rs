@@ -73,8 +73,9 @@ Gated behind `world::guesses` (`NV_GUESSES=1`), off on base-game routes:
 
 - teammates with nothing to do follow the player at 200 units, a guard
   package being the wait order (`world::ai::current_package`);
-- teammates come along when the player changes place
-  (`viewer::scripts::bring_teammates`);
+- (teammates coming along when the player changes place,
+  `viewer::scripts::bring_teammates`, was replaced on 2026-10-07 by the
+  traced `world::companions::come_along`, `00973de0`, always on);
 - `IsAnimPlaying` on a person (1 standing, 0 down).
 
 (A script's `ShowRecipeMenu` was gated here until Chazm's traced crafting

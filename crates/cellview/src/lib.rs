@@ -15,6 +15,7 @@
 //! # Ok::<(), cellview::Error>(())
 //! ```
 
+pub mod blackjack;
 pub mod caravan;
 pub mod game;
 pub mod grass;
@@ -22,6 +23,8 @@ pub mod impacts;
 pub mod lockpick;
 pub mod music;
 pub mod particles;
+pub mod rendered_terminal;
+pub mod roulette;
 pub mod slots;
 pub mod sound;
 pub mod space;
@@ -273,6 +276,9 @@ pub struct MeshData {
     /// Drawn into the local map's pictures (`preview::cell::ModelMesh::
     /// local_map`).
     pub local_map: bool,
+    /// Actor pieces: which part of the actor's look it comes from
+    /// (`preview::cell::ModelMesh::actor_part`).
+    pub actor_part: Option<u16>,
     /// Stored as triangle strips: what takes the game's world decals
     /// (`preview::cell::ModelMesh::strips`).
     pub strips: bool,
@@ -422,6 +428,9 @@ pub struct ActorData {
     pub position: [f32; 3],
     /// A woman (the idle tree has women's sitting idles).
     pub female: bool,
+    /// What it was built from (its pieces' `MeshData::actor_part` index its
+    /// parts), for redrawing what changes.
+    pub look: Option<std::sync::Arc<world::ActorLook>>,
 }
 
 /// A mesh drawn somewhere: `transform` (column-major 4x4) takes the mesh's
@@ -783,6 +792,7 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
                 base: placed.base.0,
                 position: placed.position,
                 female: placed.actor.as_ref().is_some_and(|a| a.female),
+                look: placed.actor.clone().map(std::sync::Arc::new),
             });
             actors.len() - 1
         });
@@ -1456,6 +1466,7 @@ fn mesh_data(
         motion: None,
         billboard: mesh.billboard,
         local_map: mesh.local_map,
+        actor_part: mesh.actor_part,
         strips: mesh.strips,
     }
 }

@@ -419,6 +419,7 @@ fn adamantium_halves_limb_damage_from_the_attacks_it_names() {
             &hit,
             false,
             (FormId(GECKO_REF), weapon.map(FormId)),
+            world::melee::Special::None,
         );
         state.value_damage.get(&(p, 29)).copied().unwrap_or(0.0) as f32
     };

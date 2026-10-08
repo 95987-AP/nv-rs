@@ -20,9 +20,9 @@ history is retained separately; do not publish its build outputs.
 | --- | --- | --- |
 | M1: Opening and persistent world | Retail opening movie and scripted wakeup, animations/movement, Doc Mitchell's creation sequence, exit into Goodsprings, talk/interact, save, restart and reload. Player, NPC, quest, inventory and reference state survives. Compare with the original game. | Active; initial live run and package-action reader complete; choreography and full route pending. |
 | M2: Core gameplay loop | Sunny's tutorial and a representative Goodsprings quest branch through their own scripts: movement, weapons/reloads, damage/death, AI, dialogue, loot, trade and progression. Save/reload at intermediate stages. Verify melee and V.A.T.S.; track other weapon classes explicitly. | Partial implementation reported; acceptance pending. Crafting (`ShowRecipeMenu`, [CRAFTING.md](CRAFTING.md)): rules and the game's menu done; tutorial help and item card remain. |
-| M3: Base-game systems and campaign | Coverage matrix for quests, actor/creature types, weapon classes, effects, factions/crime, companions, travel and menus. Representative routes and ultimately campaign completion, with evidence and regression tests for blockers. | Inventory and acceptance routes needed. Terminals ([HACKING.md](HACKING.md), [TERMINALS.md](TERMINALS.md)): who gets in, hacking and the terminal's own menu done; rendered terminals (the menus on the terminal's screen) remain. Item scripts ([ITEM_SCRIPTS.md](ITEM_SCRIPTS.md)): per-item scripts with `OnAdd`, `OnEquip`, `OnUnequip`, `GameMode`, `RemoveMe`, `DropMe`, `OnDrop` and `Drop` into the world, and the Pip-Boy's Drop (the pad's X: its refusals and "How many?"). Repairing ([REPAIR.md](REPAIR.md)): merchants' repair services (`ShowRepairMenu`) and the Pip-Boy's repair screen done, NPC skills now with their offsets; the player's armour wears from hits and its DT/DR follows its condition. Companions ([COMPANIONS.md](COMPANIONS.md)): trading things with them (`OpenTeammateContainer`) and their wheel of orders (`CompanionWheelMenu`, with the UI's `radial` tiles) done; their re-equipping and the wheel's Back Up remain. Caravan ([CARAVAN.md](CARAVAN.md)): the cards, the player's collection (`AddCardToPlayer`) and the rules (placing, values, jacks and jokers, drawing, the end) the opponent's AI (`ProcessAI`, with the exe's own sort), the bet and results, the menu's state machine (`world::caravan::menu`), its tiles (`ui::menus::caravan`) and the 3D table (`cellview::caravan`, the viewer's `caravan_table`) done: playable in the viewer from `ShowCaravanMenu`; the tutorials remain. Casinos ([CASINO.md](CASINO.md)): the record, the player's winnings, levels and comps quest, refusals and the anti-cheat lock, settling chips, and the slot machines' rules and states (`world::casino`) done; the games on screen and blackjack's and roulette's rules remain. Weapon mods ([WEAPON_MODS.md](WEAPON_MODS.md)): slots, fitting and their effects on damage, clip, spread, weight, attack speed, projectiles, V.A.T.S. to-hit, condition and worth, the Pip-Boy's mod screen, the modded models (the player's first-person objects, `WNAM`/`WNM{n}`) split beams (projectiles, cone, the shown damage) and silencers (`world::noise`: attacks' noise, `VNAM`/`NAM5` sound levels for `fActorAlertSoundTimer`, heard by detection) done; the remaining effects remain. |
+| M3: Base-game systems and campaign | Coverage matrix for quests, actor/creature types, weapon classes, effects, factions/crime, companions, travel and menus. Representative routes and ultimately campaign completion, with evidence and regression tests for blockers. | Inventory and acceptance routes needed. Terminals ([HACKING.md](HACKING.md), [TERMINALS.md](TERMINALS.md)): who gets in, hacking and the terminal's own menu done; rendered terminals (the PC default: both menus on the screen of `TerminalInterface01.NIF` with its camera, lights, screen effect, fade, the pointer through the screen and the power button) done, not yet compared with the running game. Menus' own fades ([MENU_FADES.md](MENU_FADES.md)): every game menu fades in and out as the interface runs it (`menufade`, the fade list, input only once shown), the terminal's 0.75 s on leaving; not compared with the running game. Item scripts ([ITEM_SCRIPTS.md](ITEM_SCRIPTS.md)): per-item scripts with `OnAdd`, `OnEquip`, `OnUnequip`, `GameMode`, `RemoveMe`, `DropMe`, `OnDrop` and `Drop` into the world, and the Pip-Boy's Drop (the pad's X: its refusals and "How many?"). Repairing ([REPAIR.md](REPAIR.md)): merchants' repair services (`ShowRepairMenu`) and the Pip-Boy's repair screen done, NPC skills now with their offsets; the player's armour wears from hits and its DT/DR follows its condition. Companions ([COMPANIONS.md](COMPANIONS.md)): trading things with them (`OpenTeammateContainer`) and their wheel of orders (`CompanionWheelMenu`, with the UI's `radial` tiles) done; since 2026-10-07 also the engine's teammate rules: coming along through doors, `MoveTo` and fast travel, Nerve, essential outside Hardcore with time down paused while the player fights, ammunition use, no fall damage, sneaking with the player; their armour picked after trading, the wheel's stick and subtitles, the Back Up hook; since 2026-10-07 (later) also the weapon they pick to hold after trading (`GetBestWeapon` by the traced damage per second, `00645380`, with the player's attack animations as the game reads them; the combat style from the wheel's Ranged/Melee switch; creatures such as ED-E from their `LNAM` weapon list) and the Pip-Boy ITEMS card's DPS and effects text (`00406620`); the Back Up package and `InitDefaultWorn`'s other callers remain. Caravan ([CARAVAN.md](CARAVAN.md)): the cards, the player's collection (`AddCardToPlayer`) and the rules (placing, values, jacks and jokers, drawing, the end) the opponent's AI (`ProcessAI`, with the exe's own sort), the bet and results, the menu's state machine (`world::caravan::menu`), its tiles (`ui::menus::caravan`) and the 3D table (`cellview::caravan`, the viewer's `caravan_table`) done: playable in the viewer from `ShowCaravanMenu`; its tutorials shown once each; the table keeps the file's 16:9 frustum on any screen, the deck screen's mouse drag follows the game's (`fMouseHeldTime`) and the pad's left stick works; the payment's inventory order remains. Tutorial messages ([TUTORIALS.md](TUTORIALS.md)): the once-only tutorial manager (`world::tutorial`, saved) and its help box (`ui::menus::tutorial`), hooked for Caravan, crafting, hacking, terminals, lockpicking (with the controls' key names in text), V.A.T.S., the Pip-Boy's ITEMS tabs and reputation titles; the start menu's Help (the help manual's pages) and `ShowTutorialMenu`. The HUD's corner messages show the game's own picture for each message ([HUD_MESSAGES.md](HUD_MESSAGES.md): scripts' messages, the casinos', locks and keys ("Unlocked with ..."), refusals, condition, reputation, karma, hardcore needs); the HUD's quest text shows a discovered place, quests added, completed or failed (the name a letter at a time) and objective lines with their boxes, as the game's `QuestUpdateManager` and HUD do. Help text written in HTML (`HelpHealingLimbs`) is laid out by the game's HTML layout ([HTML_TEXT.md](HTML_TEXT.md)). Casinos ([CASINO.md](CASINO.md)): the record, the player's winnings, levels and comps quest, refusals and the anti-cheat lock, settling chips, and the slot machines' rules and states (`world::casino`) done; the slot machines, blackjack and roulette playable in the viewer from their tables' and machines' scripts (`world::casino::{slots, blackjack, roulette}`, `ui::menus`, `cellview`, `game_menus`, `casino_scene`; checked live at Vikki & Vance: spins, a deal, a split, a stand, a roulette spin and its result); the roulette cursor by the pad remains. Weapon mods ([WEAPON_MODS.md](WEAPON_MODS.md)): slots, fitting and their effects on damage, clip, spread, weight, attack speed, projectiles, V.A.T.S. to-hit, condition and worth, the Pip-Boy's mod screen, the modded models (the player's first-person objects, `WNAM`/`WNM{n}`) split beams (projectiles, cone, the shown damage) and silencers (`world::noise`: attacks' noise, `VNAM`/`NAM5` sound levels for `fActorAlertSoundTimer`, heard by detection) done; the remaining effects remain. |
 | M4: Stability and performance | Recorded routes and extended play without crashes or lost state. Measure frame times, memory, loading and streaming stalls on target hardware. Publish traces/settings and agreed budgets; remove measured stalls without changing behavior. | Not measured here; instrument earlier when it helps M1/M2. Chazm's PR #12 (2026-10-07, `claude/contrib-chazm-perf`, [CONTRIB_CHAZM.md](CONTRIB_CHAZM.md)): mean frame time, three interleaved runs before/after, Goodsprings 19.8 → 16.7 ms, Back in the Saddle 41.7 → 23.9 ms, Ghost Town Gunfight 24.9 → 20.1 ms, Doc's walk 14.0 → 10.8 ms; Doc's house screenshots pixel-identical, outdoor ones within run-to-run noise. |
-| M5: DLC and mods | Official DLC progression and reproducible plugin/archive/loose-file, script and content-extension cases; document interfaces and exclusions. | Load-order infrastructure exists; broad compatibility unverified. DLC track started by the maintainer alongside M1 (2026-10-05): Dead Money research pass in [DEAD_MONEY.md](DEAD_MONEY.md); next action: run its data pass. |
+| M5: DLC and mods | Official DLC progression and reproducible plugin/archive/loose-file, script and content-extension cases; document interfaces and exclusions. | Load-order infrastructure exists; broad compatibility unverified. Mods and plugins (M8, [MODS.md](MODS.md), 2026-10-07): the game's plugin order (master flag, dates, masters moved, `.nam`, masters made active), form IDs (engine forms 1–0x7FF kept), archive order and priority (`OpenArchive`'s list: mod archives first, the first loaded mod archive winning), `<plugin>*.bsa`, loose files with `bInvalidateOlderFiles` and `ArchiveInvalidation.txt`, traced and done with generated test setups (`mod-cases`); `nvinspect … coverage nvse` lists the script extender functions plugins call (nv-rs runs none); not compared with the original game yet. DLC track started by the maintainer alongside M1 (2026-10-05): Dead Money research pass in [DEAD_MONEY.md](DEAD_MONEY.md); next action: run its data pass. |
 | M6: VR | Shared simulation with action inputs, independent aim and multiple views. Headset-tested tracking, controllers, menus, combat, comfort and frame budget. | Architecture documented; headset validation pending. |
 
 Preserve save correctness, mod semantics and VR boundaries throughout; order
@@ -83,6 +83,11 @@ original game**.
   sounds placed and attenuated; traced, unit-tested; decals seen live,
   effect models placed but too faint to see in screenshots
   ([WEAPON_EFFECTS.md](WEAPON_EFFECTS.md)).
+- M11 (2026-10-07, `claude/factions-crime`): reputation clamps, notices and
+  the title box, karma for owned terminals and notes, assault/murder
+  making the victim's factions enemies, hacking alarms, and the faction
+  armour disguises' engine side (form-list `GetEquipped`, area pulses)
+  traced and tested ([FACTIONS_CRIME.md](FACTIONS_CRIME.md)).
 - Acceptance evidence ([GOODSPRINGS_ROUTE.md](GOODSPRINGS_ROUTE.md)): with
   dialogue choices replayed by `--run` lines, Ghost Town Gunfight reaches
   stage 100 (XP +50) on the integration build; Back in the Saddle completes
@@ -110,6 +115,29 @@ original game. Triage and what was rejected:
 [CONTRIB_CHAZM.md](CONTRIB_CHAZM.md). **Next action:** the lead merges
 `claude/contrib-chazm` into the integration branch after reviewing the
 acceptance results.
+
+NPC gear redraw, 2026-10-07 (`claude/npc-gear-redraw`): people
+are redrawn when what they wear or hold changes (`EquipItem`,
+`UnequipItem`, armour or a weapon taken away, a weapon swapped), only the
+parts that changed rebuilt, on a thread (`BipedAnim::LoadBipedParts`
+keeps unchanged slots): [NPC_GEAR.md](NPC_GEAR.md). Unit-tested and
+checked live on Doc Mitchell; not compared with the original game.
+**Next action:** let `world::outfit` re-pick through the companions'
+`InitDefaultWorn`/`GetBestArmor` port (both in this branch now), so
+re-picking uses the whole inventory.
+
+Follow-ups for Chazm's areas, 2026-10-07 (branch
+`claude/repair-mod-followups`, from the integration branch): the Pip-Boy's
+Repair and Mod screens take the mouse (their `DoEnter` / `DoLeave` /
+`DoClick`, the scroll knob turning with their lists, the brackets' exact
+place; [REPAIR.md](REPAIR.md), [WEAPON_MODS.md](WEAPON_MODS.md)),
+`RemoveMe` on a worn item takes the worn one off first
+([ITEM_SCRIPTS.md](ITEM_SCRIPTS.md)), and the crafting menu's item card
+([CRAFTING.md](CRAFTING.md)); the merchants' repair menu already took
+the mouse (checked again). Unit-tested, seen in the viewer, acceptance
+routes pass (doc, vcg02, vms16); not compared with the original game. **Next action:** keep an item's
+condition and mods per instance (what it needs: [REPAIR.md](REPAIR.md),
+"Not done").
 
 Look-IK batch, 2026-10-06 (local session, branch `claude/m1-look-ik`).
 Corrections: ADR-0004 (restructure) was rejected on 2026-10-06 and the
@@ -648,6 +676,125 @@ B10 (`claude/b10-greetings`): greetings traced (`008eeec0`, `008bc3d0`): one GRE
 B11 (`claude/b11-voice-skip`): lines after a skip were silent because the voice file name was wrong for short quest names with long topics (Doc's psych test, his Pip-Boy line), not because of the skip: the name rule is now translated from `006172c0` (a quest under 11 bytes keeps whole, the topic gets the rest of 25). Verified live: every response of Doc's psych test and farewell plays its voice with every line skipped; not compared with the original ([DIALOGUE.md](DIALOGUE.md)). **Next action:** check all voice file names against the voice archives.
 
 B4 (`claude/b4-npc-ground`, 2026-10-07): people back from a walk out of sight (Ringo in the gunfight, 64-75 under the land) had no controller and walked under the ground for good; `MobileObject::Move`'s two rules are now followed (`0092f260`: outdoors, feet more than 30 under the land are put on it, the player's too; further than `fCharControllerWarpDistSqr` (2449.5) from the camera people walk on the navmesh's height without their controller). Verified live (gunfight, Back in the Saddle, the player started under the land); not compared with the original ([PHYSICS.md](PHYSICS.md)). **Next action:** a ragdoll seen sunk to the waist after the gunfight (B1's solver).
+
+## M4: PR #12 review and streaming hitches (`claude/perf-streaming`, 2026-10-07)
+
+Merge notes for PR #12 (performance), stacked on `claude/perf-latest`;
+details and method in [PERFORMANCE.md](PERFORMANCE.md). The maintainer's
+three review points:
+- **Shared textures:** tinted faces and hair are keyed by what they were
+  made from (`"<base> + FaceGen <tint>"`, `"<base> + layer <file>"`, per-NPC
+  tint files), so they don't mix. The cache's lifetime was wrong instead
+  (textures freed while held, re-uploads across frames); fixed in
+  `ba8e864`.
+- **Screenshots** of Doc's house, faces (Doc, Trudy, Sunny, Chet, Pete) and
+  Goodsprings before/after: differences within the noise of two runs of
+  the same build (idle poses, grass, tumbleweeds).
+- **Acceptance-route frame rates** (median fps before → after, busy
+  machine, re-measure on a quiet one): doc 252–264 → 474–504, vcg02 132 →
+  273, vms16 113 → 240; all routes pass in both.
+
+In this branch: `ba8e864` (PR #12's texture lifetime fixed). Follow-ups: `d0bbcc0` (player body/view relit, not rebuilt),
+`1fe77bf` (outdoor collider gathered without re-measuring), `5e7f8eb`
+(materials kept when their lights don't change): flying out of
+Goodsprings, each 2 s window's longest frame 130–230 ms before
+`d0bbcc0`, 45–115 ms after it (median 75 ms), median 36–39 ms after
+`5e7f8eb`. Not fixable here: a minimized window held to 60 fps (bevy_winit
+redraw pacing). **Next action:** re-measure the route table on a quiet
+machine.
+
+Stutters in the merged build (2026-10-07, `claude/overnight-agents`),
+measured as each frame's own work on the main and render threads
+(`--fps`): a folder sound (every gunshot, most impacts) looked through
+every archived path for its folder each time it played (~10 ms, twice a
+shot), now listed once per folder (warmed on a thread at startup) with
+decoded sounds kept; the path smoother's triangle-under-a-point looked at
+every triangle of the mesh (10k outdoors) for each line it walked (a
+sandbox choice's path up to ~50 ms), now through the grid index with the
+same answer (tested against the full scan); the squares' navmeshes joined
+on crossing into another square decode their `NAVM` records once (30–60
+ms to under 7). Walking through Goodsprings, the longest main-thread frame
+went from 25–68 ms to 7–14 ms; a pistol shot from ~20 ms of work to under
+1 ms after the first. Test aids: `--background` (behind other windows,
+without the focus, the mouse left alone) and work times in `--fps`.
+
+M4 weapon class batch `claude/energy-weapons` (2026-10-07): energy
+weapons. Traced and implemented: critical effects (laser disintegration,
+plasma goo: cast on a killing critical, kept on the dead, ash/goo piles
+standing for the corpse, critical stages, the Disintegrations statistic),
+the weapons' resist type (Energy Resistance) after the armour floor,
+automatic weapons' critical chance ÷ fire rate, beams striking at once
+and plasma bolts flying at their speed (player and NPCs). Generated-data
+tests; live check in Doc Mitchell's house; not compared with the
+original. Evidence, gaps and next action: [ENERGY_WEAPONS.md](ENERGY_WEAPONS.md).
+
+M4 weapon class batch `claude/launchers-mines` (2026-10-07): launchers,
+explosive projectiles, thrown weapons and mines. Traced and implemented:
+missiles falling under their record's gravity (the projectile's character
+controller), the ammunition's own projectile (HE/HV missiles), explosions'
+object effects (EMP, fire) and knockdown rules, the AI holding explosives
+that would catch its own side, mines (proximity, owners, Light Step, the
+fuse and blink, disarming with XP, taking the mine, placed `PGRE` mines
+saved), and E on ash piles; worn armour's DR read in hundredths.
+Generated-data tests; live checks (grenade rifle and rocket in
+Goodsprings, the mined corridor in `NorthVegasHouseTools`); not compared
+with the original. Evidence, gaps and next action:
+[EXPLOSIVES.md](EXPLOSIVES.md).
+
+M4 weapon class batch `claude/melee-unarmed` (2026-10-07): melee and
+unarmed. Inventory against the exe, then traced and implemented: reach
+of hand-to-hand weapons, what a swing hits (`FindMeleeTarget`: combat
+target, else nearest the hit cone's middle; the player's cone by the
+attack, dead targets ×2), fists' power attack bonus after the armour,
+unarmed uppercut/cross outside V.A.T.S. by the Unarmed skill and their
+effects (stagger and disarm, ×2.5 limb damage), the stagger rules,
+Super Slam's knockdown chance, V.A.T.S. specials' names (`VANM`),
+thresholds and spells (Mauler's knockdown). Generated-data tests; live
+check in Doc Mitchell's house; not compared with the original. Evidence,
+gaps (fatigue damage, the stagger/knockdown animations, NPC specials)
+and next action: [MELEE_UNARMED.md](MELEE_UNARMED.md).
+
+M4/M3 batch `claude/fatigue-blockers` (2026-10-07): fatigue and
+knock-outs, and two quest blockers. Traced and implemented: full fatigue
+(record + derived, auto-calculated people), fists' and the bean bag's
+fatigue damage through the armour, `fMinimumFatigue`, regeneration with
+the all-back-at-0 rule, the knock states (fatigue below 0, paralysis,
+essential down; `GetKnockedState` now 1, not 2), `GetFatiguePercentage`;
+`ForceFlee` (the engine's flee package out of a fight, nothing in one)
+and `GetGroupMemberCount`/`GetGroupTargetCount` (combat groups: alone,
+joined by helpers, merged, the player's). Unblocks by function: 9 quests
+calling `ForceFlee`, 9 asking `GetGroupMemberCount`. Generated-data
+tests; live checks in the Prospector Saloon; not compared with the
+original. Evidence, gaps and next action: [FATIGUE.md](FATIGUE.md).
+
+## Original `.fos` saves (M7 research, `claude/fos-saves`, 2026-10-07)
+
+Format and scope written down from the exe's writer and reader and checked
+byte-for-byte against nine real saves: [FOS_SAVES.md](FOS_SAVES.md). Header,
+plugins, location table, all global data tables, change form records,
+form id and worldspace arrays decoded; quests, globals, misc stats, cells,
+topics, actor bases, factions, classes and challenges decode to their exact
+lengths. Read-only reader `crates/fos` and `nvinspect fos <SAVE> [PLUGIN]`,
+run on all nine saves.
+
+Part 2 (`claude/fos-import`): references' extra data (`00426a30`, the
+saved-under table `01183d30`), inventories (`004d4090`), mobile objects,
+actors, all four AI process levels, movers and pathing, packages made in
+game (the combat controller and its procedures), the player
+(`009590f0`: perks, active quest, hot keys, notes), projectiles, the
+small base form types, the weather and the radio decoded: every change
+form in all nine saves (36,322) decodes to its exact length, none skipped.
+`world::fos_import` builds a `GameState` from a save (globals and game
+time, quests with stages, objectives and variables, said topics, the
+player's place, name, S.P.E.C.I.A.L., experience, perks, inventory and hot
+keys, references moved, disabled, locked, found map markers, containers,
+dead actors and their values, factions, challenges, reputations, local
+map fog, weather, radio); plugin indices are matched by name. Gaps listed
+in FOS_SAVES.md. `nvinspect fos-import` runs it on all nine saves with no
+failures. The viewer starts from a save with `--load-fos <SAVE>`
+(checked live on two of the saves: the player where the save says, the
+time and quest stages printed). **Next action:** compare a loaded save
+against the original game running the same save.
 
 ## Deferred
 

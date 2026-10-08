@@ -119,11 +119,13 @@ pub fn discard(screen: &mut Screen) -> bool {
 /// A service menu (barter, recipes) has just been put over the menus
 /// (`00763ff0`, from its `Create`): the conversation's menu, if one is
 /// open and not ending, fades out and waits under it.
-pub fn service_opened(screen: &mut Screen) {
-    let Screen { ui, open, .. } = screen;
+pub fn service_opened(screen: &mut Screen, dt: f32) {
+    let Screen {
+        ui, open, fades, ..
+    } = screen;
     for m in open.iter_mut() {
         if let OpenMenu::Dialog(d) = m {
-            if d.service_opened(ui) {
+            if d.service_opened(ui, fades, dt) {
                 println!("Dialogue menu: hidden under a service menu.");
             }
         }
@@ -132,12 +134,14 @@ pub fn service_opened(screen: &mut Screen) {
 
 /// The service menu closed (`007640a0`): the conversation's menu fades
 /// back in.
-pub fn service_closed(screen: &mut Screen) {
-    let Screen { ui, open, .. } = screen;
+pub fn service_closed(screen: &mut Screen, dt: f32) {
+    let Screen {
+        ui, open, fades, ..
+    } = screen;
     for m in open.iter_mut() {
         if let OpenMenu::Dialog(d) = m {
             if d.in_service {
-                d.service_closed(ui);
+                d.service_closed(ui, fades, dt);
                 println!("Dialogue menu: back from the service menu.");
             }
         }
@@ -176,11 +180,9 @@ pub fn update(screen: &mut Screen, order: &esm::LoadOrder, dt: f32) {
                     d.state, d.zoom
                 );
             }
+            // (Its fade under a service menu and back is the interface's,
+            // as every menu's: `Screen::fades`, `ui::fade`.)
             d.update(ui, dt, zoom_in, zoom_out);
-            // Its fade under a service menu and back (the interface
-            // manager's, `00716320`, `00711ea0`).
-            let tile = d.menu;
-            d.fade.frame(ui, tile, dt);
         }
     }
 }

@@ -29,6 +29,8 @@ use esm::{FormId, FourCC, LoadOrder};
 use crate::dialogue::PLAYER_REF;
 use crate::scripting::GameState;
 
+pub mod blackjack;
+pub mod roulette;
 pub mod slots;
 
 const CSNO: FourCC = FourCC::new(b"CSNO");
@@ -440,14 +442,36 @@ pub enum Settled {
         count: i32,
         message: String,
     },
-    /// Given: under the limit the game's usual "added" notice for them
-    /// (`004821a0`); at the limit given quietly with a message ending in
-    /// the ban (very happy Vault Boy).
+    /// Given: under the limit with the game's usual "added" notice for
+    /// them (`004821a0(player, 0)`: "%s %s" for one, "%i %s%s %s" for
+    /// more, the gift box); at the limit given quietly (`004821a0(player,
+    /// 1)`) with a message ending in the ban (very happy Vault Boy):
+    /// `banned`.
     Added {
         count: i32,
-        banned_message: Option<String>,
+        message: String,
+        banned: bool,
     },
 }
+
+impl Settled {
+    /// The picture beside its corner message (`QueueUIMessage`'s): the sad
+    /// Vault Boy for chips taken, the very happy one with the ban, else
+    /// the gift box of the game's usual "added" notice (`004821a0`,
+    /// `0101c140`).
+    pub fn icon(&self) -> Option<&'static str> {
+        match self {
+            Settled::Nothing => None,
+            Settled::Removed { .. } => Some(crate::message_icon::SAD),
+            Settled::Added { banned: true, .. } => Some(crate::message_icon::VERY_HAPPY),
+            Settled::Added { .. } => Some(crate::message_icon::GIFT_BOX),
+        }
+    }
+}
+
+/// A refusal's picture: the surprised Vault Boy (every casino refusal and
+/// "out of chips", with `UIPopUpMessageGeneral`).
+pub const REFUSAL_ICON: &str = crate::message_icon::SURPRISED;
 
 /// Closing a game (the closing state of each `DoIdle`: blackjack
 /// `007350f6`, roulette `007bd65b`, slots ≈`007c2f2f`): the difference
@@ -485,16 +509,19 @@ pub fn settle(
         *state.items.entry((PLAYER_REF, casino.chip)).or_insert(0) += diff;
         state.added(order, PLAYER_REF, casino.chip, diff);
         let winnings = data(state, casino.form).map_or(0, |d| d.winnings);
-        let banned_message = (winnings >= casino.max_winnings).then(|| {
-            format!(
-                "{diff} {name}{plural} {}\n{}",
-                text(order, "sAddItemtoInventory", "added"),
-                banned_text(order)
-            )
-        });
+        let added = text(order, "sAddItemtoInventory", "added");
+        let banned = winnings >= casino.max_winnings;
+        let message = if banned {
+            format!("{diff} {name}{plural} {added}\n{}", banned_text(order))
+        } else if diff < 2 {
+            format!("{name} {added}")
+        } else {
+            format!("{diff} {name}{plural} {added}")
+        };
         Settled::Added {
             count: diff,
-            banned_message,
+            message,
+            banned,
         }
     } else {
         Settled::Nothing

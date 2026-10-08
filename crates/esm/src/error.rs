@@ -30,7 +30,7 @@ pub enum Error {
     },
     /// An error while loading one plugin of a load order.
     InPlugin { name: String, source: Box<Error> },
-    /// A plugin depends on a master that is not loaded before it.
+    /// A plugin depends on a master that isn't loaded.
     MissingMaster { plugin: String, master: String },
     /// More plugins than the 255 the form ID scheme can address.
     TooManyPlugins { count: usize },
@@ -75,7 +75,7 @@ impl fmt::Display for Error {
             Error::InPlugin { name, source } => write!(f, "in {name}: {source}"),
             Error::MissingMaster { plugin, master } => write!(
                 f,
-                "{plugin} requires {master}, which is not loaded before it"
+                "{plugin} requires {master}, which isn't loaded"
             ),
             Error::TooManyPlugins { count } => write!(
                 f,

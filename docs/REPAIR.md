@@ -135,6 +135,32 @@ ITEMS, drawn on the Pip-Boy's screen; Enter on a line asks for the repair
 (`Action::Repair`: `world::repair::repair_with`), then the screen is filled
 again or closes; E goes back to ITEMS.
 
+The screen takes the mouse as the game's `RepairMenu` does (its `DoEnter`
+`007b6120`, `DoLeave` `007b6a00` and `DoClick` `007b5b40`, vtable
+`01075c5c` slots 0x10, 0x14, 0x0c; its wheel slot is the base menu's, so
+the wheel only moves the list's scroll bar): the pointer onto a line makes
+it the list's choice and shows what mending with it does; off it, the
+repaired card (9) and "choose an item" (8) hide and nothing is chosen; a
+click mends with the chosen line when the line's text is at full alpha,
+it isn't the item itself and the repaired card shows; a click on Cancel
+goes back to ITEMS. Keys go the same way (Enter clicks the chosen line).
+Without a pad nothing is chosen as it opens (`004b71d0`: the first line
+only with one). Each `DoEnter` turns the Pip-Boy's scroll knob a notch
+with `UIPipBoyScroll` when the chosen line's `listindex` isn't the one it
+last turned for (`011da7d8`, kept between openings). After a repair the
+used line goes and the choice moves to the line after it, or the one
+before when it was the last (`0071a5c0` → `0071aaa0`); at 99% or with only
+the item left it closes as Cancel does, with `UIMenuMode`. The brackets
+sit on the item's line by operators (`007b6aa0`: the height the line's
+less 1, the y the line's; there is no animation). `ui::pipboy::Pipboy`
+hands the pointer to the screen (`Code`) while it's up; the viewer's
+`--menu-pointer` / `--menu-click` drive the Pip-Boy's pointer too. Seen in
+the viewer in Doc Mitchell's house with three 9mm pistols at 30% (`--run
+"player.AddItemHealthPercent WeapNV9mmPistol 3 0.3" --pipboy items:0
+--pipboy-keys r --menu-pointer 760,348 --menu-click 25,35,45`): the
+pointer on the third line chose it ("+9%", DAM 6 → 7), a click mended
+the pistol with it (30% → 39%) and two lines were left.
+
 Checks: `crates/world/tests/repair.rs` (the formulas, a merchant's list and
 order, a repair paid to the vendor, the Pip-Boy's rules with a repair list
 and Jury Rigging), `world::repair::tests` (an NPC's skill offset),
@@ -145,19 +171,37 @@ and `broken_things_come_off_and_stay_off` (`crates/world/tests/repair.rs`).
 Seen in the viewer at Mick & Ralph's (`--open-menu
 repair:FreesideMickREF`): Repair 75, mending to 85%; a 9mm pistol at 30%
 for 110 caps; clicking it paid 110 caps and left it at 85%, "CANNOT
-REPAIR PAST 85%". The Pip-Boy in Doc Mitchell's house with three 9mm
-pistols at 30% and Repair 15 (`--pipboy items:0 --pipboy-keys r,down,enter`):
+REPAIR PAST 85%". The merchant's menu takes the mouse through the
+game menus' interface (its `DoEnter` / `DoLeave` / `DoClick`, `007b82f0`,
+`007b8ae0`, `007b7d80`, were already translated): checked again on
+2026-10-07 with `--menu-pointer 520,255 --menu-click ...`, the pointer
+on the pistol's line showed its card and a click paid 110 caps (500 →
+390). The Pip-Boy in Doc Mitchell's house with three 9mm
+pistols at 30% and Repair 15 (`--pipboy items:0 --pipboy-keys r,down,down,enter`;
+without a pad nothing is chosen as the screen opens, so the first Down
+chooses the item's own line):
 the screen lists the pistol in brackets and its two spares, "CHOOSE ITEM TO
 REPAIR WITH"; on a spare "+9%" (3.875 → 38.75%) and DAM 6 → 7; Enter mends
 it, one spare left.
 
 ## Not done
 
-- The Pip-Boy's scroll knob turning with the repair list, the brackets'
-  move onto the item, the mouse on the Pip-Boy's screen.
+- The tutorial message the repair screen asks for as it opens
+  (`00718630(6, 1035, 500)`), the pad's buttons closing it (`007b6a50`,
+  `DoGamepadUpEvent` codes 6 and 10).
 - An item's condition is kept per holder and kind (weapons and armour,
   `GameState::weapon_health`): a repair or wear touches every one of a kind
-  the holder has, where the game's touch one.
+  the holder has, where the game's touch one. Keeping it per instance (as
+  the game's inventory entries keep an extra-data list per stack: health,
+  weapon mod flags 0x8D, worn 0x16 / 0x17, script, hot key) would replace
+  `GameState`'s `items`, `weapon_health`, `weapon_mods` and `equipped`,
+  all keyed by holder and kind, with stacks per holder, and make every
+  caller pick an instance: equipping the first unworn one, `RemoveItem`
+  an unworn one and `RemoveMe` the worn one (`004bfda0`), a repair or a
+  fitted mod splitting one off its stack; the save's `weaponhealth` /
+  `weaponmods` lines, barter values, combat's weapon in hand, crafting's
+  80% products, the Pip-Boy's rows and the repair lines (one per
+  instance already) would follow, and NPCs' equipment with them.
 - Fatigue damage (no hit here does any), the shotgun's threshold share
   per projectile; a broken weapon an NPC drops stays in their inventory,
   marked dropped (`GameState::dropped`), rather than becoming a reference

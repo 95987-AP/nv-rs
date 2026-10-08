@@ -25,6 +25,8 @@ use crate::menus::Menu;
 pub struct WheelScreen {
     pub menu: CompanionWheelMenu,
     pub who: FormId,
+    /// The pad's left stick as last read (XInput units, y up).
+    pub stick: (i16, i16),
 }
 
 /// The companion's voice for the wheel's lines: what to play, and the one
@@ -100,23 +102,23 @@ pub fn open(
         .push(OpenMenu::CompanionWheel(Box::new(WheelScreen {
             menu,
             who,
+            stick: (0, 0),
         })));
 }
 
-/// A line said on the wheel: its subtitle, its voice.
-fn said(
-    menu: &mut CompanionWheelMenu,
-    ui: &mut ui::Ui,
+/// A companion's line said on a menu (the wheel's `00757690`, the
+/// container menu's `0075eea0`): its first response's text, and until
+/// when it stays on the subtitle (ms): while its voice plays (queued
+/// here), or its length × `fNoticeTextTimePerCharacter` without one.
+pub fn line(
     order: &LoadOrder,
     voices: &mut WheelVoices,
     who: FormId,
     info: &Info,
     now_ms: f64,
-) {
-    let Some(response) = info.responses.first() else {
-        return;
-    };
-    println!("Companion wheel: {who} says \"{}\".", response.text);
+) -> Option<(String, f64)> {
+    let response = info.responses.first()?;
+    println!("Companion: {who} says \"{}\".", response.text);
     let voice = world::scripting::base_of(order, who)
         .and_then(|b| world::dialogue::Speaker::load(order, who, b))
         .and_then(|s| s.voice)
@@ -132,21 +134,59 @@ fn said(
             now_ms + CompanionWheelMenu::line_time(&response.text, per)
         }
     };
-    menu.say(ui, &response.text, until);
+    Some((response.text.clone(), until))
 }
 
-/// Each frame: the subtitle emptied once its time is up or its voice has
-/// ended.
+/// A line said on the wheel: its subtitle, its voice.
+fn said(
+    menu: &mut CompanionWheelMenu,
+    ui: &mut ui::Ui,
+    order: &LoadOrder,
+    voices: &mut WheelVoices,
+    who: FormId,
+    info: &Info,
+    now_ms: f64,
+) {
+    if let Some((text, until)) = line(order, voices, who, info, now_ms) {
+        menu.say(ui, &text, until);
+    }
+}
+
+/// Each frame: the wheel's and the container menu's subtitles emptied
+/// once their time is up or their voice has ended.
 pub fn update(screen: &mut Screen, voices: &mut WheelVoices, now_ms: f64) {
     let ended = std::mem::take(&mut voices.ended);
     for m in screen.open.iter_mut() {
+        let until = match m {
+            OpenMenu::CompanionWheel(w) => &mut w.menu.subtitle_until,
+            OpenMenu::Container(c) => &mut c.menu.subtitle_until,
+            _ => continue,
+        };
+        if ended && *until == Some(f64::INFINITY) {
+            *until = Some(now_ms);
+        }
         if let OpenMenu::CompanionWheel(w) = m {
-            if ended && w.menu.subtitle_until == Some(f64::INFINITY) {
-                w.menu.subtitle_until = Some(now_ms);
-            }
             w.menu.update(&mut screen.ui, now_ms);
         }
     }
+}
+
+/// The pad's left stick this frame (`None`: no pad), for the wheel when
+/// it's the top menu (`00755480`: `00702450(1075)`; Bevy's first gamepad
+/// stands for XInput's pad 0, its -1..1 axes scaled to XInput's ±32767).
+/// The wheel sees the stick as read the frame before and now.
+pub fn stick(screen: &mut Screen, pad: Option<Vec2>) {
+    let Some(OpenMenu::CompanionWheel(w)) = screen.open.last_mut() else {
+        return;
+    };
+    let Some(pad) = pad else {
+        w.stick = (0, 0);
+        return;
+    };
+    let axis = |v: f32| (v.clamp(-1.0, 1.0) * 32767.0) as i16;
+    let now = (axis(pad.x), axis(pad.y));
+    let before = std::mem::replace(&mut w.stick, now);
+    w.menu.stick(&mut screen.ui, before, now);
 }
 
 /// What the wheel asked for, carried out. Returns sounds to play.
@@ -219,11 +259,7 @@ pub fn after(
                         changed = true;
                     }
                 }
-                Request::BackUp => {
-                    // `008a7760`: a default package (0x27) moving them away
-                    // from the player; packages like it aren't here.
-                    println!("Companion wheel: {who} would step back (not carried out here).");
-                }
+                Request::BackUp => world::companions::back_up(state, who),
                 Request::Talk => {
                     // As the player using them would (`00756980`).
                     state.events.push(world::scripting::Event::Talk {

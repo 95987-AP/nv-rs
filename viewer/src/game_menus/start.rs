@@ -33,6 +33,12 @@ pub struct StartScreen {
     was_paused: bool,
 }
 
+impl StartScreen {
+    pub fn new(menu: StartMenu, was_paused: bool) -> StartScreen {
+        StartScreen { menu, was_paused }
+    }
+}
+
 /// The settings the user options show and change: (value, default) by
 /// setting, as the INI holds them (the exe's defaults where it's silent).
 /// Changes stay in this run: the user's own `FalloutPrefs.ini` isn't
@@ -357,9 +363,9 @@ pub fn open(
     }
     screen.ui.set_number(tile, t::VISIBLE, 1.0);
     println!("Pause menu.");
-    screen
-        .open
-        .push(OpenMenu::Start(Box::new(StartScreen { menu, was_paused })));
+    screen.open.push(OpenMenu::Start(Box::new(StartScreen::new(
+        menu, was_paused,
+    ))));
     true
 }
 
@@ -368,6 +374,8 @@ pub fn open(
 pub struct Outcome {
     pub resume: Option<bool>,
     pub exit: bool,
+    /// Help asked for (`007d0770`): the help manual, for the caller.
+    pub help: bool,
     pub save: Option<SaveFile>,
     pub applied: Vec<(Setting, f32)>,
     pub sounds: Vec<String>,
@@ -410,7 +418,14 @@ pub fn frame(screen: &mut Screen, game: &Game, settings: &mut GameSettings, now:
                 Request::MainMenu => {
                     println!("Main Menu: the main menu isn't made here (not implemented).")
                 }
-                Request::Help => println!("Help: the help menu isn't made here (not implemented)."),
+                // `007d0770`: the version shows (the menu's +0x50, tile
+                // 10), then the help manual opens over it (the caller).
+                Request::Help => {
+                    if let Some(v) = s.menu.tiles[start::id::VERSION as usize] {
+                        ui.set_number(v, t::VISIBLE, 1.0);
+                    }
+                    out.help = true;
+                }
                 Request::Apply {
                     setting,
                     value,

@@ -24,6 +24,8 @@ use crate::menus::Menu;
 pub struct ComputersScreen {
     pub menu: ComputersMenu,
     pub reference: FormId,
+    /// Waiting on the terminal tutorial (`+0xc0`).
+    pub tutorial_wait: bool,
 }
 
 pub fn takes(m: &Menu) -> bool {
@@ -50,7 +52,7 @@ fn screen_of(
 }
 
 /// Opens the menu (`00757b70`).
-pub fn open(screen: &mut MenuScreen, game: &cellview::Game, state: &GameState, request: Menu) {
+pub fn open(screen: &mut MenuScreen, game: &cellview::Game, state: &mut GameState, request: Menu) {
     let Menu::Terminal(base, reference) = request else {
         return;
     };
@@ -90,18 +92,32 @@ pub fn open(screen: &mut MenuScreen, game: &cellview::Game, state: &GameState, r
         screen.ui.detach(menu.menu);
         return;
     }
+    // The terminal tutorial (`00757b70`; vanilla's isn't "Auto Display",
+    // so it never comes up).
+    let tutorial_wait = world::tutorial::ask(
+        order,
+        &mut state.tutorials,
+        world::tutorial::id::TERMINAL,
+        world::tutorial::menu::COMPUTERS,
+        world::tutorial::menu::DELAY,
+    );
     screen
         .open
         .push(OpenMenu::Computers(Box::new(ComputersScreen {
             menu,
             reference,
+            tutorial_wait,
         })));
 }
 
 /// Every frame (`00758470`).
-pub fn update(screen: &mut MenuScreen, now_ms: f64) {
+pub fn update(screen: &mut MenuScreen, state: &GameState, now_ms: f64) {
     for m in &mut screen.open {
         if let OpenMenu::Computers(c) = m {
+            // Waiting until its tutorial has been shown.
+            if c.tutorial_wait && !state.tutorials.is_shown(world::tutorial::id::TERMINAL) {
+                continue;
+            }
             c.menu.update(&mut screen.ui, now_ms);
         }
     }
@@ -117,7 +133,12 @@ pub fn after(
     now_ms: f64,
 ) -> Vec<String> {
     let mut notices = Vec::new();
-    let MenuScreen { ui, open, .. } = screen;
+    let MenuScreen {
+        ui,
+        open,
+        terminal_left: left,
+        ..
+    } = screen;
     for m in open.iter_mut() {
         let OpenMenu::Computers(c) = m else {
             continue;
@@ -166,6 +187,14 @@ pub fn after(
                     c.menu.retype(ui, &passing);
                 }
                 Request::Close => sounds.stop_all(),
+                // Leaving (`00757ea0`): the power down (`007ffe40`), the
+                // rendered terminal fading out (`007ffaf0`).
+                Request::Leave => {
+                    if let Some(f) = order.form_by_editor_id(sound::POWER_DOWN) {
+                        sounds.play_at(f, now_ms);
+                    }
+                    *left = true;
+                }
             }
         }
     }

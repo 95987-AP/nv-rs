@@ -50,6 +50,10 @@ pub struct ItemEffect {
     /// Flag 0x01, hostile: a chem's effect that isn't a benefit (its
     /// duration isn't lengthened by Chemist, `crate::magic`).
     pub hostile: bool,
+    /// The magic effect's flags as they are (`MGEF` `DATA` u32 at 0; the
+    /// game's +0x58): 0x80 no duration, 0x100 no magnitude, 0x2000 its
+    /// name shown alone, 0x400000 (with hostile) poison.
+    pub flags: u32,
     pub script: Option<FormId>,
     pub resist: i32,
     pub archetype: u32,
@@ -93,6 +97,7 @@ pub fn effects(order: &LoadOrder, item: FormId) -> Vec<ItemEffect> {
                 harmful: u(0).is_some_and(|f| f & 0x04 != 0),
                 recover: u(0).is_some_and(|f| f & 0x02 != 0),
                 hostile: u(0).is_some_and(|f| f & 0x01 != 0),
+                flags: u(0).unwrap_or(0),
                 script,
                 resist: u(16).map_or(-1, |v| v as i32),
                 archetype,

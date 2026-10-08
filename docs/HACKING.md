@@ -228,11 +228,26 @@ N is required to hack this terminal." with `UIPopUpMessageGeneral`.
 Hacking calls `world::terminal::hacked` (experience, the statistic) or
 `lock_out`. The address column's base is a random multiple of 4.
 
+## On the terminal's screen
+
+With `[RenderedTerminal] bUseRenderedTerminals` on (the PC default), the
+hacking menu is drawn on the terminal model's screen as the terminal's
+own menu is ([TERMINALS.md](TERMINALS.md), "The rendered terminal"): it
+opens one (`00705ec0`), and its hand-over to the terminal's menu after the
+password keeps it (`0076a540`). Its file (`hacking_menu.xml`) keeps its
+words within the same top-left 960 × 720 of the 1280 × 960 picture
+(its depth rect 920 × 630 at x 32; only its background covers the whole
+picture, of which the screen shows that corner). The
+pointer goes through the screen, so `--menu-pointer` positions are where
+a word shows on the model's screen in the window, not the flat menu's.
+Leaving (code 10, `00766aa0`) plays `OBJComputerTerminalPowerDown`
+(`007ffe40`) and fades the terminal out.
+
 ## Not done
 
-- Rendered terminals (the game's default draws this menu on the
-  terminal's screen in the world; see [TERMINALS.md](TERMINALS.md)).
 - The controller's cursor (special codes 1–4 and 9, `00767610`).
-- Crime when hacking an owned terminal with witnesses (`008c0ec0`).
+- (Done since: hacking an owned terminal raises the trespass alarm,
+  `008c0ec0`; see [FACTIONS_CRIME.md](FACTIONS_CRIME.md).)
 - Encounter-zone levels for leveled terminals.
-- The tutorial message the menu asks for on opening (`00718630(0x13, …)`).
+- (Done since: the tutorial message the menu asks for on opening,
+  `00718630(0x13, …)`; see [TUTORIALS.md](TUTORIALS.md).)

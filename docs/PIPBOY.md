@@ -67,9 +67,14 @@ and merchant repair are Chazm's (merged 2026-10-06, see
 [CONTRIB_CHAZM.md](CONTRIB_CHAZM.md)): [REPAIR.md](REPAIR.md) and
 [WEAPON_MODS.md](WEAPON_MODS.md). Clicking R or X with an item that can be
 mended (`world::repair::can_repair`, `00781860`) or a weapon chosen opens
-the screen over ITEMS (`ui::pipboy::repair`, `ui::pipboy::item_mod`); the
-screens take keys only (their mouse code isn't translated, so the pointer
-and wheel do nothing while they're up).
+the screen over ITEMS (`ui::pipboy::repair`, `ui::pipboy::item_mod`). While
+one is up it is the menu on top: the interface hands it the pointer (its
+`DoEnter`, `DoLeave` and `DoClick`, through `ui::pipboy`'s `Code`), the
+wheel moves its list's scroll bar, ITEMS' right-button drop doesn't run,
+and the pointer's tiles are let go as it opens and closes (2026-10-07,
+`claude/repair-mod-followups`; the details in REPAIR.md and
+WEAPON_MODS.md). For screenshots `--menu-pointer` and `--menu-click` put
+the Pip-Boy's pointer on a pixel and click there.
 
 ## Traced behaviour (implemented)
 
@@ -183,7 +188,7 @@ live checks above are of the viewer only. Not implemented:
   (`007df620`), the Stimpak / Doctor's Bag buttons' `target` by
   `007e05f0` / `007e06f0`; "limb condition" effects (archetype 35, the
   Doctor's Bag) do nothing in the world yet, aimed or not.
-- ITEMS: the repair and mod screens' mouse code; the hot keys' pad
+- ITEMS: the hot keys' pad
   assignment; the other Drop refusals (the player's current action,
   worn items that can't come off, no room), the drop's shape cast,
   ten headings and physics; the sort's ties by condition and equipped.

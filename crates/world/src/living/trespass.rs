@@ -150,7 +150,12 @@ pub fn evil(order: &LoadOrder, who: FormId) -> bool {
 
 /// Whether `who` is in `faction` (`008b8e90`): their base lists it (any
 /// rank) and no script took them out, or a script put them in.
-fn in_faction(order: &LoadOrder, state: &GameState, who: FormId, faction: FormId) -> bool {
+pub(crate) fn in_faction(
+    order: &LoadOrder,
+    state: &GameState,
+    who: FormId,
+    faction: FormId,
+) -> bool {
     match state.faction_changes.get(&(who, faction)) {
         Some(&rank) if rank < 0 => false,
         Some(_) => true,
@@ -313,6 +318,9 @@ pub fn alarm(
     }
     if let Some(&first) = turned.first() {
         crate::crime::witnessed(order, state, first, 1, 0, "fReputationMinorCrimeNeg", 2.0);
+        // The player's own minor crimes (`GetMinorCrimeCount`; the Xbox
+        // `Actor::TrespassAlarm` counts it once at the end).
+        state.player_crimes.0 += 1;
     }
     turned
 }

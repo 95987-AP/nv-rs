@@ -23,6 +23,7 @@ class layouts from the Xbox 360 prototype's symbols (Xbox PDB, read with
 | List order | `00728c10` | `RecipeMenu::SortFunc` |
 | Filter order | `007278c0` | `RecipeMenu::FilterSortFunction` |
 | The selected recipe's details | `00727b10` | |
+| The item card | `00728da0` | `RecipeMenu::PopulateItemStatsDisplay` |
 | Clicks (filter arrows 0-2, Make 7, Exit 8) | `007274b0` | `RecipeMenu::DoClick` |
 | Making (the quantity menu's callback) | `007284f0` | |
 | Loading `RCPE` | `005a8110` | `TESRecipe::Load` |
@@ -107,6 +108,36 @@ line template `RM_list_template` (id 15). From the code:
   "name (have/need)" sorted by name (`00728cd0`, alpha 127 when short), the
   skill "name (current/required)" (alpha 127 when too low), Accept's
   `target` only when it can be made, the first product's picture.
+- The item card (10, `item_stats_display.xml`; `00728da0` with the first
+  product's item, the recipe's +0x44 output list's first component, then
+  the card shown): the file's first 12 cards in order (DR, DPS, weight,
+  value, condition, ammunition, effects, three mods, strength, damage; the
+  13th, DT, is left alone), titled from the settings (`sModEffects` on the
+  first mod card), each shown by a bit of the mask: weapons (form type
+  0x28) 0xc3e: the DPS (`00645380`), the damage at full condition
+  (`006450f0`, "%d" rounded or "%.1fx%d" with more projectiles a shot,
+  `00525b20`), the condition meter full (`user5` 1), the strength needed
+  (`00663b60`, the card made opaque) and the ammunition card's title, its
+  short name (else name) and "(0/held)", or the name alone for a weapon
+  that regenerates (`00709430`), "--" without; armour and clothing (0x18,
+  0x1a) 0x1d: the DR at full condition (`004be060(1.0)`, "%d"); anything
+  else 0xc; the effects (`00406620`) when there's text (0x40). Weight
+  (`0048ebc0`) and value: "--" for nothing, "%.1f" below 1, else "%.0f";
+  the value goes through `00647c00` with 1 as the condition in percent
+  (the exe passes 1.0 where the inventory passes a percentage): with the
+  master's `fItemConditionValueBase` 0 and `fItemConditionValueMult`
+  0.0316 that is a thousandth of the value, so the Bottlecap Mine (150)
+  reads 0.1 and Healing Powder (4) 0.0 (seen in the viewer; not compared
+  with the running game). The effects and mod cards' y: half the card's
+  height less 20, twice that with the condition or ammunition card.
+  Here: `ui::menus::recipe::Card` and `RecipeMenu::show_card`, worked out
+  by `ui::pipboy::gather::recipe_card`; the DPS and the effects' text
+  aren't worked out (as on ITEMS' card), so the DPS is empty and the
+  effects card stays hidden. Seen in the viewer (`--run "player.
+  ShowRecipeMenu WorkbenchRecipes" --menu-pointer 525,215`): on Bottlecap
+  Mine the DPS and condition (full) cards, STR 1, WG 0.5, VAL 0.1 and
+  "--" for ammunition, beside the Vault Boy picture; on the campfire's
+  Healing Powder only WG and VAL.
 - Accept (7, `007274b0` case 7): the quantity menu with the most that can be
   made (`007aba00`, which always opens), then `007284f0`, which ends by
   closing the menu (`00727430`: `LEAVE_STACK` 1): every craft needs the
@@ -126,8 +157,10 @@ Not compared with the running original game.
 - The `HelpCrafting` tutorial message the first time (`00726ff0`:
   tutorial flag 0x26); the game's tutorial help messages aren't in the
   viewer at all yet.
-- The item card (`00728da0`, `RecipeMenu::PopulateItemStatsDisplay`), the
-  ingredient list's own pointer (an ingredient's picture), the
+- The item card's DPS (`00645380`) and effects text (`00406620`); the
+  picture of armour by the player's sex (`00480f80` → `00481280`); the
+  ingredient list's own pointer (an ingredient's card and picture,
+  `00727b10` with the list switched, `011d8ea5`), the
   controller's list switching (special codes 0xd, 0xe) and the cross-fade
   (`00728a70`).
 - The challenge events crafting raises (`005f5950(0xc, ...)` and the misc

@@ -32,6 +32,15 @@ pub enum Menu {
         text: String,
         buttons: Vec<(usize, String)>,
     },
+    /// A box the game itself puts up (`world::scripting::Event::Popup`:
+    /// a reputation's new title), with one OK button whose answer goes to
+    /// no script.
+    Popup {
+        title: Option<String>,
+        text: String,
+        icon: Option<String>,
+        sound: Option<String>,
+    },
     Character(CharacterMenu),
     /// A container opened: its reference and name.
     Container(FormId, String),
@@ -58,6 +67,15 @@ pub enum Menu {
         difficulty: i32,
         share: f32,
     },
+    /// A casino game (`ShowSlotMachineMenuParams`, `ShowBlackJackMenuParams`,
+    /// `ShowRouletteMenuParams`), its `Create` checks passed
+    /// (`game_menus::casino`): the casino, the bets' limits.
+    Casino {
+        game: world::casino::Game,
+        casino: FormId,
+        min_bet: i32,
+        max_bet: i32,
+    },
     /// A computer terminal used (`world::terminal`): its record and the
     /// placed terminal.
     Terminal(FormId, FormId),
@@ -72,6 +90,9 @@ pub enum Menu {
     /// A level gained (`world::experience::level_up`): its skill points to
     /// share out, then a perk on perk levels.
     LevelUp(world::experience::LevelUp),
+    /// A script's `ShowTutorialMenu`: the tutorial menu with this message
+    /// (`game_menus::tutorial::show_form`).
+    Tutorial(FormId),
 }
 
 /// A menu on screen, with what's been chosen so far.
@@ -239,6 +260,12 @@ fn open(
             text,
             buttons,
         },
+        // Without the game's message menu: shown like a script's box.
+        Menu::Popup { title, text, .. } => Open::Message {
+            title,
+            text,
+            buttons: vec![(0, "OK".to_string())],
+        },
         // Only the game's own menus show these (`game_menus`).
         Menu::Container(..)
         | Menu::Barter(..)
@@ -247,12 +274,14 @@ fn open(
         | Menu::Teammate(..)
         | Menu::CompanionWheel(..)
         | Menu::Caravan { .. }
+        | Menu::Casino { .. }
         | Menu::LevelUp(..)
         | Menu::Character(CharacterMenu::Traits { .. })
         | Menu::Character(CharacterMenu::TagSkills { .. })
         | Menu::Character(CharacterMenu::Name)
         | Menu::Character(CharacterMenu::Special { .. })
-        | Menu::SleepWait { .. } => {
+        | Menu::SleepWait { .. }
+        | Menu::Tutorial(..) => {
             println!("That menu can't be opened: the game's menus aren't available.");
             return None;
         }

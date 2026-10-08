@@ -12,8 +12,13 @@ use crate::menus::Menu;
 
 /// Whether this module shows a request.
 pub fn takes(menu: &Menu) -> bool {
-    matches!(menu, Menu::Message { .. })
+    matches!(menu, Menu::Message { .. } | Menu::Popup { .. })
 }
+
+/// The owner of the game's own boxes (`Menu::Popup`): their answer is
+/// taken and dropped (the reputation box's callback `00615720` only reads
+/// it), so no script's `GetButtonPressed` sees it.
+pub const POPUP_OWNER: u32 = 0x0061_5720;
 
 /// The menus' background alpha (`_background_fill_alpha` of the globals:
 /// `fMenuBackgroundOpacity` × 255), which a box keeps (`007a8850`).
@@ -30,6 +35,26 @@ pub fn background_alpha(screen: &mut Screen) -> f32 {
 /// A message box request becomes a box in the message menu (opened if it
 /// isn't).
 pub fn open(screen: &mut Screen, game: &Game, request: Menu) {
+    if let Menu::Popup {
+        title,
+        text,
+        icon,
+        sound,
+    } = request
+    {
+        // `00703f10`: kind 0x17, the one button `sOk`.
+        let ok = screen
+            .ui
+            .setting_text("sOk")
+            .unwrap_or_else(|| ui::menus::message::DEFAULT_BUTTON.to_string());
+        let alpha = background_alpha(screen);
+        let mut b = MessageBox::new(&text, title.as_deref(), &[&ok], 0x17, alpha);
+        b.icon = icon;
+        b.sound = sound;
+        b.owner = Some(POPUP_OWNER);
+        show(screen, game, b);
+        return;
+    }
     let Menu::Message {
         title,
         text,
@@ -87,6 +112,7 @@ pub fn after(
         let OpenMenu::Message(m) = m else {
             continue;
         };
+        m.take_pressed_for(Some(POPUP_OWNER));
         if let Some(n) = m.take_pressed() {
             println!("Message box: button {n}.");
             state.button = Some(n);

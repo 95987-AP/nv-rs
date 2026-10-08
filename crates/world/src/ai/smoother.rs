@@ -168,7 +168,12 @@ impl NavMesh {
     /// height, within 200 (a path location resolved to its triangle).
     pub(crate) fn triangle_under(&self, p: [f32; 3]) -> Option<(usize, f32)> {
         let mut best: Option<(f32, usize, f32)> = None;
-        for t in 0..self.triangles.len() {
+        // Only those over the point's grid square can hold it, each
+        // square's in the mesh's order (so the first of the nearest wins,
+        // as looking at every triangle did): the smoother asks this for
+        // every line it walks.
+        let under = self.index().get(&super::grid_square(p[0], p[1]));
+        for &t in under.into_iter().flatten() {
             let [a, b, c] = [0, 1, 2].map(|i| self.corner(t, i));
             if let Some(z) = height_in(a, b, c, p) {
                 let dz = (z - p[2]).abs();

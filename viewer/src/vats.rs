@@ -255,6 +255,12 @@ impl Vats {
         self.phase != Phase::Off
     }
 
+    /// Whether the menu is up (choosing targets), for the tutorial
+    /// manager (`VATSMenu`, 1056).
+    pub fn in_menu(&self) -> bool {
+        self.phase == Phase::Menu
+    }
+
     /// Whether a camera shot has the view (the first-person model hides).
     pub fn shot_view(&self) -> bool {
         self.shot_camera.is_some()
@@ -590,23 +596,40 @@ pub fn run_vats(
                 // stays open isn't traced; once here).
                 state.more.menu_open = Some(vats::VATS_MENU);
                 Runner::new(order, &scripts.0, state).menu_mode(vats::VATS_MENU);
+                // `VATSMenu::Create` asks for its help over itself
+                // (`007e9200`: `ShowMessage(0x15, 1056, 512)`; 0x1B with
+                // a pad, which V.A.T.S. here doesn't take).
+                world::tutorial::ask(
+                    order,
+                    &mut state.tutorials,
+                    world::tutorial::id::VATS_PC,
+                    world::tutorial::menu::VATS,
+                    world::tutorial::menu::DELAY,
+                );
             }
         }
         Phase::Menu => {
-            let keys_now = MenuKeys {
-                v_pressed: keys.just_pressed(KeyCode::KeyV),
-                v_held: keys.pressed(KeyCode::KeyV),
-                previous_target: keys.just_pressed(KeyCode::KeyA),
-                next_target: keys.just_pressed(KeyCode::KeyD),
-                next_part: keys.just_pressed(KeyCode::KeyW),
-                previous_part: keys.just_pressed(KeyCode::KeyS),
-                queue: mouse.just_pressed(MouseButton::Left),
-                undo: mouse.just_pressed(MouseButton::Right) || keys.just_pressed(KeyCode::KeyB),
-                execute: keys.just_pressed(KeyCode::KeyE),
-                special: [
-                    keys.just_pressed(KeyCode::KeyR),
-                    keys.just_pressed(KeyCode::KeyF),
-                ],
+            // One of the game's menus over it (its help) has the keys and
+            // buttons.
+            let keys_now = if menus.game_open {
+                MenuKeys::default()
+            } else {
+                MenuKeys {
+                    v_pressed: keys.just_pressed(KeyCode::KeyV),
+                    v_held: keys.pressed(KeyCode::KeyV),
+                    previous_target: keys.just_pressed(KeyCode::KeyA),
+                    next_target: keys.just_pressed(KeyCode::KeyD),
+                    next_part: keys.just_pressed(KeyCode::KeyW),
+                    previous_part: keys.just_pressed(KeyCode::KeyS),
+                    queue: mouse.just_pressed(MouseButton::Left),
+                    undo: mouse.just_pressed(MouseButton::Right)
+                        || keys.just_pressed(KeyCode::KeyB),
+                    execute: keys.just_pressed(KeyCode::KeyE),
+                    special: [
+                        keys.just_pressed(KeyCode::KeyR),
+                        keys.just_pressed(KeyCode::KeyF),
+                    ],
+                }
             };
             menu(
                 order,
@@ -682,6 +705,7 @@ pub fn run_vats(
 }
 
 /// The keys the menu reads this frame.
+#[derive(Default)]
 struct MenuKeys {
     v_pressed: bool,
     v_held: bool,
@@ -2320,6 +2344,16 @@ fn fire(
     }
     let was_dead = |state: &GameState, r: FormId| state.dead.contains(&r);
     let mut struck: Vec<(FormId, bool)> = Vec::new();
+    // The move's group (`world::vats::attack_group`: Uppercut `Attack6`,
+    // Cross `Attack7`) and what it does to the one hit
+    // (`world::melee::special_of`).
+    let blow = world::melee::Blow {
+        power: false,
+        special: vats::attack_group(a.kind, state.player_sneaking)
+            .map_or(world::melee::Special::None, |g| {
+                world::melee::special_of(weapon.as_ref(), g)
+            }),
+    };
     if melee {
         // A queued hit lands on its part; a miss swings as an ordinary blow,
         // reaching × `fVATSMeleeReachMult`.
@@ -2327,11 +2361,12 @@ fn fire(
         if hit {
             struck.push((a.target, was_dead(state, a.target)));
             let part = u8::try_from(a.slot).ok();
-            let result = Runner::new(order, scripts, state).hit_at(
+            let result = Runner::new(order, scripts, state).blow_at(
                 PLAYER_REF,
                 a.target,
                 weapon.as_ref(),
                 part,
+                blow,
             );
             if let Some(h) = result {
                 let d = distance(eye, node);
@@ -2360,11 +2395,12 @@ fn fire(
                     part,
                 } => {
                     struck.push((reference, was_dead(state, reference)));
-                    if let Some(h) = Runner::new(order, scripts, state).hit_at(
+                    if let Some(h) = Runner::new(order, scripts, state).blow_at(
                         PLAYER_REF,
                         reference,
                         weapon.as_ref(),
                         part,
+                        blow,
                     ) {
                         println!(
                             "  (missed) {}.",
@@ -2507,6 +2543,9 @@ mod tests {
             semi_auto_delay: (0.0, 0.0),
             speed: 1.0,
             cone_mult: 1.0,
+            crit_effect: None,
+            crit_on_death: false,
+            resist: None,
         }
     }
 

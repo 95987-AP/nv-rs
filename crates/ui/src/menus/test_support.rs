@@ -477,7 +477,21 @@ pub fn recipe_menu() -> String {
              <image name=\"RM_ButtonB\"><id>8</id><x>1307</x><target>&true;</target>
                <text name=\"button_text\"><font>2</font><string><copy src=\"parent()\" trait=\"string\"/></string></text></image>
              <image name=\"RM_ItemIcon\"><id>9</id><visible>&false;</visible></image>
-             <rect name=\"RM_ItemData\"><id>10</id><visible>&false;</visible></rect>
+             <rect name=\"RM_ItemData\"><id>10</id><visible>&false;</visible><width>530</width><height>120</height>
+               <rect name=\"DamageResistInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"DPSInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"WeightInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"ValueInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"ConditionInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"AmmoInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"EffectsInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"ModInfoOne\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"ModInfoTwo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"ModInfoThree\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"StrengthReqInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"DAMInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+               <rect name=\"DamageThresholdInfo\"><_Title></_Title><_Value></_Value><visible>&false;</visible></rect>
+             </rect>
            </rect>
            <template name=\"RM_list_template\"><hotrect name=\"RM_list_template_container\">{LIST_ITEM}<id>15</id>
              <text name=\"ListItemText\"><font>2</font><string><copy src=\"parent()\" trait=\"string\"/></string></text>
@@ -815,6 +829,113 @@ pub fn slots_menu_file() -> String {
         button("SMM_BetMax", 7),
         button("SMM_ExitButton", 8),
     )
+}
+
+/// A stand-in for `black_jack_menu.xml`: the ten tiles by id, each
+/// button a hotrect with a text child, the game's key bindings.
+pub fn blackjack_menu_file() -> String {
+    let display = |name: &str, id: i32| {
+        format!(
+            "<rect name=\"{name}\"><id>{id}</id><_Value></_Value>
+               <text name=\"{name}Title\"><font>7</font><string><copy src=\"parent()\" trait=\"_Value\"/></string></text>
+               <text name=\"{name}Value\"><font>7</font><string><copy src=\"parent()\" trait=\"_X\"/></string></text>
+             </rect>"
+        )
+    };
+    let button = |name: &str, id: i32| {
+        format!(
+            "<hotrect name=\"{name}\"><id>{id}</id><target>&true;</target><string></string>
+               <text name=\"{name}Text\"><font>7</font><string><copy src=\"parent()\" trait=\"string\"/></string></text>
+             </hotrect>"
+        )
+    };
+    format!(
+        "<menu name=\"BlackJackMenu\"><class>&BlackJackMenu;</class>
+           <_PCButton_F>BJM_Hit</_PCButton_F><_PCButton_Q>BJM_Switch_DecreaseBet</_PCButton_Q>
+           <_PCButton_E>BJM_Split_IncreaseBet</_PCButton_E><_PCButton_W>BJM_Double_Deal</_PCButton_W>
+           <_PCBUTTON_S>BJM_Surrender_MaxBet</_PCBUTTON_S><_PCBUTTON_R>BJM_Stay_Exit</_PCBUTTON_R>
+           <rect name=\"NOGLOW_BRANCH\">
+             {}{}
+             <rect name=\"BJM_CasinoNameDisplay\"><id>2</id><_Value></_Value>
+               <text name=\"BJM_CasinoNameTitle\"><string><copy src=\"parent()\" trait=\"_Value\"/></string></text>
+               <text name=\"BJM_TotalEarningsValue\"><string><copy src=\"parent()\" trait=\"_X\"/></string></text>
+             </rect>
+             {}{}{}{}{}{}
+             <text name=\"BJM_StatusText\"><id>9</id><font>7</font><visible>&false;</visible></text>
+           </rect>
+         </menu>",
+        display("BJM_CurrentBetDisplay", 0),
+        display("BJM_ChipsDisplay", 1),
+        button("BJM_Hit", 3),
+        button("BJM_Double_Deal", 4),
+        button("BJM_Split_IncreaseBet", 5),
+        button("BJM_Switch_DecreaseBet", 6),
+        button("BJM_Surrender_MaxBet", 7),
+        button("BJM_Stay_Exit", 8),
+    )
+}
+
+/// A stand-in for `roulette_menu.xml`: the eleven tiles by id, each
+/// button a hotrect with a text child, the game's key bindings.
+pub fn roulette_menu_file() -> String {
+    let display = |name: &str, id: i32| {
+        format!(
+            "<rect name=\"{name}\"><id>{id}</id><_Value></_Value>
+               <text name=\"{name}Title\"><font>7</font><string><copy src=\"parent()\" trait=\"_Value\"/></string></text>
+               <text name=\"{name}Value\"><font>7</font><string><copy src=\"parent()\" trait=\"_X\"/></string></text>
+             </rect>"
+        )
+    };
+    let button = |name: &str, id: i32| {
+        format!(
+            "<hotrect name=\"{name}\"><id>{id}</id><target>&true;</target><string></string>
+               <text name=\"{name}Text\"><font>7</font><string><copy src=\"parent()\" trait=\"string\"/></string></text>
+             </hotrect>"
+        )
+    };
+    format!(
+        "<menu name=\"RouletteMenu\"><class>&RouletteMenu;</class>
+           <_PCButton_Q>ROM_DecreaseBet</_PCButton_Q><_PCButton_E>ROM_IncreaseBet</_PCButton_E>
+           <_PCButton_W>ROM_PlaceBet</_PCButton_W><_PCBUTTON_S>ROM_FinishBet</_PCBUTTON_S>
+           <_PCBUTTON_R>ROM_ExitButton</_PCBUTTON_R><_PCBUTTON_F>ROM_RemoveBet</_PCBUTTON_F>
+           <rect name=\"NOGLOW_BRANCH\">
+             {}{}{}
+             <rect name=\"ROM_CasinoNameDisplay\"><id>2</id><_Value></_Value>
+               <text name=\"ROM_CasinoNameTitle\"><string><copy src=\"parent()\" trait=\"_Value\"/></string></text>
+               <text name=\"ROM_TotalEarningsValue\"><string><copy src=\"parent()\" trait=\"_X\"/></string></text>
+             </rect>
+             {}{}{}{}{}{}
+             <text name=\"ROM_StatusText\"><id>9</id><font>7</font><visible>&false;</visible></text>
+           </rect>
+         </menu>",
+        display("ROM_CurrentBetDisplay", 0),
+        display("ROM_TotalBetDisplay", 10),
+        display("ROM_ChipsDisplay", 1),
+        button("ROM_PlaceBet", 3),
+        button("ROM_RemoveBet", 4),
+        button("ROM_FinishBet", 5),
+        button("ROM_IncreaseBet", 6),
+        button("ROM_DecreaseBet", 7),
+        button("ROM_ExitButton", 8),
+    )
+}
+
+/// The roulette menu loaded from [`roulette_menu_file`].
+pub fn roulette_menu() -> (Ui, super::roulette::RouletteMenu) {
+    let mut ui = self::ui();
+    let mut code = super::roulette::RouletteMenu::new(0);
+    let menu = load(&mut ui, &roulette_menu_file(), &mut code);
+    code.menu = menu;
+    (ui, code)
+}
+
+/// The blackjack menu loaded from [`blackjack_menu_file`].
+pub fn blackjack_menu() -> (Ui, super::blackjack::BlackjackMenu) {
+    let mut ui = self::ui();
+    let mut code = super::blackjack::BlackjackMenu::new(0);
+    let menu = load(&mut ui, &blackjack_menu_file(), &mut code);
+    code.menu = menu;
+    (ui, code)
 }
 
 /// A UI with the slot machine's menu loaded.

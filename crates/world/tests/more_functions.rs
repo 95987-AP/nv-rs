@@ -85,9 +85,11 @@ fn essential_people_go_down_instead_of_dying_and_get_up() {
     assert!(!dead);
     assert!(!state.dead.contains(&who));
     assert!(state.more.down.contains_key(&who));
+    // Down they lie knocked out: `GetKnockedState` (`005a08c0`) is 1 for
+    // knock states 3 and 4 (`world::fatigue`).
     assert_eq!(
         ask(&order, &scripts, &mut state, "PersonRef.GetKnockedState"),
-        2.0
+        1.0
     );
     // Down, they take no more harm while essential.
     assert!(!world::combat::hurt(
@@ -1407,6 +1409,52 @@ fn companions_pushes_dispositions_and_causes_of_death() {
     let (back, _) = world::save::load(&saved).unwrap();
     assert_eq!(back.more.dispositions, state.more.dispositions);
     assert_eq!(back.more.cause_of_death, state.more.cause_of_death);
+}
+
+#[test]
+fn a_recast_replaces_its_effect_and_a_poison_adds_its_duration() {
+    // 00823210 (CheckAddEffect): an actor effect's identical effect from
+    // the same caster is dispelled (00824400); another caster's stays; a
+    // poison's identical effect gets the new duration added (00824c00).
+    let (_data, order) = order("more-recast");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    let from = |state: &GameState, source: u32| -> Vec<(Option<FormId>, f32)> {
+        state
+            .active_effects
+            .iter()
+            .filter(|e| e.target == PLAYER_REF && e.source == FormId(source))
+            .map(|e| (e.caster, e.remaining))
+            .collect()
+    };
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "player.CastImmediateOnSelf TestTick\nplayer.CastImmediateOnSelf TestTick",
+    );
+    assert_eq!(from(&state, TICK), vec![(Some(PLAYER_REF), 10.0)]);
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "PersonRef.Cast TestTick player",
+    );
+    assert_eq!(
+        from(&state, TICK),
+        vec![(Some(PLAYER_REF), 10.0), (Some(FormId(PERSON_REF)), 10.0)]
+    );
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "player.CastImmediateOnSelf TestTickPoison\nplayer.CastImmediateOnSelf TestTickPoison",
+    );
+    assert_eq!(from(&state, TICK_POISON), vec![(Some(PLAYER_REF), 20.0)]);
+    // The caster and the effect item are kept in a save.
+    let saved = world::save::save(&state, None);
+    let (back, _) = world::save::load(&saved).unwrap();
+    assert_eq!(back.active_effects, state.active_effects);
 }
 
 #[test]

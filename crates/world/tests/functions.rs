@@ -224,15 +224,22 @@ fn a_fighting_friend_forgives_three_hits_within_ten_seconds() {
         ask(&order, &scripts, &mut state, "AdultRef.GetFriendHit"),
         3.0
     );
-    // The fourth: an assault.
+    // The fourth: an assault. He saw it, so his town (which tracks crime)
+    // holds the player as an enemy from now on (`Actor::AttackAlarm` →
+    // `SetFactionsThatCareAboutCrime`).
     state.seconds = 3.0;
     assert!(world::crime::assault(&order, &mut state, adult_ref));
+    assert!(state.crime_enemies.contains(&FormId(TOWN)));
     // Past `fFriendHitTimer` (10 s) the old hits are gone.
     state.seconds = 20.0;
     assert_eq!(
         ask(&order, &scripts, &mut state, "AdultRef.GetFriendHit"),
         0.0
     );
+    // No longer a friend: no allowance.
+    assert!(world::crime::assault(&order, &mut state, adult_ref));
+    // Forgiven again once the town's flag is cleared.
+    state.crime_enemies.clear();
     assert!(!world::crime::assault(&order, &mut state, adult_ref));
 }
 
@@ -601,6 +608,33 @@ fn objectives_shown_and_completed_as_the_game_keeps_them() {
         &mut state,
         "SetObjectiveDisplayed TestQuest 10 1",
     );
+    // The first objective shown says "Quest added" on the HUD (once:
+    // `005ec5d0`, the quest's flag 0x20), and is kept in a save.
+    let added = |state: &GameState| {
+        state
+            .events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Event::QuestText(world::quest_text::QuestText::Quest {
+                        update: world::quest_text::Update::Added,
+                        ..
+                    })
+                )
+            })
+            .count()
+    };
+    assert_eq!(added(&state), 1);
+    let (loaded, _) = world::save::load(&world::save::save(&state, None)).unwrap();
+    assert!(loaded.quests_announced.contains(&FormId(QUEST)));
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "SetObjectiveDisplayed TestQuest 20 1\nSetObjectiveDisplayed TestQuest 20 0",
+    );
+    assert_eq!(added(&state), 1);
     state.events.clear();
     run(
         &order,
@@ -857,4 +891,26 @@ fn what_scripts_show_lines_animations_idles_and_textures() {
     assert_eq!(state.set_by_scripts.looking.get(&adult), Some(&PLAYER_REF));
     run(&order, &scripts, &mut state, "AdultRef.StopLook");
     assert!(state.set_by_scripts.looking.is_empty());
+}
+
+/// `ShowTutorialMenu` (`005da630`) opens the tutorial menu with the
+/// message it names, straight away (not through the tutorial manager);
+/// without one, with none.
+#[test]
+fn show_tutorial_menu_asks_for_the_menu_with_its_message() {
+    let (_data, order) = order("fn-tutorial");
+    let scripts = ScriptCache::default();
+    let mut state = new_game(&order);
+    run(
+        &order,
+        &scripts,
+        &mut state,
+        "ShowTutorialMenu TestNameMessage",
+    );
+    assert!(state.unhandled.is_empty(), "{:?}", state.unhandled);
+    assert_eq!(
+        state.events,
+        vec![Event::TutorialMenu(FormId(NAME_MESSAGE))]
+    );
+    assert!(state.tutorials == Default::default());
 }

@@ -398,6 +398,30 @@ pub const EXE_TEXT_SETTINGS: &[(&str, &str)] = &[
         "sSlotPressAnyButtonText",
         "Press any valid slot machine button to continue.",
     ),
+    // Blackjack's buttons (`00733630`, `00738cc0`) and its even round.
+    ("sHitText", "Hit"),
+    ("sDealText", "Deal"),
+    ("sDoubleDownText", "Double Down"),
+    ("sSplitText", "Split"),
+    ("sSwitchHandsText", "Switch Hands"),
+    ("sSurrenderText", "Surrender"),
+    ("sStayText", "Stay"),
+    ("sYouBreakEvenText", "You break even"),
+    // Roulette's buttons and lines (`007bbe20`, `007b9c40`).
+    ("sTotalBetText", "Total Bet: "),
+    ("sPlaceBetText", "Place Bet"),
+    ("sRemoveBetText", "Remove Bet"),
+    ("sFinsihBetText", "Finish Bet"),
+    ("sBetText", "Bet"),
+    ("sPayoutText", "Payout"),
+    ("sFirstDozenText", "First Dozen"),
+    ("sSecondDozenText", "2nd Dozen"),
+    ("sThirdDozenText", "3rd Dozen"),
+    ("sEvenText", "Even"),
+    ("sOddtext", "Odd"),
+    ("sRedText", "Red"),
+    ("sBlacktext", "Black"),
+    ("sTwoToOneText", "2 to 1"),
     // The Pip-Boy's Drop (`00780140` case 7; objects `011d47a4`, `011d22c8`,
     // `011d43e4`, `011d31f8`, `011d3d30`).
     (
@@ -524,10 +548,23 @@ pub fn new_ui(
         .into_iter()
         .map(|(k, v)| (k.to_ascii_lowercase(), v))
         .collect();
-    for (name, value) in EXE_TEXT_SETTINGS {
+    for (name, value) in EXE_TEXT_SETTINGS
+        .iter()
+        .copied()
+        .chain(crate::controls::KEYS.iter().map(|&(_, n, v)| (n, v)))
+        .chain(crate::controls::MOUSE_BUTTONS.iter().copied())
+    {
         settings
             .entry(name.to_ascii_lowercase())
             .or_insert_with(|| value.to_string());
+    }
+    // The actions' settings read as their bindings' names (`007070c0`
+    // before the settings themselves).
+    for (control, (name, _)) in crate::controls::ACTIONS.iter().enumerate() {
+        let text = crate::controls::action_text(control, &|s| {
+            settings.get(&s.to_ascii_lowercase()).cloned()
+        });
+        settings.insert(name.to_ascii_lowercase(), text);
     }
     let mut ui = Ui::new(
         screen(ini, width_px, height_px),
@@ -570,6 +607,18 @@ pub fn set_pad(ui: &mut Ui, pad: bool) {
     }
 }
 
+/// Whether a 360 pad is in use (`globals()`' `_Has360Controller`, as
+/// [`set_pad`] leaves it): what the menus ask `004b71d0`.
+pub fn has_pad(ui: &mut Ui) -> bool {
+    let Some(globals) = ui.globals else {
+        return false;
+    };
+    match ui.names.lookup("_Has360Controller") {
+        Some(id) => ui.number(globals, id) != 0.0,
+        None => false,
+    }
+}
+
 /// `[Interface] fMenuBackgroundOpacity`'s default in the exe.
 pub const MENU_BACKGROUND_OPACITY: f32 = 0.8;
 /// `[Interface] fPopUpBackgroundOpacity`'s default (`011d3bc8`): a message
@@ -606,6 +655,26 @@ mod tests {
         assert_eq!(ui.setting_text("sOK").as_deref(), Some("Ok"));
         assert_eq!(ui.setting_text("sPCMenuHintA").as_deref(), Some("A)"));
         assert_eq!(ui.setting_text("sNothing"), None);
+    }
+
+    #[test]
+    fn controls_read_as_their_keys() {
+        let ini = |_: &str, _: &str| -> Option<String> { None };
+        let mut plugin = HashMap::new();
+        // FalloutNV.esm renames Caps Lock.
+        plugin.insert("sKBCapital".to_string(), "Caps Lock".to_string());
+        let ui = new_ui(&mut |_| None, &ini, plugin, 1920, 1080);
+        assert_eq!(ui.setting_text("sKBF").as_deref(), Some("F"));
+        assert_eq!(ui.setting_text("sUActnForward").as_deref(), Some("W"));
+        assert_eq!(ui.setting_text("sUActnUse").as_deref(), Some("Mouse1"));
+        assert_eq!(
+            ui.setting_text("sUActnTogglerun").as_deref(),
+            Some("Caps Lock")
+        );
+        let text = crate::text::substitute(b"&-sUActnForward;&-sUActnBack;: Apply", &|n| {
+            ui.setting_text(n)
+        });
+        assert_eq!(text, b"WS: Apply");
     }
 
     #[test]

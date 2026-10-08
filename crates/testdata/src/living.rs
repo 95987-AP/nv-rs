@@ -472,6 +472,8 @@ pub fn living(tag: &str) -> TempData {
         data.push(1);
         d.extend(sub(b"DATA", &data));
         let mut dnam = vec![0u8; 204];
+        // No resist type (-1 at 120), as the game's guns.
+        dnam[120..124].copy_from_slice(&(-1i32).to_le_bytes());
         dnam[0] = anim;
         dnam[36..40].copy_from_slice(&proj.to_le_bytes());
         d.extend(sub(b"DNAM", &dnam));

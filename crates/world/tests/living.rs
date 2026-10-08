@@ -458,7 +458,8 @@ fn the_bed_script_makes_the_player_well_rested() {
     assert_eq!(ask(&order, &scripts, &mut state, "IsPCSleeping"), 0.0);
     Runner::new(&order, &scripts, &mut state).run_blocks(bed, Some(bed), "gamemode", |_| true);
     assert!(has_spell(&state, WELL_RESTED));
-    notices(&mut state);
+    // The effect starts as it's cast (`MagicTarget::CheckAddEffect` starts
+    // what it adds): its `ScriptEffectStart` has run.
     Runner::new(&order, &scripts, &mut state).update(0.1);
     assert_eq!(state.damage.get(&PLAYER_REF).copied().unwrap_or(0.0), 0.0);
     assert!(state.perks.contains(&FormId(WELL_RESTED_PERK)));
@@ -495,17 +496,23 @@ fn using_a_person_picks_their_pockets_while_sneaking() {
     assert_eq!(used(&state, FormId(PAL_REF)), pickpocket::Use::Wheel);
     assert_eq!(
         pickpocket::use_person(&order, &state, mark, true),
-        pickpocket::Use::Refused("Owner is fleeing.".into())
+        pickpocket::Use::Refused("Owner is fleeing.".into(), world::message_icon::SAD)
     );
     state.living.caught_by.insert(mark);
     assert_eq!(
         used(&state, mark),
-        pickpocket::Use::Refused("Owner has already caught you.".into())
+        pickpocket::Use::Refused(
+            "Owner has already caught you.".into(),
+            world::message_icon::SAD
+        )
     );
     run(&order, &scripts, &mut state, "MarkRef.SetUnconscious 1");
     assert_eq!(
         used(&state, mark),
-        pickpocket::Use::Refused("Owner is unconscious.".into())
+        pickpocket::Use::Refused(
+            "Owner is unconscious.".into(),
+            world::message_icon::SURPRISED
+        )
     );
     state.dead.insert(FormId(VILLAIN_REF));
     assert_eq!(used(&state, FormId(VILLAIN_REF)), pickpocket::Use::Search);

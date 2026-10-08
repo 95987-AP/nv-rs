@@ -1,5 +1,6 @@
-//! Ownership and crime, read from the game's code
-//! (`%USERPROFILE%\nv-re\findings\reputation.md` §3).
+//! Ownership and crime, read from the game's code (`Actor::StealAlarm`,
+//! `AttackAlarm`, `MurderAlarm`, `PickpocketAlarm`, `TrespassAlarm`,
+//! Xbox PDB; `docs/FACTIONS_CRIME.md`).
 //!
 //! Who owns a reference (`00567790`): its own `XOWN`; for a door, the
 //! door on the other side's; for anything but people, furniture, doors and
@@ -11,18 +12,23 @@
 //!
 //! Stealing (`008bfa40`): −5 karma (`fKarmaModStealing`) whenever the
 //! owner isn't evil (a faction flagged evil, `DATA` 0x02, or a person
-//! whose record karma is evil), seen or not. If the victim (the person
-//! stolen from, else the owner or a member of the owning faction nearby)
-//! sees the player (detection above 0): each of the victim's factions that
-//! tracks crime (`DATA` 0x100) counts a minor crime and gives the player
-//! `fReputationMinorCrimeNeg` (2) infamy with its reputation (`WMI1`); a
-//! second witnessed theft on the same day of the month makes the victim
-//! attack; the first `iStealWarnings` (2) times the victim only comes to
-//! warn (not here: the warning package and its line).
+//! whose record karma is evil), seen or not, unless taken from a person.
+//! If the victim (the person stolen from, else the owner or a member of
+//! the owning faction nearby) sees the player (detection above 0): each
+//! of the victim's factions that tracks crime (`DATA` 0x100) counts a
+//! minor crime and gives the player `fReputationMinorCrimeNeg` (2) infamy
+//! with its reputation (`WMI1`); a second witnessed theft on the same day
+//! of the month makes the victim attack; the first `iStealWarnings` (2)
+//! times the victim only comes to warn (not here: the warning package).
+//! Thefts and pickpockets don't count in the player's own minor crimes;
+//! the trespass alarm does, and witnessed assaults and murders in their
+//! major ones.
 //!
 //! A faction can hold the player as an enemy for their crimes (its runtime
 //! flag 0x10; `SetPCEnemyofFaction`, `ClearFactionPlayerEnemyFlag`): its
-//! members then react to the player as enemies (`world::factions`).
+//! members then react to the player as enemies (`world::factions`). An
+//! assault anyone sees, and every murder, flags the victim's
+//! crime-tracking factions so ([`assault_crime`], [`murder`]).
 //! Trespassing (`00546da0`): in a cell with an owner, not public (`DATA`
 //! 0x20 or 0x40), with no `XGLB`, that isn't the player's or a faction
 //! they're in (at the cell's `XRNK` rank or above). Scripts change owners
@@ -152,6 +158,20 @@ pub fn owner_is_evil(order: &LoadOrder, owner: FormId) -> bool {
     matches!(crate::reputation::alignment(order, karma), 2 | 4)
 }
 
+/// The karma for taking what `owner` owns: `fKarmaModStealing` (−5)
+/// unless the owner is evil ([`owner_is_evil`]). The same test in the
+/// theft (`008bfa40`), opening someone's terminal (`00501310`), picking up
+/// their note (`005e9360`) and a note taken from their container
+/// (`004c37d0`).
+pub fn stealing_karma(order: &LoadOrder, state: &mut GameState, owner: FormId) {
+    if !owner_is_evil(order, owner) {
+        let karma = game_setting(order, "fKarmaModStealing")
+            .unwrap_or(-5.0)
+            .trunc() as i32;
+        crate::reputation::reward_karma(order, state, karma);
+    }
+}
+
 /// The person who would see a theft from `from` owned by `owner`: the
 /// person stolen from, else someone in the player's cell who is the owner
 /// or in the owning faction (the game asks for a loaded one).
@@ -177,12 +197,17 @@ fn victim(order: &LoadOrder, state: &GameState, from: FormId, owner: FormId) -> 
 
 /// The player takes something `owner` owns from `from` (see the module
 /// notes). Whether anyone saw it.
+// Translated from 008bfa40 (decompiled, FalloutNV.exe 1.4.0.525;
+// `Actor::StealAlarm`, Xbox PDB)
 pub fn steal(order: &LoadOrder, state: &mut GameState, from: FormId, owner: FormId) -> bool {
-    if !owner_is_evil(order, owner) {
-        let karma = game_setting(order, "fKarmaModStealing")
-            .unwrap_or(-5.0)
-            .trunc() as i32;
-        crate::reputation::reward_karma(order, state, karma);
+    let warned_before =
+        state.steal_warnings < game_setting(order, "iStealWarnings").unwrap_or(2.0) as u32;
+    // Taking from a person (a character) costs no karma there.
+    let from_person = order
+        .get(from)
+        .is_some_and(|r| r.entry.header.kind.as_bytes() == b"ACHR");
+    if !from_person {
+        stealing_karma(order, state, owner);
     }
     let Some(victim) = victim(order, state, from, owner) else {
         return false;
@@ -203,24 +228,39 @@ pub fn steal(order: &LoadOrder, state: &mut GameState, from: FormId, owner: Form
         return false;
     }
     witnessed(order, state, victim, 1, 0, "fReputationMinorCrimeNeg", 2.0);
-    // A second witnessed theft the same day: the victim attacks.
+    // The record of the day kept on the player (its `+0x134`/`+0x138`):
+    // the first seen crime notes the day of the month; one on that day
+    // makes the victim attack (and nothing more); one on another day
+    // clears the note.
     let day = state.global(order, "GameDay").unwrap_or(0.0) as u32;
-    if state.last_theft_day == Some(day) {
-        state.combat.insert(victim, PLAYER_REF);
-    } else {
-        state.last_theft_day = Some(day);
+    match state.last_theft_day {
+        None => state.last_theft_day = Some(day),
+        Some(d) if d == day => {
+            state.combat.insert(victim, PLAYER_REF);
+            return true;
+        }
+        Some(_) => state.last_theft_day = None,
     }
-    let warnings = game_setting(order, "iStealWarnings").unwrap_or(2.0) as u32;
-    if state.steal_warnings < warnings {
+    // Warnings left (`iStealWarnings`, counted when the theft began): the
+    // victim comes to warn (`Actor::InitiateStealWarning`, a package of
+    // type 0x22 the AI follows, which counts one more warning,
+    // `PlayerCharacter::ModStealWarning`, and starts `fWarningTimer`);
+    // none left: the victim raises the alarm (the AI's).
+    if warned_before {
         state.steal_warnings += 1;
     }
     true
 }
 
-/// A witnessed crime against `victim`: each of its factions that tracks
-/// crime counts `minor` and `major` crimes and gives the player the
-/// setting's infamy (`fReputationMinorCrimeNeg` 2, `fReputationMajor
-/// CrimeNeg` 30) with its reputation (`WMI1`).
+/// A crime against `victim` counted by its factions
+/// (`Actor::AddFactionMinorCrime` / `AddFactionMajorCrime`, Xbox PDB;
+/// `008b7c00`, `008b7d20`): each of its factions that tracks crime counts
+/// `minor` and `major` crimes, and with an infamy setting given
+/// (`fReputationMinorCrimeNeg` 2, `fReputationMajorCrimeNeg` 30;
+/// `TESFaction::AddMinorCrime`, `005fda00` / `005fda50` → `00616c20`)
+/// gives the player that much infamy with its reputation (`WMI1`,
+/// `AddReputationExact`'s notice and title box). The player's own counts
+/// (`GetMinorCrimeCount` on the player) are the callers' business.
 pub fn witnessed(
     order: &LoadOrder,
     state: &mut GameState,
@@ -247,11 +287,67 @@ pub fn witnessed(
             .and_then(|r| r.record().ok().map(|rec| (r, rec)))
             .and_then(|(rr, rec)| form_in(&rr, &rec, FourCC::new(b"WMI1")));
         if let Some(rep) = rep.filter(|_| infamy > 0.0) {
-            crate::reputation::change(order, state, rep, crate::reputation::INFAMY, infamy);
+            crate::reputation::add(order, state, rep, crate::reputation::INFAMY, infamy);
         }
     }
-    state.player_crimes.0 += minor;
-    state.player_crimes.1 += major;
+}
+
+/// Whether someone is in a faction flagged for special combat (`DATA`
+/// 0x04; `Actor::IsInCombatantFaction`, Xbox PDB): a crime between two
+/// such isn't one (`008c0460`, `008c09e0`).
+fn in_combatant_faction(order: &LoadOrder, state: &GameState, who: FormId) -> bool {
+    crate::factions::factions_of(order, state, who)
+        .into_iter()
+        .any(|f| faction_flags(order, f) & 0x04 != 0)
+}
+
+/// `who`'s factions that track crime and that `victim` is in hold the
+/// player as an enemy (their runtime flag 0x10;
+/// `Actor::SetFactionsThatCareAboutCrime`, Xbox PDB, `008b8360` with
+/// `008b8e90`). Whether any did.
+// Translated from 008b8360 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn set_factions_that_care(
+    order: &LoadOrder,
+    state: &mut GameState,
+    who: FormId,
+    victim: FormId,
+) -> bool {
+    let mut any = false;
+    for f in crate::factions::factions_of(order, state, who) {
+        if tracks_crime(order, f) && crate::living::trespass::in_faction(order, state, victim, f) {
+            state.crime_enemies.insert(f);
+            any = true;
+        }
+    }
+    any
+}
+
+/// Who a crime is sent to (`ProcessLists::SendCrimetoHighList`, Xbox PDB):
+/// the living, enabled people in the player's cell (the game asks every
+/// actor in high process) but the criminal, who detect the criminal (above
+/// 0); the victim among them when alive.
+fn crime_witnesses(order: &LoadOrder, state: &GameState, criminal: FormId) -> Vec<FormId> {
+    let Some(cell) = state.player_cell else {
+        return Vec::new();
+    };
+    let facts = crate::scripting::Facts {
+        order,
+        state,
+        speaker: None,
+    };
+    order
+        .references_in_cell(cell)
+        .into_iter()
+        .filter(|rr| rr.entry.header.kind.as_bytes() == b"ACHR")
+        .map(|rr| rr.form_id)
+        .filter(|&w| w != criminal && !state.dead.contains(&w))
+        .filter(|&w| state.disabled.get(&w) != Some(&true))
+        .filter(|&w| {
+            facts
+                .detection(w, criminal)
+                .is_some_and(|v| v > crate::detection::SEEN)
+        })
+        .collect()
 }
 
 /// Who sees a crime: the living people in the player's cell (the game
@@ -288,10 +384,12 @@ pub fn witnesses(
 }
 
 /// The player hits someone who isn't fighting them (`008987f0`): a friend
-/// or ally takes a few hits first (`iFriendHitCombatAllowed` 4 /
-/// `iFriendHitNonCombatAllowed` 0 for friends, `iAllyHitCombatAllowed`
-/// 1000 / `iAllyHitNonCombatAllowed` 3 for allies, "combat" meaning the
-/// victim is fighting someone) and only remarks on it; past that, or anyone
+/// or ally takes a few hits first (`iFriendHitCombatAllowed` 4 in
+/// FalloutNV.esm, GMST `00040F09`, exe default 3 / `iFriendHitNonCombatAllowed`
+/// 0 for friends, `iAllyHitCombatAllowed` 1000 / `iAllyHitNonCombatAllowed`
+/// 3 for allies, the last three only the exe's defaults, `00f5a1d0` to
+/// `00f5a260`; "combat" meaning the victim is fighting someone) and only
+/// remarks on it; past that, or anyone
 /// else, it's an assault: a major crime for the player, and if anyone saw
 /// it, +1 major crime (no infamy) for each of the victim's factions that
 /// tracks crime. A friend or ally who ignores friendly hits
@@ -303,6 +401,8 @@ pub fn assault(order: &LoadOrder, state: &mut GameState, victim: FormId) -> bool
     use crate::factions::Reaction;
     let reaction = crate::factions::reaction(order, state, victim, PLAYER_REF);
     let fighting = state.combat.contains_key(&victim);
+    // The data's value, else the exe's default (`00f5a1d0`, `00f5a200`,
+    // `00f5a230`, `00f5a260`).
     let allowed = |name: &str, default: f32| game_setting(order, name).unwrap_or(default) as u32;
     let allowance = match (reaction, fighting) {
         (Reaction::Friend, true) => Some(allowed("iFriendHitCombatAllowed", 3.0)),
@@ -358,49 +458,76 @@ fn add_friend_hit(order: &LoadOrder, state: &mut GameState, victim: FormId) {
     hits.push(now);
 }
 
-/// The assault crime itself (`008c0460`, also `SendAssaultAlarm`'s): none
-/// against someone who ignores crime; else a major crime for the player,
-/// and if anyone saw it, +1 major crime (no infamy) for each of the
-/// victim's factions that tracks crime.
+/// The assault crime itself (`Actor::AttackAlarm`, Xbox PDB, `008c0460`,
+/// also `SendAssaultAlarm`'s): none against someone who ignores crime, nor
+/// when both are in special-combat factions. The crime goes to everyone
+/// who detects the player ([`crime_witnesses`], the victim too); each of
+/// them who doesn't ignore crime makes their crime-tracking factions the
+/// victim is in hold the player as an enemy ([`set_factions_that_care`]);
+/// what they do next is the AI's (an alarm package, or attacking). With
+/// anyone there: +1 major crime for the player and for each of the
+/// victim's crime-tracking factions (no infamy). Nobody detecting the
+/// player: nothing.
+// Translated from 008c0460 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn assault_crime(order: &LoadOrder, state: &mut GameState, victim: FormId) {
     if crate::script_functions::ignores_crime(state, victim) {
         return;
     }
-    state.player_crimes.1 += 1;
-    if !witnesses(order, state, PLAYER_REF, victim).is_empty() {
-        witnessed(order, state, victim, 0, 1, "", 0.0);
-        // `witnessed` counted it for the player as well.
-        state.player_crimes.1 -= 1;
+    if in_combatant_faction(order, state, victim) && in_combatant_faction(order, state, PLAYER_REF)
+    {
+        return;
     }
+    let seen = crime_witnesses(order, state, PLAYER_REF);
+    if seen.is_empty() {
+        return;
+    }
+    for w in seen {
+        if !crate::script_functions::ignores_crime(state, w) {
+            set_factions_that_care(order, state, w, victim);
+        }
+    }
+    // The crime's know list holds the victim, so it always counts here.
+    state.player_crimes.1 += 1;
+    witnessed(order, state, victim, 0, 1, "", 0.0);
 }
 
-/// The player (or a teammate) kills someone who wasn't fighting them: a
-/// murder (`008c09e0`). If anyone saw it: +1 major crime and
-/// `fReputationMajorCrimeNeg` (30) infamy for each of the victim's factions
-/// that tracks crime, and the witnesses' crime-tracking factions hold the
-/// player as an enemy (`008b8360`). The player becomes a murderer
-/// (`IsPCAMurderer`) when the victim isn't evil. (Which deaths the game
-/// counts as murder has two flags not traced; here: a person who wasn't
-/// fighting the killer.)
+/// The player (or a teammate) kills a person who wasn't fighting them: a
+/// murder (`Actor::MurderAlarm`, Xbox PDB, `008c09e0`; none when both are
+/// in special-combat factions). The victim's own crime-tracking factions
+/// hold the player as an enemy whether or not anyone saw it
+/// ([`set_factions_that_care`] on the victim itself); the crime goes to
+/// everyone who detects the killer, and each of them who doesn't ignore
+/// crime does the same for their factions the victim was in. With anyone
+/// there: +1 major crime for the player and for each of the victim's
+/// crime-tracking factions, with `fReputationMajorCrimeNeg` (30) infamy.
+/// The player killing becomes a murderer (`IsPCAMurderer`;
+/// `PlayerCharacter::SetIsAMurderer`, Xbox PDB, from `Actor::Kill`
+/// `0089d900`) unless the victim is part of an evil faction (`005678a0`:
+/// every faction they're in flagged evil). (Which deaths count as murder
+/// hangs on two things not traced, the victim's process flag 4 and an
+/// allowance for friends; here: a person who wasn't fighting the killer.
+/// A creature, or someone with an owner, gets the assault alarm instead in
+/// the game, `008b01c0`; nothing here.)
+// Translated from 008c09e0 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn murder(order: &LoadOrder, state: &mut GameState, victim: FormId, killer: FormId) {
     if crime_victim_is_creature(order, victim) {
         return;
     }
-    state.player_crimes.1 += 1;
-    let seen = witnesses(order, state, killer, victim);
+    if in_combatant_faction(order, state, victim) && in_combatant_faction(order, state, killer) {
+        return;
+    }
+    set_factions_that_care(order, state, victim, victim);
+    let seen = crime_witnesses(order, state, killer);
     if !seen.is_empty() {
-        witnessed(order, state, victim, 0, 1, "fReputationMajorCrimeNeg", 30.0);
-        state.player_crimes.1 -= 1;
         for w in seen {
-            for f in crate::factions::factions_of(order, state, w) {
-                if tracks_crime(order, f) {
-                    state.crime_enemies.insert(f);
-                }
+            if !crate::script_functions::ignores_crime(state, w) {
+                set_factions_that_care(order, state, w, victim);
             }
         }
+        state.player_crimes.1 += 1;
+        witnessed(order, state, victim, 0, 1, "fReputationMajorCrimeNeg", 30.0);
     }
-    let evil = base_of(order, victim).is_some_and(|b| owner_is_evil(order, b));
-    if !evil {
+    if killer == PLAYER_REF && !crate::living::trespass::evil(order, victim) {
         state.player_murderer = true;
     }
 }

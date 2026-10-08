@@ -276,7 +276,7 @@ impl CameraPaths {
         let mut seen = HashSet::new();
         for p in order.plugins() {
             for &ri in p.plugin.record_indices_of_type(CPTH) {
-                let id = p.to_global(p.plugin.records()[ri].header.form_id);
+                let id = p.record_id(p.plugin.records()[ri].header.form_id);
                 if seen.insert(id) {
                     ids.push(id);
                 }

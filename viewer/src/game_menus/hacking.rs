@@ -40,6 +40,8 @@ pub struct HackingScreen {
     pub terminal: FormId,
     pub reference: FormId,
     pub granted: bool,
+    /// Waiting on the hacking tutorial (`+0x1da`).
+    pub tutorial_wait: bool,
 }
 
 /// The retry time, and the menu's sounds: delayed ones, the hum, and the
@@ -139,7 +141,7 @@ fn generator() -> Twister {
 pub fn open(
     screen: &mut Screen,
     game: &cellview::Game,
-    state: &GameState,
+    state: &mut GameState,
     request: Menu,
     sounds: &HackingSounds,
 ) {
@@ -237,20 +239,36 @@ pub fn open(
         screen.ui.detach(menu.menu);
         return;
     }
+    // The hacking tutorial (`00765b80`): the menu waits until it's shown.
+    let tutorial_wait = world::tutorial::ask(
+        order,
+        &mut state.tutorials,
+        world::tutorial::id::HACKING,
+        world::tutorial::menu::HACKING,
+        world::tutorial::menu::DELAY,
+    );
     screen.open.push(OpenMenu::Hacking(Box::new(HackingScreen {
         menu,
         terminal: base,
         reference,
         granted: false,
+        tutorial_wait,
     })));
 }
 
-/// Every frame (`00767c90`).
-pub fn update(screen: &mut Screen, now_ms: f64) {
+/// Every frame (`00767c90`): only while it's the menu on top, and not
+/// while it waits on its tutorial.
+pub fn update(screen: &mut Screen, state: &GameState, now_ms: f64) {
     let over = screen.interface.over;
     let x = screen.pointer.map(|(x, _)| x);
-    for m in &mut screen.open {
+    let top = screen.open.len().saturating_sub(1);
+    for (i, m) in screen.open.iter_mut().enumerate() {
         if let OpenMenu::Hacking(h) = m {
+            let waiting =
+                h.tutorial_wait && !state.tutorials.is_shown(world::tutorial::id::HACKING);
+            if i != top || waiting {
+                continue;
+            }
             h.menu.update(&mut screen.ui, now_ms, over, x);
         }
     }
@@ -265,6 +283,7 @@ pub fn after(
     now_ms: f64,
 ) -> Vec<Menu> {
     let mut then = Vec::new();
+    let mut left = false;
     for m in &mut screen.open {
         let OpenMenu::Hacking(h) = m else {
             continue;
@@ -311,9 +330,18 @@ pub fn after(
                         then.push(Menu::Terminal(h.terminal, h.reference));
                     }
                 }
+                // Leaving (`00766aa0`): the power down (`007ffe40`), the
+                // rendered terminal fading out (`007ffaf0`).
+                Request::Leave => {
+                    if let Some(f) = form(ui::menus::computers::sound::POWER_DOWN) {
+                        sounds.orders.push(Order::At(now_ms, f));
+                    }
+                    left = true;
+                }
             }
         }
     }
+    screen.terminal_left |= left;
     then
 }
 

@@ -587,6 +587,7 @@ fn decal_scene(
         motion: None,
         billboard: None,
         local_map: false,
+        actor_part: None,
         strips: false,
     }];
     scene.draws = vec![cellview::Draw {

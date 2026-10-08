@@ -154,15 +154,17 @@ pub fn factions_of(order: &LoadOrder, state: &GameState, who: FormId) -> Vec<For
 /// combat_ai.md` §2.1: friend and ally beat enemy.)
 pub fn reaction(order: &LoadOrder, state: &GameState, who: FormId, other: FormId) -> Reaction {
     let mine = factions_of(order, state, who);
-    // A faction holding the player as an enemy for their crimes makes its
-    // members their enemies (`005a2270`, `world::crime`).
-    if other == crate::dialogue::PLAYER_REF && mine.iter().any(|f| state.crime_enemies.contains(f))
-    {
-        return Reaction::Enemy;
-    }
     let theirs = factions_of(order, state, other);
     let mut found = Reaction::Neutral;
     for faction in mine {
+        // A faction holding the player as an enemy for their crimes
+        // (`005a2270`, `world::crime`) makes the reaction so far "enemy"
+        // in place of its relations; the factions after it still count, so
+        // a friend or an ally there wins (`008b87a0`).
+        if other == crate::dialogue::PLAYER_REF && state.crime_enemies.contains(&faction) {
+            found = Reaction::Enemy;
+            continue;
+        }
         for &other_faction in &theirs {
             match faction_reaction(order, state, faction, other_faction) {
                 Reaction::Ally => return Reaction::Ally,

@@ -465,21 +465,33 @@ pub struct PartHurt {
     pub crippled: bool,
     /// The weapon they dropped for it.
     pub dropped: Option<FormId>,
+    /// The hit staggered them (`0089a760`): the part newly crippled, an
+    /// already crippled torso hit again (a chance), or an unarmed
+    /// uppercut (`world::melee::Special::Stagger`). The stagger itself is
+    /// the animation's.
+    pub staggered: bool,
 }
 
 /// The part a hit landed on loses its condition points (`0089a760`): the
-/// player's perks' "Adjust Limb Damage" (entry point 6) first when the
-/// player is the one hit; the part's actor value is damaged by the rest.
-/// Crippled when it goes from above 0 to 0 or less: a person (not the
-/// player) whose right arm is crippled — or left arm, holding a
-/// two-handed weapon — drops the weapon, unless they ignore crippled limbs
-/// (actor value 72). A hit on the weapon (14) takes its condition points
-/// off the weapon in their hands, and a critical one makes a person drop
-/// it (`iWeaponCriticalHitDropChance` 100%).
+/// limb damage (× `fCrossSkillDamageMultiplier` 2.5 for an unarmed
+/// cross, `world::melee::Special::Cross`), then the one hit's perks'
+/// "Adjust Limb Damage" (entry point 6); the part's actor value is
+/// damaged by the rest. Crippled when it goes from above 0 to 0 or less.
+/// The hit staggers when the part was newly crippled, or, on a torso
+/// already crippled, with a chance of `iCombatCrippledTorsoHitStaggerChance`
+/// (50: a roll % 100 at most it) — neither for someone who ignores
+/// crippled limbs (actor value 72) — and always for an unarmed uppercut
+/// (`world::melee::Special::Stagger`). A staggered person (not the
+/// player, not essential) holding a weapon drops it when the right arm
+/// was hit, or the left holding a two-handed weapon. A hit on the weapon
+/// (14) takes its condition points off the weapon in their hands, and a
+/// critical one makes a person drop it (`iWeaponCriticalHitDropChance`
+/// 100%).
 ///
 /// Dropping, here: they stop using that weapon (it stays in their
 /// inventory, its model hidden; the game lays it on the ground beside
 /// them, which isn't done).
+// Translated from 0089a760 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn hurt_part(
     order: &LoadOrder,
     state: &mut GameState,
@@ -487,6 +499,7 @@ pub fn hurt_part(
     hit: &PartHit,
     critical: bool,
     attacker: (FormId, Option<FormId>),
+    special: crate::melee::Special,
 ) -> Option<PartHurt> {
     let p = hit.part?;
     if p == part::WEAPON {
@@ -506,6 +519,7 @@ pub fn hurt_part(
             lost: hit.weapon_damage,
             crippled: false,
             dropped,
+            staggered: false,
         });
     }
     let data = BodyPartData::of(order, target)?;
@@ -514,12 +528,18 @@ pub fn hurt_part(
     // The one hit's perks' "Adjust Limb Damage" (entry point 6:
     // Adamantium Skeleton × 0.5), asked about the attacker and the
     // attacker's weapon (the fists when none, as `0089a760` passes it).
+    let specials = crate::melee::UnarmedSpecials::read(order);
+    let limb_damage = if special == crate::melee::Special::Cross {
+        hit.limb_damage * specials.cross_limb_mult
+    } else {
+        hit.limb_damage
+    };
     let lost = crate::perks::apply_for(
         order,
         state,
         target,
         crate::perks::entry::ADJUST_LIMB_DAMAGE,
-        hit.limb_damage,
+        limb_damage,
         &[
             crate::perks::Tab::Target(attacker.0),
             crate::perks::weapon_tab(attacker.1),
@@ -538,9 +558,23 @@ pub fn hurt_part(
     if lost != 0.0 {
         *state.value_damage.entry((target, value)).or_insert(0.0) += f64::from(lost);
     }
-    let crippled = before > 0.0 && condition(state) <= 0.0;
+    let now = condition(state);
+    let crippled = before > 0.0 && now <= 0.0;
+    let mut staggered = crippled;
+    if p == part::TORSO && !crippled && now <= 0.0 {
+        staggered = ((state.roll() % 100) as f32) <= specials.torso_stagger_chance;
+    }
+    if ignores_crippled_limbs(order, state, target) {
+        staggered = false;
+    }
+    if special == crate::melee::Special::Stagger {
+        staggered = true;
+    }
     let mut dropped = None;
-    if crippled && target != PLAYER_REF && !ignores_crippled_limbs(order, state, target) {
+    if staggered
+        && target != PLAYER_REF
+        && !crate::more_functions::is_essential(order, state, target)
+    {
         if let Some(w) = crate::combat::weapon_in_hand(order, state, target) {
             let arm = matches!(p, part::RIGHT_ARM | part::RIGHT_ARM2)
                 || (w.two_handed() && matches!(p, part::LEFT_ARM | part::LEFT_ARM2));
@@ -555,6 +589,7 @@ pub fn hurt_part(
         lost,
         crippled,
         dropped,
+        staggered,
     })
 }
 

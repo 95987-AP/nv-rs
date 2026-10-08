@@ -2,7 +2,8 @@
 //! `005fa330`, `0075dc80`, `0075e240`, `0075e0b0`, `00643400`, the crime
 //! `008c00e0`, live grenades `0075d510`).
 //!
-//! **Using a person** (`005fa330`): someone unconscious (`SetUnconscious`)
+//! **Using a person** (`005fa330`): someone unconscious (`SetUnconscious`),
+//! knocked down or essential and down (`world::fatigue::knocked`)
 //! answers "<name> is unconscious." (`sNoTalkUnConscious`), someone
 //! fleeing "<name> is fleeing." (`sNoTalkFleeing`); the dead are searched
 //! (their inventory opens as a container); a living person who isn't the
@@ -58,8 +59,9 @@ use crate::scripting::{base_of, Facts, GameState};
 /// What using a person does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Use {
-    /// Nothing, and a notice why.
-    Refused(String),
+    /// Nothing, and a notice why, with its picture (`005fa330`: the
+    /// surprised Vault Boy for the unconscious, the sad one otherwise).
+    Refused(String, &'static str),
     /// Searching the dead: their inventory as a container.
     Search,
     /// Picking their pockets.
@@ -79,11 +81,20 @@ pub fn use_person(order: &LoadOrder, state: &GameState, who: FormId, fleeing: bo
     // `%s %s`: the name, a space, the setting as it is (the data's texts
     // have no leading space; the exe's own do).
     let joined = |setting: &str, exe: &str| {
-        Use::Refused(format!("{} {}", name(), super::text(order, setting, exe)))
+        let icon = crate::message_icon::for_setting(setting).unwrap_or(crate::message_icon::SAD);
+        Use::Refused(
+            format!("{} {}", name(), super::text(order, setting, exe)),
+            icon,
+        )
     };
-    if state.unconscious.contains(&who) {
+    // Unconscious (life state 3), knocked down (vtable +0x230: any knock
+    // state, `world::fatigue`) or essential and down (life state 6).
+    if state.unconscious.contains(&who) || crate::fatigue::knocked(state, who) {
         return joined("sNoTalkUnConscious", " is unconscious.");
     }
+    // Fleeing: the viewer's running away, or the engine's flee package
+    // (`ForceFlee`, `Actor::IsFleeing` (Xbox PDB)).
+    let fleeing = fleeing || crate::ai::flee::forced(state, who);
     if fleeing && !state.dead.contains(&who) {
         return joined("sNoTalkFleeing", " is fleeing for their life.");
     }
@@ -300,13 +311,15 @@ pub fn attempt(
 /// Caught pickpocketing `victim` (`0075e0b0`'s failure, then the crime
 /// `008c00e0`; see the module notes).
 pub fn caught(order: &LoadOrder, state: &mut GameState, victim: FormId) {
-    super::notice(
+    // Type 2: the sad Vault Boy.
+    super::notice_with(
         state,
         super::text(
             order,
             "sPickpocketFail",
             "You've been caught pickpocketing.",
         ),
+        Some(crate::message_icon::SAD),
     );
     state.living.caught_by.insert(victim);
     if crate::script_functions::ignores_crime(state, victim) || state.dead.contains(&victim) {

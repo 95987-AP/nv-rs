@@ -124,16 +124,74 @@ pub(crate) fn play_with(
     pick: u64,
     settings: PlaybackSettings,
 ) -> Option<Entity> {
-    let (path, bytes) = game.sound_file(sound, pick)?;
+    let handle = wavs.add(decoded(game, sound, pick)?);
+    Some(commands.spawn((AudioPlayer(handle), settings)).id())
+}
+
+/// The samples of the file a sound record plays ([`cellview::Game::
+/// sound_path`]), read and decoded once and kept: doing it again for every
+/// gunshot or footstep cost milliseconds each time. Up to
+/// [`DECODED_SAMPLES`] samples are kept in all, the least recently played
+/// file going first.
+fn decoded(game: &cellview::Game, sound: &Sound, pick: u64) -> Option<PcmSound> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<DecodedSounds>> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    let path = game.sound_path(sound, pick)?;
+    if let Some(sound) = cache.lock().ok().and_then(|mut c| c.get(&path)) {
+        return Some(sound);
+    }
+    let bytes = game.assets.read(&path).ok()??;
     let pcm = read_sound(&path, &bytes)
         .map_err(|e| println!("  couldn't play {path}: {e}"))
         .ok()?;
-    let handle = wavs.add(PcmSound {
-        channels: pcm.channels,
-        rate: pcm.rate,
-        samples: Arc::from(pcm.samples.into_boxed_slice()),
-    });
-    Some(commands.spawn((AudioPlayer(handle), settings)).id())
+    let sound = pcm_sound(pcm);
+    if let Ok(mut c) = cache.lock() {
+        c.insert(path, sound.clone());
+    }
+    Some(sound)
+}
+
+/// Samples kept by [`decoded`] (64 MB of 16-bit samples).
+const DECODED_SAMPLES: usize = 32 << 20;
+
+/// Decoded sound files by path, each with when it was last played.
+#[derive(Default)]
+struct DecodedSounds {
+    files: std::collections::HashMap<String, (PcmSound, u64)>,
+    samples: usize,
+    clock: u64,
+}
+
+impl DecodedSounds {
+    fn get(&mut self, path: &str) -> Option<PcmSound> {
+        self.clock += 1;
+        let clock = self.clock;
+        self.files.get_mut(path).map(|(sound, used)| {
+            *used = clock;
+            sound.clone()
+        })
+    }
+
+    fn insert(&mut self, path: String, sound: PcmSound) {
+        self.clock += 1;
+        self.samples += sound.samples.len();
+        if let Some((old, _)) = self.files.insert(path, (sound, self.clock)) {
+            self.samples -= old.samples.len();
+        }
+        while self.samples > DECODED_SAMPLES && self.files.len() > 1 {
+            let Some(oldest) = self
+                .files
+                .iter()
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(p, _)| p.clone())
+            else {
+                break;
+            };
+            if let Some((gone, _)) = self.files.remove(&oldest) {
+                self.samples -= gone.samples.len();
+            }
+        }
+    }
 }
 
 /// A voice line's file ready to play: decoded here like every sound (see
@@ -227,5 +285,35 @@ pub fn play_sounds(
             }
             entity
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sound(n: usize) -> PcmSound {
+        PcmSound::new(1, 22050, vec![0; n])
+    }
+
+    /// Kept files come back as they were decoded; over the limit the least
+    /// recently played go first, the newest always stays.
+    #[test]
+    fn decoded_sounds_keep_the_recently_played() {
+        let mut c = DecodedSounds::default();
+        let third = DECODED_SAMPLES / 3 + 1;
+        c.insert("a".into(), sound(third));
+        c.insert("b".into(), sound(third));
+        assert_eq!(c.get("a").map(|s| s.samples.len()), Some(third));
+        // "b" is now the least recently played: the third file pushes it out.
+        c.insert("c".into(), sound(third));
+        assert!(c.get("b").is_none());
+        assert!(c.get("a").is_some() && c.get("c").is_some());
+        assert_eq!(c.samples, 2 * third);
+        // One file bigger than the limit still stays (the newest).
+        c.insert("big".into(), sound(DECODED_SAMPLES + 1));
+        assert!(c.get("big").is_some());
+        assert_eq!(c.files.len(), 1);
+        assert_eq!(c.samples, DECODED_SAMPLES + 1);
     }
 }

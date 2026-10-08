@@ -149,6 +149,10 @@ pub struct ActorRig {
     /// Another weapon was put in the hand (`004ab750`): handled at the next
     /// drive (`Picker::weapon_attached`).
     pub weapon_attached: bool,
+    /// Someone else than the player: the weapon in hand
+    /// (`world::combat::weapon_in_hand`) as [`npc_frame`] last saw it,
+    /// for the redraw (`dress`); `None` until it has looked.
+    pub held_weapon: Option<Option<esm::FormId>>,
 }
 
 /// A dead actor's ragdoll (`preview::ragdoll`): the bodies in motion, the
@@ -203,6 +207,7 @@ impl ActorRig {
             spine_up: None,
             weapon_parent: None,
             weapon_attached: false,
+            held_weapon: None,
             skeleton,
         };
         if let Some(idle) = rig.skeleton.idle.clone() {
@@ -483,6 +488,12 @@ pub fn spawn_actor(
         crate::ai::Walker::new(actor),
         crate::sitting::Life::default(),
     ));
+    // People are redrawn as what they wear changes (`dress`).
+    if let Some(look) = actor.look.as_ref().filter(|l| !l.creature) {
+        commands
+            .entity(root)
+            .insert(crate::dress::Dressed::new(look.clone()));
+    }
     (root, joints)
 }
 
@@ -806,6 +817,7 @@ fn npc_frame(
     rig.sneaking = pick::npc_sneaks(state.more.forced_sneak.contains(&me), flags);
     rig.seated = state.sitters.contains_key(&me) || state.furniture.contains_key(&me);
     let weapon = world::combat::weapon_in_hand(order, state, me);
+    rig.held_weapon = Some(weapon.as_ref().map(|w| w.form_id));
     rig.weapon_kind = weapon
         .as_ref()
         .map(|w| world::animation::groups::weapon_kind(w.animation));

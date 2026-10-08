@@ -56,7 +56,7 @@ nv-rs/
 
 | Group | Crates | What they do |
 | --- | --- | --- |
-| **Formats** | `esm`, `bsa`, `nif`, `dds`, `mp3`, `speedtree`, `shaders`, `assets` | Read the game's files: plugins and records, archives, meshes and animations, textures, audio, trees, compiled shaders, and the loose-file/archive lookup. |
+| **Formats** | `esm`, `bsa`, `nif`, `dds`, `mp3`, `speedtree`, `shaders`, `assets`, `fos` | Read the game's files: plugins and records, archives, meshes and animations, textures, audio, trees, compiled shaders, the loose-file/archive lookup, and the original game's saves (read-only). |
 | **Game** | `world`, `physics`, `script`, `ui`, `preview`, `cellview` | The game's rules: world state, actors, AI, combat, dialogue, quests, inventory, saves, collision, the script engine, menus built from the game's XML, and per-cell scene data. |
 | **Tools** | `nvinspect` | Command-line inspection of real game data: records, cells, meshes, collision walks, coverage tables and more. |
 | **Test content** | `testdata` | Builds synthetic plugins, archives and meshes for tests, so tests never need game files. |

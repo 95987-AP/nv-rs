@@ -21,7 +21,9 @@ original game.** Executable: `FalloutNV.exe` 1.4.0.525; names marked
   fists ÷ 10000. Constants: `01020758` 10.0, `0102f078` 10000.0.
 - `00645380` `CombatFormulas::CalcWeaponDamagePerSecond` (Xbox PDB), as the
   controller calls it (no mods, no perks, own skill, own critical
-  chance), read from its disassembly:
+  chance), read from its disassembly (the whole figure, with what the item
+  cards and `GetBestWeapon` pass, is in `COMPANIONS.md`, "The damage per
+  second"; one translation, `world::dps`):
   - damage = `DATA` damage × `fDamageWeaponMult`, ammunition damage
     effects (`0059a030`: multiplying effects first), + projectiles ×
     explosion damage when the projectile explodes (`00525b20`,

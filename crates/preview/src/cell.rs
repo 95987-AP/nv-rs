@@ -214,6 +214,10 @@ pub struct ModelMesh {
     /// `HairTint` (already laid into the vertex colours, see
     /// `preview::actor`).
     pub hair_tint: Option<[f32; 3]>,
+    /// Actor pieces: which of the look's parts (`world::ActorLook::parts`)
+    /// the piece comes from, so a part can be rebuilt on its own (the
+    /// game's biped slots, `BipedAnim::LoadBipedParts`, Xbox PDB).
+    pub actor_part: Option<u16>,
     /// The file stores it as triangle strips (`NiTriStrips`): the only
     /// geometry the game puts world decals on (`004a1a70`, `0068b4c0` take
     /// the `NiTriStrips` type at `011f4a20`; `0068d230` walks the strip).
@@ -1037,6 +1041,7 @@ impl Loader<'_> {
             billboard: Billboard::of(mesh),
             shading,
             hair_tint: None,
+            actor_part: None,
             strips: false,
         })
     }

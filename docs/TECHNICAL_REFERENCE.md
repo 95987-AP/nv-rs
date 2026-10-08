@@ -40,10 +40,12 @@ The `esm` crate handles:
 - zlib-compressed records, through a built-in DEFLATE decoder with checksum verification
 - Windows-1252 text, so names like *O’Malley* come through correctly
 - typed decoding of weapon stats (damage, clip size, value, weight, condition)
-- **load order:** picks the active plugins from `plugins.txt`, orders them the
-  way the game does (FalloutNV.esm first, then master-flagged files, then the
-  rest, each by file date), renumbers form IDs to their load-order index and
-  resolves overrides, keeping every version of each record
+- **load order:** picks the active plugins (`plugins.txt`, `.nam` files,
+  masters of active plugins), orders them the way the game does
+  (master-flagged files, then the rest, each by file date, masters moved
+  before the master files needing them), renumbers form IDs to their
+  load-order index and resolves overrides, keeping every version of each
+  record; [MODS.md](MODS.md) has the traced rules
 
 The `bsa` crate handles:
 
@@ -103,10 +105,12 @@ The `assets` crate finds files the way the game does:
   `Fallout.ini` in `Documents\My Games\FalloutNV`, or else the install's
   `Fallout_default.ini`), then the game's patch archive `Update.bsa` (which
   those ini files don't list, but whose meshes records in FalloutNV.esm
-  use), then any archive named after an active plugin
+  use), then any archive whose name starts with an active plugin's
   (`DeadMoney - Main.bsa` for `DeadMoney.esm`), in load order
-- a file in a later archive replaces the same path in an earlier one, and
-  loose files in `Data` replace archived ones (as in every common mod setup)
+- which archive's copy of a file wins follows the game's archive list (mod
+  and DLC archives before the base game's; [MODS.md](MODS.md)), and loose
+  files in `Data` replace archived ones when `bInvalidateOlderFiles` is on
+  (the exe's default), with `ArchiveInvalidation.txt` applied
 - paths are matched ignoring case and slash direction, and texture and model
   references are normalized the way meshes and records write them
 
@@ -183,7 +187,10 @@ nvinspect "<Data folder>" show 0000000F
 
 The active list comes from `%LOCALAPPDATA%\FalloutNV\plugins.txt`. Use
 `--plugins FILE` to read a different list, or `--official` for just the base
-game and official DLC. **Mod Organizer 2 users:** MO2 keeps mods outside the
+game and official DLC. Which plugins load and in what order follows the game's
+rules (file dates, not the list's order; see [MODS.md](MODS.md)). To see
+which script extender (NVSE) functions a mod's scripts call, run
+`nvinspect "<Data folder>/SomeMod.esp" coverage nvse`. **Mod Organizer 2 users:** MO2 keeps mods outside the
 `Data` folder, so only the files physically in `Data` are found.
 
 ### One plugin

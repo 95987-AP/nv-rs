@@ -307,8 +307,13 @@ mod tests {
     fn the_hud_blends_over_the_tester_and_writes_plainly_without_it() {
         let (_data, _game, opened) = opened_tester("vigor-hud");
         let open = vec![super::super::OpenMenu::Vigor(Box::new(opened))];
-        assert!(super::super::blends(&super::super::hud_output(&open)));
-        assert!(!super::super::blends(&super::super::hud_output(&[])));
+        assert!(super::super::blends(&super::super::hud_output(
+            &open, false
+        )));
+        assert!(!super::super::blends(&super::super::hud_output(&[], false)));
+        // The lockpicking menu (not one of the game's menus here) draws
+        // into the same picture, so the HUD blends over it too.
+        assert!(super::super::blends(&super::super::hud_output(&[], true)));
     }
 
     #[test]

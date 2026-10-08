@@ -242,6 +242,7 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
         ("unconscious", &state.unconscious),
         ("marker", &state.map_markers),
         ("found", &state.discovered),
+        ("announced", &state.quests_announced),
         ("teammate", &state.teammates),
         ("picked", &state.picked),
     ] {
@@ -335,10 +336,34 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     for (who, target) in fights {
         line(format!("fight {} {}", id(*who), id(*target)));
     }
+    // Combat groups joined, knock states, `ForceFlee`'s flees ("-" for no
+    // place).
+    let joined: BTreeMap<_, _> = state.combat_groups.joined.iter().collect();
+    for (who, group) in joined {
+        line(format!("joined {} {}", id(*who), id(*group)));
+    }
+    let knocks: BTreeMap<_, _> = state.knocks.state.iter().collect();
+    for (who, knock) in knocks {
+        line(format!("knock {} {knock}", id(*who)));
+    }
+    let flees: BTreeMap<_, _> = state.forced_flee.iter().collect();
+    for (who, f) in flees {
+        let opt = |f: Option<FormId>| f.map_or("-".to_string(), id);
+        line(format!("flee {} {} {}", id(*who), opt(f.cell), opt(f.to)));
+    }
     let equipped: BTreeMap<_, _> = state.equipped.iter().collect();
     for (who, items) in equipped {
         for item in items {
             line(format!("equipped {} {}", id(*who), id(*item)));
+        }
+    }
+    let taken_off: BTreeMap<_, _> = state.taken_off.iter().collect();
+    for (who, items) in taken_off {
+        for (item, by) in items {
+            match by {
+                Some(by) => line(format!("takenoff {} {} {}", id(*who), id(*item), id(*by))),
+                None => line(format!("takenoff {} {}", id(*who), id(*item))),
+            }
         }
     }
     let ammo_loaded: BTreeMap<_, _> = state.ammo_loaded.iter().collect();
@@ -357,6 +382,10 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
         if let Some(item) = item {
             line(format!("hotkey {i} {}", id(*item)));
         }
+    }
+    let locked: BTreeSet<_> = state.equip_locked.iter().collect();
+    for (who, item) in locked {
+        line(format!("equiplocked {} {}", id(*who), id(*item)));
     }
     let dropped: BTreeSet<_> = state.dropped.iter().collect();
     for (who, weapon) in dropped {
@@ -423,7 +452,14 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
                 e.resist,
                 e.script.map_or("-".to_string(), id),
                 u8::from(e.started),
-            ) + &if e.part >= 0 {
+            ) + &if e.caster.is_some() || e.item.is_some() {
+                format!(
+                    " {} {} {}",
+                    e.part,
+                    e.caster.map_or("-".to_string(), id),
+                    e.item.map_or("-".to_string(), |i| i.to_string())
+                )
+            } else if e.part >= 0 {
                 format!(" {}", e.part)
             } else {
                 String::new()
@@ -446,6 +482,7 @@ pub fn save(state: &GameState, player: Option<PlayerPlace>) -> String {
     crate::more_functions::save_lines(state, &mut line);
     crate::caravan::save_lines(state, &mut line);
     crate::casino::save_lines(state, &mut line);
+    crate::tutorial::save_lines(state, &mut line);
     crate::weapon_mods::save_lines(state, &mut line);
     out
 }
@@ -619,6 +656,9 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
             "found" => {
                 state.discovered.insert(form(1)?);
             }
+            "announced" => {
+                state.quests_announced.insert(form(1)?);
+            }
             "teammate" => {
                 state.teammates.insert(form(1)?);
             }
@@ -695,6 +735,22 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
             "fight" => {
                 state.combat.insert(form(1)?, form(2)?);
             }
+            "joined" => {
+                state.combat_groups.joined.insert(form(1)?, form(2)?);
+            }
+            "knock" => {
+                state.knocks.state.insert(form(1)?, num(2)? as u8);
+            }
+            "flee" => {
+                let opt = |i: usize| form(i).ok();
+                state.forced_flee.insert(
+                    form(1)?,
+                    crate::ai::flee::ForcedFlee {
+                        cell: opt(2),
+                        to: opt(3),
+                    },
+                );
+            }
             "relation" => {
                 state
                     .faction_relations
@@ -706,6 +762,11 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                     .insert((form(1)?, form(2)?), num(3)? as i8);
             }
             "equipped" => state.equipped.entry(form(1)?).or_default().push(form(2)?),
+            "takenoff" => state
+                .taken_off
+                .entry(form(1)?)
+                .or_default()
+                .push((form(2)?, form(3).ok())),
             "ammoloaded" => {
                 state.ammo_loaded.insert(form(1)?, form(2)?);
             }
@@ -724,6 +785,9 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                 if slot < 8 {
                     state.hotkeys[slot] = Some(form(2)?);
                 }
+            }
+            "equiplocked" => {
+                state.equip_locked.insert((form(1)?, form(2)?));
             }
             "dropped" => {
                 state.dropped.insert((form(1)?, form(2)?));
@@ -807,10 +871,18 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                     },
                     started: flag(12)?,
                     locals: Locals::default(),
-                    // Older saves have no part.
+                    // Older saves have no part, caster or item.
                     part: match parts.get(13) {
                         Some(_) => num(13)? as i32,
                         None => -1,
+                    },
+                    caster: match parts.get(14) {
+                        Some(&"-") | None => None,
+                        Some(_) => Some(form(14)?),
+                    },
+                    item: match parts.get(15) {
+                        Some(&"-") | None => None,
+                        Some(_) => Some(num(15)? as usize),
                     },
                 });
             }
@@ -835,6 +907,7 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
                 .or_else(|| crate::more_functions::load_line(&mut state, raw))
                 .or_else(|| crate::caravan::load_line(&mut state, raw))
                 .or_else(|| crate::casino::load_line(&mut state, raw))
+                .or_else(|| crate::tutorial::load_line(&mut state, raw))
                 .or_else(|| crate::weapon_mods::load_line(&mut state, raw))
             {
                 Some(Ok(())) => {}
@@ -849,6 +922,29 @@ pub fn load(text: &str) -> Result<(GameState, Option<PlayerPlace>), String> {
 mod file_tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn knock_states_flees_and_combat_groups_go_through_a_save() {
+        let mut state = GameState::default();
+        state.knocks.state.insert(FormId(0x0010_0001), 3);
+        state.forced_flee.insert(
+            FormId(0x0010_0002),
+            crate::ai::flee::ForcedFlee {
+                cell: None,
+                to: Some(FormId(0x0010_0003)),
+            },
+        );
+        state
+            .combat_groups
+            .joined
+            .insert(FormId(0x0010_0004), FormId(0x0010_0005));
+        let text = save(&state, None);
+        let (back, _) = load(&text).unwrap();
+        assert_eq!(back.knocks, state.knocks);
+        assert_eq!(back.forced_flee, state.forced_flee);
+        assert_eq!(back.combat_groups, state.combat_groups);
+        assert_eq!(save(&back, None), text);
+    }
 
     #[test]
     fn havok_moved_objects_keep_their_pose_through_a_save() {

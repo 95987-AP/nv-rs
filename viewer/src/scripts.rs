@@ -90,9 +90,6 @@ pub struct CellScripts {
     /// The game's reference-script pass: attached cells, pending events,
     /// trigger occupancy.
     scheduler: world::ref_scripts::RefScripts,
-    /// The player's place (worldspace, else interior) when teammates were
-    /// last brought along ([`bring_teammates`]).
-    space: Option<FormId>,
 }
 
 /// World-space bounds of rendered placed objects in the loaded cell(s).
@@ -222,10 +219,12 @@ pub fn door_opens(
         }
         Some(Locked::Says(why)) => {
             println!("{why}");
+            // A key needed or too little skill: the padlock (`005180b0`).
             state.events.push(Event::Message {
                 title: None,
                 text: why,
                 buttons: Vec::new(),
+                icon: Some(world::message_icon::PADLOCK.to_string()),
             });
             return false;
         }
@@ -245,31 +244,6 @@ pub fn door_opens(
         .events
         .retain(|e| !matches!(e, Event::Activate { what, .. } if *what == door));
     opened
-}
-
-/// The player's teammates come with them through a door or a move to
-/// another place: they're where the player is (and walk to their follow
-/// distance there). Those still in the same world stay where they are.
-/// [G] Not traced (Dead Money contributor, 2026-10-06): the game moves its
-/// followers (`ExtraFollower`, `iNumberActorsAllowedToFollowPlayer`)
-/// by rules not read yet. No base-game acceptance route has a teammate.
-fn bring_teammates(order: &esm::LoadOrder, state: &mut world::scripting::GameState) {
-    let (Some(at), Some(cell)) = (state.player_position, state.player_cell) else {
-        return;
-    };
-    let space = state.player_world.unwrap_or(cell);
-    for t in state.teammates.clone() {
-        if state.dead.contains(&t) || state.more.down.contains_key(&t) {
-            continue;
-        }
-        if state.place(order, t).is_some_and(|p| p.0 == space) {
-            continue;
-        }
-        state.spaces.insert(t, (space, cell));
-        state.positions.insert(t, (at, 0.0));
-        state.evaluate.insert(t);
-        println!("{t} comes along.");
-    }
 }
 
 /// The attached cells (in the game's pass order) and how to read one's
@@ -321,6 +295,17 @@ fn refresh_cell_scripts(
     }
 }
 
+/// The references made while playing that E can use (dropped items, ash
+/// piles) and the placed mines, in the player's place.
+fn made_and_mines(order: &esm::LoadOrder, state: &GameState) -> Vec<world::scripting::Interactive> {
+    let Some((space, ..)) = state.place(order, PLAYER_REF) else {
+        return Vec::new();
+    };
+    let mut out = world::more_functions::placed::dropped_items(order, state, space);
+    out.extend(world::mines::interactive_in(order, state, space));
+    out
+}
+
 /// Whether an object's script has an `OnActivate` block.
 fn has_on_activate(order: &esm::LoadOrder, cache: &ScriptCache, r: &Interactive) -> bool {
     r.script
@@ -330,8 +315,9 @@ fn has_on_activate(order: &esm::LoadOrder, cache: &ScriptCache, r: &Interactive)
 
 /// What using an object did.
 enum Used {
-    /// Something to tell the player.
-    Notice(String),
+    /// Something to tell the player, with its picture (`None` the
+    /// neutral Vault Boy).
+    Notice(String, Option<&'static str>),
     /// A container to open on screen: its reference and name.
     Container(FormId, String),
     /// A terminal's screen: its record and the placed terminal.
@@ -344,6 +330,8 @@ enum Used {
     Furniture(FormId),
     /// An item taken that the game doesn't announce (`004ce380`'s types).
     Taken,
+    /// A sound to play (a mine's disable sound).
+    Sound(FormId),
 }
 
 /// E on an object: its `OnActivate` script runs, if it has one, and its
@@ -375,6 +363,29 @@ fn use_object(
             .and_then(|rec| rec.full_name())
             .unwrap_or_else(|| id.to_string())
     };
+    // A placed mine: disarmed, then taken (`world::mines::use_placed`).
+    if r.kind == esm::FourCC::new(b"PROJ") {
+        return match world::mines::use_placed(order, state, r.reference)? {
+            world::mines::MineUsed::Disarmed(sound) => {
+                println!("Disarmed {}.", r.reference);
+                sound.map(Used::Sound)
+            }
+            world::mines::MineUsed::Taken(_, Some(message)) => Some(Used::Notice(
+                message,
+                // The "added" notice's gift box (`004821a0`).
+                Some(world::message_icon::GIFT_BOX),
+            )),
+            world::mines::MineUsed::Taken(_, None) => Some(Used::Taken),
+        };
+    }
+    // An ash or goo pile passes the activation on to its corpse
+    // (`TESObjectREFR::Activate`, `00573170`): the corpse is searched.
+    let corpse = world::activation::stands_for(order, state, r.reference);
+    if corpse != r.reference {
+        let label = world::script_functions::full_name(order, state, corpse)
+            .unwrap_or_else(|| corpse.to_string());
+        return Some(Used::Container(corpse, label));
+    }
     let counted = |item: FormId, n: i32| {
         if n > 1 {
             format!("{} ({n})", name(item))
@@ -390,14 +401,17 @@ fn use_object(
         // cards and leave the inventory).
         state.pick_up(order, r.reference, r.base, r.count);
         if let Some(owner) = owner.filter(|_| !world::crime::may_take(order, state, owner)) {
-            if world::crime::steal(order, state, r.reference, owner) {
+            // A note (`BGSNote::Activate`, `005e9360`): only the karma.
+            if r.kind.as_bytes() == b"NOTE" {
+                world::crime::stealing_karma(order, state, owner);
+            } else if world::crime::steal(order, state, r.reference, owner) {
                 println!("Seen stealing {}.", counted(r.base, r.count));
             }
         }
         // "<name> added" / "<n> <name>(s) added" (`004ce380`).
         return Some(
             match world::activation::pickup_message(order, r.base, r.count) {
-                Some(message) => Used::Notice(message),
+                Some(message) => Used::Notice(message, None),
                 None => Used::Taken,
             },
         );
@@ -407,7 +421,9 @@ fn use_object(
         return Some(match locked(order, state, r.reference, &label) {
             None => Used::Container(r.reference, label),
             Some(Locked::Pick) => Used::Lockpick(r.reference),
-            Some(Locked::Says(why)) => Used::Notice(why),
+            // A key needed or too little skill: the padlock (`00516dc0`,
+            // `0078db00`).
+            Some(Locked::Says(why)) => Used::Notice(why, Some(world::message_icon::PADLOCK)),
         });
     }
     // Any furniture while in furniture gets the player up
@@ -421,7 +437,8 @@ fn use_object(
     if r.is_furniture() && world::living::sleep::is_bed(order, r.reference) {
         return match world::living::sleep::may_sleep_in(order, state, r.reference) {
             Ok(()) => Some(Used::Sleep),
-            Err(why) => Some(Used::Notice(why)),
+            // The bed's refusals: the sad Vault Boy (`005095b0`).
+            Err(why) => Some(Used::Notice(why, Some(world::message_icon::SAD))),
         };
     }
     if r.is_furniture() {
@@ -471,8 +488,16 @@ fn object_in_view(
             && r.trigger.is_none()
             && ![*b"NPC_", *b"CREA", *b"DOOR"].contains(r.kind.as_bytes())
     })?;
-    let usable =
-        r.is_item() || r.is_container() || r.is_furniture() || has_on_activate(order, cache, r);
+    // An ash or goo pile standing for a corpse is used to search it; a
+    // placed mine to disarm or take it.
+    let pile = world::activation::stands_for(order, state, r.reference) != r.reference;
+    let mine = r.kind == esm::FourCC::new(b"PROJ");
+    let usable = r.is_item()
+        || r.is_container()
+        || r.is_furniture()
+        || pile
+        || mine
+        || has_on_activate(order, cache, r);
     if !usable || !world::enabled_now(order, r.reference, &state.disabled) {
         return None;
     }
@@ -494,7 +519,17 @@ fn object_in_view(
         );
     let steal =
         || world::scripting::game_setting_text(order, "sSteal").unwrap_or_else(|| "Steal".into());
-    let prompt = if r.is_item() {
+    let pile = world::activation::stands_for(order, state, r.reference) != r.reference;
+    let mine = r.kind == esm::FourCC::new(b"PROJ");
+    let prompt = if pile || mine {
+        // The pile's own words (an activator with a name: "Activate",
+        // `world::activation::info`).
+        let info = world::activation::info(order, state, r.reference);
+        match info.and_then(|i| i.action) {
+            Some(action) => format!("{action} {name}"),
+            None => name,
+        }
+    } else if r.is_item() {
         let verb = if owned { steal() } else { "Take".into() };
         if r.count > 1 {
             format!("{verb} {name} ({})", r.count)
@@ -804,6 +839,11 @@ fn queue_reload_cleanup(commands: &mut Commands, result: &Result<bool, String>) 
 }
 
 fn discard_reloaded_dialogue(world: &mut World) {
+    // A game loaded arms the casinos' anti-cheat lock if a casino menu
+    // closed before (`00956f70` → `00969ac0`).
+    if let Some(mut lock) = world.get_resource_mut::<crate::game_menus::casino::CasinoLock>() {
+        lock.0.loaded();
+    }
     world.resource_mut::<Conversation>().discard();
     world.resource_mut::<ScriptedTalk>().0 = None;
     world
@@ -927,6 +967,9 @@ pub struct HereNow<'w> {
     crosshair: Res<'w, crate::crosshair::Crosshair>,
     player_seat: ResMut<'w, crate::sitting::PlayerSeat>,
     later: ResMut<'w, LaterCommands>,
+    /// The casinos' anti-cheat lock, on the real clock (`game_menus::casino`).
+    casino_lock: ResMut<'w, crate::game_menus::casino::CasinoLock>,
+    real_time: Res<'w, Time<bevy::time::Real>>,
 }
 
 /// The start-up state and requests `run_scripts` works with.
@@ -990,17 +1033,24 @@ pub fn run_scripts(
         crosshair,
         mut player_seat,
         mut later,
+        mut casino_lock,
+        real_time,
     } = here_now;
     let order = &game.0.order;
     let now = time.elapsed_secs();
     // What the game announces goes to the HUD's message corner while it's
     // drawn, else to the notice panel.
-    let mut announce = |n: String, notices: &mut Notices| {
-        println!("{n}");
+    // The HUD's quest text takes quest updates and objective lines while
+    // the HUD is drawn (`ui::quest_text`); otherwise they're notices.
+    let hud_on = hud_messages.on;
+    let mut quest_texts = Vec::new();
+    let mut objective_lines = Vec::new();
+    let mut announce = |n: crate::hud::HudMessage, notices: &mut Notices| {
+        println!("{}", n.text);
         if hud_messages.on {
             hud_messages.queue.push(n);
         } else {
-            notices.0.push((n, now));
+            notices.0.push((n.text, now));
         }
     };
     // Tab, I and J open the Pip-Boy (`pipboy`).
@@ -1115,13 +1165,6 @@ pub fn run_scripts(
         feet,
     );
     let cells: Vec<FormId> = attached.iter().map(|(c, _)| *c).collect();
-    let space = state.player_world.or(state.player_cell);
-    if space != cell_scripts.space {
-        cell_scripts.space = space;
-        if world::guesses::enabled() {
-            bring_teammates(order, state);
-        }
-    }
     refresh_cell_scripts(
         order,
         &scripts.0,
@@ -1230,10 +1273,7 @@ pub fn run_scripts(
         });
         // Items the player dropped (made references) are taken as placed
         // items are (the hook the Pip-Boy's Drop needs; `pipboy`).
-        let dropped = state
-            .place(order, PLAYER_REF)
-            .map(|(space, ..)| world::more_functions::placed::dropped_items(order, state, space))
-            .unwrap_or_default();
+        let dropped = made_and_mines(order, state);
         if let Some(r) = activate_request.0.take().filter(|_| !refused) {
             let object = cell_scripts
                 .refs
@@ -1241,19 +1281,31 @@ pub fn run_scripts(
                 .chain(&dropped)
                 .find(|o| o.reference == r);
             match object.and_then(|o| use_object(order, &scripts.0, state, o)) {
-                Some(Used::Notice(n)) => announce(n, &mut notices),
+                Some(Used::Notice(n, icon)) => {
+                    announce(crate::hud::HudMessage::with_icon(n, icon), &mut notices)
+                }
                 Some(Used::Container(c, name)) => {
                     waiting.push(crate::menus::Menu::Container(c, name));
                 }
                 Some(Used::Terminal(t, r)) => {
                     use crate::game_menus::hacking::{use_terminal, Using};
                     match use_terminal(order, state, t, r) {
-                        Using::Open(m) => waiting.push(m),
+                        Using::Open(m) => {
+                            world::terminal::opened(order, state, t, r);
+                            waiting.push(m);
+                        }
                         Using::Refused(why) => {
                             if let Some(s) = order.form_by_editor_id(crate::lockpick::POPUP_SOUND) {
                                 sound_requests.0.push(s);
                             }
-                            announce(why, &mut notices);
+                            // The angry Vault Boy (`00501310`).
+                            announce(
+                                crate::hud::HudMessage::with_icon(
+                                    why,
+                                    Some(world::message_icon::ANGRY),
+                                ),
+                                &mut notices,
+                            );
                         }
                     }
                 }
@@ -1262,6 +1314,7 @@ pub fn run_scripts(
                     waiting.push(crate::menus::Menu::SleepWait { sleep: true });
                 }
                 Some(Used::Furniture(f)) => player_seat.activated = Some(f),
+                Some(Used::Sound(s)) => sound_requests.0.push(s),
                 Some(Used::Taken) | None => {}
             }
             // A taken item's pick-up sound: its own (`YNAM`), else a
@@ -1280,10 +1333,7 @@ pub fn run_scripts(
             }
         }
     }
-    let dropped = state
-        .place(order, PLAYER_REF)
-        .map(|(space, ..)| world::more_functions::placed::dropped_items(order, state, space))
-        .unwrap_or_default();
+    let dropped = made_and_mines(order, state);
     // Scripts can turn the crosshair's roll-over text (and with it using
     // things) off (`DisablePlayerControls`).
     let rollover = !state.controls_off[world::scripting::controls::ROLLOVER];
@@ -1310,12 +1360,15 @@ pub fn run_scripts(
                 .and_then(|r| r.full_name().or_else(|| r.editor_id()))
                 .unwrap_or_else(|| id.to_string())
         };
+        // The picture beside a corner message.
+        let mut notice_icon = None;
         let notice = match event {
             // A message box waits for an answer.
             Event::Message {
                 title,
                 text,
                 buttons,
+                ..
             } if !buttons.is_empty() => {
                 println!("Message box shown: {}", text.lines().next().unwrap_or(""));
                 waiting.push(crate::menus::Menu::Message {
@@ -1325,12 +1378,32 @@ pub fn run_scripts(
                 });
                 None
             }
-            Event::Message { title, text, .. } => Some(fill_keys(&match title {
-                Some(t) => format!("{t}\n{text}"),
-                None => text,
-            })),
+            Event::Message {
+                title, text, icon, ..
+            } => {
+                notice_icon = icon;
+                Some(fill_keys(&match title {
+                    Some(t) => format!("{t}\n{text}"),
+                    None => text,
+                }))
+            }
             Event::CharacterMenu(m) => {
                 waiting.push(crate::menus::Menu::Character(m));
+                None
+            }
+            // The game's own box (a reputation's title, `game_menus::message`).
+            Event::Popup {
+                title,
+                text,
+                icon,
+                sound,
+            } => {
+                waiting.push(crate::menus::Menu::Popup {
+                    title,
+                    text,
+                    icon,
+                    sound,
+                });
                 None
             }
             Event::Barter(merchant) => {
@@ -1346,19 +1419,59 @@ pub fn run_scripts(
                 waiting.push(crate::menus::Menu::RepairServices(vendor));
                 None
             }
+            Event::TutorialMenu(message) => {
+                waiting.push(crate::menus::Menu::Tutorial(message));
+                None
+            }
             Event::TeammateContainer(who) => {
                 waiting.push(crate::menus::Menu::Teammate(who));
                 None
             }
+            Event::BackUp(who) => {
+                println!("{who} steps back from the player (default package 0x27): not carried out here.");
+                None
+            }
+            // `Create`'s checks as the command runs (`005cf040` and the
+            // others call it at once): the menu, or the refusal's corner
+            // message with `UIPopUpMessageGeneral`.
             Event::Casino {
                 game,
                 casino,
                 min_bet,
                 max_bet,
-                ..
+                min_winnings,
             } => {
-                println!("{game:?} at {casino} (bets {min_bet} to {max_bet}): not shown yet.");
-                None
+                let created = crate::game_menus::casino::create(
+                    order,
+                    state,
+                    &mut casino_lock.0,
+                    game,
+                    casino,
+                    min_bet,
+                    max_bet,
+                    min_winnings,
+                    real_time.elapsed_secs_f64(),
+                );
+                // The scripts' `MenuMode` for the game (the Sierra Madre's
+                // and the base game's tables alike) once it's open.
+                menus.extend(crate::game_menus::casino::menu_mode(game, &created));
+                match created {
+                    Some(Ok(menu)) => {
+                        waiting.push(menu);
+                        None
+                    }
+                    Some(Err(why)) => {
+                        if let Some(s) = order.form_by_editor_id(crate::lockpick::POPUP_SOUND) {
+                            sound_requests.0.push(s);
+                        }
+                        notice_icon = Some(world::casino::REFUSAL_ICON.to_string());
+                        Some(why)
+                    }
+                    None => {
+                        println!("{game:?}: {casino} isn't a casino.");
+                        None
+                    }
+                }
             }
             Event::Caravan {
                 npc,
@@ -1387,14 +1500,52 @@ pub fn run_scripts(
             }),
             Event::KnockedOut { who } => Some(format!("{} is down.", name(who))),
             Event::GotUp { who } => Some(format!("{} gets up.", name(who))),
+            // `ForceFlee` (`world::ai::flee::force`): printed; the AI runs to
+            // the place given, or stands (`ai::forced_flee_frame`).
+            Event::Flees { who, to } => {
+                match to {
+                    Some(to) => println!("{} flees (ForceFlee) to {}.", name(who), name(to)),
+                    None => println!("{} flees (ForceFlee).", name(who)),
+                }
+                None
+            }
             Event::Journal { quest, text } => Some(format!("{}: {text}", name(quest))),
+            // The HUD's objective lines (`0077a5b0`).
             Event::Objective {
                 text, completed, ..
-            } => Some(if completed {
-                format!("Completed: {text}")
-            } else {
-                text
-            }),
+            } => {
+                if hud_on {
+                    // Printed as the notice was (the acceptance routes
+                    // read it).
+                    if completed {
+                        println!("Completed: {text}");
+                    } else {
+                        println!("{text}");
+                    }
+                    objective_lines.push(ui::quest_text::Objective {
+                        text,
+                        completed,
+                        reminder: false,
+                    });
+                    None
+                } else {
+                    Some(if completed {
+                        format!("Completed: {text}")
+                    } else {
+                        text
+                    })
+                }
+            }
+            // The HUD's quest names (`world::quest_text`).
+            Event::QuestText(text) => {
+                let notice = crate::hud::quest_notice(order, text);
+                if hud_on {
+                    quest_texts.push(notice);
+                    None
+                } else {
+                    Some(format!("{}\n{}", notice.title, notice.subtitle))
+                }
+            }
             Event::Talk {
                 speaker,
                 to,
@@ -1561,7 +1712,11 @@ pub fn run_scripts(
                 None
             }
             Event::Menu(menu) => {
-                menus.push(menu);
+                // A casino game's number is counted once its menu opens
+                // (`Event::Casino`, `game_menus::casino::menu_mode`).
+                if !(1080..=1082).contains(&menu) {
+                    menus.push(menu);
+                }
                 match menu {
                     world::scripting::RACE_SEX_MENU => {
                         Some("(The face and body menu would open here; kept as it is.)".to_string())
@@ -1612,6 +1767,7 @@ pub fn run_scripts(
                         use crate::game_menus::hacking::{use_terminal, Using};
                         match use_terminal(order, state, base.unwrap_or(what), what) {
                             Using::Open(m) => {
+                                world::terminal::opened(order, state, base.unwrap_or(what), what);
                                 waiting.push(m);
                                 None
                             }
@@ -1621,6 +1777,7 @@ pub fn run_scripts(
                                 {
                                     sound_requests.0.push(s);
                                 }
+                                notice_icon = Some(world::message_icon::ANGRY.to_string());
                                 Some(why)
                             }
                         }
@@ -1635,7 +1792,10 @@ pub fn run_scripts(
                                 lockpicking.request = Some(what);
                                 None
                             }
-                            Some(Locked::Says(why)) => Some(why),
+                            Some(Locked::Says(why)) => {
+                                notice_icon = Some(world::message_icon::PADLOCK.to_string());
+                                Some(why)
+                            }
                         }
                     }
                     // A talking activator with a voice (Elijah's hologram)
@@ -1690,9 +1850,20 @@ pub fn run_scripts(
             }
         };
         if let Some(n) = notice {
-            announce(n, &mut notices);
+            announce(
+                crate::hud::HudMessage {
+                    text: n,
+                    icon: notice_icon,
+                },
+                &mut notices,
+            );
         }
     }
+    for n in &quest_texts {
+        println!("{}: {}", n.title, n.subtitle);
+    }
+    hud_messages.quests.extend(quest_texts);
+    hud_messages.objectives.extend(objective_lines);
     // Script execution has already mutated GameState. Dispatch every pending
     // idle request before snapshotting, so its corresponding presentation
     // queue cannot be lost merely because Save appeared earlier in events.

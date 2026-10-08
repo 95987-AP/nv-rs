@@ -31,9 +31,14 @@ OPTIONS:
                             FILE once everything has loaded, then quit
     --wait SECONDS          with --screenshot, let the game run this long
                             first (people walking, scripts)
+    --screen-size W,H       with --screenshot or --background, open at this
+                            size instead (to check other shapes of screen)
     --walk                  walk even with --screenshot (which otherwise
                             flies, keeping the exact eye position given)
-    --fps                   print the frame rate every two seconds
+    --fps                   print the frame rate every two seconds, and how
+                            long each frame's own work took on the main and
+                            render threads (apart from waiting for the
+                            display)
     --talk                  start talking to the nearest person once loaded
     --choose N,N,...        with --talk or a script's talking: pick these
                             replies in order (as the number keys would),
@@ -44,6 +49,11 @@ OPTIONS:
                             its first stage, which plays the intro movie;
                             scripts take you to Doc's house (the CELL can
                             then be left out)
+    --load-fos FILE         start from one of the original game's saves
+                            (.fos, read-only) instead of a new game: its
+                            quests, globals, inventory, the player's place
+                            (the CELL can then be left out); prints what
+                            it took (docs/FOS_SAVES.md)
     --character FILE        start as a ready-made test character: a file
                             of the game's script lines (editor IDs) run
                             on the new game before its first frame, plus
@@ -74,6 +84,10 @@ OPTIONS:
     --no-hud                leave out the game's HUD (health, compass,
                             crosshair, messages); screenshots then show
                             the scene alone
+    --background            a test run out of the way: the window opens
+                            behind the others without the focus, and the
+                            mouse is never held in it (with --screen-size,
+                            at that size)
     --freeze-ai             people and creatures stand where they are and
                             do nothing but their idle, as after the game's
                             console command tai (for lining up with a
@@ -116,10 +130,11 @@ OPTIONS:
                             object (editor ID or form ID), as if the
                             player's crosshair were on it
     --menu-pointer X,Y      for testing: put the menus' pointer at this
-                            pixel (screenshots have no mouse)
+                            pixel (screenshots have no mouse); the
+                            Pip-Boy's too, through its screen
     --key-at SECONDS KEY[:HOLD]
                             for testing: press a key (a letter or digit,
-                            mouse-left, mouse-right, mouse-x=COUNTS: the
+                            mouse-left, mouse-right, escape, mouse-x=COUNTS: the
                             mouse moving sideways each frame, or
                             wheel=NOTCHES, negative out) that
                             many seconds after you're placed, held HOLD
@@ -133,7 +148,20 @@ OPTIONS:
     --menu-keys S:K[,S:K...]
                             for testing: type key K (a character, or
                             left, right, up, down, enter) into the top menu at
-                            S seconds after starting
+                            S seconds after starting; tab leaves the
+                            hacking and terminal menus, as Tab does
+    --answer-boxes          for testing (the acceptance routes): answer the
+                            prompts on top by rule as soon as they're shown,
+                            as a player would: a message box with one button
+                            (OK) with it, one with more with the next of
+                            --box-answers (left open when none is left); a
+                            tutorial box closed; the name entry accepted
+                            with Enter (the name in it). The DLCs' start-up
+                            messages and VCG01's prompts would otherwise hold
+                            a scripted route
+    --box-answers I[,I...]  with --answer-boxes: the buttons (0 the first,
+                            by the box's own order) to answer the boxes with
+                            more than one button, one per box in turn
 
 CONTROLS:
     mouse                          look around (walking; flying: hold
@@ -189,6 +217,9 @@ const NEW_GAME_QUEST: &str = "VCG00";
 /// anyway).
 const NEW_GAME_CELL: &str = "GSDocMitchellHouse";
 
+/// The CELL when `--load-fos` gives the place.
+pub const FROM_SAVE: &str = "(the save's place)";
+
 /// What the viewer was asked to do.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Args {
@@ -212,6 +243,8 @@ pub struct Args {
     pub stage: Option<(String, u16)>,
     /// A ready-made test character to start as (`world::character`).
     pub character: Option<PathBuf>,
+    /// `--load-fos`: an original save to start from (`world::fos_import`).
+    pub load_fos: Option<PathBuf>,
     /// A weapon to start with, equipped.
     pub weapon: Option<String>,
     /// Script lines to run once loaded, as console commands.
@@ -231,6 +264,10 @@ pub struct Args {
     pub cloud_time: Option<f32>,
     /// Hold everyone's AI still (the console's `tai`).
     pub freeze_ai: bool,
+    /// `--background`: a test run that stays out of the way: the window
+    /// opens behind the others without taking the focus, and the mouse
+    /// is never held in it.
+    pub background: bool,
     /// Raise the Pip-Boy once loaded: its menu and page (stats:1).
     pub pipboy: Option<String>,
     /// `--pipboy-keys`: keys to press in the Pip-Boy once it's up.
@@ -247,6 +284,8 @@ pub struct Args {
     pub menu_pointer: Option<(f32, f32)>,
     /// `--key-at`: keys to press: when, and the key (`KEY[:HOLD]`).
     pub key_at: Vec<(f32, String)>,
+    /// `--screen-size`: the screenshot's window size.
+    pub screen_size: Option<(u32, u32)>,
     /// Play the movies scripts ask for (`PlayBink`).
     pub movies: bool,
     /// `--menu-click`: when to click (seconds after starting).
@@ -254,6 +293,11 @@ pub struct Args {
     /// `--menu-keys`: keys typed into the menus (seconds after starting,
     /// the key).
     pub menu_keys: Vec<(f64, String)>,
+    /// `--answer-boxes`: message boxes answered with their first button,
+    /// tutorial boxes closed, once shown (a test aid).
+    pub answer_boxes: bool,
+    /// `--box-answers`: the buttons for boxes with several, in turn.
+    pub box_answers: Vec<usize>,
 }
 
 /// Where to stand, in the game's terms: feet position in game units, and
@@ -306,6 +350,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut new_game = false;
     let mut weapon = None;
     let mut character = None;
+    let mut load_fos = None;
     let mut run = Vec::new();
     let mut run_at = Vec::new();
     let mut say = Vec::new();
@@ -314,6 +359,9 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut vats = None;
     let mut cloud_time = None;
     let mut freeze_ai = false;
+    let mut answer_boxes = false;
+    let mut box_answers = Vec::new();
+    let mut background = false;
     let mut pipboy = None;
     let mut pipboy_keys = Vec::new();
     let mut pad = false;
@@ -322,6 +370,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut use_on = None;
     let mut menu_pointer = None;
     let mut key_at = Vec::new();
+    let mut screen_size = None;
     let mut movies = None;
     let mut menu_clicks = Vec::new();
     let mut menu_keys = Vec::new();
@@ -380,6 +429,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             "--new-game" => new_game = true,
             "--weapon" => weapon = Some(value("--weapon")?),
             "--character" => character = Some(value("--character")?.into()),
+            "--load-fos" => load_fos = Some(value("--load-fos")?.into()),
             "--run" => run.push(value("--run")?),
             "--run-at" => {
                 let v = value("--run-at")?;
@@ -405,6 +455,18 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             "--movies" => movies = Some(true),
             "--no-movies" => movies = Some(false),
             "--freeze-ai" => freeze_ai = true,
+            "--answer-boxes" => answer_boxes = true,
+            "--box-answers" => {
+                let v = value("--box-answers")?;
+                for n in v.split(',') {
+                    box_answers.push(n.trim().parse::<usize>().map_err(|_| {
+                        format!(
+                            "--box-answers expects button numbers separated by commas, got '{v}'"
+                        )
+                    })?);
+                }
+            }
+            "--background" => background = true,
             "--lockpick" => lockpick = Some(value("--lockpick")?),
             "--pipboy" => {
                 let v = value("--pipboy")?;
@@ -437,6 +499,14 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
                 match p[..] {
                     [x, y] => menu_pointer = Some((x, y)),
                     _ => return Err(format!("--menu-pointer expects X,Y, got '{v}'")),
+                }
+            }
+            "--screen-size" => {
+                let v = value("--screen-size")?;
+                let p: Vec<u32> = v.split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                match p[..] {
+                    [w, h] if w > 0 && h > 0 => screen_size = Some((w, h)),
+                    _ => return Err(format!("--screen-size expects W,H, got '{v}'")),
                 }
             }
             "--menu-keys" => {
@@ -495,6 +565,15 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
         }
     }
     let movies = movies.unwrap_or(screenshot.is_none());
+    // An original save says where to start.
+    if load_fos.is_some() {
+        if new_game || stage.is_some() {
+            return Err("--load-fos starts from the save; leave out --new-game and --stage".into());
+        }
+        if positional.len() == 1 {
+            positional.push(FROM_SAVE.to_string());
+        }
+    }
     match positional.as_slice() {
         [data, cell] => Ok(Some(Args {
             data: data.into(),
@@ -510,6 +589,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             choose,
             stage,
             character,
+            load_fos,
             weapon,
             run,
             run_at,
@@ -519,6 +599,7 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             vats,
             cloud_time,
             freeze_ai,
+            background,
             pipboy,
             pipboy_keys,
             pad,
@@ -527,9 +608,12 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             use_on,
             menu_pointer,
             key_at,
+            screen_size,
             movies,
             menu_clicks,
             menu_keys,
+            answer_boxes,
+            box_answers,
         })),
         [] | [_] => Err("expected the Data folder and a cell".into()),
         [_, _, extra, ..] => Err(format!("unexpected argument '{extra}'")),
@@ -579,6 +663,16 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(frozen.freeze_ai);
+        assert!(!frozen.answer_boxes);
+        let answering = parse(&strings(&["Data", "Cell", "--answer-boxes"]))
+            .unwrap()
+            .unwrap();
+        assert!(answering.answer_boxes);
+        let choosing = parse(&strings(&["Data", "Cell", "--box-answers", "1, 0"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(choosing.box_answers, vec![1, 0]);
+        assert!(parse(&strings(&["Data", "Cell", "--box-answers", "no"])).is_err());
         let character = parse(&strings(&["Data", "Cell", "--character", "c.txt"]))
             .unwrap()
             .unwrap();
@@ -645,6 +739,18 @@ mod tests {
         assert!(parse(&strings(&["Data", "Cell", "--at", "1,2,3"]))
             .unwrap_err()
             .contains("X,Y,Z,HEADING"));
+    }
+
+    #[test]
+    fn an_original_save_gives_the_place() {
+        let args = parse(&strings(&["C:\\Games\\FNV", "--load-fos", "Save 1.fos"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(args.load_fos, Some(PathBuf::from("Save 1.fos")));
+        assert_eq!(args.cell, FROM_SAVE);
+        assert!(parse(&strings(&["D", "--load-fos", "a.fos", "--new-game"])).is_err());
+        assert!(parse(&strings(&["D", "--load-fos", "a.fos", "--stage", "Q", "1"])).is_err());
+        assert!(parse(&strings(&["D", "--load-fos"])).is_err());
     }
 
     #[test]
@@ -735,6 +841,11 @@ mod tests {
             .unwrap();
         assert_eq!(args.menu_pointer, Some((10.0, 20.5)));
         assert!(parse(&strings(&["Data", "Cell", "--menu-pointer", "10"])).is_err());
+        let args = parse(&strings(&["Data", "Cell", "--screen-size", "1024,768"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(args.screen_size, Some((1024, 768)));
+        assert!(parse(&strings(&["Data", "Cell", "--screen-size", "0,768"])).is_err());
         assert!(parse(&strings(&["Data", "Cell", "--open-menu"])).is_err());
     }
 

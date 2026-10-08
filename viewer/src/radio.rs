@@ -155,9 +155,10 @@ pub fn run_radio(
             }
             RadioEvent::Message(text) => {
                 println!("Radio: {text}");
-                messages
-                    .with_icon
-                    .push((text, world::radio::TOWER_ICON.to_string()));
+                messages.queue.push(crate::hud::HudMessage::with_icon(
+                    text,
+                    Some(world::radio::TOWER_ICON),
+                ));
             }
             RadioEvent::ClearDecks => crate::music::radio_clear(&mut music),
             RadioEvent::HoldMusic(on) => crate::music::radio_hold(&mut music, on),

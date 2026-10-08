@@ -71,7 +71,7 @@ const FEMALE: u32 = 0x01;
 /// template; take the inventory from it.
 pub const USE_TRAITS: u16 = 0x01;
 const USE_MODEL: u16 = 0x40;
-const USE_INVENTORY: u16 = 0x100;
+pub const USE_INVENTORY: u16 = 0x100;
 /// `ACBS` template flags: take the factions, the AI data (`AIDT`:
 /// aggression…) from the template (a Powder Ganger's 0x03BE has both).
 pub const USE_FACTIONS: u16 = 0x04;
@@ -657,18 +657,189 @@ pub fn player_look(
         &rr,
         &record,
         Some(Dressing {
-            female,
+            female: Some(female),
             worn,
             weapon,
         }),
     )
 }
 
-/// What the game state says the player is and wears ([`player_look`]).
+/// What the game state says someone is and wears ([`player_look`],
+/// [`npc_look_wearing`]): the sex (`None`: the record's), the clothes and
+/// armour worn, in order, and the weapon in hand.
 struct Dressing<'a> {
-    female: bool,
+    female: Option<bool>,
     worn: &'a [FormId],
     weapon: Option<FormId>,
+}
+
+/// A person as drawn when the game state has them wear `worn` (clothes and
+/// armour, in order: the first on a body slot wins, as [`worn_of`]) and
+/// hold `weapon`: assembled as [`actor_look`] assembles them from their
+/// record, with these instead of the record's inventory
+/// (`world::outfit::worn_armour`, `world::combat::weapon_in_hand`). `None`
+/// for creatures and records that can't be read.
+pub fn npc_look_wearing(
+    order: &LoadOrder,
+    base: FormId,
+    worn: &[FormId],
+    weapon: Option<FormId>,
+) -> Option<ActorLook> {
+    let rr = order.get(base).filter(|r| r.entry.header.kind == NPC_)?;
+    let record = rr.record().ok()?;
+    npc_look_dressed(
+        order,
+        &rr,
+        &record,
+        Some(Dressing {
+            female: None,
+            worn,
+            weapon,
+        }),
+    )
+}
+
+/// Whether a person is a woman: their traits' (`ACBS` flag 0x01, from the
+/// template when its flags say the traits come from there).
+pub fn is_female(order: &LoadOrder, base: FormId) -> bool {
+    data_record(order, base, USE_TRAITS).is_some_and(|(_, record)| {
+        record
+            .get(ACBS)
+            .filter(|s| s.data.len() >= 4)
+            .is_some_and(|s| le_u32(&s.data, 0) & FEMALE != 0)
+    })
+}
+
+/// What a person puts on from what they carry (`006047c0`, the armour
+/// part; `InventoryChanges::GetBestArmor` (Xbox PDB) `004c8220` for
+/// each body slot 0 to 19): for each slot, the best armour covering it
+/// ([`best_armour`]) is put on unless the upper-body armour already
+/// chosen (slot 2) covers that slot, it's on already, or, for a slot
+/// other than 2, it covers the upper body too (only slot 2 puts such a
+/// piece on). Putting one on takes off what shares a slot with it
+/// (`EquipItem`, vtable `+0x184`; that rule isn't traced here).
+/// `entries` are the record's container entries with what each gives:
+/// items named directly are looked at first (the base container, in
+/// order), then what leveled lists gave (the inventory changes; their
+/// order among themselves isn't traced).
+// Translated from 006047c0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn pick_worn(order: &LoadOrder, entries: &[(FormId, Vec<(FormId, i32)>)]) -> Vec<FormId> {
+    let direct = entries
+        .iter()
+        .flat_map(|(entry, items)| items.iter().filter(move |(i, _)| i == entry));
+    let given = entries
+        .iter()
+        .flat_map(|(entry, items)| items.iter().filter(move |(i, _)| i != entry));
+    let candidates: Vec<FormId> = direct
+        .chain(given)
+        .filter(|(_, count)| *count > 0)
+        .map(|(item, _)| *item)
+        .collect();
+    let slots_of = |item: FormId| Armor::load(order, item).map_or(0, |a| a.slots);
+    let mut worn: Vec<(FormId, u32)> = Vec::new();
+    let mut upper: Option<u32> = None;
+    for slot in 0..20u32 {
+        let Some(best) = best_armour(order, &candidates, slot) else {
+            continue;
+        };
+        let bit = 1u32 << slot;
+        if upper.is_some_and(|s| s & bit != 0) || worn.iter().any(|(w, _)| *w == best) {
+            continue;
+        }
+        let slots = slots_of(best);
+        if slot == slots::UPPER_BODY.trailing_zeros() {
+            upper = Some(slots);
+        } else if slots & slots::UPPER_BODY != 0 {
+            continue;
+        }
+        worn.retain(|(_, s)| s & slots == 0);
+        worn.push((best, slots));
+    }
+    worn.into_iter().map(|(item, _)| item).collect()
+}
+
+/// The best armour among `candidates` for a body slot
+/// (`InventoryChanges::GetBestArmor` (Xbox PDB), `004c8220`): of those
+/// covering it (`BMDT` slot bit, `00480af0`), the highest damage
+/// resistance (`DNAM` u16 at 0 ÷ 100, `004be080`, truncated: the FPU's
+/// control word | 0xc00) × the condition factor (`00646360` →
+/// `00646d40`, given the item's health: 1 above 0.5, so for any item at
+/// its full `DATA` health of 1 or more) + damage threshold (`DNAM` f32
+/// at 4, `004be180`); the first of equals. For what a person carries in
+/// the game state (a companion after trading) see
+/// [`crate::companions::best_armour`], the same function.
+// Translated from 004c8220 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn best_armour(order: &LoadOrder, candidates: &[FormId], slot: u32) -> Option<FormId> {
+    let mut best: Option<(FormId, f32)> = None;
+    for &item in candidates {
+        let Some(armor) = Armor::load(order, item) else {
+            continue;
+        };
+        if armor.slots & (1 << slot) == 0 {
+            continue;
+        }
+        let Some(record) = order.get(item).and_then(|r| r.record().ok()) else {
+            continue;
+        };
+        let dnam = record
+            .get(FourCC::new(b"DNAM"))
+            .map(|s| s.data.clone())
+            .unwrap_or_default();
+        let dr = if dnam.len() >= 2 {
+            f32::from(u16::from_le_bytes([dnam[0], dnam[1]])) / 100.0
+        } else {
+            0.0
+        };
+        let dt = if dnam.len() >= 8 {
+            le_f32(&dnam, 4)
+        } else {
+            0.0
+        };
+        let health = record
+            .get(esm::sig::DATA)
+            .filter(|s| s.data.len() >= 8)
+            .map_or(0.0, |s| le_u32(&s.data, 4) as f32);
+        let factor = if health <= 0.5 {
+            1.0 - (0.5 - health)
+        } else {
+            1.0
+        };
+        let score = f32::from(dr.trunc() as i32 as u16) * factor + dt;
+        if best.map_or(true, |(_, b)| b < score) {
+            best = Some((item, score));
+        }
+    }
+    best.map(|(item, _)| item)
+}
+
+/// Which of `items` (in order) are drawn, each with its record: the
+/// clothes and armour that have a model for their sex, the first on a body
+/// slot taking it (the slots of its own model and its addons'). What is
+/// worn is picked by [`pick_worn`].
+pub fn worn_of(
+    order: &LoadOrder,
+    items: impl IntoIterator<Item = FormId>,
+    female: bool,
+) -> Vec<(FormId, Armor)> {
+    let mut covered = 0u32;
+    let mut out = Vec::new();
+    for item in items {
+        let Some(armor) = Armor::load(order, item) else {
+            continue;
+        };
+        if armor.slots & covered != 0 {
+            continue;
+        }
+        let pieces = armor.pieces(female);
+        if pieces.is_empty() {
+            continue;
+        }
+        for (slots, _) in &pieces {
+            covered |= slots;
+        }
+        out.push((item, armor));
+    }
+    out
 }
 
 fn npc_look(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Option<ActorLook> {
@@ -699,15 +870,12 @@ fn npc_look_dressed(
         .or_else(|| zstring(record, MODL))
         .unwrap_or_else(|| "Characters\\_Male\\Skeleton.NIF".into());
 
-    let female = dressing.as_ref().map_or_else(
-        || {
-            traits_record
-                .get(ACBS)
-                .filter(|s| s.data.len() >= 4)
-                .is_some_and(|s| le_u32(&s.data, 0) & FEMALE != 0)
-        },
-        |d| d.female,
-    );
+    let female = dressing.as_ref().and_then(|d| d.female).unwrap_or_else(|| {
+        traits_record
+            .get(ACBS)
+            .filter(|s| s.data.len() >= 4)
+            .is_some_and(|s| le_u32(&s.data, 0) & FEMALE != 0)
+    });
     let race = form(trr, traits_record, RNAM).and_then(|id| Race::load(order, id));
     let hair_tint = traits_record
         .get(HCLR)
@@ -719,21 +887,12 @@ fn npc_look_dressed(
     let mut parts = Vec::new();
     // The NPC's body tint, for the skin pieces of everything below the head.
     let body_tint = body_tint_path(order, trr.form_id, female);
-    let carried = match &dressing {
-        Some(d) => d.worn.iter().map(|&w| (w, 1)).collect(),
-        None => inventory_items(order, irr, inventory_record),
+    let carried: Vec<FormId> = match &dressing {
+        Some(d) => d.worn.to_vec(),
+        None => pick_worn(order, &inventory_entries(order, irr, inventory_record)),
     };
-    for &(item, _) in &carried {
-        let Some(armor) = Armor::load(order, item) else {
-            continue;
-        };
-        if armor.slots & covered != 0 {
-            continue;
-        }
+    for (_, armor) in worn_of(order, carried.iter().copied(), female) {
         let pieces = armor.pieces(female);
-        if pieces.is_empty() {
-            continue;
-        }
         let facegen = armor.pieces_facegen(female);
         for ((slots, model), facegen) in pieces.into_iter().zip(facegen) {
             covered |= slots;
@@ -857,7 +1016,7 @@ fn npc_look_dressed(
     // `Weapon` node.
     let weapon = match &dressing {
         Some(d) => d.weapon,
-        None => best_weapon(order, &carried),
+        None => best_weapon(order, &inventory_items(order, irr, inventory_record)),
     }
     .and_then(|item| held_weapon(order, &skeleton, item));
     if let Some((model, _)) = &weapon {
@@ -941,13 +1100,31 @@ fn face(record: &Record, race: Option<&Face>) -> Option<Face> {
 /// everything: Sunny Smiles' `WithAmmoNVVarmintRifleLoot` is the rifle and
 /// its rounds), as a new game first draws them.
 fn inventory_items(order: &LoadOrder, rr: &RecordRef<'_>, record: &Record) -> Vec<(FormId, i32)> {
-    let mut out = Vec::new();
-    for entry in record.get_all(CNTO).filter(|s| s.data.len() >= 8) {
-        let id = rr.plugin.to_global(FormId(le_u32(&entry.data, 0)));
-        let count = le_u32(&entry.data, 4) as i32;
-        out.extend(crate::leveled::resolve_first(order, id, count.max(1), 1));
-    }
-    out
+    inventory_entries(order, rr, record)
+        .into_iter()
+        .flat_map(|(_, items)| items)
+        .collect()
+}
+
+/// [`inventory_items`] by the record's entry each came from: the entry
+/// (`CNTO`: an item or a leveled list) and what it gives.
+pub(crate) fn inventory_entries(
+    order: &LoadOrder,
+    rr: &RecordRef<'_>,
+    record: &Record,
+) -> Vec<(FormId, Vec<(FormId, i32)>)> {
+    record
+        .get_all(CNTO)
+        .filter(|s| s.data.len() >= 8)
+        .map(|entry| {
+            let id = rr.plugin.to_global(FormId(le_u32(&entry.data, 0)));
+            let count = le_u32(&entry.data, 4) as i32;
+            (
+                id,
+                crate::leveled::resolve_first(order, id, count.max(1), 1),
+            )
+        })
+        .collect()
 }
 
 /// What a person's base record carries (from its template when its

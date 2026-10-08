@@ -325,6 +325,133 @@ pub(crate) fn first_met_past(
     }
 }
 
+/// Someone's collision radius for a swing's gap (`008be420`, as
+/// `fighting::Kit` reads it): people [`world::combat_ai::PERSON_RADIUS`],
+/// a creature its skeleton's bound (25 × its scale without one).
+fn swing_radius(order: &esm::LoadOrder, who: FormId, rig: Option<(&Walker, &ActorRig)>) -> f32 {
+    if world::combat::creature_reach(order, who).is_none() {
+        return world::combat_ai::PERSON_RADIUS;
+    }
+    match rig {
+        Some((w, r)) => match r.skeleton.bound {
+            Some(b) => world::combat_ai::creature_radius(b.half_extents, w.scale),
+            None => 25.0 * w.scale,
+        },
+        None => 25.0,
+    }
+}
+
+/// Someone's bounds' bottom and top for a swing's gap (`009a64d0`, vtable
+/// `+0x1d8`/`+0x1dc`): their base's `OBND` z (`world::npc_aim::bound_z`).
+/// A base without `OBND` is given zero bounds: unresolved guess, the empty
+/// bound object's value isn't traced.
+fn melee_bound_z(order: &esm::LoadOrder, base: FormId) -> [f32; 2] {
+    world::npc_aim::bound_z(order, base).unwrap_or([0.0; 2])
+}
+
+/// Whether someone swims (actor `+0x14d`, as `IsSwimming` reads it).
+fn melee_swimming(state: &world::scripting::GameState, who: FormId) -> bool {
+    state.more.seen.get(&who).is_some_and(|s| s.swimming)
+}
+
+/// Whom the player's swing meets (`Actor::MeleeAttack`, `00899200`):
+/// the person or creature [`world::melee::find_target`] picks
+/// (`009a60e0`: within reach of the gap between the bodies and the hit
+/// cone, nearest its middle), when the collider doesn't stand between
+/// the eye and their middle (`0088b880`); the body part the view's ray
+/// meets on them within 200 units (`009b6620`), if any. Without one, a
+/// scripted object along the view within reach (the game's object hit,
+/// `008ae660`, isn't traced further).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn melee_met(
+    order: &esm::LoadOrder,
+    state: &world::scripting::GameState,
+    caches: &mut PlayerAttack,
+    (talkers, cell_scripts, collision, rigs): (
+        &Talkers,
+        &CellScripts,
+        &CellCollision,
+        &Query<(&Walker, &ActorRig)>,
+    ),
+    (eye, dir): ([f32; 3], [f32; 3]),
+    swing: &world::melee::Swing,
+    reach: f32,
+    now: f32,
+) -> Met {
+    // A body its critical stage ended has no collision left (`008a1a70` →
+    // `0057b520(0)`, `world::more_functions::body_gone`): no swing meets it.
+    let near: Vec<world::melee::Body> = talkers
+        .0
+        .iter()
+        .filter(|t| !world::more_functions::body_gone(state, t.reference))
+        .map(|t| {
+            let rig = rigs.iter().find(|(w, _)| w.reference == t.reference);
+            world::melee::Body {
+                reference: t.reference,
+                position: rig.map_or(t.position, |(w, _)| w.position),
+                radius: swing_radius(order, t.reference, rig),
+                bound_z: melee_bound_z(order, t.base),
+                swimming: melee_swimming(state, t.reference),
+                dead: state.dead.contains(&t.reference),
+            }
+        })
+        .collect();
+    if let Some(b) = world::melee::find_target(swing, None, &near)
+        .and_then(|r| near.iter().find(|b| b.reference == r))
+    {
+        let base = talkers
+            .0
+            .iter()
+            .find(|t| t.reference == b.reference)
+            .map(|t| t.base)
+            .unwrap_or(b.reference);
+        let (radius, height) = *caches
+            .bodies
+            .entry(base)
+            .or_insert_with(|| body(order, base));
+        let middle = [b.position[0], b.position[1], b.position[2] + height * 0.5];
+        let to = [middle[0] - eye[0], middle[1] - eye[1], middle[2] - eye[2]];
+        let distance = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2])
+            .sqrt()
+            .max(1e-3);
+        let toward = to.map(|v| v / distance);
+        let blocked = cast(collision, (eye, toward), distance, true)
+            .is_some_and(|(d, _)| d < distance - radius);
+        if !blocked {
+            let data = caches.body_parts(order, b.reference);
+            let rig = rigs.iter().find(|(w, _)| w.reference == b.reference);
+            let cylinder = ray_body(eye, dir, b.position, radius, height);
+            let part = ray_actor(rig, data.as_deref(), (eye, dir), cylinder, true, now)
+                .filter(|(d, _)| *d <= 200.0)
+                .and_then(|(_, bone)| bone.zip(rig).zip(data.as_deref()))
+                .and_then(|((bone, (_, rig)), data)| data.part_of_bone(&rig.skeleton.bones, bone));
+            return Met::Thing {
+                distance,
+                reference: b.reference,
+                part,
+            };
+        }
+    }
+    match first_met(
+        order,
+        state,
+        caches,
+        talkers,
+        cell_scripts,
+        collision,
+        rigs,
+        (eye, dir),
+        reach,
+        true,
+        now,
+    ) {
+        Met::Thing { reference, .. } if talkers.0.iter().any(|t| t.reference == reference) => {
+            Met::Nothing(false)
+        }
+        met => met,
+    }
+}
+
 /// Where a shot or blow along `(eye, dir)` meets the collider within
 /// `reach`. Shots are cast on Havok's projectile layer (6): the game's
 /// collision filter (`physics::layers`, `00c84930` for casts) lets them
@@ -362,6 +489,34 @@ pub(crate) fn meetable(
     r.script.is_some()
         && r.trigger.is_none()
         && world::enabled_now(order, r.reference, &state.disabled)
+        // A body its critical stage ended has its collision taken out
+        // (`008a1a70` → `0057b520(0)`) and its 3D culled (`00450f90(1)`,
+        // `world::more_functions::body_gone`): nothing left to meet.
+        && !world::more_functions::body_gone(state, r.reference)
+}
+
+/// The player's critical on someone alive (`0089a760`): "Sneak Attack
+/// Critical on <name>" (hit flag 0x400) or "Critical Strike on <name>",
+/// with the very happy Vault Boy.
+pub(crate) fn critical_message(
+    order: &esm::LoadOrder,
+    state: &world::scripting::GameState,
+    messages: &mut crate::hud::HudMessages,
+    target: FormId,
+    sneak_attack: bool,
+) {
+    let (setting, exe) = if sneak_attack {
+        ("sSneakAttackCriticalStrike", "Sneak Attack Critical on")
+    } else {
+        ("sCriticalStrike", "Critical Strike on")
+    };
+    let words =
+        world::scripting::game_setting_text(order, setting).unwrap_or_else(|| exe.to_string());
+    let name = world::script_functions::full_name(order, state, target).unwrap_or_default();
+    messages.queue.push(crate::hud::HudMessage::with_icon(
+        format!("{words} {name}"),
+        Some(CRITICAL_ICON),
+    ));
 }
 
 /// Says what a hit did, as the attacks print it.
@@ -393,6 +548,17 @@ pub(crate) fn tell_hit(
         if hurt.dropped.is_some() {
             said.push_str("; dropped their weapon");
         }
+        if hurt.staggered {
+            said.push_str("; staggered");
+        }
+    }
+    if hit.knocked_down {
+        said.push_str("; knocked down");
+    }
+    // Fatigue damage (`world::fatigue`): fists' half, a bean bag's.
+    if hit.fatigue > 0.0 {
+        let fatigue = world::fatigue::fatigue(order, state, target).unwrap_or(0.0);
+        said.push_str(&format!("; fatigue {:.1} ({fatigue:.1} left)", hit.fatigue));
     }
     said
 }
@@ -958,6 +1124,26 @@ pub fn player_attack(
             unarmed,
         );
     }
+    // An unarmed attack may become an uppercut or a cross by the Unarmed
+    // skill (`world::melee::unarmed_special_group`, `00893a40`).
+    if melee_out && world::melee::may_turn_special(weapon.as_ref(), true, sneaking, false) {
+        let skill = world::scripting::Facts {
+            order,
+            state,
+            speaker: None,
+        }
+        .current_actor_value(PLAYER_REF, world::combat::av::UNARMED)
+        .unwrap_or(0.0) as f32;
+        let roll = (state.roll() % 1_000_000) as f32 / 10_000.0;
+        let specials = world::melee::UnarmedSpecials::read(order);
+        if let Some(g) = world::melee::unarmed_special_group(&specials, skill, roll) {
+            group = g;
+            println!(
+                "Unarmed special: {}.",
+                world::melee::group_file_stem(g).unwrap_or_default()
+            );
+        }
+    }
     attack.attack_group = group;
     attack.power = melee_out && world::animation::kind_of(group) == 6;
     if attack.power {
@@ -1021,10 +1207,32 @@ pub fn player_attack(
     };
     let pellet = weapon.clone().map(|mut w| {
         w.damage /= count as f32;
+        // The ammunition's own projectile when it names one (the rockets'
+        // HE and HV loads, `world::combat::fired_projectile`).
+        if !melee {
+            w.projectile = world::combat::fired_projectile(order, state, PLAYER_REF, &w);
+        }
         w
     });
     let heading = view[0].atan2(view[1]);
     let pitch = view[2].clamp(-1.0, 1.0).asin();
+    // A swing (`world::melee`, `008990f0`): from the player's feet, facing
+    // the view, the weapon's reach, the cone of the attack playing.
+    let cones = world::melee::Cones::read(order);
+    let swing = melee.then(|| world::melee::Swing {
+        at: player.character.feet,
+        heading,
+        radius: physics::CharacterShape::PLAYER.radius,
+        bound_z: melee_bound_z(order, world::dialogue::PLAYER_BASE),
+        swimming: melee_swimming(state, PLAYER_REF),
+        slope_difference: world::scripting::game_setting(order, "fAICombatSlopeDifference")
+            .unwrap_or(48.0),
+        reach: world::melee::swing_reach(order, weapon.as_ref(), 1.0, false),
+        cone: cones.for_attack(attack.attack_group),
+        dead_mult: cones.dead_mult,
+        player: true,
+        vats_playback: false,
+    });
     for _ in 0..count {
         // Within the cone, uniform in the angle off the view (so shots
         // bunch toward the middle), as the game does: r = U(0, cone), θ =
@@ -1034,20 +1242,43 @@ pub fn player_attack(
         let theta = std::f32::consts::TAU * unit(state.roll());
         let (h, p) = (heading + r * theta.cos(), pitch + r * theta.sin());
         let dir = [h.sin() * p.cos(), h.cos() * p.cos(), p.sin()];
-        // The nearest thing met: how far, who, and the body part.
-        let met = first_met(
-            order,
-            state,
-            &mut attack,
-            &talkers,
-            &cell_scripts,
-            &collision,
-            &rigs,
-            (eye, dir),
-            reach,
-            melee,
-            now,
-        );
+        // A plasma bolt (a missile that isn't hitscan) flies from the eye
+        // and strikes on its way (`bolts`); beams and bullets strike now.
+        if let Some(bolt) = pellet
+            .as_ref()
+            .filter(|w| !melee && crate::bolts::flies(order, w))
+        {
+            crate::bolts::fire(order, state, PLAYER_REF, bolt, (eye, dir));
+            continue;
+        }
+        // The nearest thing met: how far, who, and the body part; a swing
+        // finds its target by the game's rule (`melee_met`).
+        let met = if let Some(swing) = swing.as_ref() {
+            melee_met(
+                order,
+                state,
+                &mut attack,
+                (&talkers, &cell_scripts, &collision, &rigs),
+                (eye, dir),
+                swing,
+                reach,
+                now,
+            )
+        } else {
+            first_met(
+                order,
+                state,
+                &mut attack,
+                &talkers,
+                &cell_scripts,
+                &collision,
+                &rigs,
+                (eye, dir),
+                reach,
+                melee,
+                now,
+            )
+        };
         // A shot striking the world: its impact (`hiteffects`).
         let struck = cast(&collision, (eye, dir), reach, melee);
         let gun = weapon.as_ref().filter(|w| !w.is_melee()).map(|w| w.form_id);
@@ -1101,28 +1332,24 @@ pub fn player_attack(
         // A power attack's damage × `fDamagePowerAttackBonus`, not while
         // sneaking (`009b5170`, `world::melee::power_attack_mult`).
         let power = attack.power && !state.player_sneaking;
-        let hit = Runner::new(order, &scripts.0, state).strike_at(
+        // An unarmed uppercut or cross (`world::melee::special_of`).
+        let special = if melee {
+            world::melee::special_of(weapon.as_ref(), attack.attack_group)
+        } else {
+            world::melee::Special::None
+        };
+        let hit = Runner::new(order, &scripts.0, state).blow_at(
             PLAYER_REF,
             target,
             pellet.as_ref(),
             part,
-            power,
+            world::melee::Blow { power, special },
         );
         // The player's critical on someone alive (`0089a760`): "Sneak Attack
         // Critical on <name>" (hit flag 0x400) or "Critical Strike on
         // <name>", with the very happy Vault Boy.
         if hit.as_ref().is_some_and(|h| h.critical) && alive {
-            let (setting, exe) = if sneak_attack {
-                ("sSneakAttackCriticalStrike", "Sneak Attack Critical on")
-            } else {
-                ("sCriticalStrike", "Critical Strike on")
-            };
-            let words = world::scripting::game_setting_text(order, setting)
-                .unwrap_or_else(|| exe.to_string());
-            let name = world::script_functions::full_name(order, state, target).unwrap_or_default();
-            messages
-                .with_icon
-                .push((format!("{words} {name}"), CRITICAL_ICON.to_string()));
+            critical_message(order, state, &mut messages, target, sneak_attack);
         }
         let Some(hit) = hit else {
             // An object (a scripted bottle): its impact where the shot
@@ -1257,6 +1484,7 @@ mod tests {
             base: 0x1235,
             position: [0.0; 3],
             female: false,
+            look: None,
         };
         let rig = ActorRig::new(skeleton, 1.0, 0.0);
         let part = |name: &str, node: &str, kind: u8| {
@@ -1287,6 +1515,39 @@ mod tests {
             ragdoll: None,
         };
         (Walker::new(&actor), rig, data)
+    }
+
+    #[test]
+    fn a_body_its_critical_stage_culled_offers_the_crosshair_nothing() {
+        use bevy::ecs::system::RunSystemOnce;
+        // 008a1a70: stages 2 and 4 take the collision out (0057b520(0)).
+        let (walker, mut rig, _) = person(true);
+        let who = walker.reference;
+        assert!(rig.go_limp(0.0, walker.placement(), None, None));
+        let mut app = World::new();
+        app.spawn((walker, rig));
+        let shapes = |stage: Option<i32>| {
+            let mut state = world::scripting::GameState::default();
+            state.dead.insert(who);
+            if let Some(s) = stage {
+                state.more.critical_stage.insert(who, s);
+            }
+            move |rigs: Query<(&Walker, &ActorRig)>| {
+                let talkers = Talkers(vec![crate::dialogue::Talker {
+                    reference: who,
+                    base: FormId(0x1235),
+                    position: [0.0; 3],
+                }]);
+                crate::crosshair::people_shapes(&talkers, &state, &rigs).len()
+            }
+        };
+        // Dead, whole: the ragdoll's one body.
+        assert_eq!(app.run_system_once(shapes(None)).unwrap(), 1);
+        // Disintegrated or gooed: nothing.
+        let end = world::more_functions::DISINTEGRATE_END;
+        assert_eq!(app.run_system_once(shapes(Some(end))).unwrap(), 0);
+        let goo = world::more_functions::GOO_END;
+        assert_eq!(app.run_system_once(shapes(Some(goo))).unwrap(), 0);
     }
 
     #[test]

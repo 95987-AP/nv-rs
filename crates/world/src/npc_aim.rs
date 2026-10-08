@@ -84,12 +84,19 @@ pub fn fire_height(height: f32) -> f32 {
 /// An actor's height as the aim reads it (`008853a0`): its base's bounds
 /// (`OBND` top − bottom) × its scale.
 pub fn actor_height(order: &LoadOrder, base: FormId, scale: f32) -> Option<f32> {
+    let [bottom, top] = bound_z(order, base)?;
+    Some(((top - bottom) * scale).max(0.0)).filter(|h| *h > 0.0)
+}
+
+/// The bottom and top of an actor's bounds (vtable `+0x1d8` min and
+/// `+0x1dc` max, z): its base's `OBND` z1 and z2, unscaled.
+pub fn bound_z(order: &LoadOrder, base: FormId) -> Option<[f32; 2]> {
     let record = order.get(base)?.record().ok()?;
     let s = record
         .get(FourCC::new(b"OBND"))
         .filter(|s| s.data.len() >= 12)?;
     let z = |i: usize| f32::from(i16::from_le_bytes([s.data[i * 2], s.data[i * 2 + 1]]));
-    Some(((z(5) - z(2)) * scale).max(0.0)).filter(|h| *h > 0.0)
+    Some([z(2), z(5)])
 }
 
 /// A weapon's sight usage (`DNAM` f32 at 124; the weapon's `+0x170`, read

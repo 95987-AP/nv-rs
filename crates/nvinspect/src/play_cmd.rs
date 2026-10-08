@@ -1118,6 +1118,7 @@ pub fn play(
                 title,
                 text,
                 buttons,
+                ..
             } => format!(
                 "message: {}{}{}",
                 title.as_ref().map(|t| format!("{t}: ")).unwrap_or_default(),
@@ -1129,10 +1130,23 @@ pub fn play(
                     format!(" [{}]", b.join(" | "))
                 }
             ),
+            Event::Popup { title, text, .. } => format!(
+                "box: {}{}",
+                title.as_ref().map(|t| format!("{t}: ")).unwrap_or_default(),
+                text.replace(['\r', '\n'], " ")
+            ),
             Event::CharacterMenu(m) => format!("character menu opened: {m:?}"),
             Event::Barter(m) => format!("trading with {}", describe_id(order, *m)),
             Event::KnockedOut { who } => format!("{} is down", describe_id(order, *who)),
             Event::GotUp { who } => format!("{} gets up", describe_id(order, *who)),
+            Event::Flees { who, to } => match to {
+                Some(to) => format!(
+                    "{} flees to {}",
+                    describe_id(order, *who),
+                    describe_id(order, *to)
+                ),
+                None => format!("{} flees", describe_id(order, *who)),
+            },
             Event::RecipeMenu { actor, category } => format!(
                 "crafting ({}) for {}",
                 describe_id(order, *category),
@@ -1141,6 +1155,7 @@ pub fn play(
             Event::TeammateContainer(m) => {
                 format!("trading things with {}", describe_id(order, *m))
             }
+            Event::BackUp(m) => format!("{} steps back from the player", describe_id(order, *m)),
             Event::Caravan {
                 npc,
                 deck,
@@ -1154,6 +1169,7 @@ pub fn play(
             Event::RepairServices(m) => {
                 format!("{}'s repair services", describe_id(order, *m))
             }
+            Event::TutorialMenu(m) => format!("the tutorial menu: {}", describe_id(order, *m)),
             Event::Casino {
                 game,
                 casino,
@@ -1259,6 +1275,14 @@ pub fn play(
                 if *completed { "completed" } else { "shown" },
                 describe_id(order, *quest)
             ),
+            Event::QuestText(t) => match t {
+                world::quest_text::QuestText::Quest { quest, update } => {
+                    format!("quest {update:?}: {}", describe_id(order, *quest))
+                }
+                world::quest_text::QuestText::Custom(c) => {
+                    format!("quest text: {} / {}", c.title, c.subtitle)
+                }
+            },
         });
     }
     writeln!(out, "\nWhat happened ({} events):", lines.len())?;

@@ -7,6 +7,7 @@ name = "assets"
 version = "0.1.0"
 dependencies = [
  "bsa",
+ "testdata",
 ]
 
 [[package]]
@@ -46,6 +47,13 @@ dependencies = [
 [[package]]
 name = "esm"
 version = "0.1.0"
+dependencies = [
+ "testdata",
+]
+
+[[package]]
+name = "fos"
+version = "0.1.0"
 
 [[package]]
 name = "mp3"
@@ -68,6 +76,7 @@ dependencies = [
  "cellview",
  "dds",
  "esm",
+ "fos",
  "mp3",
  "nif",
  "physics",
@@ -139,6 +148,7 @@ name = "world"
 version = "0.1.0"
 dependencies = [
  "esm",
+ "fos",
  "nif",
  "script",
  "testdata",

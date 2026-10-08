@@ -42,9 +42,8 @@
 //! * a line said (`007573d0` → `00757690`): on the subtitle (12) until
 //!   its voice ends, or its length × `fNoticeTextTimePerCharacter` (0.06)
 //!   seconds without one; the update (`00755480`) empties it after.
-//!
-//! Not here: choosing a slice with the pad's stick (`00755480`,
-//! `00755c50`).
+//! * the pad's left stick (`00755480` → `00755c50`, [`CompanionWheelMenu::
+//!   stick`]): a slice chosen by the stick's angle.
 
 use crate::menu::{self, MenuCode};
 use crate::names::t;
@@ -326,6 +325,41 @@ impl CompanionWheelMenu {
         }
     }
 
+    /// The pad's left stick (`00755480`, each frame while the wheel is the
+    /// top menu and the pad is what's in use): XInput's state before this
+    /// frame's read (`011d8a54`) and now (`011d8a6c`), each (x, y) with y
+    /// up. When the earlier y or the present x is past the deadzone
+    /// (7849, XInput's left-stick one) the earlier (x, y) gives an angle
+    /// as the pointer's would ([`menu::slice_angle`] of x and −y: 0 up,
+    /// clockwise), and `00755c50` moves it out of the gaps above and below
+    /// (0 to 30° → 0.55, 150 to 180° → 2.6, 180 to 210° → 3.7, from 330°
+    /// → 5.7 radians) and chooses the radial tile (of ids 0 to 15) whose
+    /// `user2` ≤ angle < `user3`.
+    ///
+    /// Translated from 00755480, 00755c50 (decompiled, FalloutNV.exe
+    /// 1.4.0.525).
+    pub fn stick(&mut self, ui: &mut Ui, before: (i16, i16), now: (i16, i16)) {
+        if self.closed
+            || (i32::from(before.1).abs() <= STICK_DEADZONE
+                && i32::from(now.0).abs() <= STICK_DEADZONE)
+        {
+            return;
+        }
+        let angle = menu::slice_angle(f32::from(before.0), -f32::from(before.1));
+        let angle = stick_angle(angle);
+        for id in 0..TILE_COUNT as i32 {
+            let Some(tile) = self.tile(id) else { continue };
+            if ui.tiles[tile].kind != crate::names::kind::RADIAL {
+                continue;
+            }
+            let (from, to) = (ui.number(tile, t::USER0 + 2), ui.number(tile, t::USER0 + 3));
+            if from <= angle && angle < to {
+                self.choose(ui, id, false);
+                return;
+            }
+        }
+    }
+
     /// Closes it (`00755270`); `Talk` follows when asked for (`00754c60`).
     pub fn close(&mut self, ui: &mut Ui) {
         if self.closed {
@@ -468,6 +502,26 @@ impl MenuCode for CompanionWheelMenu {
 /// The B button's code: Exit (`007556b0`).
 pub const LEAVE: i32 = 10;
 
+/// The left stick's deadzone the wheel uses (`00755480`: 0x1ea9).
+pub const STICK_DEADZONE: i32 = 7849;
+
+/// `00755c50`: a stick's angle (radians, 0 up, clockwise) moved out of the
+/// gaps between the wheel's halves to their nearest slice.
+#[allow(clippy::approx_constant)]
+pub fn stick_angle(angle: f32) -> f32 {
+    if (0.0..0.523598).contains(&angle) {
+        0.55
+    } else if (2.61799..3.14159).contains(&angle) {
+        2.6
+    } else if (3.14159..3.665186).contains(&angle) {
+        3.7
+    } else if angle >= 5.759578 {
+        5.7
+    } else {
+        angle
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,6 +622,36 @@ mod tests {
         let none = |t: Option<TileId>| !m.tiles[..8].contains(&t);
         assert!(none(at(&mut ui, 0.1, 200.0)));
         assert!(none(at(&mut ui, 0.8, 40.0)));
+    }
+
+    /// The pad's stick (`00755480`, `00755c50`): pushed up and right,
+    /// slice 0; down and left, slice 4; straight up is moved into slice 0
+    /// (0.55 rad), straight down into slice 4's side (3.7); within the
+    /// deadzone nothing; only the earlier frame's y and the present x are
+    /// looked at for that.
+    #[test]
+    fn choosing_with_the_stick() {
+        let (mut ui, mut m) = opened(Switches::default());
+        let s = |a: f32, r: f32| ((r * a.sin()) as i16, (r * a.cos()) as i16);
+        m.stick(&mut ui, s(0.8, 20000.0), (0, 0));
+        assert_eq!(m.selected, AGGRESSIVE);
+        m.stick(&mut ui, s(3.9, 20000.0), (0, 0));
+        assert_eq!(m.selected, BACK_UP);
+        m.stick(&mut ui, (0, 20000), (0, 0));
+        assert_eq!(m.selected, AGGRESSIVE);
+        m.stick(&mut ui, (0, -20000), (0, 0));
+        assert_eq!(m.selected, BACK_UP);
+        // Right, but only x past the deadzone in the earlier frame and the
+        // present x not: nothing.
+        m.stick(&mut ui, (20000, 0), (0, 0));
+        assert_eq!(m.selected, BACK_UP);
+        // With the present x past it, the earlier (x, y) counts: straight
+        // right is 1.57075, just inside slice 1 (to 1.5707943).
+        m.stick(&mut ui, (20000, 0), (20000, 0));
+        assert_eq!(m.selected, STIMPAK);
+        assert_eq!(stick_angle(0.1), 0.55);
+        assert_eq!(stick_angle(6.0), 5.7);
+        assert_eq!(stick_angle(1.0), 1.0);
     }
 
     /// `007552e0` and its buttons; `007556b0`'s keys.

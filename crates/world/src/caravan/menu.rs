@@ -282,6 +282,29 @@ pub const HELP_DECK: &str = "HelpCaravanDeckBuilding";
 pub const HELP_STARTING: &str = "HelpCaravanStartingCaravans";
 pub const HELP_CONTRACT_WAR: &str = "HelpCaravanContractWar";
 
+/// A tutorial's id (`world::tutorial`): the menu looks its message up by
+/// editor ID and marks the id shown (`00741060`, `00741500`).
+pub fn tutorial_id(name: &str) -> Option<u8> {
+    use crate::tutorial::id;
+    Some(match name {
+        HELP_BETTING => id::CARAVAN_BET,
+        HELP_DECK => id::CARAVAN_DECK,
+        HELP_STARTING => id::CARAVAN_TRACK,
+        HELP_CONTRACT_WAR => id::CARAVAN_GAME,
+        _ => return None,
+    })
+}
+
+/// A stick axis as `DoIdle` reads it: within 7849 of the middle 0, else
+/// the raw value (−32768..32767) over 32767.
+pub fn stick_axis(raw: i32) -> f32 {
+    if (raw as f32).abs() <= 7849.0 {
+        0.0
+    } else {
+        raw as f32 / 32767.0
+    }
+}
+
 /// The most cards a deck can hold (`UpdateCaravanFlags`: Add off above 107).
 pub const MAX_DECK: usize = 108;
 
@@ -338,6 +361,16 @@ pub struct Menu {
     pub chosen: usize,
     pub steps: i32,
     pub drag_from: Option<usize>,
+    /// A mouse drag being followed (`+0xe85`), from the scrollbar's value
+    /// when it began (`drag_from`, `+0xaf8`).
+    pub dragging: bool,
+    /// A pad in use (`004b71d0`): its left stick read, the mouse's drags
+    /// not.
+    pub pad: bool,
+    /// The pad's left stick this update (`DoIdle`'s start): x right and y
+    /// down, each the raw value over 32767, 0 within 7849 of the middle
+    /// ([`stick_axis`]).
+    pub stick: [f32; 2],
     /// The game.
     pub game: Option<Game>,
     /// The hand card chosen (`iSelectedDeckCard`), where a card goes
@@ -420,6 +453,9 @@ impl Menu {
             chosen: FIRST_CHOSEN,
             steps: 0,
             drag_from: None,
+            dragging: false,
+            pad: false,
+            stick: [0.0; 2],
             game: None,
             hand_card: 0,
             track: 0,
@@ -726,6 +762,23 @@ impl Menu {
         match self.screen {
             Screen::Ante => self.update_flags(),
             Screen::Deck => {
+                // The stick first, without the arrows' guard: a card on
+                // its way (the scrollbar's value plus x / |x|), the right
+                // way forward.
+                let x = self.stick[0];
+                if self.pad && x != 0.0 {
+                    let v = (self.chosen as f32 + x / x.abs()) as i32;
+                    if v >= 0 && (v as usize) < self.cards.len() {
+                        self.chosen = v as usize;
+                        self.steps = 1;
+                        self.state = if x <= 0.0 {
+                            state::DECK_BACK
+                        } else {
+                            state::DECK_FORWARD
+                        };
+                        return;
+                    }
+                }
                 // ← and → step through the cards (the 0.25 s guard compares
                 // milliseconds with seconds and never holds them back).
                 let Some(a @ (Arrow::Left | Arrow::Right)) = arrow else {
@@ -747,9 +800,24 @@ impl Menu {
                 }
             }
             Screen::Game => {
-                let Some(a) = arrow else {
-                    return;
+                // The stick, an arrow taking the place of its own axis.
+                let (mut x, mut y) = if self.pad {
+                    (self.stick[0], self.stick[1])
+                } else {
+                    (0.0, 0.0)
                 };
+                if let Some(a) = arrow {
+                    let (ax, ay) = a.xy();
+                    if ax != 0.0 {
+                        x = ax;
+                    }
+                    if ay != 0.0 {
+                        y = ay;
+                    }
+                }
+                if x == 0.0 && y == 0.0 {
+                    return;
+                }
                 if self.has(flag::AI) {
                     return;
                 }
@@ -758,15 +826,14 @@ impl Menu {
                     return;
                 }
                 self.selection_delay = self.elapsed;
-                self.arrow_in_game(a, fx);
+                self.arrow_in_game(x, y, fx);
             }
             Screen::Results => {}
         }
     }
 
-    /// An arrow on the player's turn.
-    fn arrow_in_game(&mut self, a: Arrow, fx: &mut Vec<Effect>) {
-        let (x, y) = a.xy();
+    /// An arrow (or the stick) on the player's turn: `x` right, `y` down.
+    fn arrow_in_game(&mut self, x: f32, y: f32, fx: &mut Vec<Effect>) {
         let Some(g) = &self.game else {
             return;
         };
@@ -1658,6 +1725,25 @@ impl Menu {
         self.update_flags();
     }
 
+    /// The mouse in state 0 without a pad (`DoIdle`): a button held
+    /// (`InterfaceManager::fMouseHeldTime`, +0x48, above 0) starts
+    /// following a drag from the scrollbar's value `bar`; let go on the deck
+    /// screen, the cards move as far as the bar did ([`Menu::meter_release`]).
+    /// (So the bar moved without a button held, by the wheel, moves no
+    /// cards: the next press starts from where it is.)
+    pub fn mouse(&mut self, held: bool, bar: usize) {
+        if self.pad || self.state != state::IDLE {
+            return;
+        }
+        if !held && self.dragging && self.screen == Screen::Deck {
+            self.dragging = false;
+            self.meter_release(bar);
+        } else if !self.dragging && held {
+            self.drag_from = Some(bar);
+            self.dragging = true;
+        }
+    }
+
     /// The deck screen's scrollbar pressed: where a drag starts.
     pub fn meter_press(&mut self) {
         self.drag_from = Some(self.chosen);
@@ -2060,5 +2146,142 @@ mod tests {
         assert_eq!(values, sorted);
         assert_eq!(m.in_deck, 30);
         assert_eq!(m.cards.len(), 33);
+    }
+
+    #[test]
+    fn the_tutorials_are_ids_0x1e_to_0x21() {
+        assert_eq!(tutorial_id(HELP_BETTING), Some(0x1E));
+        assert_eq!(tutorial_id(HELP_DECK), Some(0x1F));
+        assert_eq!(tutorial_id(HELP_STARTING), Some(0x20));
+        assert_eq!(tutorial_id(HELP_CONTRACT_WAR), Some(0x21));
+        assert_eq!(tutorial_id("HelpHacking"), None);
+    }
+
+    /// A menu at the deck screen, idle, with 33 cards.
+    fn at_deck() -> (Menu, u32, Rng) {
+        let mut rng = Rng(5);
+        let mut tick = 0;
+        let mut all = Vec::new();
+        let (mut m, _) = Menu::open(
+            FormId(0x50),
+            cards(30, 0x300),
+            0,
+            &cards(3, 0x100),
+            &cards(30, 0x200),
+            Bet::new(500, 200, 0.5),
+            50.0,
+            &mut |n| rng.next(n),
+        );
+        m.tutorial_done();
+        settle(&mut m, &mut tick, &mut rng, &mut all);
+        m.key('W', &mut |n| rng.next(n));
+        settle(&mut m, &mut tick, &mut rng, &mut all);
+        m.key('F', &mut |n| rng.next(n));
+        settle(&mut m, &mut tick, &mut rng, &mut all);
+        assert_eq!((m.screen, m.state), (Screen::Deck, state::IDLE));
+        (m, tick, rng)
+    }
+
+    /// A button held starts a drag from the bar; let go, the cards move as
+    /// far as the bar did. The bar moved with no button held (the wheel)
+    /// moves nothing, and the next press starts from where it is.
+    #[test]
+    fn the_mouse_drags_from_where_the_bar_was_pressed() {
+        let (mut m, _, _) = at_deck();
+        let start = m.chosen;
+        m.mouse(true, start);
+        assert!(m.dragging);
+        m.mouse(true, start + 1);
+        m.mouse(false, start + 2);
+        assert!(!m.dragging);
+        assert_eq!(
+            (m.state, m.steps, m.chosen),
+            (state::DECK_FORWARD, 2, start + 2)
+        );
+        let (mut m, _, _) = at_deck();
+        let start = m.chosen;
+        // The wheel: no button, nothing.
+        m.mouse(false, start + 3);
+        assert_eq!((m.state, m.chosen), (state::IDLE, start));
+        m.mouse(true, start + 3);
+        m.mouse(false, start + 3);
+        assert_eq!((m.state, m.chosen), (state::IDLE, start + 3));
+        // Five or more: one fast move; back four, a step each.
+        let (mut m, _, _) = at_deck();
+        let start = m.chosen;
+        m.mouse(true, start);
+        m.mouse(false, start + 6);
+        assert_eq!(m.state, state::DECK_FAST_FORWARD);
+        let (mut m, _, _) = at_deck();
+        let start = m.chosen;
+        m.mouse(true, start);
+        m.mouse(false, start - 4);
+        assert_eq!((m.state, m.steps), (state::DECK_BACK, 4));
+        // With a pad the mouse's drags aren't followed.
+        let (mut m, _, _) = at_deck();
+        m.pad = true;
+        m.mouse(true, 0);
+        assert!(!m.dragging);
+    }
+
+    /// The pad's left stick: past the dead zone a card a step on the deck
+    /// screen, and on the player's turn the hand card as the arrows choose
+    /// it.
+    #[test]
+    fn the_stick_steps_through_the_cards() {
+        assert_eq!(stick_axis(7849), 0.0);
+        assert_eq!(stick_axis(-7849), 0.0);
+        assert!((stick_axis(16384) - 0.5).abs() < 1e-3);
+        assert!((stick_axis(-32768) + 1.0).abs() < 1e-3);
+        let (mut m, mut tick, mut rng) = at_deck();
+        let start = m.chosen;
+        m.pad = true;
+        m.stick = [0.4, 0.0];
+        tick += 16;
+        m.update(tick, &Half, &mut |n| rng.next(n));
+        assert_eq!(
+            (m.state, m.steps, m.chosen),
+            (state::DECK_FORWARD, 1, start + 1)
+        );
+        // Without a pad the stick isn't read.
+        let (mut m, mut tick, mut rng) = at_deck();
+        m.stick = [0.4, 0.0];
+        tick += 16;
+        m.update(tick, &Half, &mut |n| rng.next(n));
+        assert_eq!(m.state, state::IDLE);
+        // Left at the first card: nothing.
+        let (mut m, mut tick, mut rng) = at_deck();
+        m.pad = true;
+        m.chosen = 0;
+        m.stick = [-0.9, 0.0];
+        tick += 16;
+        m.update(tick, &Half, &mut |n| rng.next(n));
+        assert_eq!((m.state, m.chosen), (state::IDLE, 0));
+    }
+
+    /// On the player's turn the stick chooses the hand card as the arrows
+    /// do (right: the next one).
+    #[test]
+    fn the_stick_chooses_hand_cards() {
+        let (mut m, mut tick, mut rng) = at_deck();
+        let mut all = Vec::new();
+        m.key('F', &mut |n| rng.next(n));
+        settle(&mut m, &mut tick, &mut rng, &mut all);
+        assert_eq!(m.screen, Screen::Game);
+        let before = m.hand_card;
+        let n = m.game.as_ref().unwrap().player_hand.len();
+        m.pad = true;
+        m.stick = [0.0, 0.0];
+        // Past the quarter-second guard.
+        for _ in 0..40 {
+            tick += 16;
+            m.update(tick, &Half, &mut |n| rng.next(n));
+        }
+        assert_eq!(m.hand_card, before);
+        m.stick = [0.6, 0.0];
+        tick += 16;
+        let fx = m.update(tick, &Half, &mut |n| rng.next(n));
+        assert_eq!(m.hand_card, (before + 1) % n);
+        assert!(fx.contains(&Effect::Sound("GAMECaravanSwitchCard")));
     }
 }

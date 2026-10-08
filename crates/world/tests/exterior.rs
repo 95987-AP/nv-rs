@@ -80,6 +80,31 @@ fn map_markers_are_found_nearby_and_travelled_to() {
     assert!(world::map::shown(&state, well) && world::map::can_travel(&state, well));
     // Worth `iXPRewardDiscoverMapMarker`, once.
     assert_eq!(world::experience::xp(&state), 10.0);
+    // Announced by the HUD's quest text, not a corner message:
+    // `sDiscoveredText` over the marker's name (`00779070`).
+    let texts: Vec<_> = state
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            world::scripting::Event::QuestText(world::quest_text::QuestText::Custom(c)) => {
+                Some((c.title.clone(), c.subtitle.clone(), c.sound.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        [(
+            "You have discovered".to_string(),
+            testdata::MAP_MARKER_NAME.to_string(),
+            "UIPopUpQuestNew".to_string()
+        )]
+    );
+    // (The only message is the experience, for the XP meter.)
+    assert!(!state.events.iter().any(|e| matches!(
+        e,
+        world::scripting::Event::Message { text, .. } if text.contains(testdata::MAP_MARKER_NAME)
+    )));
 
     // Found markers are kept in a save.
     let (mut state, _) = world::save::load(&world::save::save(&state, None)).unwrap();

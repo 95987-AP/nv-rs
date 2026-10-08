@@ -109,6 +109,15 @@ pub fn open(screen: &mut Screen, game: &Game, state: &mut GameState, request: Me
         recipes,
         making: None,
     })));
+    // The crafting tutorial, once (`00726ff0`: the message by editor ID,
+    // marked as id 0x26; the menu doesn't wait on it).
+    super::tutorial::show_once(
+        screen,
+        game,
+        state,
+        world::tutorial::id::RECIPE,
+        "HelpCrafting",
+    );
 }
 
 /// The right side for a recipe (`00727b10` with a recipe line).
@@ -189,6 +198,11 @@ fn details(
         skill_dim,
         can_make: crafting::can_make(order, state, actor, r, category) > 0,
         icon: r.outputs.first().and_then(|o| icon_of(order, o.item)),
+        // The first product's item card (`00727b10` → `00728da0`).
+        card: r
+            .outputs
+            .first()
+            .map(|o| ui::pipboy::gather::recipe_card(order, state, o.item)),
     }
 }
 

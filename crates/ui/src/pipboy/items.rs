@@ -96,6 +96,22 @@ pub const MOD_ID: i32 = 0x13;
 /// The first tab button's `id` (0x18 Weapons .. 0x1c Ammo, `0077fc10`).
 pub const FIRST_TAB_ID: i32 = 0x18;
 
+/// The help message a tab button asks for as it's pressed, the tab shown
+/// or not (`00780140`): Apparel (0x19) the apparel message (0x23,
+/// 512 ms), Ammo (0x1c) the ammo message (0x24, 500 ms), over ITEMS.
+fn tab_tutorial(id: i32) -> Option<Action> {
+    let (tutorial, delay) = match id {
+        0x19 => (0x23, 512),
+        0x1c => (0x24, 500),
+        _ => return None,
+    };
+    Some(Action::Tutorial {
+        id: tutorial,
+        menu: super::ITEMS_CLASS,
+        delay,
+    })
+}
+
 /// An item's row text (`00782850`): "name (count)" for more than one,
 /// "name+ (count)" when they're a modded weapon.
 pub fn row_text(item: &ItemLine) -> String {
@@ -113,7 +129,9 @@ pub fn row_text(item: &ItemLine) -> String {
 /// 0x3c (weight, value, condition, and the ammunition card holding the
 /// weight class) with DR or DT (0x1 / 0x1000; "--" in DR with neither),
 /// everything else weight and value (0xc), with the effects (0x40) when
-/// it has any (aid, ammunition).
+/// it has any (aid, ammunition, a weapon mod, an enchanted weapon or
+/// piece of apparel; never a modded weapon: `world::item_card::
+/// card_effects` leaves those without).
 pub fn card_mask(item: &ItemLine) -> u32 {
     let mut m = match item.tab {
         ItemTab::Weapons if item.damage.is_some() => 0xc3e,
@@ -134,7 +152,7 @@ pub fn card_mask(item: &ItemLine) -> u32 {
         }
         _ => 0xc,
     };
-    if item.effects.as_deref().is_some_and(|e| !e.is_empty()) && item.tab != ItemTab::Weapons {
+    if item.effects.as_deref().is_some_and(|e| !e.is_empty()) {
         m |= 0x40;
     }
     m
@@ -154,7 +172,7 @@ pub fn damage_text(damage: f32, projectiles: u32) -> String {
 
 /// `004bd510` with a step of 1: the whole part, plus one when what's left
 /// is at least a half.
-fn round_half_up(v: f32) -> i32 {
+pub(crate) fn round_half_up(v: f32) -> i32 {
     let whole = v.trunc();
     whole as i32 + i32::from(v - whole >= 0.5)
 }
@@ -407,8 +425,7 @@ impl ItemsMenu {
                 "DAMInfo" => item
                     .damage
                     .map_or("--".into(), |v| damage_text(v, item.projectiles)),
-                // `00645380`'s value, "%d" rounded; none worked out yet:
-                // left empty.
+                // `00645380`'s value, "%d" rounded half up (`004bd510`).
                 "DPSInfo" => item
                     .dps
                     .map_or(String::new(), |v| format!("{}", round_half_up(v))),
@@ -702,6 +719,9 @@ impl ItemsMenu {
                 };
                 self.show_tab(ui, tab, input);
                 out.push(Action::Sound("UIPipBoyTab".into()));
+                // The key presses the tab's button (`00782190` → the
+                // click handler).
+                out.extend(tab_tutorial(FIRST_TAB_ID + tab as i32));
             }
             Key::Up | Key::Down => {
                 let before = self.list.selected;
@@ -777,6 +797,7 @@ impl ItemsMenu {
                     self.show_tab(ui, tab, input);
                     out.push(Action::Sound("UIPipBoyTab".into()));
                 }
+                out.extend(tab_tutorial(id));
             }
             // Not from the keyring: the refusal sound.
             DROP_ID => {
@@ -943,6 +964,10 @@ pub(crate) mod tests {
         stimpak.effects = Some("Restore Health".into());
         assert_eq!(card_mask(&stimpak), 0x4c);
         assert_eq!(card_mask(&item("Tin Can", ItemTab::Misc)), 0xc);
+        // An enchanted weapon shows its effects too (`00707e30`; a modded
+        // one has none to show).
+        gun.effects = Some("PER +1".into());
+        assert_eq!(card_mask(&gun), 0xc7e);
     }
 
     #[test]
@@ -1061,14 +1086,22 @@ pub(crate) mod tests {
         // The effects card: half the card's height less 20, twice that
         // under a second row.
         assert_eq!(ui.number(tile(&ui, "EffectsInfo"), t::Y), 60.0);
-        // Activating equips; right turns to Apparel.
+        // Activating equips; right turns to Apparel, whose button asks
+        // for the apparel help (`00780140`).
         assert_eq!(
             m.key(&mut ui, Key::Activate, &input),
             [Action::Equip(0x200)]
         );
         assert_eq!(
             m.key(&mut ui, Key::Right, &input),
-            [Action::Sound("UIPipBoyTab".into())]
+            [
+                Action::Sound("UIPipBoyTab".into()),
+                Action::Tutorial {
+                    id: 0x23,
+                    menu: 1002,
+                    delay: 512
+                }
+            ]
         );
         ui.refresh();
         assert_eq!(m.shown, [0x300]);
@@ -1078,6 +1111,20 @@ pub(crate) mod tests {
         assert_eq!(ui.string(dr_card, value).unwrap(), "--");
         assert_eq!(ui.number(tile(&ui, "ConditionInfo"), t::USER0 + 6), 0.0);
         assert_eq!(ui.number(tile(&ui, "DPSInfo"), t::VISIBLE), 0.0);
+    }
+
+    /// Only Apparel and Ammo ask for help (`00780140`).
+    #[test]
+    fn the_tabs_help() {
+        let asked: Vec<_> = (FIRST_TAB_ID..=0x1c).map(tab_tutorial).collect();
+        let ask = |id, delay| {
+            Some(Action::Tutorial {
+                id,
+                menu: 1002,
+                delay,
+            })
+        };
+        assert_eq!(asked, [None, ask(0x23, 512), None, None, ask(0x24, 500)]);
     }
 
     #[test]

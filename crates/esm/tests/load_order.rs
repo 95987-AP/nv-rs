@@ -143,11 +143,16 @@ fn reports_missing_or_misordered_masters() {
         }
         other => panic!("unexpected: {:?}", other.err()),
     }
+    // A master that loads later is still found by name, as the game finds
+    // it; its own version of a shared record then wins.
     let reversed = LoadOrder::from_plugins(vec![
         ("Dlc.esm".into(), None, p(dlc(&["Base.esm"]))),
         ("Base.esm".into(), None, p(base())),
-    ]);
-    assert!(matches!(reversed, Err(Error::MissingMaster { .. })));
+    ])
+    .unwrap();
+    assert!(reversed.warnings()[0].contains("loads before its master Base.esm"));
+    assert_eq!(name_of(&reversed, 0x0100_0800).as_deref(), Some("Base Gun"));
+    assert_eq!(name_of(&reversed, 0x0000_0900).as_deref(), Some("Dlc Gun"));
 }
 
 #[test]
@@ -239,11 +244,14 @@ fn lists_the_winning_references_in_a_cell() {
 
 #[test]
 fn parses_plugins_txt() {
-    let text =
-        b"# Active plugins\r\nFalloutNV.esm\r\n\r\n*Mod One.esp\n  Caf\xe9.esp  \n#Off.esp\n";
+    // As the game reads it (00872430): comments and empty lines skipped,
+    // the line feed (and a carriage return before it) cut, nothing
+    // trimmed, and a last line of one character without a line feed
+    // skipped.
+    let text = b"# Active plugins\r\nFalloutNV.esm\r\n\r\nMod One.esp\n  Caf\xe9.esp \n#Off.esp\nX";
     assert_eq!(
         parse_plugins_txt(text),
-        ["FalloutNV.esm", "Mod One.esp", "Café.esp"]
+        ["FalloutNV.esm", "Mod One.esp", "  Café.esp "]
     );
 }
 
@@ -321,7 +329,8 @@ fn orders_active_plugins_like_the_game() {
         .to_vec(),
     );
     let order = LoadOrder::from_data_dir(dir.path(), &active).unwrap();
-    // Main master first, then master-flagged files by age, then the rest by age.
+    // Master-flagged files by age (FalloutNV.esm, though newer, moved
+    // before DeadMoney.esm, which needs it), then the rest by age.
     assert_eq!(
         names(&order),
         [
@@ -332,8 +341,13 @@ fn orders_active_plugins_like_the_game() {
             "AMod.esp"
         ]
     );
-    assert_eq!(order.warnings().len(), 1);
-    assert!(order.warnings()[0].contains("Missing.esp"));
+    let listed: Vec<&String> = order
+        .warnings()
+        .iter()
+        .filter(|w| w.contains("listed as active"))
+        .collect();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].contains("Missing.esp"));
 }
 
 #[test]

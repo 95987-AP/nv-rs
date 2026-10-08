@@ -133,6 +133,9 @@ pub mod entry {
     pub const CALCULATE_MY_CRITICAL_HIT_CHANCE: u8 = 1;
     /// The weapon's critical damage on a critical (`009b7060`).
     pub const CALCULATE_MY_CRITICAL_HIT_DAMAGE: u8 = 2;
+    /// A mine's chance (from 100) of going off for the player near it
+    /// (`009c39e0`: the player, the mine's projectile; Light Step sets 0).
+    pub const CALCULATE_MINE_EXPLODE_CHANCE: u8 = 4;
     /// On the one hit: their limb damage (`0089a760`: the one hit, the
     /// attacker, the attacker's weapon).
     pub const ADJUST_LIMB_DAMAGE: u8 = 6;
@@ -181,6 +184,9 @@ pub mod entry {
     pub const MODIFY_RADIATION_CONSUMED: u8 = 44;
     /// Fast travel while over-encumbered (`0093cdf0`, `0093d660`).
     pub const HAS_FAST_TRAVEL_ALWAYS: u8 = 51;
+    /// The chance (0..1) a hit knocks the one hit down (`0089a760`:
+    /// Super Slam, `world::melee::knockdown_chance`).
+    pub const KNOCKDOWN_CHANCE: u8 = 52;
     pub const MODIFY_WEAPON_STRENGTH_REQ: u8 = 53;
     pub const MODIFY_AIMING_MOVE_SPEED: u8 = 54;
     /// Light items' weight (`004d0900`).

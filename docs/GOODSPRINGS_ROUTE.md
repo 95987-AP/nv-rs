@@ -171,6 +171,28 @@ section). Status words: **reached** (seen in a viewer run), **fixed**
 (code change with a regression test), **not compared** (not checked
 against the original game).
 
+**Message boxes on the routes (2026-10-07).** With the DLCs installed,
+their start-up quests open message boxes on a new game (Dead Money's
+signal, the pre-order packs' "items added to inventory", ...), as the game
+does, and tutorial boxes show the first time something is met. A box left
+open holds the AI and the input, so a scripted route never finishes.
+VCG01 also asks for the name (the text entry) and then "Before you venture
+deeper into the wasteland, you may revise your character." (Edit Name,
+Rebuild Character, Finished - Travel Onward). `scripts/acceptance.ps1`
+therefore runs every route with the viewer's `--answer-boxes` test aid,
+which answers by rule as soon as each prompt is shown, as a player would:
+a one-button box (OK) with it, a box with several buttons with the next of
+`--box-answers` (button numbers in the box's own order; the routes give
+`2`, "Finished - Travel Onward"), a tutorial box closed, the name entry
+accepted with Enter. Each answer is logged as `--answer-boxes: ...`; a box
+with several buttons and no choice left stays open and is logged as
+waiting. The routes' commands and success lines are otherwise unchanged.
+Add `--answer-boxes --box-answers 2` when driving these routes by hand too.
+
+Known blocker (2026-10-07): after "Finished - Travel Onward" the revise
+prompt comes back (the name entry, then the box again, forever; B29, being
+fixed on its own branch), so a route that meets it waits at the second box.
+
 ## Ghost Town Gunfight (VMS16)
 
 Branch `claude/m2-vms16-route`, 2026-10-06. Quest `VMS16` (00104EAE),

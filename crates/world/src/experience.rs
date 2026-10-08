@@ -119,6 +119,7 @@ pub fn reward(order: &LoadOrder, state: &mut GameState, amount: f64) -> f64 {
             title: None,
             text: format!("{label} +{value}"),
             buttons: Vec::new(),
+            icon: None,
         });
         if total >= xp_for_level(order, state.player_level + 1) {
             state.level_up_pending = true;
@@ -196,6 +197,7 @@ pub fn level_up(order: &LoadOrder, state: &mut GameState) -> LevelUp {
         text: crate::scripting::game_setting_text(order, "sLevelUp")
             .unwrap_or_else(|| "LEVEL UP".into()),
         buttons: Vec::new(),
+        icon: None,
     });
     LevelUp {
         level,

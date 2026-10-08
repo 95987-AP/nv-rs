@@ -1,25 +1,31 @@
 //! Reputation (`REPU`) and karma, read from the game's code
-//! (`%USERPROFILE%\nv-re\findings\reputation.md`).
+//! (`TESReputation`, Xbox PDB; `docs/FACTIONS_CRIME.md`).
 //!
 //! A reputation's `DATA` f32 is its most (NCR 80, Legion 100, Goodsprings
 //! 15); the game keeps fame and infamy for each, both from 0. Scripts:
 //! `AddReputation rep type n` / `RemoveReputation` move fame (type 1) or
-//! infamy (type 0) by `fReputationBump…` (n 1–5: 1, 2, 4, 7, 12), clamped
-//! to 0..most; `…Exact` by the amount given; `SetReputation` sets it
-//! (no clamp, no notice); `GetReputation` the value, `GetReputationPct`
-//! value / most (a fraction). Each axis's level from value / most: 1 from
-//! 0.15, 2 from 0.5, 3 at the most (`fReputationThreshold…`); the title is
-//! by infamy level × 4 + fame level (`sRepTitlePos<F>Neg<I>`), and
-//! `GetReputationThreshold` answers per axis as `00616a90` does. Every
-//! change shows "<name>\n<Fame Gained!…>"; a changed level shows the new
-//! title.
+//! infamy (type 0) by `fReputationBump…` (n 1–5: 1, 2, 4, 7, 12; others
+//! nothing); `…Exact` by the amount given. Adding stops at the most (no
+//! floor), removing at 0 (no ceiling) (`00615730`, `00615a00`);
+//! `SetReputation` sets it (no clamp, no notice); `GetReputation` the
+//! value, `GetReputationPct` value / most (a fraction). Each axis's level
+//! from value / most: 1 from 0.15, 2 from 0.5, 3 at the most
+//! (`fReputationThreshold…`, `00616950`); the title is by infamy level × 4
+//! plus fame level (`sRepTitlePos<F>Neg<I>`), and `GetReputationThreshold`
+//! answers per axis as `00616a90` does. Every change shows the HUD notice
+//! "<name>\n<sRepPositiveGain…>" (the data's "Fame Gained!" and so on);
+//! when the changed axis's level changes, a box with the reputation's
+//! name, "<title>\n<description>", the title's icon and a good or bad sound
+//! ([`title_box`], `006155f0`). The engine itself changes reputations
+//! only through crimes' infamy (`world::crime`).
 //!
 //! Karma (actor value 23): `RewardKarma` (always the player) clamped to
 //! ±1000 (`iKarmaMin`/`Max`), with the game's notice; bands very evil ≤
 //! −750, evil ≤ −250, good ≥ 250, very good ≥ 750. The player's kills of
 //! anyone in a faction that tracks crime (`FACT` `DATA` flag 0x100) change
-//! it by the victim's own karma: good −50, very good −100, evil +100, very
-//! evil +2 (`fKarmaMod…`).
+//! it by the victim's own karma: good −50, very good −100, evil +100 (the
+//! data's), very evil +2 (`fKarmaMod…`, `0089d900`); taking what someone
+//! not evil owns −5 (`world::crime::stealing_karma`).
 
 use esm::{FormId, FourCC, LoadOrder};
 
@@ -172,37 +178,182 @@ pub fn threshold(order: &LoadOrder, state: &GameState, rep: FormId, axis: u8) ->
     v as f32
 }
 
-/// Moves fame or infamy by `by` (clamped to 0..most), with the game's
-/// notice, and the new title when the axis's level changed.
-pub fn change(order: &LoadOrder, state: &mut GameState, rep: FormId, kind: u8, by: f32) {
+/// Fame or infamy raised by `amount` (`AddReputation` with its bump,
+/// `AddReputationExact`, a faction's crimes' infamy), at most to the
+/// reputation's most (no floor: the amount isn't checked).
+// Translated from 00615730 (decompiled, FalloutNV.exe 1.4.0.525;
+// `TESReputation::AddReputationValue`, Xbox PDB), 00615c90 the same with
+// the bump.
+pub fn add(order: &LoadOrder, state: &mut GameState, rep: FormId, kind: u8, amount: f32) {
     let Some(max) = reputation_max(order, rep) else {
         return;
     };
-    let before = levels(order, state, rep);
-    let now = (get(state, rep, kind) + by).clamp(0.0, max);
+    let before = axis_level(order, state, rep, kind, max);
+    let now = (get(state, rep, kind) + amount).min(max);
     set_raw(state, rep, kind, now);
-    let words = match (kind == FAME, by >= 0.0) {
-        (true, true) => ("sRepPositiveGain", "Fame Gained!"),
-        (false, true) => ("sRepNegativeGain", "Infamy Gained!"),
-        (true, false) => ("sRepPositiveLoss", "Fame Reduced"),
-        (false, false) => ("sRepNegativeLoss", "Infamy Reduced"),
+    let words = if kind == FAME {
+        ("sRepPositiveGain", "Reputation Gain")
+    } else {
+        ("sRepNegativeGain", "Reputation Loss")
     };
+    changed(order, state, rep, kind, max, before, words, kind == FAME);
+}
+
+/// Fame or infamy lowered by `amount` (`RemoveReputation` with its bump,
+/// `RemoveReputationExact`), at least to 0 (no ceiling).
+// Translated from 00615a00 (decompiled, FalloutNV.exe 1.4.0.525;
+// `TESReputation::RemoveReputationValue`, Xbox PDB), 00615fa0 the same
+// with the bump.
+pub fn remove(order: &LoadOrder, state: &mut GameState, rep: FormId, kind: u8, amount: f32) {
+    let Some(max) = reputation_max(order, rep) else {
+        return;
+    };
+    let before = axis_level(order, state, rep, kind, max);
+    let now = (get(state, rep, kind) - amount).max(0.0);
+    set_raw(state, rep, kind, now);
+    let words = if kind == FAME {
+        ("sRepPositiveLoss", "Reputation Loss")
+    } else {
+        ("sRepNegativeLoss", "Reputation Gain")
+    };
+    changed(order, state, rep, kind, max, before, words, kind != FAME);
+}
+
+fn axis_level(order: &LoadOrder, state: &GameState, rep: FormId, kind: u8, max: f32) -> u8 {
+    level(order, get(state, rep, kind), max)
+}
+
+/// After a change: the HUD notice "<name>\n<words>" (the words' setting,
+/// else the exe's default; its icon `sRep…Icon`, 2 s), and when the
+/// axis's level changed the title box ([`title_box`]). `good`: fame
+/// raised or infamy lowered (the box's sound, the reputation's `+0x4c`).
+#[allow(clippy::too_many_arguments)]
+fn changed(
+    order: &LoadOrder,
+    state: &mut GameState,
+    rep: FormId,
+    kind: u8,
+    max: f32,
+    before: u8,
+    words: (&str, &str),
+    good: bool,
+) {
+    // With the picture its `…Icon` setting names (the exe's defaults:
+    // fame gained and infamy lost very happy, the others sad).
+    use crate::message_icon::{SAD, VERY_HAPPY};
+    let default_icon = match words.0 {
+        "sRepPositiveGain" | "sRepNegativeLoss" => VERY_HAPPY,
+        _ => SAD,
+    };
+    let icon = crate::message_icon::from_setting(order, &format!("{}Icon", words.0), default_icon);
     let name = reputation_name(order, rep);
     let text = game_setting_text(order, words.0).unwrap_or_else(|| words.1.into());
     state.events.push(Event::Message {
         title: None,
         text: format!("{name}\n{text}"),
         buttons: Vec::new(),
+        icon: Some(icon),
     });
-    let after = levels(order, state, rep);
-    if after != before {
-        let title = title(order, after.0, after.1);
-        state.events.push(Event::Message {
-            title: Some(name),
-            text: title,
-            buttons: Vec::new(),
-        });
+    if axis_level(order, state, rep, kind, max) != before {
+        title_box(order, state, rep, good);
     }
+}
+
+/// The exe's descriptions of the titles (`sRepTitle…Desc`, by infamy × 4 +
+/// fame; the data sets only `sRepTitlePosTwoNegThreeDesc`).
+const DESCRIPTIONS: [&str; 16] = [
+    "People don't know enough about you to form an opinion.",
+    "Folks have come to accept you for your helpful nature.",
+    "Enough news of your good works has been passed around that people like you.",
+    "Renowned for your extensive support and goodwill, you are idolized by the community.",
+    "You've left a poor impression on the community and may be shunned as a result.",
+    "A little bit good mixed with a little bit bad, people haven't figured you out yet.",
+    "People know you're good at heart even though you're occasionally a troublemaker.",
+    "Your reputation as a good-natured friend of the community manages to outshine your dark side.",
+    "Now that folks know you're bad, most people outright hate you.",
+    "Even though you've done some good for the community, people still think you're a punk.",
+    "No one's sure what to make of your unpredictable nature, but you've left a strong impression.",
+    "Folks still think you're some kind of hero, but you sure can be nasty sometimes.",
+    "For your overwhelmingly monstrous behavior, you have become vilified by the community.",
+    "Despite your reputation as a thug, you are known to occasionally show a charitable side.",
+    "Most people say you're the devil himself, but most admit you've also done a world of good.",
+    "Your wild, seemingly capricious behavior leaves people scratching their heads in confusion and avoiding close contact.",
+];
+
+/// The exe's icons of the titles (`sRepTitle…Icon`), by infamy × 4 + fame.
+const ICONS: [&str; 16] = [
+    "neutral",
+    "neutral",
+    "very_happy",
+    "very_happy",
+    "in_pain",
+    "neutral",
+    "very_happy",
+    "very_happy",
+    "sad",
+    "sad",
+    "in_pain",
+    "sad",
+    "sad",
+    "sad",
+    "in_pain",
+    "in_pain",
+];
+
+/// A title's description (`sRepTitle<…>Desc`, else the exe's).
+pub fn title_description(order: &LoadOrder, fame: u8, infamy: u8) -> String {
+    let (f, i) = (fame.min(3), infamy.min(3));
+    game_setting_text(order, &format!("{}Desc", title_setting(f, i)))
+        .unwrap_or_else(|| DESCRIPTIONS[usize::from(i) * 4 + usize::from(f)].to_string())
+}
+
+fn title_setting(fame: u8, infamy: u8) -> String {
+    const WORDS: [&str; 4] = ["None", "One", "Two", "Three"];
+    format!(
+        "sRepTitlePos{}Neg{}",
+        WORDS[usize::from(fame)],
+        WORDS[usize::from(infamy)]
+    )
+}
+
+/// The box a changed title brings up (`006155f0`,
+/// `TESReputation::DisplayReputationTitleChange`, Xbox PDB): titled with the
+/// reputation's name, "<title>\n<description>", the title's icon, the sound
+/// `sRepChangePosSound` (`UIRepGood`) when the change was good else
+/// `sRepChangeNegSound` (`UIRepBad`), one button `sOk`. (With a menu open
+/// the game keeps the reputation and shows it later, `006159e0`; the
+/// viewer's queue of boxes does the waiting here.)
+// Translated from 006155f0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn title_box(order: &LoadOrder, state: &mut GameState, rep: FormId, good: bool) {
+    // The title's box (`006155f0`) first asks for the reputation help,
+    // over any menu (the box), half a second on.
+    crate::tutorial::ask(
+        order,
+        &mut state.tutorials,
+        crate::tutorial::id::REPUTATION,
+        0,
+        500,
+    );
+    let (f, i) = levels(order, state, rep);
+    let text = format!("{}\n{}", title(order, f, i), title_description(order, f, i));
+    let icon =
+        game_setting_text(order, &format!("{}Icon", title_setting(f, i))).unwrap_or_else(|| {
+            format!(
+                "Interface\\Icons\\Message Icons\\glow_message_vaultboy_{}.dds",
+                ICONS[usize::from(i) * 4 + usize::from(f)]
+            )
+        });
+    let sound = if good {
+        game_setting_text(order, "sRepChangePosSound").unwrap_or_else(|| "UIRepGood".into())
+    } else {
+        game_setting_text(order, "sRepChangeNegSound").unwrap_or_else(|| "UIRepBad".into())
+    };
+    state.events.push(Event::Popup {
+        title: Some(reputation_name(order, rep)),
+        text,
+        icon: Some(icon),
+        sound: Some(sound),
+    });
 }
 
 /// `AddReputation` / `RemoveReputation`'s size (1–5) as points
@@ -270,19 +421,27 @@ pub fn reward_karma(order: &LoadOrder, state: &mut GameState, amount: i32) {
         a = max - k;
     }
     let major = s("iKarmaChangeThreshold", 250.0);
-    let (name, fallback) = if a < -major {
-        ("sKarmaMajorLost", "You've lost Karma!")
+    // With the picture its `…Image` setting names (`0094fd30`; the exe's
+    // defaults).
+    use crate::message_icon::{IN_PAIN, NEUTRAL, SAD, VERY_HAPPY};
+    let (name, fallback, icon) = if a < -major {
+        ("sKarmaMajorLost", "You've lost Karma!", IN_PAIN)
     } else if a < 0 {
-        ("sKarmaMinorLost", "You've lost Karma!")
+        ("sKarmaMinorLost", "You've lost Karma!", SAD)
     } else if a < major {
-        ("sKarmaMinorGained", "You've gained Karma!")
+        ("sKarmaMinorGained", "You've gained Karma!", NEUTRAL)
     } else {
-        ("sKarmaMajorGained", "You've gained Karma!")
+        ("sKarmaMajorGained", "You've gained Karma!", VERY_HAPPY)
     };
     state.events.push(Event::Message {
         title: None,
         text: game_setting_text(order, name).unwrap_or_else(|| fallback.into()),
         buttons: Vec::new(),
+        icon: Some(crate::message_icon::from_setting(
+            order,
+            &format!("{name}Image"),
+            icon,
+        )),
     });
     if (a > 0 && k >= max) || (a < 0 && k <= min) {
         return;
@@ -341,4 +500,70 @@ pub fn karmic_title(order: &LoadOrder, state: &GameState) -> Option<String> {
     };
     let level = state.player_level.clamp(1, 30);
     game_setting_text(order, &format!("sKarmicTitle{row}{level:02}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tutorial::{self, id, Screen};
+
+    /// A message box on top, shown.
+    struct MessageBoxUp;
+    impl Screen for MessageBoxUp {
+        fn is_menu_open(&self, class: i32) -> bool {
+            class == tutorial::menu::MESSAGE
+        }
+        fn top_menu_shown(&self) -> bool {
+            true
+        }
+    }
+
+    /// A master with a reputation (most 20) and the reputation help
+    /// (`HelpReputation`, Auto Display).
+    fn order() -> LoadOrder {
+        use testdata::{group, record, sub, zstr};
+        let mut header = 1.34f32.to_le_bytes().to_vec();
+        header.extend([0; 8]);
+        let mut bytes = record(b"TES4", 0, &sub(b"HEDR", &header));
+        let mut rep = sub(b"EDID", &zstr("RepTest"));
+        rep.extend(sub(b"FULL", &zstr("Testville")));
+        rep.extend(sub(b"DATA", &20f32.to_le_bytes()));
+        bytes.extend(group(*b"REPU", 0, &record(b"REPU", 0x900, &rep)));
+        let mut help = sub(b"EDID", &zstr("HelpReputation"));
+        help.extend(sub(b"DESC", &zstr("Text")));
+        help.extend(sub(b"FULL", &zstr("Reputation")));
+        help.extend(sub(b"DNAM", &3u32.to_le_bytes()));
+        let form = tutorial::message_form(id::REPUTATION).0;
+        bytes.extend(group(*b"MESG", 0, &record(b"MESG", form, &help)));
+        let plugin = esm::Plugin::from_bytes(bytes).unwrap();
+        LoadOrder::single("FalloutNV.esm", None, plugin).unwrap()
+    }
+
+    /// A new title asks for the reputation help (`006155f0`:
+    /// `ShowMessage(0x27, 0, 500)`), which comes up over a message box
+    /// half a second later; a change within the level doesn't.
+    #[test]
+    fn a_new_title_asks_for_the_reputation_help() {
+        let order = order();
+        let mut state = GameState::new(&order);
+        let rep = FormId(0x900);
+        add(&order, &mut state, rep, FAME, 1.0);
+        assert_eq!(
+            state.tutorials.update(1000, true, false, &MessageBoxUp),
+            None
+        );
+        assert_eq!(
+            state.tutorials.update(1600, true, false, &MessageBoxUp),
+            None
+        );
+        add(&order, &mut state, rep, FAME, 3.0);
+        assert_eq!(
+            state.tutorials.update(2000, true, false, &MessageBoxUp),
+            None
+        );
+        assert_eq!(
+            state.tutorials.update(2500, true, false, &MessageBoxUp),
+            Some(id::REPUTATION)
+        );
+    }
 }

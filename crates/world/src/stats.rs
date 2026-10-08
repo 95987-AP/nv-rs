@@ -62,9 +62,13 @@ pub const PEOPLE_KILLED: u8 = 2;
 pub const CREATURES_KILLED: u8 = 3;
 pub const LOCKS_PICKED: u8 = 4;
 pub const COMPUTERS_HACKED: u8 = 5;
+pub const MINES_DISARMED: u8 = 11;
 pub const POCKETS_PICKED: u8 = 13;
 pub const BOOKS_READ: u8 = 15;
 pub const TIMES_SLEPT: u8 = 23;
+/// Bumped when a corpse the player killed disintegrates or turns to goo
+/// (`world::more_functions::set_critical_stage`, `008a1a70`).
+pub const DISINTEGRATIONS: u8 = 29;
 pub const TOTAL_THINGS_KILLED: u8 = 35;
 
 /// A statistic's number by its name (any case).

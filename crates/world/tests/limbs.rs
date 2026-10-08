@@ -287,6 +287,8 @@ fn an_aimed_effect_keeps_its_part_in_a_save() {
         started: false,
         locals: Default::default(),
         part: 27,
+        caster: None,
+        item: None,
     });
     let saved = world::save::save(&state, None);
     let (back, _) = world::save::load(&saved).unwrap();

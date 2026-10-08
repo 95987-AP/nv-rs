@@ -763,9 +763,15 @@ pub fn move_actors(
     let attached: HashSet<(i32, i32)> = key.1.iter().flatten().copied().collect();
     let now = time.elapsed_secs();
     let dt = time.delta_secs();
-    // Essential people who went down count their time to get up.
+    // Essential people who went down count their time to get up; fatigue
+    // comes back and the knocked out get up (`world::fatigue`); those who
+    // stopped fighting leave their combat groups, and `ForceFlee`'s flees
+    // end with a fight or death.
     if !frozen {
         world::combat::advance_down(order, state, dt);
+        world::fatigue::advance(order, state, dt);
+        world::combat_groups::tidy(state);
+        world::ai::flee::tidy(state);
     }
     // Attacks' noise wears off (`world::noise::update`, the actors'
     // update `00886360`).
@@ -1057,8 +1063,10 @@ pub fn move_actors(
         // The dead go limp (their skeleton's ragdoll, thrown by the killing
         // blow) and do nothing more; without a ragdoll they tip over.
         // Essential people brought to 0 health lie limp for a time (the dead
-        // do, for good), then get up where they lay.
-        if state.more.down.contains_key(&me) {
+        // do, for good), then get up where they lay; so do those knocked
+        // out by fatigue or paralysis (`world::fatigue`, until their knock
+        // state moves on).
+        if world::fatigue::lies_down(state, me) {
             if !walker.fallen {
                 fall(
                     walker,
@@ -1347,6 +1355,11 @@ pub fn move_actors(
             chat_frame(&mut ctx, walker, &mut chats, &mut lines, moves);
         } else if walker.talk_to.is_some() {
             talk_frame(&mut ctx, walker, &mut talk, moves);
+        } else if let Some(flee) = ctx.state.forced_flee.get(&me).copied() {
+            // `ForceFlee`'s engine flee package in place of theirs.
+            life.activity = None;
+            life.idles.stop();
+            forced_flee_frame(&mut ctx, walker, flee);
         } else {
             // The package, looked at again when due (`008da670`): forced,
             // none, every 20 s, a new game hour; only in sit states 0, 4, 9.
@@ -1610,7 +1623,7 @@ fn fall(
     // down aren't dead (no death routine's nudge) but fall as their blow
     // throws them.
     let start = state.deaths.remove(&walker.reference);
-    let down = state.more.down.contains_key(&walker.reference);
+    let down = world::fatigue::lies_down(state, walker.reference);
     // Every body gains the death routine's nudge (`0089d900`): along the
     // way they were moving, else the way they face, or away from the
     // player who killed them.
@@ -2334,6 +2347,38 @@ fn flee_frame(ctx: &mut Ctx, walker: &mut Walker) {
             }
         }
         FleeStep::Run { to: None, .. } => {}
+    }
+}
+
+/// One frame of `ForceFlee`'s engine flee package (`world::ai::flee::
+/// force`, `00897de0`): to the reference given when it's in their space,
+/// running until within the request radius; with none they stand (the
+/// flee from nobody, `009f1140` with no one to avoid, moves them nowhere
+/// that was traced). The package's own avoiding and door search
+/// (`FleePackage`) are the AI's, not done here.
+fn forced_flee_frame(ctx: &mut Ctx, walker: &mut Walker, flee: world::ai::flee::ForcedFlee) {
+    let order = &ctx.game.order;
+    let here = ctx.state.place(order, walker.reference).map(|p| p.0);
+    let to = flee
+        .to
+        .and_then(|r| ctx.state.place(order, r))
+        .filter(|p| Some(p.0) == here)
+        .map(|p| p.2);
+    match to {
+        Some(at) if !mv::arrived(walker.position, at, mv::REQUEST_RADIUS) => {
+            if !walker.on_path() {
+                if let Some(path) = path_for(ctx.mesh, walker, at) {
+                    walker.set_path(path, mv::REQUEST_RADIUS, true, ctx.moves);
+                }
+            }
+            walker.run = true;
+        }
+        _ => {
+            if walker.on_path() {
+                walker.clear_path();
+            }
+            walker.run = false;
+        }
     }
 }
 

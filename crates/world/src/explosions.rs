@@ -39,6 +39,7 @@ use crate::scripting::{game_setting, Facts, GameState};
 const PROJ: FourCC = FourCC::new(b"PROJ");
 const EXPL: FourCC = FourCC::new(b"EXPL");
 const MNAM: FourCC = FourCC::new(b"MNAM");
+const EITM: FourCC = FourCC::new(b"EITM");
 
 /// `PROJ` `DATA` flags (u16 at 0; xEdit's names, checked against the
 /// code where noted).
@@ -49,6 +50,12 @@ pub mod proj_flags {
     /// "Alt. trigger": it goes off by its timer (or proximity), not on
     /// impact (`00975300`, read by `009c3190`).
     pub const ALT_TRIGGER: u16 = 0x0004;
+    /// "Can be disabled": E on it while armed disarms it
+    /// (`BGSProjectile::Activate` (Xbox PDB), `Projectile::TurnOff`,
+    /// `009c43e0`).
+    pub const CAN_BE_DISABLED: u16 = 0x0020;
+    /// "Can be picked up": E on it (disarmed) takes it.
+    pub const CAN_BE_PICKED_UP: u16 = 0x0040;
     /// "Detonates": the code's mine test (`005de080`).
     pub const DETONATES: u16 = 0x0400;
 }
@@ -80,7 +87,7 @@ pub mod expl_flags {
 /// A projectile's record (`PROJ`): `DATA` flags u16 at 0, type u16 at 2,
 /// gravity f32 at 4, speed at 8, range at 12, proximity (alt. trigger) at
 /// 28, timer at 32, explosion at 36, impact force at 52, countdown sound
-/// at 56, bounciness at 80 (the form's `+0x60 …`, `+0xb0` for the last:
+/// at 56, disable sound at 60, default weapon source at 64, bounciness at 80 (the form's `+0x60 …`, `+0xb0` for the last:
 /// `006d2c20`); its model (`MODL`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectileRecord {
@@ -95,6 +102,11 @@ pub struct ProjectileRecord {
     pub explosion: Option<FormId>,
     pub impact_force: f32,
     pub countdown_sound: Option<FormId>,
+    /// The sound of disarming it (`DATA` form at 60, the form's `+0xac`).
+    pub disable_sound: Option<FormId>,
+    /// The weapon it comes from (`DATA` form at 64): what picking it up
+    /// gives (the frag mine's `WeapMineFrag`).
+    pub weapon_source: Option<FormId>,
     pub bounciness: f32,
     pub model: Option<String>,
 }
@@ -132,6 +144,8 @@ impl ProjectileRecord {
             explosion: form(le_u32(d, 36)),
             impact_force: le_f32(d, 52),
             countdown_sound: form(le_u32(d, 56)),
+            disable_sound: (d.len() >= 64).then(|| form(le_u32(d, 60))).flatten(),
+            weapon_source: (d.len() >= 68).then(|| form(le_u32(d, 64))).flatten(),
             bounciness: if d.len() >= 84 { le_f32(d, 80) } else { 0.0 },
             model: None,
         })
@@ -185,6 +199,9 @@ pub struct ExplosionRecord {
     pub sound2: Option<FormId>,
     pub model: Option<String>,
     pub image_space: Option<FormId>,
+    /// Its object effect (`EITM`, the form's `+0x68`): the pulse grenades'
+    /// and mines' `EMP`, the incendiary grenades' fire, the stun grenade's.
+    pub enchantment: Option<FormId>,
 }
 
 impl ExplosionRecord {
@@ -197,6 +214,10 @@ impl ExplosionRecord {
         e.model = record.get(esm::sig::MODL).map(|s| s.zstring());
         e.image_space = record
             .get(MNAM)
+            .filter(|s| s.data.len() >= 4)
+            .and_then(|s| form(le_u32(&s.data, 0)));
+        e.enchantment = record
+            .get(EITM)
             .filter(|s| s.data.len() >= 4)
             .and_then(|s| form(le_u32(&s.data, 0)));
         Some(e)
@@ -224,6 +245,7 @@ impl ExplosionRecord {
             sound2: form(le_u32(d, 32)),
             model: None,
             image_space: None,
+            enchantment: None,
         })
     }
 
@@ -418,12 +440,14 @@ impl FlightSettings {
     pub fn read(order: &LoadOrder, projectile: &ProjectileRecord) -> FlightSettings {
         let restitution = setting(order, "fGrenadeRestitution", 0.0);
         let friction = setting(order, "fGrenadeFriction", 0.0);
-        FlightSettings::with(
-            projectile,
-            restitution,
-            friction,
-            setting(order, "fGrenadeAgeMax", 90.0),
-        )
+        // Mines live by `fMineAgeMax` (exe 0: for ever), grenades by
+        // `fGrenadeAgeMax` (`009b41b0`).
+        let age_max = if projectile.is_mine() {
+            setting(order, "fMineAgeMax", 0.0)
+        } else {
+            setting(order, "fGrenadeAgeMax", 90.0)
+        };
+        FlightSettings::with(projectile, restitution, friction, age_max)
     }
 
     /// From the settings' values. The model's own restitution and friction
@@ -510,6 +534,14 @@ impl Flight {
             fuse,
             impact: None,
             resting: false,
+        }
+    }
+
+    /// A mine set off ([`crate::mines::check_proximity`]): its fuse starts
+    /// running.
+    pub fn set_off(&mut self, fuse: f32) {
+        if self.fuse.is_none() {
+            self.fuse = Some(fuse);
         }
     }
 
@@ -608,41 +640,74 @@ impl Flight {
     }
 }
 
+/// What an explosion's line of sight starts from (`Explosion::RunLOSPick`
+/// (Xbox PDB), `009b1810`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LosPick {
+    /// The explosion's `ClosestPointNormal` (Xbox PDB, `+0xf4`,
+    /// [`closest_surface`]); zero when no surface was found.
+    pub normal: [f32; 3],
+    /// `fExplosionLOSBufferDistance` (exe 24): the start is moved this far
+    /// along the normal.
+    pub buffer_distance: f32,
+    /// `fExplosionLOSBuffer` (exe 6).
+    pub buffer: f32,
+    /// The explosion's owner (`pOwner`, Xbox PDB, `+0xc8`) has the
+    /// reference flag 0x01000000 (`00452370`): on the first point nothing
+    /// blocks. Projectiles' and mines' explosions have no owner
+    /// (`009c3190` passes none to `009ac9c0`).
+    pub owner_passes: bool,
+}
+
 /// Whether an explosion at `center` sees `point` (`Explosion::RunLOSPick`
-/// (Xbox PDB), `009b1810`): `cast(from, direction, length)` gives the
-/// nearest surface along a segment and its distance. A surface met blocks
-/// it, except one just below the explosion — straight down (the ray's z
-/// below −0.98) within `fExplosionLOSBuffer` (6) units of it — so a
-/// grenade lying on the floor isn't hidden by that floor (the reading of
-/// that test's vector is inferred). For people and creatures `offsets`
-/// adds the six points ±2 × their radius along each axis, tried in turn
-/// when the first is blocked. With the "ignore LOS" flag, always.
+/// (Xbox PDB), `009b1810`): the pick starts at `center` + the closest
+/// surface's normal × `fExplosionLOSBufferDistance` and every surface it
+/// meets on the way blocks (`cast(from, direction, length)` gives the
+/// nearest one's distance), except, when that normal's z is below −0.98,
+/// those nearer than `fExplosionLOSBuffer` to the start; on the first
+/// point an owner with flag 0x01000000 lets everything through. For
+/// people and creatures `offsets` adds the six points ±2 × their radius
+/// along each axis (`0084d030`), tried in turn when the first is blocked,
+/// with the same start and the normal's rule only. With the "ignore LOS"
+/// flag (0x10) the pick isn't made.
+// Translated from 009b1810 (decompiled, FalloutNV.exe 1.4.0.525)
 pub fn los_clear(
     center: [f32; 3],
     point: [f32; 3],
     offsets: Option<f32>,
-    buffer: f32,
+    pick: &LosPick,
     cast: &mut Cast,
 ) -> bool {
-    let mut points = vec![point];
-    if let Some(r) = offsets {
-        let r2 = r + r;
-        points.extend([
-            [point[0], point[1], point[2] + r2],
-            [point[0], point[1], point[2] - r2],
-            [point[0] + r2, point[1], point[2]],
-            [point[0] - r2, point[1], point[2]],
-            [point[0], point[1] + r2, point[2]],
-            [point[0], point[1] - r2, point[2]],
-        ]);
+    let from = add(center, scale(pick.normal, pick.buffer_distance));
+    let below = pick.normal[2] < -0.98;
+    let exempt = |d: f32| below && d < pick.buffer;
+    if segment_clear(from, point, &|d| pick.owner_passes || exempt(d), cast) {
+        return true;
     }
-    points
-        .into_iter()
-        .any(|p| segment_clear(center, p, buffer, cast))
+    let Some(r) = offsets else {
+        return false;
+    };
+    let r2 = r + r;
+    [
+        [point[0], point[1], point[2] + r2],
+        [point[0], point[1], point[2] - r2],
+        [point[0] + r2, point[1], point[2]],
+        [point[0] - r2, point[1], point[2]],
+        [point[0], point[1] + r2, point[2]],
+        [point[0], point[1] - r2, point[2]],
+    ]
+    .into_iter()
+    .any(|p| segment_clear(from, p, &exempt, cast))
 }
 
-// Translated from 009b1810 (decompiled, FalloutNV.exe 1.4.0.525)
-fn segment_clear(from: [f32; 3], to: [f32; 3], buffer: f32, cast: &mut Cast) -> bool {
+/// Every surface along the segment, nearest first (the pick's all-hits
+/// collector), blocks unless `exempt` at its distance from `from`.
+fn segment_clear(
+    from: [f32; 3],
+    to: [f32; 3],
+    exempt: &dyn Fn(f32) -> bool,
+    cast: &mut Cast,
+) -> bool {
     let full = length(sub(to, from));
     if full < 1e-3 {
         return true;
@@ -654,15 +719,51 @@ fn segment_clear(from: [f32; 3], to: [f32; 3], buffer: f32, cast: &mut Cast) -> 
             return true;
         };
         let at = along + d;
-        if dir[2] < -0.98 && at < buffer {
-            along = at + 0.5;
-            continue;
+        if !exempt(at) {
+            return false;
         }
-        return false;
+        along = at + 0.5;
     }
     true
 }
 
+/// A surface the explosion's sphere touches (one of its phantom's closest
+/// points): the body it belongs to, the point, and the unit normal from
+/// the surface toward the explosion.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Contact {
+    pub body: u32,
+    pub point: [f32; 3],
+    pub normal: [f32; 3],
+}
+
+/// The explosion's `ClosestPoint` and `ClosestPointNormal` (Xbox PDB,
+/// `+0xe8`/`+0xf4`), set as it finds its targets (`009ae6e0`): for each
+/// contact not on an actor, a ray from the explosion along twice the way
+/// to the point (or, when that is shorter than 1 unit, from 16 units back
+/// along the normal, 32 along it) must meet that same body before any
+/// other that isn't an actor's; the first that does gives the point and
+/// the normal. `first_body(from, vector)` gives the first non-actor body
+/// met along the vector.
+// Translated from 009ae6e0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn closest_surface(
+    center: [f32; 3],
+    contacts: &[Contact],
+    first_body: &mut dyn FnMut([f32; 3], [f32; 3]) -> Option<u32>,
+) -> Option<([f32; 3], [f32; 3])> {
+    for c in contacts {
+        let mut from = center;
+        let mut ray = scale(sub(c.point, center), 2.0);
+        if length(ray) < 1.0 {
+            from = sub(from, scale(c.normal, 16.0));
+            ray = scale(c.normal, 32.0);
+        }
+        if first_body(from, ray) == Some(c.body) {
+            return Some((c.point, c.normal));
+        }
+    }
+    None
+}
 /// Someone an explosion reaches.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BlastTarget {
@@ -695,6 +796,227 @@ pub fn blast_targets(
         .collect();
     out.sort_by(|a, b| a.distance.total_cmp(&b.distance));
     out
+}
+
+/// What a knockdown by formula reads (`00646400`): `fKnockdownBaseHealthThreshold`
+/// (exe 75), `fKnockdownCurrentHealthThreshold` (data 50), `fKnockdownAgilBase`
+/// (0) and `…AgilMult` (1), `fKnockdownDamageBase` (0) and `…DamageMult`
+/// (0.3), `fKnockdownChance` (0.25, the most the chance can be).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KnockdownSettings {
+    pub base_health_threshold: f32,
+    pub current_health_threshold: f32,
+    pub agility_base: f32,
+    pub agility_mult: f32,
+    pub damage_base: f32,
+    pub damage_mult: f32,
+    pub chance: f32,
+}
+
+impl KnockdownSettings {
+    pub fn read(order: &LoadOrder) -> KnockdownSettings {
+        KnockdownSettings {
+            base_health_threshold: setting(order, "fKnockdownBaseHealthThreshold", 75.0),
+            current_health_threshold: setting(order, "fKnockdownCurrentHealthThreshold", 25.0),
+            agility_base: setting(order, "fKnockdownAgilBase", 0.0),
+            agility_mult: setting(order, "fKnockdownAgilMult", 1.0),
+            damage_base: setting(order, "fKnockdownDamageBase", 0.0),
+            damage_mult: setting(order, "fKnockdownDamageMult", 0.3),
+            chance: setting(order, "fKnockdownChance", 0.25),
+        }
+    }
+}
+
+/// Whether a hit of `damage` (whole points) knocks someone down
+/// (`CombatFormulas::CheckKnockdown` (Xbox PDB), `00646400`), on their
+/// health now and at full (actor value 16) and Agility (10); `roll` a
+/// random number (its remainder by 1000 is the roll). Only for those it
+/// doesn't kill: more than `fKnockdownBaseHealthThreshold` % of their full
+/// health always; else more than `fKnockdownCurrentHealthThreshold` % of
+/// their health now gives a chance of (damage × `…DamageMult` +
+/// `…DamageBase`) ÷ (`…AgilMult` × Agility × 10 + `…AgilBase`), at most
+/// `fKnockdownChance`.
+// Translated from 00646400 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn knockdown_by_formula(
+    (health_now, health_full): (f32, f32),
+    agility: f32,
+    damage: i32,
+    s: &KnockdownSettings,
+    roll: u64,
+) -> bool {
+    let d = damage as f32;
+    if health_now <= 0.0 || health_now - d <= 0.0 {
+        return false;
+    }
+    if d / health_full * 100.0 > s.base_health_threshold {
+        return true;
+    }
+    if d / health_now * 100.0 <= s.current_health_threshold {
+        return false;
+    }
+    let mut chance =
+        (d * s.damage_mult + s.damage_base) / (s.agility_mult * (agility * 10.0) + s.agility_base);
+    if chance > s.chance {
+        chance = s.chance;
+    }
+    ((roll % 1000) as i64) < (chance * 1000.0) as i64
+}
+
+/// Whether an explosion knocks down someone it hurt and didn't kill
+/// (`Explosion::ProcessTargets`, `009b00a0`, after the hit is handled and
+/// the object effect cast): with the record's "knock down always" flag
+/// (0x04), always; with "by formula" (0x08), as [`knockdown_by_formula`]
+/// says for the hit's damage (the explosion's at their distance, before
+/// armour: the hit data's `+0x14`, `HitData::InitializeExplosionData`)
+/// against their health after it. The
+/// knockdown itself (`Explosion::PushActor`, `009b0d70`: the body thrown
+/// as a ragdoll, then getting up) is the physics' and animation's.
+pub fn knocks_down(
+    order: &LoadOrder,
+    state: &GameState,
+    explosion: &ExplosionRecord,
+    target: FormId,
+    damage: f32,
+    roll: u64,
+) -> bool {
+    if state.dead.contains(&target) {
+        return false;
+    }
+    if explosion.flags & expl_flags::KNOCK_DOWN_ALWAYS != 0 {
+        return true;
+    }
+    if explosion.flags & expl_flags::KNOCK_DOWN_BY_FORMULA == 0 {
+        return false;
+    }
+    let now = crate::combat::health(order, state, target).unwrap_or(0.0) as f32;
+    let full = crate::combat::max_health(order, state, target).unwrap_or(0.0) as f32;
+    let agility = Facts {
+        order,
+        state,
+        speaker: None,
+    }
+    .current_actor_value(target, AGILITY)
+    .unwrap_or(0.0) as f32;
+    knockdown_by_formula(
+        (now, full),
+        agility,
+        damage as i32,
+        &KnockdownSettings::read(order),
+        roll,
+    )
+}
+
+/// Agility's actor value.
+const AGILITY: u16 = 10;
+
+/// The explosion's object effect on someone it hit (`009b00a0`: cast by
+/// the explosion's actor cause, else the explosion itself, on each target
+/// that passed the line of sight): the pulse grenades' EMP, incendiary
+/// fire. Says what each effect did.
+pub fn cast_enchantment(
+    order: &LoadOrder,
+    state: &mut GameState,
+    explosion: &ExplosionRecord,
+    source: Option<FormId>,
+    target: FormId,
+) -> Vec<String> {
+    match explosion.enchantment {
+        Some(e) => crate::magic::apply(order, state, target, e, source.unwrap_or(target), false),
+        None => Vec::new(),
+    }
+}
+
+/// What the combat AI's danger test reads (`00992720`):
+/// `fDangerousProjectileExplosionDamage` (exe 5),
+/// `fDangerousProjectileExplosionRadius` (exe 30) and
+/// `iAvoidHurtingNonTargetsResponsibility` (exe 50); no plugin sets them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DangerSettings {
+    pub min_damage: f32,
+    pub min_radius: f32,
+    pub responsibility: f32,
+}
+
+impl DangerSettings {
+    pub fn read(order: &LoadOrder) -> DangerSettings {
+        DangerSettings {
+            min_damage: setting(order, "fDangerousProjectileExplosionDamage", 5.0),
+            min_radius: setting(order, "fDangerousProjectileExplosionRadius", 30.0),
+            responsibility: setting(order, "iAvoidHurtingNonTargetsResponsibility", 50.0),
+        }
+    }
+}
+
+/// How far from an explosion of `radius` and `damage` it still does
+/// `least` damage (`006479a0` → `00647960`, [`falloff`] turned round):
+/// radius × √(1 − least ÷ damage); 0 when it never does that much.
+// Translated from 006479a0 and 00647960 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn reach_of_damage(radius: f32, damage: f32, least: f32) -> f32 {
+    let x = least / damage;
+    if x <= 1.0 && 1.0 - x >= 0.0 {
+        (1.0 - x).sqrt() * radius
+    } else {
+        0.0
+    }
+}
+
+/// Combat style flags (`CSTD` u16 at 80, the style's `+0xa8`, tested by
+/// `009928c0`) that let an attacker's explosion hurt its own side.
+pub mod style_flags {
+    pub const IGNORE_DAMAGING_SELF: u16 = 0x20;
+    pub const IGNORE_DAMAGING_GROUP: u16 = 0x40;
+    pub const IGNORE_DAMAGING_SPECTATORS: u16 = 0x80;
+}
+
+/// Who stands where an attacker's explosion would reach (`00992ba0`
+/// counts the living within the reach): the attacker, their combat group,
+/// and spectators (those on neither side; the attacker's targets aren't
+/// counted against it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Nearby {
+    pub own: u32,
+    pub group: u32,
+    pub spectators: u32,
+}
+
+/// Whether someone may fire an exploding projectile at a point
+/// (`CombatManager::CheckExplosionAttack` (Xbox PDB), `00992720`, asked by
+/// the attack procedures before they fire): an explosion (`radius` in
+/// units, the record's `damage`) of at least `min_damage` whose damage
+/// still reaches `min_damage` at least `min_radius` out ([`reach_of_damage`])
+/// is refused when, within that reach of the point (`count`), there's the
+/// attacker (unless their style ignores damaging themselves), their combat
+/// group (unless it ignores damaging the group), or spectators while the
+/// attacker's Responsibility is at least the setting (unless it ignores
+/// damaging spectators). `None` (no explosion) is always allowed.
+// Translated from 00992720 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn explosion_attack_allowed(
+    explosion: Option<(f32, f32)>,
+    s: &DangerSettings,
+    style: u16,
+    responsibility: f32,
+    count: impl FnOnce(f32) -> Nearby,
+) -> bool {
+    let Some((radius, damage)) = explosion else {
+        return true;
+    };
+    if damage < s.min_damage {
+        return true;
+    }
+    let reach = reach_of_damage(radius, damage, s.min_damage);
+    if reach < s.min_radius {
+        return true;
+    }
+    let n = count(reach);
+    if n.own != 0 && style & style_flags::IGNORE_DAMAGING_SELF == 0 {
+        return false;
+    }
+    if n.group != 0 && style & style_flags::IGNORE_DAMAGING_GROUP == 0 {
+        return false;
+    }
+    !(n.spectators != 0
+        && responsibility >= s.responsibility
+        && style & style_flags::IGNORE_DAMAGING_SPECTATORS == 0)
 }
 
 /// Which part of a target a thrower aims at (`009a8bf0`): 2 (¾ up) for a
@@ -991,8 +1313,17 @@ mod tests {
             .any(|e| matches!(e, FlightEvent::Explode { .. })));
     }
 
+    fn pick(normal: [f32; 3]) -> LosPick {
+        LosPick {
+            normal,
+            buffer_distance: 24.0,
+            buffer: 6.0,
+            owner_passes: false,
+        }
+    }
+
     #[test]
-    fn walls_hide_targets_but_the_floor_under_the_blast_does_not() {
+    fn walls_hide_targets_and_the_pick_starts_off_the_surface() {
         // A wall at x = 100.
         let mut wall = |from: [f32; 3], dir: [f32; 3], len: f32| {
             if dir[0] <= 0.0 {
@@ -1001,37 +1332,127 @@ mod tests {
             let d = (100.0 - from[0]) / dir[0];
             (d >= 0.0 && d <= len).then_some(d)
         };
+        let none = pick([0.0; 3]);
         assert!(!los_clear(
             [0.0; 3],
             [200.0, 0.0, 0.0],
             None,
-            6.0,
+            &none,
             &mut wall
         ));
-        assert!(los_clear([0.0; 3], [50.0, 0.0, 0.0], None, 6.0, &mut wall));
-        // A floor 3 units under the blast, a target straight below it.
-        let mut floor = |from: [f32; 3], dir: [f32; 3], len: f32| {
-            if dir[2] >= 0.0 {
-                return None;
-            }
-            let d = (-3.0 - from[2]) / dir[2];
-            (d >= 0.0 && d <= len).then_some(d)
+        assert!(los_clear(
+            [0.0; 3],
+            [50.0, 0.0, 0.0],
+            None,
+            &none,
+            &mut wall
+        ));
+        // An owner with flag 0x01000000: nothing blocks the first point.
+        let owned = LosPick {
+            owner_passes: true,
+            ..none
         };
         assert!(los_clear(
             [0.0; 3],
-            [0.0, 0.0, -40.0],
+            [200.0, 0.0, 0.0],
             None,
-            6.0,
+            &owned,
+            &mut wall
+        ));
+        // A floor (z = 0, two-sided) under a grenade lying on it: the
+        // normal points up, so the pick starts 24 above it and a target
+        // 200 away, 1 above the floor, is seen.
+        let mut floor = |from: [f32; 3], dir: [f32; 3], len: f32| {
+            if dir[2] == 0.0 {
+                return None;
+            }
+            let d = -from[2] / dir[2];
+            (d >= 0.0 && d <= len).then_some(d)
+        };
+        let up = pick([0.0, 0.0, 1.0]);
+        assert!(los_clear(
+            [0.0; 3],
+            [200.0, 0.0, 1.0],
+            None,
+            &up,
             &mut floor
         ));
-        // Farther than the buffer below, it blocks.
+        // Without a surface found the start is the floor itself: hit at 0.
         assert!(!los_clear(
-            [0.0, 0.0, 10.0],
-            [0.0, 0.0, -40.0],
+            [0.0; 3],
+            [200.0, 0.0, 1.0],
             None,
-            6.0,
+            &none,
             &mut floor
         ));
+    }
+
+    #[test]
+    fn under_a_ceiling_the_near_surfaces_are_let_through() {
+        // A ceiling at z = 0 touched by the blast: its normal points down,
+        // the pick starts 24 below. A ceiling slab hit 4 units from the
+        // start (within fExplosionLOSBuffer) doesn't block; one 10 away
+        // does.
+        let at = |d0: f32| move |_: [f32; 3], _: [f32; 3], len: f32| (d0 <= len).then_some(d0);
+        let down = pick([0.0, 0.0, -1.0]);
+        let near = at(4.0);
+        let mut seen = 0;
+        let mut once = |f: [f32; 3], d: [f32; 3], l: f32| {
+            seen += 1;
+            if seen == 1 {
+                near(f, d, l)
+            } else {
+                None
+            }
+        };
+        assert!(los_clear(
+            [0.0; 3],
+            [100.0, 0.0, -24.0],
+            None,
+            &down,
+            &mut once
+        ));
+        let mut far = at(10.0);
+        assert!(!los_clear(
+            [0.0; 3],
+            [100.0, 0.0, -24.0],
+            None,
+            &down,
+            &mut far
+        ));
+    }
+
+    #[test]
+    fn the_closest_surface_is_the_first_one_the_explosion_meets() {
+        // 009ae6e0: two contacts; the first is behind another body, the
+        // second is met directly.
+        let contacts = [
+            Contact {
+                body: 1,
+                point: [10.0, 0.0, 0.0],
+                normal: [-1.0, 0.0, 0.0],
+            },
+            Contact {
+                body: 2,
+                point: [0.0, 0.0, -0.2],
+                normal: [0.0, 0.0, 1.0],
+            },
+        ];
+        let mut first = |from: [f32; 3], ray: [f32; 3]| {
+            if ray[0] > 0.0 {
+                Some(3)
+            } else if ray[2] > 0.0 {
+                // Under 1 unit away: from 16 below, 32 up.
+                assert_eq!(from, [0.0, 0.0, -16.0]);
+                Some(2)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            closest_surface([0.0; 3], &contacts, &mut first),
+            Some(([0.0, 0.0, -0.2], [0.0, 0.0, 1.0]))
+        );
     }
 
     #[test]
@@ -1048,10 +1469,10 @@ mod tests {
         };
         let center = [0.0, 0.0, 60.0];
         let target = [200.0, 0.0, 0.0];
-        assert!(!los_clear(center, target, None, 6.0, &mut low));
-        assert!(los_clear(center, target, Some(40.0), 6.0, &mut low));
+        let none = pick([0.0; 3]);
+        assert!(!los_clear(center, target, None, &none, &mut low));
+        assert!(los_clear(center, target, Some(40.0), &none, &mut low));
     }
-
     #[test]
     fn blast_targets_are_those_within_the_radius_nearest_first() {
         let t = blast_targets(

@@ -226,6 +226,9 @@ pub struct GameState {
     pub running: HashSet<FormId>,
     pub completed: HashSet<FormId>,
     pub failed: HashSet<FormId>,
+    /// Quests whose "Quest added" has been shown (the quest's flag 0x20,
+    /// `world::quest_text`).
+    pub quests_announced: HashSet<FormId>,
     pub globals: HashMap<FormId, f32>,
     /// Lines said (for "say once").
     pub said: HashSet<FormId>,
@@ -258,6 +261,11 @@ pub struct GameState {
     /// Which way the player faces (radians clockwise from north), kept by
     /// whatever moves them; what [`Self::place`] gives for them.
     pub player_heading: f32,
+    /// The player was put somewhere (`MoveTo`, fast travel:
+    /// [`crate::script_functions::player_moved`]) and those coming along
+    /// haven't been brought yet (`world::companions::come_along`; the
+    /// viewer takes it). Not saved.
+    pub player_placed: bool,
     /// The player's level (1 in a new game) and perks, with their ranks
     /// past the first (`world::perks`).
     pub player_level: u16,
@@ -351,6 +359,13 @@ pub struct GameState {
     pub spaces: HashMap<FormId, (FormId, FormId)>,
     /// People knocked out by scripts (`SetUnconscious 1`).
     pub unconscious: HashSet<FormId>,
+    /// Knock states other than normal: knocked out by fatigue or
+    /// paralysis (`world::fatigue`).
+    pub knocks: crate::fatigue::Knocks,
+    /// Flees `ForceFlee` started (`world::ai::flee::force`).
+    pub forced_flee: HashMap<FormId, crate::ai::flee::ForcedFlee>,
+    /// Who joined whose combat group (`world::combat_groups`).
+    pub combat_groups: crate::combat_groups::CombatGroups,
     /// Sizes scripts set (`SetScale`).
     pub scales: HashMap<FormId, f32>,
     /// Objects Havok moved (shot, blown or pushed clutter: the game's
@@ -466,6 +481,16 @@ pub struct GameState {
     pub discovered: HashSet<FormId>,
     /// What people have equipped (`EquipItem`), by person.
     pub equipped: HashMap<FormId, Vec<FormId>>,
+    /// Clothes and armour people other than the player wore from the start
+    /// (`world::outfit`) that came off, by person: taken off
+    /// (`UnequipItem`: `None`), or for something put on over the same body
+    /// slots (`Some(that)`, `0088db20`).
+    pub taken_off: HashMap<FormId, Vec<(FormId, Option<FormId>)>>,
+    /// Things equipped with `EquipItem`'s no-unequip flag, (person, item):
+    /// the worn entry's extra data 0x3e (`005d0060` → `0041ab70`), which
+    /// keeps them in their slot when a person picks their armour again
+    /// (`004c8220`).
+    pub equip_locked: HashSet<(FormId, FormId)>,
     /// Who's fighting whom: attacker → target (`StartCombat`, being hit,
     /// an aggressive creature seeing the player).
     pub combat: HashMap<FormId, FormId>,
@@ -529,6 +554,9 @@ pub struct GameState {
     /// The player's casinos: the chips won at each and the level reached
     /// (`world::casino`, `PlayerCharacter` +0x610), head first.
     pub casinos: Vec<crate::casino::CasinoData>,
+    /// The once-only tutorial messages: which have been shown, which are
+    /// asked for (`world::tutorial`; only the shown ones are saved).
+    pub tutorials: crate::tutorial::Tutorials,
     /// For the viewer: what to show or do, oldest first.
     pub events: Vec<Event>,
     /// Functions scripts called that aren't carried out yet, with counts,
@@ -662,6 +690,8 @@ impl GameState {
                         title: None,
                         text,
                         buttons: Vec::new(),
+                        icon: crate::message_icon::for_setting("sCantEquipBrokenItem")
+                            .map(str::to_string),
                     });
                 }
                 return;
@@ -671,6 +701,21 @@ impl GameState {
         let kind = |f: FormId| order.get(f).map(|r| r.entry.header.kind);
         let item_kind = kind(item);
         let slots = crate::actor::Armor::load(order, item).map_or(0, |a| a.slots);
+        // Someone else's clothes from the start on those slots come off
+        // (`world::outfit`); one of them put on again is worn again.
+        if who != PLAYER_REF && slots != 0 {
+            let replaced = crate::outfit::replaced_by(order, who, item);
+            let off = self.taken_off.entry(who).or_default();
+            off.retain(|(i, _)| *i != item);
+            for (piece, by) in replaced {
+                if !off.iter().any(|(i, _)| *i == piece) {
+                    off.push((piece, by));
+                }
+            }
+            if off.is_empty() {
+                self.taken_off.remove(&who);
+            }
+        }
         let worn = self.equipped.entry(who).or_default();
         worn.retain(|&f| {
             if f == item {
@@ -700,6 +745,13 @@ impl GameState {
             self.item_event(order, who, item, event::UNEQUIP);
         }
         self.unequip(who, item);
+        // Clothes someone else wore from the start come off too
+        // (`world::outfit`).
+        if who != PLAYER_REF && crate::outfit::worn_from_start(order, who, item) {
+            let off = self.taken_off.entry(who).or_default();
+            off.retain(|(i, _)| *i != item);
+            off.push((item, None));
+        }
     }
 
     /// Whether someone has an item equipped.
@@ -1112,6 +1164,19 @@ pub enum Event {
         title: Option<String>,
         text: String,
         buttons: Vec<(usize, String)>,
+        /// The picture beside a corner message (`world::message_icon`;
+        /// `None`: the neutral Vault Boy).
+        icon: Option<String>,
+    },
+    /// A box the game itself puts up (not a script's: its answer goes to
+    /// no script), with one button `sOk`: a reputation's new title
+    /// (`world::reputation::title_box`). The icon is a path under `Data`,
+    /// the sound a sound's editor ID.
+    Popup {
+        title: Option<String>,
+        text: String,
+        icon: Option<String>,
+        sound: Option<String>,
     },
     /// Someone talks: the speaker, who they talk to, and the topic
     /// (`None`: their greeting). `SayTo` only has them say a line
@@ -1148,6 +1213,9 @@ pub enum Event {
         text: String,
         completed: bool,
     },
+    /// The HUD's quest text: a quest added, completed or failed, or custom
+    /// text such as a place discovered (`world::quest_text`).
+    QuestText(crate::quest_text::QuestText),
     /// A script opened one of the game's menus (by the number `MenuMode`
     /// blocks use).
     Menu(u16),
@@ -1173,9 +1241,17 @@ pub enum Event {
     },
     /// `ShowRepairMenu`: this merchant's repairs (`world::repair`).
     RepairServices(FormId),
+    /// `ShowTutorialMenu` (`005da630`): the tutorial menu with this help
+    /// message (0 when none was given), not through the tutorial manager.
+    TutorialMenu(FormId),
     /// `OpenTeammateContainer`: trading things with a companion (the
     /// container menu's mode 3).
     TeammateContainer(FormId),
+    /// The companion wheel's Back Up (`00756930` → `008a7760`,
+    /// `Actor::InitiateBackUpPackage` (Xbox PDB)): the companion is given
+    /// their default package 0x27 (a `BackUpPackage`, away from the
+    /// player). Packages are the AI's to carry out.
+    BackUp(FormId),
     /// `ShowCaravanMenu`: a game of Caravan against this person with their
     /// deck, the AI's difficulty and the share of their funds they bet
     /// (`world::caravan`).
@@ -1202,13 +1278,21 @@ pub enum Event {
         by: FormId,
     },
     /// Someone essential was brought to 0 health: they go down instead of
-    /// dying (`world::combat::hurt`).
+    /// dying (`world::combat::hurt`); or someone is knocked out by fatigue
+    /// below 0 or paralysis (`world::fatigue`).
     KnockedOut {
         who: FormId,
     },
-    /// Someone who was down gets up (`world::combat::advance_down`).
+    /// Someone who was down gets up (`world::combat::advance_down`,
+    /// `world::fatigue`).
     GotUp {
         who: FormId,
+    },
+    /// `ForceFlee` started the engine's flee package on someone
+    /// (`world::ai::flee::force`), to a reference or cell if given.
+    Flees {
+        who: FormId,
+        to: Option<FormId>,
     },
     /// `PlayGroup`: an animation group (by the game's name: `Forward`,
     /// `Open`, `SpecialIdle`…) to play on a person or an object's model,
@@ -1358,7 +1442,7 @@ pub fn base_of(order: &LoadOrder, reference: FormId) -> Option<FormId> {
 
 /// Every `CNTO` (form, count) on the base of a container, NPC or creature
 /// (the player's on `PLAYER_BASE`): items and leveled lists.
-fn record_contents(order: &LoadOrder, holder: FormId) -> Vec<(FormId, i32)> {
+pub(crate) fn record_contents(order: &LoadOrder, holder: FormId) -> Vec<(FormId, i32)> {
     let Some(base) = base_of(order, holder) else {
         return Vec::new();
     };
@@ -1898,11 +1982,22 @@ impl Facts<'_> {
                     0.0
                 }
             }
-            "GetEquipped" => flag(
-                s.equipped
-                    .get(&on?)
-                    .is_some_and(|e| e.contains(&arg(0).form())),
-            ),
+            // A form list asks for any of its forms (`0059da90`: type 0x55,
+            // the faction armour scripts' `GetEquipped FactionGearNVNCR`).
+            "GetEquipped" => {
+                let worn = s.equipped.get(&on?);
+                let asked = arg(0).form();
+                let is_list = self
+                    .order
+                    .get(asked)
+                    .is_some_and(|r| r.entry.header.kind.as_bytes() == b"FLST");
+                let forms = if is_list {
+                    crate::script_functions::form_list(self.order, s, asked)
+                } else {
+                    vec![asked]
+                };
+                flag(worn.is_some_and(|e| forms.iter().any(|f| e.contains(f))))
+            }
             "GetSelf" => f64::from(on?.0),
             "IsActionRef" => flag(s.action_ref == Some(arg(0).form())),
             "GetActionRef" => f64::from(s.action_ref.map_or(0, |f| f.0)),
@@ -2156,15 +2251,17 @@ impl Facts<'_> {
             // True of a new game, where nobody has been eaten yet
             // (hardcore: `world::living`).
             "HasBeenEaten" => 0.0,
-            // Knock state 2 (as `PushActorAway` leaves it) for someone
-            // essential brought down.
-            "GetKnockedState" => {
-                if s.more.down.contains_key(&on?) {
-                    2.0
-                } else {
-                    0.0
-                }
-            }
+            // `005a08c0`: 1 while knocked out or falling to it (knock
+            // states 3 and 4; essential people who are down lie knocked
+            // out), else 0 (`world::fatigue`).
+            "GetKnockedState" => crate::fatigue::knocked_state_value(s, on?),
+            // `00893530`: fatigue now ÷ its full value (`world::fatigue`).
+            "GetFatiguePercentage" => crate::fatigue::percentage(self.order, s, on?)?,
+            // `005a4240`, `005a42b0`: the members and targets of the
+            // actor's combat group, 0 out of a fight
+            // (`world::combat_groups`).
+            "GetGroupMemberCount" => crate::combat_groups::member_count(s, on?) as f64,
+            "GetGroupTargetCount" => crate::combat_groups::target_count(s, on?) as f64,
             // `005dec30`: the player's winnings there by quarters of its
             // limit (`world::casino`); 0 where they haven't played.
             "GetCasinoWinningsLevel" => {
@@ -2265,6 +2362,9 @@ impl Facts<'_> {
     /// recent shot, no body armour weight (all guesses until the viewer
     /// supplies them).
     pub fn detection(&self, who: FormId, other: FormId) -> Option<i32> {
+        if crate::companions::hidden_with_player(self.state, other) {
+            return Some(crate::companions::HIDDEN_WITH_PLAYER);
+        }
         let inputs = self.detection_inputs(who, other, true, None)?;
         Some(crate::detection::value(self.order, &inputs))
     }
@@ -2334,7 +2434,13 @@ impl Facts<'_> {
             perception: av(who, 6),
             in_combat: fighting.is_some(),
             fighting_other: fighting.is_some_and(|t| t != other),
-            sneak: av(other, 42),
+            // A teammate sneaks as well as the player does, if better
+            // (`008a0d10`).
+            sneak: if s.teammates.contains(&other) {
+                av(other, 42).max(av(PLAYER_REF, 42))
+            } else {
+                av(other, 42)
+            },
             target_level: f32::from(self.level(other).unwrap_or(1)),
             detector_level: f32::from(self.level(who).unwrap_or(1)),
         })
@@ -2463,6 +2569,8 @@ impl Facts<'_> {
                 "fAVDMeleeDamageStrengthMult",
                 5,
             ),
+            // Fatigue: the record's and the derived part (`world::fatigue`).
+            22 => crate::fatigue::base_fatigue(self, who),
             25..=31 => Some(100.0),
             // What they carry weighs (the items' records' weights).
             46 => Some(f64::from(self.state.inventory_weight(self.order, who))),
@@ -3004,6 +3112,44 @@ impl<'a> Runner<'a> {
         }
     }
 
+    /// A spell cast by a script (`CastImmediateOnSelf`, `Cast`) at
+    /// `target`, and at whoever its area reaches
+    /// ([`crate::magic::area_targets`]). On each, every effect added goes
+    /// through `MagicTarget::CheckAddEffect` (Xbox PDB, `00823210`,
+    /// [`crate::magic::cast`]): by the spell's type, an identical effect
+    /// from the same spell and caster is dispelled first (its
+    /// `ScriptEffectFinish` runs if it had started) or, for a poison, has
+    /// the new duration added.
+    pub fn cast(&mut self, spell: FormId, caster: FormId, target: FormId) {
+        let mut reached = vec![target];
+        reached.extend(crate::magic::area_targets(
+            self.order, self.state, spell, caster, target, self.sight,
+        ));
+        for who in reached {
+            for mut e in crate::magic::cast(self.order, self.state, who, spell, caster) {
+                if let Some(script) = e.script.filter(|_| e.started) {
+                    self.run_effect_script(script, &mut e, "scripteffectfinish", 0.0);
+                }
+            }
+            // Each effect starts as it's added (`CheckAddEffect` calls the
+            // new effect's start): a script effect's `ScriptEffectStart`
+            // runs now, not at the next update.
+            let mut i = 0;
+            while i < self.state.active_effects.len() {
+                let e = &self.state.active_effects[i];
+                if e.target == who && e.source == spell && !e.started && e.script.is_some() {
+                    let mut e = self.state.active_effects.remove(i);
+                    e.started = true;
+                    if let Some(script) = e.script {
+                        self.run_effect_script(script, &mut e, "scripteffectstart", 0.0);
+                    }
+                    self.state.active_effects.insert(i, e);
+                }
+                i += 1;
+            }
+        }
+    }
+
     /// Runs a script effect's blocks of one kind (`scripteffectstart`, …)
     /// on whoever it affects, with the effect's own variables.
     pub(crate) fn run_effect_script(
@@ -3221,6 +3367,30 @@ impl<'a> Runner<'a> {
         part: Option<u8>,
         power: bool,
     ) -> Option<crate::combat::Hit> {
+        self.blow_at(
+            attacker,
+            target,
+            weapon,
+            part,
+            crate::melee::Blow {
+                power,
+                special: crate::melee::Special::None,
+            },
+        )
+    }
+
+    /// [`Self::strike_at`] with a melee blow's particulars
+    /// (`world::melee::Blow`): a power attack, an unarmed uppercut or
+    /// cross (`00899200` → `0089a760`).
+    pub fn blow_at(
+        &mut self,
+        attacker: FormId,
+        target: FormId,
+        weapon: Option<&crate::combat::Weapon>,
+        part: Option<u8>,
+        blow: crate::melee::Blow,
+    ) -> Option<crate::combat::Hit> {
+        let power = blow.power;
         let order = self.order;
         let names = |b: &script::Block, id: Option<FormId>| match b.args.first() {
             None => true,
@@ -3255,14 +3425,30 @@ impl<'a> Runner<'a> {
         // the weapon's damage (a creature's bite, or fists), a critical
         // adding the weapon's critical damage, the armour, then a sneak
         // attack's multiplier.
+        // Fists' power attack: a bonus multiplier after the armour
+        // (`world::combat::fists_power_bonus`); a creature's own attack
+        // has none.
+        let mut fists_bonus = 0.0;
+        // Bare fists' fatigue damage, half their damage (`00646310`,
+        // `world::fatigue`).
+        let mut fatigue = 0.0;
         let mut damage = match weapon {
             Some(w) => crate::combat::weapon_damage(order, self.state, attacker, Some(w), power),
             None => crate::combat::creature_damage(order, attacker).unwrap_or_else(|| {
-                crate::combat::weapon_damage(order, self.state, attacker, None, power)
+                fists_bonus = crate::combat::fists_power_bonus(order, power);
+                let fists = crate::combat::weapon_damage(order, self.state, attacker, None, false);
+                fatigue = crate::fatigue::fists_fatigue(order, self.state, attacker, target, fists);
+                fists
             }),
         };
         // V.A.T.S.'s melee moves and automatic melee weapons (`world::vats`).
         damage *= crate::vats::attack_damage_mult(order, self.state, attacker, weapon);
+        // A teammate's Nerve once more for a melee, unarmed or creature
+        // attack (`009b5170`; on top of `00644ce0`'s for weapons and
+        // fists); a shot's damage (`009b5650`) has it once.
+        if weapon.map_or(true, |w| w.is_melee()) {
+            damage *= crate::companions::nerve(order, self.state, attacker);
+        }
         let sneak = attacker == PLAYER_REF
             && self.state.player_sneaking
             && self
@@ -3292,27 +3478,45 @@ impl<'a> Runner<'a> {
         }
         let vats_mult = crate::vats::player_damage_mult(order, self.state, target);
         let after_armour = armoured.damage * vats_mult;
-        // The player's armour wears (`0089a760`).
-        crate::combat::wear_armour(
+        // The fatigue damage through the armour, the ammunition's added
+        // (`009b5a30`, `world::fatigue::through_armour`).
+        fatigue = crate::fatigue::through_armour(
             order,
-            self.state,
-            target,
-            part,
-            armoured.armour_damage * vats_mult,
-        );
+            fatigue,
+            ammo,
+            weapon.is_some(),
+            damage,
+            armoured.damage,
+        ) * vats_mult;
+        // A hit doing fatigue damage wears no armour (`009b5a30`).
+        let armour_damage = if fatigue > 0.0 {
+            0.0
+        } else {
+            armoured.armour_damage
+        };
+        // The player's armour wears (`0089a760`).
+        crate::combat::wear_armour(order, self.state, target, part, armour_damage * vats_mult);
         // The part it landed on: limb damage from the damage after armour,
         // and the hit's multiplier (`009b6620`).
         let at = crate::body_parts::part_hit(order, self.state, target, weapon, part, after_armour);
         let mut dealt = at.health_damage;
-        // The multiplier last (`009b73d0`): with a part found, a sneak
-        // attack's bonus when it's at least 1, then the damage × it.
-        let mut multiplier = at.multiplier;
+        // The multiplier last (`009b73d0`): the part's (or a fists' power
+        // attack's bonus, the larger: `009b7840`), a sneak attack's bonus
+        // when it's at least 1, then the damage × it.
+        let mut multiplier = at.multiplier.max(fists_bonus);
         if multiplier > 0.0 {
             if multiplier >= 1.0 && sneak {
                 multiplier *=
                     crate::combat::sneak_multiplier(order, weapon.map_or(true, |w| w.is_melee()));
             }
             dealt *= multiplier;
+            // An unarmed blow's fatigue takes it too (`009b73d0`: attacker
+            // not a creature, the hit's skill Unarmed).
+            if weapon.map_or(true, |w| w.skill == crate::combat::av::UNARMED)
+                && !crate::combat::is_creature(order, attacker)
+            {
+                fatigue *= multiplier;
+            }
         }
         self.state
             .hit_location
@@ -3325,6 +3529,7 @@ impl<'a> Runner<'a> {
             &at,
             critical,
             (attacker, weapon_id),
+            blow.special,
         );
         // The player hitting a person who isn't fighting them: an assault,
         // unless a friend or ally forgives it (`world::crime::assault`);
@@ -3335,7 +3540,30 @@ impl<'a> Runner<'a> {
         if attacker == PLAYER_REF && person && !was_hostile {
             fights_back &= crate::crime::assault(order, self.state, target);
         }
+        let was_alive = !self.state.dead.contains(&target);
         let killed = crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker);
+        // Then the fatigue, while above `fMinimumFatigue` (`0089d6f0`).
+        if !crate::fatigue::take_hit(order, self.state, target, fatigue) {
+            fatigue = 0.0;
+        }
+        // A critical hit's effect: the energy weapons' disintegration and
+        // goo on the killed (`0089a760`, `world::combat::critical_effect`).
+        if critical {
+            let dead_now = self.state.dead.contains(&target);
+            crate::combat::critical_effect(order, self.state, target, weapon, was_alive, dead_now);
+        }
+        // A V.A.T.S. special's spell (the Mauler's knockdown), cast by the
+        // one struck on themselves (`world::vats::special_effect`).
+        if let Some(spell) = crate::vats::special_effect(order, self.state, attacker, weapon) {
+            crate::magic::add_spell(order, self.state, target, spell, target, false);
+        }
+        // The attacker's "Knockdown Chance" perks (Super Slam,
+        // `world::melee::knockdown_chance`).
+        let chance = crate::melee::knockdown_chance(order, self.state, attacker, weapon_id);
+        let knocked_down = chance > 0.0 && {
+            let roll = (self.state.roll() % 1_000_000) as f32 / 1_000_000.0;
+            crate::melee::knocks_down(chance, roll)
+        };
         self.state
             .hits_taken
             .push((target, part.map_or(-1, i32::from), killed));
@@ -3365,6 +3593,8 @@ impl<'a> Runner<'a> {
             critical,
             multiplier,
             hurt,
+            knocked_down,
+            fatigue,
         })
     }
 
@@ -3459,7 +3689,15 @@ impl<'a> Runner<'a> {
         if source == Some(PLAYER_REF) && person && !was_hostile {
             fights_back &= crate::crime::assault(order, self.state, target);
         }
-        if crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker) {
+        let was_alive = !self.state.dead.contains(&target);
+        let killed = crate::combat::hurt(order, self.state, target, f64::from(dealt), attacker);
+        // The explosion's hit carries its weapon's critical effect too
+        // (`009b5770` builds it with the weapon, `009b7060`, `0089a760`).
+        if critical {
+            let dead_now = self.state.dead.contains(&target);
+            crate::combat::critical_effect(order, self.state, target, weapon, was_alive, dead_now);
+        }
+        if killed {
             self.state.killing_blow_limb.insert(target, -1);
             if let Some(s) = source.filter(|&s| {
                 person && !was_hostile && (s == PLAYER_REF || self.state.teammates.contains(&s))
@@ -3476,6 +3714,8 @@ impl<'a> Runner<'a> {
             critical,
             multiplier: 0.0,
             hurt: None,
+            knocked_down: false,
+            fatigue: 0.0,
         })
     }
 
@@ -3537,12 +3777,14 @@ impl<'a> Runner<'a> {
                 });
             }
             if e.flags & quest::COMPLETES_QUEST != 0 {
-                self.state.completed.insert(quest_id);
-                // `0060fb60`: no longer the active quest.
+                // `0060fb60` → `0060ca30` (announced when newly completed);
+                // no longer the active quest.
+                crate::quest_text::complete(self.state, quest_id);
                 crate::quest_targets::quest_ended(self.state, quest_id);
             }
             if e.flags & quest::FAILS_QUEST != 0 {
-                self.state.failed.insert(quest_id);
+                // `0060caf0`: failed (and completed) unless it was either.
+                crate::quest_text::fail(self.state, quest_id);
                 crate::quest_targets::quest_ended(self.state, quest_id);
             }
             if let Some(source) = e.script {
@@ -3575,6 +3817,11 @@ impl<'a> Runner<'a> {
                 // A sex: compiled as 0 male, 1 female.
                 Some(18) if w.eq_ignore_ascii_case("male") => Value::Number(0.0),
                 Some(18) if w.eq_ignore_ascii_case("female") => Value::Number(1.0),
+                // A critical stage (parameter type 0x37, `SetCriticalStage`
+                // `DisintegrateStart`): its number in the game's name
+                // table at `0119bbb0`.
+                Some(55) => crate::more_functions::critical_stage_number(w)
+                    .map_or(Value::Text(w.clone()), |n| Value::Number(f64::from(n))),
                 _ => Value::Text(w.clone()),
             },
         }
@@ -3652,10 +3899,14 @@ impl<'a> Runner<'a> {
                 buttons.push((0, "OK".to_string()));
             }
         }
+        // A corner message shows the message's own picture (`005b4630`:
+        // its icon's path to `QueueUIMessage`, type 0).
+        let icon = crate::message_icon::of_message(self.order, id);
         self.state.events.push(Event::Message {
             title,
             text,
             buttons,
+            icon,
         });
     }
 
@@ -3672,12 +3923,10 @@ impl<'a> Runner<'a> {
                 self.state.running.remove(&arg(0).form());
             }
             "CompleteQuest" => {
-                self.state.completed.insert(arg(0).form());
-                // Completing a quest (`0060ca30`) announces it
-                // (`0077a480`), which stops it being the active quest.
-                // (That the command goes through `0060ca30` is assumed;
-                // its handler isn't traced here.)
-                crate::quest_targets::quest_ended(self.state, arg(0).form());
+                // `005c7280` → `0060ca30`: completing a quest not completed
+                // announces it (`0077a480`), which stops it being the
+                // active quest.
+                crate::quest_text::complete(self.state, arg(0).form());
             }
             // The objective's state (`005d7c20`, `005d7d30`, `005ec5d0`: 0
             // neither, 1 shown, 2 done unseen, 3 shown and done): showing
@@ -3846,6 +4095,7 @@ impl<'a> Runner<'a> {
                         title: None,
                         text,
                         buttons: Vec::new(),
+                        icon: None,
                     });
                 } else {
                     events.push(Event::Caravan {
@@ -3856,6 +4106,9 @@ impl<'a> Runner<'a> {
                     });
                 }
             }
+            // `005da630`: `TutorialMenu::Create(message, 0)` (the shared
+            // `005d4a40` check is the PC's `return 1`).
+            "ShowTutorialMenu" => events.push(Event::TutorialMenu(arg(0).form())),
             "ShowRepairMenu" => {
                 let vendor = target?;
                 if crate::script_functions::is_actor(self.order, vendor) {
@@ -3914,10 +4167,23 @@ impl<'a> Runner<'a> {
             // One weapon in hand; clothes take off what's on the same slots.
             "EquipItem" => {
                 let who = target?;
-                self.state.equip(self.order, who, arg(0).form());
+                let item = arg(0).form();
+                self.state.equip(self.order, who, item);
+                // The no-unequip flag (`005d0060`: set or cleared on the
+                // worn entry, `0041ab70`).
+                if self.state.is_equipped(who, item) {
+                    if args.get(1).is_some_and(|a| a.number() != 0.0) {
+                        self.state.equip_locked.insert((who, item));
+                    } else {
+                        self.state.equip_locked.remove(&(who, item));
+                    }
+                }
             }
             "UnequipItem" => {
-                self.state.unequip_item(self.order, target?, arg(0).form());
+                let who = target?;
+                let item = arg(0).form();
+                self.state.unequip_item(self.order, who, item);
+                self.state.equip_locked.remove(&(who, item));
             }
             "KillActor" => {
                 let who = target?;
@@ -3988,6 +4254,14 @@ impl<'a> Runner<'a> {
             }
             "StopCombat" => {
                 self.state.combat.remove(&target?);
+            }
+            // `005d09e0` (`world::ai::flee::force`): an optional cell, then
+            // an optional reference to flee to.
+            "ForceFlee" => {
+                let who = target?;
+                let cell = args.first().map(Value::form).filter(|f| f.0 != 0);
+                let to = args.get(1).map(Value::form).filter(|f| f.0 != 0);
+                crate::ai::flee::force(self.state, who, cell, to);
             }
             // `005b5690`: the same as `RemoveAllTypedItems` for every type
             // (`script_functions::remove_all`): the player's quest items
@@ -4165,16 +4439,23 @@ impl<'a> Runner<'a> {
                 }
                 let kind = kind as u8;
                 let n = arg(2).number();
-                let by = match name {
-                    "AddReputation" => Some(crate::reputation::bump(self.order, n as i32)?),
-                    "RemoveReputation" => Some(-crate::reputation::bump(self.order, n as i32)?),
-                    "AddReputationExact" => Some(n as f32),
-                    "RemoveReputationExact" => Some(-(n as f32)),
-                    _ => None,
-                };
-                match by {
-                    Some(by) => crate::reputation::change(self.order, self.state, rep, kind, by),
-                    None => crate::reputation::set(self.state, rep, kind, n as f32),
+                let (order, state) = (self.order, &mut *self.state);
+                match name {
+                    "AddReputation" => {
+                        let by = crate::reputation::bump(order, n as i32)?;
+                        crate::reputation::add(order, state, rep, kind, by);
+                    }
+                    "RemoveReputation" => {
+                        let by = crate::reputation::bump(order, n as i32)?;
+                        crate::reputation::remove(order, state, rep, kind, by);
+                    }
+                    "AddReputationExact" => {
+                        crate::reputation::add(order, state, rep, kind, n as f32);
+                    }
+                    "RemoveReputationExact" => {
+                        crate::reputation::remove(order, state, rep, kind, n as f32);
+                    }
+                    _ => crate::reputation::set(state, rep, kind, n as f32),
                 }
             }
             // A faction holds the player as an enemy for their crimes, or
@@ -4340,9 +4621,17 @@ impl<'a> Runner<'a> {
                 self.state.drop_item(self.order, holder, item, count);
             }
             // `005b53d0`: the holder's remove-item (vtable +0x17c) for one,
-            // into the container given if any (its fifth argument).
+            // into the container given if any (its fifth argument). On an
+            // actor wearing the item (`00575400`: `004bfda0(item, 0)` finds
+            // a worn instance, extra data 0x16 or 0x17) the worn instance
+            // is the one taken, which takes it off first (`004c37d0` on a
+            // worn list: `0088d7d0` for the player, the actor's +0x188
+            // otherwise); else one of the others goes.
             "RemoveMe" => {
                 if let Some((holder, item)) = self.item.filter(|_| !self.removed) {
+                    if self.state.is_equipped(holder, item) {
+                        self.state.unequip_item(self.order, holder, item);
+                    }
                     if let Some(n) = self.state.items.get_mut(&(holder, item)) {
                         *n -= 1;
                         if *n <= 0 {
@@ -4402,12 +4691,12 @@ impl<'a> Runner<'a> {
             // someone (`Cast spell target`), given (`AddSpell`), taken off.
             "CastImmediateOnSelf" => {
                 let who = target?;
-                crate::magic::add_spell(self.order, self.state, who, arg(0).form(), who, false);
+                self.cast(arg(0).form(), who, who);
             }
             "Cast" => {
                 let caster = target?;
                 let at = args.get(1).map_or(caster, Value::form);
-                crate::magic::add_spell(self.order, self.state, at, arg(0).form(), caster, false);
+                self.cast(arg(0).form(), caster, at);
             }
             "AddSpell" => {
                 let who = target?;
@@ -4517,8 +4806,12 @@ impl<'a> Runner<'a> {
                 self.state.evaluate.insert(who);
             }
             // The package is looked at again at once (the viewer's AI).
+            // It also ends `ForceFlee`'s flee: the package picked from their
+            // list replaces it (`Actor::EvaluatePackage` (Xbox PDB)).
             "EvaluatePackage" => {
-                self.state.evaluate.insert(target?);
+                let who = target?;
+                self.state.evaluate.insert(who);
+                crate::ai::flee::end_forced(self.state, who);
             }
             // The command queues a full reset, not just package evaluation.
             // 005c9530 rejects deleted/disabled references; 008a6ce0 rejects
@@ -4535,6 +4828,7 @@ impl<'a> Runner<'a> {
                     return Some(0.0);
                 }
                 self.state.reset_ai.insert(who);
+                crate::ai::flee::end_forced(self.state, who);
             }
             "GetSecondsPassed" => return Some(f64::from(self.seconds_passed)),
             "GetRandomPercent" => return Some((self.state.roll() % 100) as f64),
@@ -4682,6 +4976,7 @@ pub const HANDLED: &[&str] = &[
     "SetItemValue",
     "AddCardToPlayer",
     "ShowCaravanMenu",
+    "ShowTutorialMenu",
     "ShowSlotMachineMenuParams",
     "ShowBlackJackMenuParams",
     "ShowRouletteMenuParams",
@@ -4726,6 +5021,10 @@ pub const HANDLED: &[&str] = &[
     "GetIsCurrentPackage",
     "GetMapMarkerVisible",
     "GetUnconscious",
+    "GetFatiguePercentage",
+    "GetGroupMemberCount",
+    "GetGroupTargetCount",
+    "ForceFlee",
     "IsPlayerInRegion",
     "PlayBink",
     "PlayMusic",

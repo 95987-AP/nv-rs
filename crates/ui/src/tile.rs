@@ -63,8 +63,22 @@ pub struct Trait {
 pub struct TextLayout {
     pub font: usize,
     pub quads: Vec<text::GlyphQuad>,
+    /// Each quad's font (from 1) when they differ (HTML text); empty: all
+    /// in `font`.
+    pub quad_fonts: Vec<usize>,
+    /// Pictures in HTML text.
+    pub pictures: Vec<crate::html::Picture>,
+    /// HTML text's number of pages (`pagecount`); 0 for plain text.
+    pub pages: i32,
     pub width: i32,
     pub height: i32,
+}
+
+impl TextLayout {
+    /// The font of quad `i` (from 1).
+    pub fn quad_font(&self, i: usize) -> usize {
+        self.quad_fonts.get(i).copied().unwrap_or(self.font)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -718,12 +732,17 @@ impl Ui {
                 string: None,
             };
         }
-        if self.tiles[tile].kind == kind::TEXT && (trait_id == t::WIDTH || trait_id == t::HEIGHT) {
+        // An HTML text tile's `pagecount` is its layout's too (`00a21af0`).
+        if self.tiles[tile].kind == kind::TEXT
+            && (trait_id == t::WIDTH
+                || trait_id == t::HEIGHT
+                || (trait_id == t::PAGECOUNT && self.number(tile, t::ISHTML) > 0.0))
+        {
             if let Some(layout) = self.layout(tile) {
-                let v = if trait_id == t::WIDTH {
-                    layout.width
-                } else {
-                    layout.height
+                let v = match trait_id {
+                    t::WIDTH => layout.width,
+                    t::HEIGHT => layout.height,
+                    _ => layout.pages,
                 };
                 return Value {
                     number: v as f32,
@@ -847,6 +866,11 @@ impl Ui {
         if wrap < 1 {
             wrap = self.screen_size.width() as i32;
         }
+        if self.number(tile, t::ISHTML) > 0.0 {
+            let layout = self.html_layout(tile, font_index, wrap);
+            self.tiles[tile].layout = Some((self.pass, layout.clone()));
+            return Some(layout);
+        }
         let lines = self.number(tile, t::WRAPLINES) as i32;
         let gap = self.number(tile, t::LINEGAP) as i32;
         let justify = self.number(tile, t::JUSTIFY) as i32;
@@ -860,11 +884,59 @@ impl Ui {
         let layout = TextLayout {
             font: font_index,
             quads,
+            quad_fonts: Vec::new(),
+            pictures: Vec::new(),
+            pages: 0,
             width,
             height: prepared.height,
         };
         self.tiles[tile].layout = Some((self.pass, layout.clone()));
         Some(layout)
+    }
+
+    /// An `ishtml` text tile's layout (`00a21af0` → `00a18a30`): the
+    /// parser's for text starting with a tag, else each character in the
+    /// tile's font and justification; a wrap width or `wraplimit` below 2
+    /// is no limit; the page shown is `pagenum`.
+    fn html_layout(&mut self, tile: TileId, font_index: usize, wrap: i32) -> TextLayout {
+        let wrap = if wrap < 2 {
+            crate::html::UNLIMITED
+        } else {
+            wrap
+        };
+        let limit = self.number(tile, t::WRAPLIMIT) as i32;
+        let limit = if limit < 2 {
+            crate::html::UNLIMITED
+        } else {
+            limit
+        };
+        let page = self.number(tile, t::PAGENUM) as i32;
+        let justify = self.number(tile, t::JUSTIFY) as i32;
+        let raw = self.string(tile, t::STRING).unwrap_or_default();
+        let setting = &self.setting;
+        let layout = crate::html::parse(&self.fonts, raw.as_bytes(), wrap, limit, &|n| setting(n))
+            .unwrap_or_else(|| {
+                crate::html::plain(
+                    &self.fonts,
+                    raw.as_bytes(),
+                    font_index - 1,
+                    justify,
+                    wrap,
+                    limit,
+                )
+            });
+        let (glyphs, pictures) = crate::html::draw(&self.fonts, &layout, page);
+        let (width, height) = layout.size(page);
+        let (quad_fonts, quads) = glyphs.into_iter().unzip();
+        TextLayout {
+            font: font_index,
+            quads,
+            quad_fonts,
+            pictures,
+            pages: layout.pages.len() as i32,
+            width,
+            height,
+        }
     }
 
     /// A tile's position on the screen: its x, y plus those of every

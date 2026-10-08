@@ -51,6 +51,10 @@ use crate::tile::{TileId, Ui};
 pub const FILE: &str = "menus\\computers_menu.xml";
 /// Its class number (`00757a10`).
 pub const CLASS: i32 = 1057;
+/// The menu's fade out as the player leaves a terminal or the hacking
+/// game (`menufade` set to 0.75 at `00757ea0`, `00766aa0`; the generic
+/// fade, `ui::fade`, then runs it).
+pub const LEAVE_FADE: f32 = 0.75;
 /// The list's template (`00757b70`).
 const TEMPLATE: &str = "computers_file_template";
 
@@ -84,6 +88,9 @@ pub mod sound {
     pub const SCROLL: &str = "UIHackingCharScroll";
     pub const ENTER: &str = "UIHackingCharEnter";
     pub const SINGLE: &str = "UIHackingCharSingle";
+    /// Leaving (`007ffe40`, from `00757ea0` and the hacking menu's
+    /// `00766aa0`; the power button's `007ffd50` too).
+    pub const POWER_DOWN: &str = "OBJComputerTerminalPowerDown";
 }
 
 /// The rates (`iComputersDisplayRateMenus`, `…Notes`, `iHackingInputRate`,
@@ -187,6 +194,9 @@ pub enum Request {
         terminal: u32,
     },
     Close,
+    /// The player left (`00757ea0`): [`sound::POWER_DOWN`] plays and the
+    /// rendered terminal fades out (`007ffaf0`); after [`Request::Close`].
+    Leave,
 }
 
 /// Where the menu is (`+0xb0`).
@@ -622,14 +632,17 @@ impl ComputersMenu {
         }
     }
 
-    /// Closes it (`00757ea0`).
+    /// Closes it as the player leaves (`00757ea0`): it fades out over
+    /// 0.75 s (`menufade`).
     pub fn close(&mut self, ui: &mut Ui) {
         if self.closed {
             return;
         }
+        ui.set_number(self.menu, t::MENUFADE, LEAVE_FADE);
         ui.set_number(self.menu, menu::LEAVE_STACK, 1.0);
         self.closed = true;
         self.requests.push(Request::Close);
+        self.requests.push(Request::Leave);
     }
 
     /// Every frame (`00758470`).
@@ -965,7 +978,11 @@ mod tests {
         // Leaving the first screen closes the menu.
         m.special_key(&mut ui, LEAVE, now + 6000.0);
         assert!(m.closed);
-        assert!(m.requests.contains(&Request::Close));
+        // It fades out over 0.75 s (`00757ea0`).
+        assert_eq!(ui.number(m.menu, t::MENUFADE), LEAVE_FADE);
+        let close = m.requests.iter().position(|r| *r == Request::Close);
+        let leave = m.requests.iter().position(|r| *r == Request::Leave);
+        assert!(close.is_some() && leave > close);
     }
 
     /// A sub-menu, then "Back" (`00758a80`).

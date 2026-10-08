@@ -49,8 +49,15 @@
 //! Not here: the item card (`CM_ItemData`, `00707e30`, shared with the
 //! Pip-Boy's inventory; it stays hidden), armed mines' "Live" lines, a
 //! dead person's held weapon added to the list, items' extra data (their
-//! owners, the pick-up reference test), modes 2–4, the controller's
-//! buttons, the subtitle line.
+//! owners, the pick-up reference test), modes 2 and 4, the controller's
+//! buttons.
+//!
+//! The subtitle (`CM_Subtitle`, found by name): emptied on opening
+//! (`0075b310`); a companion's line in mode 3 (their `FollowersTrade` and
+//! `FollowersOverburdened` barks, `0075ec60` → `0075eea0`) is put there
+//! until its voice's length, or its length × `fNoticeTextTimePerCharacter`
+//! without a voice, has passed (`+0xfc`); each frame (`0075eac0`) empties
+//! it after ([`ContainerMenu::say`], [`ContainerMenu::update`]).
 
 use crate::list::{font_for, ListBox};
 use crate::menu::{self, MenuCode};
@@ -177,6 +184,8 @@ pub struct ContainerMenu {
     pub requests: Vec<Request>,
     pub sounds: Vec<String>,
     pub closed: bool,
+    /// When the subtitle empties, in ms (`+0xfc`).
+    pub subtitle_until: Option<f64>,
 }
 
 fn side_index(side: Side) -> usize {
@@ -253,6 +262,27 @@ impl ContainerMenu {
             requests: Vec::new(),
             sounds: Vec::new(),
             closed: false,
+            subtitle_until: None,
+        }
+    }
+
+    /// A line said (`0075eea0`): on `CM_Subtitle` until `until` (ms).
+    pub fn say(&mut self, ui: &mut Ui, text: &str, until: f64) {
+        if let Some(sub) = ui.find(self.menu, "CM_Subtitle") {
+            ui.set_text(sub, t::STRING, text);
+        }
+        self.subtitle_until = Some(until);
+        ui.refresh();
+    }
+
+    /// Each frame (`0075eac0`): the subtitle emptied once its time is up.
+    pub fn update(&mut self, ui: &mut Ui, now: f64) {
+        if self.subtitle_until.is_some_and(|until| now > until) {
+            self.subtitle_until = None;
+            if let Some(sub) = ui.find(self.menu, "CM_Subtitle") {
+                ui.set_text(sub, t::STRING, "");
+            }
+            ui.refresh();
         }
     }
 
@@ -1088,5 +1118,21 @@ mod tests {
         assert_eq!(ui.number(m.tiles[10].unwrap(), t::VISIBLE), 0.0);
         let (mut ui, m) = opened(Vec::new(), Vec::new(), "Box");
         assert_ne!(ui.number(m.tiles[10].unwrap(), t::VISIBLE), 0.0);
+    }
+
+    /// `CM_Subtitle` (`0075b310`, `0075eea0`, `0075eac0`): emptied on
+    /// opening, a line on it until its time is up.
+    #[test]
+    fn a_companions_line_on_the_subtitle() {
+        let (mut ui, mut m) = opened(Vec::new(), Vec::new(), "Cass");
+        let sub = ui.find(m.menu, "CM_Subtitle").unwrap();
+        assert_eq!(ui.string(sub, t::STRING).unwrap_or_default(), "");
+        m.say(&mut ui, "What do you need?", 2000.0);
+        assert_eq!(ui.string(sub, t::STRING).unwrap(), "What do you need?");
+        m.update(&mut ui, 1500.0);
+        assert_eq!(ui.string(sub, t::STRING).unwrap(), "What do you need?");
+        m.update(&mut ui, 2001.0);
+        assert_eq!(ui.string(sub, t::STRING).unwrap_or_default(), "");
+        assert_eq!(m.subtitle_until, None);
     }
 }

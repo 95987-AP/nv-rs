@@ -83,6 +83,11 @@ pub struct ActiveEffect {
     /// it's added while the Pip-Boy's STATS healing mode aims at a limb
     /// (`00823210` → `00589f50`, [`GameState::healing_part`]); -1 none.
     pub part: i32,
+    /// Who cast it (`pCaster`, Xbox PDB, `+0x28`), when known.
+    pub caster: Option<FormId>,
+    /// Which of its source's effects it is (`pEffect`, Xbox PDB, `+0xc`):
+    /// the index among the source's `EFID`s, when known.
+    pub item: Option<usize>,
 }
 
 impl ActiveEffect {
@@ -266,7 +271,7 @@ pub fn apply(
     let mut done = Vec::new();
     let ingestible = crate::items::ingestible_flags(order, source);
     let addiction = spell_type(order, source) == Some(ADDICTION_SPELL_TYPE);
-    for e in crate::items::effects(order, source) {
+    for (item, e) in crate::items::effects(order, source).into_iter().enumerate() {
         let applies = Facts {
             order,
             state,
@@ -326,6 +331,8 @@ pub fn apply(
                 }
                 _ => -1,
             },
+            caster: Some(caster),
+            item: Some(item),
         };
         if active.detrimental && active.resist >= 0 {
             let resisted = Facts {
@@ -501,6 +508,110 @@ pub fn add_spell(
     apply(order, state, target, spell, caster, held)
 }
 
+/// The largest area (`EFIT` u32 at 4) of a spell's touch-range effects
+/// (range, u32 at 12, 1), as `00818ce0` picks it; 0 when none has one.
+fn touch_area(order: &LoadOrder, spell: FormId) -> u32 {
+    let Some(record) = order.get(spell).and_then(|r| r.record().ok()) else {
+        return 0;
+    };
+    record
+        .get_all(esm::FourCC::new(b"EFIT"))
+        .filter(|s| s.data.len() >= 16)
+        .filter(|s| crate::cell::le_u32(&s.data, 12) == 1)
+        .map(|s| crate::cell::le_u32(&s.data, 4))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Whom a cast at `target` reaches besides it (`MagicCaster::FindTargets`
+/// `00815d00`, its gathering `00818ce0`, Xbox PDB): with an area on the
+/// spell's touch-range effects, the actors loaded around (here: placed in
+/// the player's cell, and the player) other than the caster, with 3D (not
+/// disabled), not ghosts (`008ace90`), within `fMagicUnitsPerFoot` (22) ×
+/// that area of the target, at the effectiveness 1 a script's cast has;
+/// unless the spell's flag 0x10 (`SPIT` flags byte, "area effect ignores
+/// LOS", `0040e210(0x10)`) says otherwise, each needs a line of sight
+/// (`008190d0`: a ray on layer 0x27 from the target's position to theirs
+/// raised by half their height, `008853a0`, that leaves out their own
+/// collision and meets nothing). Without the viewer's [`Sight`] (headless)
+/// the line of sight isn't tested. The target itself is cast on by the
+/// caller and left out here. The disguise pulse's area 25 reaches 550
+/// units.
+///
+/// [`Sight`]: crate::sight::Sight
+// Translated from 00818ce0 and 008190d0 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn area_targets(
+    order: &LoadOrder,
+    state: &GameState,
+    spell: FormId,
+    caster: FormId,
+    target: FormId,
+    sight: Option<&dyn crate::sight::Sight>,
+) -> Vec<FormId> {
+    let area = touch_area(order, spell);
+    if area == 0 {
+        return Vec::new();
+    }
+    let feet = crate::scripting::game_setting(order, "fMagicUnitsPerFoot").unwrap_or(22.0);
+    let radius = (feet * 1.0).trunc() * area as f32;
+    let (Some(cell), Some((space, _, at, _))) = (state.player_cell, state.place(order, target))
+    else {
+        return Vec::new();
+    };
+    let ignores_los = spell_flags(order, spell) & AREA_IGNORES_LOS != 0;
+    let mut out: Vec<FormId> = order
+        .references_in_cell(cell)
+        .into_iter()
+        .filter(|rr| matches!(rr.entry.header.kind.as_bytes(), b"ACHR" | b"ACRE"))
+        .map(|rr| rr.form_id)
+        .collect();
+    // The player last (`00818ce0` asks them after the process lists).
+    out.push(crate::dialogue::PLAYER_REF);
+    out.retain(|&w| {
+        if w == caster || w == target || state.disabled.get(&w) == Some(&true) {
+            return false;
+        }
+        if crate::more_functions::is_ghost(state, w) {
+            return false;
+        }
+        let Some((s, _, p, _)) = state.place(order, w) else {
+            return false;
+        };
+        if s != space || (0..3).map(|i| (p[i] - at[i]).powi(2)).sum::<f32>().sqrt() > radius {
+            return false;
+        }
+        if ignores_los {
+            return true;
+        }
+        let Some(sight) = sight else {
+            return true;
+        };
+        let base = crate::scripting::base_of(order, w).unwrap_or(w);
+        let scale = order
+            .get(w)
+            .and_then(|rr| rr.record().ok())
+            .and_then(|r| r.get(esm::FourCC::new(b"XSCL")).map(|s| s.data.clone()))
+            .filter(|d| d.len() >= 4)
+            .map_or(1.0, |d| crate::cell::le_f32(&d, 0));
+        let height = crate::npc_aim::actor_height(order, base, scale).unwrap_or(0.0);
+        sight.ray(at, [p[0], p[1], p[2] + height * 0.5]).is_none()
+    });
+    out
+}
+
+/// `SPIT` flags (byte 12; the spell's `+0x40`): 0x10, area effects ignore
+/// the line of sight (`00818ce0`).
+const AREA_IGNORES_LOS: u8 = 0x10;
+
+fn spell_flags(order: &LoadOrder, spell: FormId) -> u8 {
+    order
+        .get(spell)
+        .filter(|r| r.entry.header.kind.as_bytes() == b"SPEL")
+        .and_then(|r| r.record().ok())
+        .and_then(|r| r.get(esm::FourCC::new(b"SPIT")).map(|s| s.data.clone()))
+        .filter(|d| d.len() >= 13)
+        .map_or(0, |d| d[12])
+}
 /// Takes an item's or spell's effects off someone (`RemoveSpell`,
 /// `Dispel`): what was taken off (script effects still to finish).
 pub fn remove(state: &mut GameState, target: FormId, source: FormId) -> Vec<ActiveEffect> {
@@ -511,14 +622,139 @@ pub fn remove(state: &mut GameState, target: FormId, source: FormId) -> Vec<Acti
     gone
 }
 
+/// A source's effect items as `004042a0` compares them: each `EFID`, its
+/// `EFIT` (magnitude, area, duration, range, actor value) and its
+/// conditions (`CTDA`s).
+fn effect_items(order: &LoadOrder, source: FormId) -> Vec<(u32, Vec<u8>, Vec<Vec<u8>>)> {
+    let Some(record) = order.get(source).and_then(|r| r.record().ok()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(u32, Vec<u8>, Vec<Vec<u8>>)> = Vec::new();
+    for sub in &record.subrecords {
+        match sub.kind.as_bytes() {
+            b"EFID" if sub.data.len() >= 4 => {
+                out.push((crate::cell::le_u32(&sub.data, 0), Vec::new(), Vec::new()))
+            }
+            b"EFIT" => {
+                if let Some(last) = out.last_mut() {
+                    last.1 = sub.data.clone();
+                }
+            }
+            b"CTDA" => {
+                if let Some(last) = out.last_mut() {
+                    last.2.push(sub.data.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A script's cast of a spell on `target` (`MagicCaster::CastSpellImmediate`
+/// → `MagicTarget::CheckAddEffect` (Xbox PDB), `00823210`, for each effect
+/// it adds): what was dispelled to make way (their `ScriptEffectFinish`
+/// is the caller's to run). By the spell's type (`MagicSystem::SpellType`,
+/// Xbox PDB; `SPIT`):
+/// - a poison (5) with a duration: an identical effect already working
+///   from the same spell and caster (`00824c00`) gets the new duration
+///   added to its own and the new one isn't added;
+/// - wortcraft (8): added as it is;
+/// - anything else (actor effect, disease, power, lesser power, ability,
+///   leveled, addiction), unless the effect comes from a worn enchantment
+///   (flag 0x100, never for a cast): `MagicTarget::Dispel` (`00824400`)
+///   with the spell, the caster and the effect item ends the first effect
+///   working from the same spell and caster on the same magic effect with
+///   an identical effect item (`004042a0`: its `EFIT` data and
+///   conditions), then the new one is added.
+///
+/// Not translated here: potions' and enchantments' own branches (an
+/// `ALCH` or `ENCH` source is added as before), and the "Usage Monitor
+/// Effect" (`0x14F`, `00408f60`) branch for chems' addictions.
+// Translated from 00823210 (decompiled, FalloutNV.exe 1.4.0.525)
+pub fn cast(
+    order: &LoadOrder,
+    state: &mut GameState,
+    target: FormId,
+    spell: FormId,
+    caster: FormId,
+) -> Vec<ActiveEffect> {
+    let before = state.active_effects.len();
+    add_spell(order, state, target, spell, caster, false);
+    let Some(kind) = spell_type(order, spell) else {
+        return Vec::new();
+    };
+    let items = effect_items(order, spell);
+    let same_item = |a: Option<usize>, b: Option<usize>| match (a, b) {
+        (Some(a), Some(b)) => items.get(a).is_some() && items.get(a) == items.get(b),
+        _ => false,
+    };
+    let added: Vec<ActiveEffect> = state.active_effects.drain(before..).collect();
+    let mut dispelled = Vec::new();
+    for new in added {
+        let matches = |e: &ActiveEffect| {
+            e.target == new.target
+                && e.source == spell
+                && e.caster == new.caster
+                && e.effect == new.effect
+                && same_item(e.item, new.item)
+        };
+        match kind {
+            POISON_SPELL_TYPE if new.remaining > 0.0 => {
+                if let Some(e) = state.active_effects.iter_mut().find(|e| matches(e)) {
+                    e.remaining += new.remaining;
+                    continue;
+                }
+            }
+            POISON_SPELL_TYPE | WORTCRAFT_SPELL_TYPE => {}
+            _ => {
+                if let Some(i) = state.active_effects.iter().position(matches) {
+                    dispelled.push(state.active_effects.remove(i));
+                }
+            }
+        }
+        state.active_effects.push(new);
+    }
+    dispelled
+}
+
+/// `MagicSystem::SpellType` (Xbox PDB) 5, poison, and 8, wortcraft.
+const POISON_SPELL_TYPE: u32 = 5;
+const WORTCRAFT_SPELL_TYPE: u32 = 8;
+/// `MGEF` `DATA` flag 0x10000000 ("No Death Dispel", xEdit's name): the
+/// effect keeps working on someone dead (`00804560`).
+pub const NO_DEATH_DISPEL: u32 = 0x1000_0000;
+
+/// Whether a magic effect keeps working after its target dies (its `MGEF`
+/// flags have [`NO_DEATH_DISPEL`]: the energy weapons' critical effects,
+/// `LaserDisintegrationEffect` and `GooificationEffect`, 0x10000475).
+pub fn survives_death(order: &LoadOrder, effect: FormId) -> bool {
+    order
+        .get(effect)
+        .filter(|r| r.entry.header.kind.as_bytes() == b"MGEF")
+        .and_then(|r| r.record().ok())
+        .and_then(|r| r.get(esm::sig::DATA).map(|s| s.data.clone()))
+        .filter(|d| d.len() >= 4)
+        .is_some_and(|d| crate::cell::le_u32(&d, 0) & NO_DEATH_DISPEL != 0)
+}
+
 /// Time passes for every effect: changes over time are applied, script
-/// effects run, and what has run its course ends. The dead lose theirs.
+/// effects run, and what has run its course ends. The dead lose theirs
+/// (a script effect's `ScriptEffectFinish` runs) unless the magic effect
+/// survives death ([`survives_death`]): those go on as on the living.
+// Translated from 00804560 (decompiled, FalloutNV.exe 1.4.0.525;
+// `ActiveEffect`'s update): after the frame's update, a target actor that
+// `IsDead` with the effect's flag 0x10000000 clear ends the effect (+0x13),
+// and an effect that started then finishes (vtable +0x58).
 pub fn tick(runner: &mut Runner, seconds: f32) {
     let order = runner.order;
     let active = std::mem::take(&mut runner.state.active_effects);
     let mut kept = Vec::with_capacity(active.len());
     for mut e in active {
-        if runner.state.dead.contains(&e.target) {
+        if runner.state.dead.contains(&e.target) && !survives_death(order, e.effect) {
+            if let (true, Some(script)) = (e.started, e.script) {
+                runner.run_effect_script(script, &mut e, "scripteffectfinish", seconds);
+            }
             continue;
         }
         let step = seconds.min(e.remaining.max(0.0));

@@ -76,10 +76,16 @@ fn a_greeting_and_the_quest_script_carry_the_quest_through() {
                 text: "Talk to the doctor.".into(),
                 completed: false
             },
+            // Its first objective shown: "Quest added" (`005ec5d0`).
+            Event::QuestText(world::quest_text::QuestText::Quest {
+                quest: FormId(QUEST),
+                update: world::quest_text::Update::Added
+            }),
             Event::Message {
                 title: Some("Note".into()),
                 text: "Hello there.".into(),
                 buttons: vec![],
+                icon: None,
             },
         ]
     );
@@ -998,12 +1004,25 @@ fn locks_keys_and_terminals() {
         locks::try_open(&order, &mut state, strongbox),
         Opening::NeedsSkill(50)
     );
-    // With the key it opens, and stays unlocked.
+    // With the key it opens, and stays unlocked: "Unlocked with <key>."
+    // with the key picture (`005180b0`, `00516dc0`).
+    state.events.clear();
     state.items.insert((PLAYER_REF, FormId(KEY)), 1);
     assert_eq!(
         locks::try_open(&order, &mut state, strongbox),
         Opening::WithKey
     );
+    let unlocked: Vec<_> = state
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Message { text, icon, .. } => Some((text.clone(), icon.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(unlocked.len(), 1, "{unlocked:?}");
+    assert!(unlocked[0].0.starts_with("Unlocked with "), "{unlocked:?}");
+    assert_eq!(unlocked[0].1.as_deref(), Some(world::message_icon::KEY));
     assert_eq!(
         ask(&order, &scripts, &mut state, "StrongboxRef.GetLocked"),
         0.0
@@ -1321,7 +1340,24 @@ fn reputation_and_karma_move_as_the_game_moves_them() {
             _ => None,
         })
         .collect();
-    assert_eq!(texts, ["Testville\nFame Gained!", "Accepted"]);
+    // The notice with the exe's words (this world's data has none); the
+    // new title in the game's box: titled with the reputation's name,
+    // "<title>\n<description>".
+    assert_eq!(texts, ["Testville\nReputation Gain"]);
+    assert!(state.events.iter().any(|e| matches!(e,
+        Event::Popup { title: Some(t), text, .. }
+            if t == "Testville"
+                && text == "Accepted\nFolks have come to accept you for your helpful nature.")));
+    // Fame gained has the very happy Vault Boy (`sRepPositiveGainIcon`).
+    let icons: Vec<Option<String>> = state
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Message { icon, .. } => Some(icon.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(icons, [Some(world::message_icon::VERY_HAPPY.to_string())]);
     // Infamy to the top (12 + 12 = 24, clamped at 20): level 3 against fame
     // 1, "Merciful Thug", on the bad axis 3.
     run(
@@ -1378,7 +1414,9 @@ fn stealing_costs_karma_and_a_second_seen_theft_starts_a_fight() {
     // Again the same day: he attacks.
     assert!(crime::steal(&order, &mut state, chest, doc));
     assert_eq!(state.combat.get(&FormId(DOC_REF)), Some(&PLAYER_REF));
-    assert_eq!(state.player_crimes.0, 2);
+    // Thefts count for his town, not for the player's own minor crimes
+    // (`Actor::StealAlarm` counts them on the victim).
+    assert_eq!(state.player_crimes.0, 0);
     // Out of his sight (behind him), nobody sees, but the karma goes.
     let mut unseen = GameState::new(&order);
     unseen.player_cell = Some(FormId(CELL));
@@ -1827,6 +1865,7 @@ fn message_boxes_ask_and_the_character_is_made() {
             title: Some("Choose".into()),
             text: "You have 5 caps (50%).".into(),
             buttons: vec![(0, "First".into()), (2, "Third".into())],
+            icon: None,
         })
     );
     // Nothing pressed yet: -1. Pressed: given once.
@@ -2150,4 +2189,41 @@ fn an_own_delay_quests_first_run_counts_the_frame() {
     Runner::new(&order, &scripts, &mut state).update(0.0625);
     assert_eq!(var(&state, "nruns"), 2.0);
     assert_eq!(var(&state, "fseen"), 0.125);
+}
+
+/// `RemoveMe` on an actor wearing the item (`005b53d0` → `00575400`,
+/// `004bfda0`): the worn one goes, taken off first, and the one left isn't
+/// worn. `TestVanishingHat`'s `OnEquip Player` removes it; with two, the
+/// player puts one on and is left with the other in their bag.
+#[test]
+fn removeme_takes_the_worn_one() {
+    let (_data, order) = order("scripting-removeme-worn");
+    let scripts = ScriptCache::default();
+    let mut state = GameState::new(&order);
+    let hat = FormId(VANISHING_HAT);
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.AddItem TestVanishingHat 2",
+        None,
+        None,
+    );
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    Runner::new(&order, &scripts, &mut state).run_source(
+        "player.EquipItem TestVanishingHat",
+        None,
+        None,
+    );
+    assert!(state.is_equipped(PLAYER_REF, hat));
+    Runner::new(&order, &scripts, &mut state).update(0.1);
+    assert_eq!(state.item_count(&order, PLAYER_REF, hat), 1);
+    assert!(!state.is_equipped(PLAYER_REF, hat));
+    // The other one's script is still there; the worn one's went with it.
+    assert_eq!(
+        state
+            .item_scripts
+            .iter()
+            .filter(|s| s.holder == PLAYER_REF && s.item == hat)
+            .count(),
+        1
+    );
+    assert!(state.unhandled.is_empty(), "{:?}", state.unhandled_first);
 }
