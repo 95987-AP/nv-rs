@@ -564,6 +564,39 @@ struct Touch {
     n: Vec3,
     margin: f32,
     surface: Surface,
+    /// The two shapes' features it came from (this generator's point id,
+    /// [`feature_key`]).
+    key: u64,
+    /// The other side's share of the margin (its shell or radius): its
+    /// surface is `on_b` + `n` × this.
+    radius_b: f32,
+}
+
+/// A contact point's identity: what kind of touch, which shapes, which
+/// feature (corner, edge end) and which triangle.
+fn feature_key(kind: u64, shapes: usize, feature: usize, triangle: u32) -> u64 {
+    kind << 56
+        | (shapes as u64 & 0xff) << 48
+        | (feature as u64 & 0xffff) << 32
+        | u64::from(triangle)
+}
+
+/// The other side of a manifold: another body, or the world's fixed body
+/// a collider triangle belongs to (its placed reference, 0 for the
+/// place's landscape and unowned statics).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Partner {
+    Body(usize),
+    Fixed(u32),
+}
+
+/// A contact point the narrowphase found this step, before the contact
+/// manager takes it.
+#[derive(Debug, Clone, Copy)]
+struct Candidate {
+    point: crate::manifold::NewPoint,
+    surface: Surface,
+    triangle: Option<u32>,
 }
 
 /// Havok's mouse spring (`hkpMouseSpringAction`, the player's Z-key grab,
@@ -604,14 +637,6 @@ pub struct ContactEvent {
     pub speed: f32,
 }
 
-/// What a body touches, for telling new contacts from old: another body,
-/// or the collider's triangles of one owner (0: the place's static ones).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Toucher {
-    Body(usize),
-    World(u32),
-}
-
 /// Free rigid bodies and the walkers that push them.
 #[derive(Debug, Clone, Default)]
 pub struct RigidWorld {
@@ -622,11 +647,10 @@ pub struct RigidWorld {
     movers: Vec<Mover>,
     /// The player's grab, if they hold something.
     pub spring: Option<Spring>,
-    /// Pairs touching at the end of the last step.
-    touching: HashSet<(usize, Toucher)>,
-    /// This step's touching pairs with their fastest closing.
-    this_step: std::collections::HashMap<(usize, Toucher), ContactEvent>,
-    /// Contacts begun since [`RigidWorld::take_contacts`].
+    /// Each agent's contact points (its contact manager's atom,
+    /// [crate::manifold]): the first body, the other side.
+    pub manifolds: std::collections::BTreeMap<(usize, Partner), crate::manifold::Manifold>,
+    /// Contact points added since [`RigidWorld::take_contacts`].
     began: Vec<ContactEvent>,
     /// The simulation islands (`crate::islands`).
     pub islands: crate::islands::Islands,
@@ -823,7 +847,7 @@ impl RigidWorld {
             if gap > self.bodies[i].reach + self.bodies[j].reach + 2.0 {
                 continue;
             }
-            if !self.body_touches(i, j).is_empty() {
+            if !self.body_touches(i, j, 0.0).is_empty() {
                 heaviest = heaviest.max(self.bodies[j].setup.mass);
             }
         }
@@ -833,9 +857,19 @@ impl RigidWorld {
     /// Takes body `i` out (a grab on it ends).
     pub fn remove_at(&mut self, i: usize) -> Rigid {
         // Pairs are kept by index: start them afresh.
-        self.touching.clear();
-        self.this_step.clear();
         self.began.clear();
+        self.manifolds = std::mem::take(&mut self.manifolds)
+            .into_iter()
+            .filter(|((a, p), _)| *a != i && *p != Partner::Body(i))
+            .map(|((a, p), m)| {
+                let a = a - usize::from(a > i);
+                let p = match p {
+                    Partner::Body(b) => Partner::Body(b - usize::from(b > i)),
+                    f => f,
+                };
+                ((a, p), m)
+            })
+            .collect();
         // Its agents go with it (`hkpWorld::removeEntity`), the rest keep
         // theirs, renumbered; its island asks for a split check.
         self.pairs = std::mem::take(&mut self.pairs)
@@ -1154,7 +1188,6 @@ impl RigidWorld {
             b.set_motion(&m);
         }
         let h = dt / SUBSTEPS as f32;
-        self.this_step.clear();
         for _ in 0..SUBSTEPS {
             self.substep(collider, &nearby, h);
         }
@@ -1169,22 +1202,6 @@ impl RigidWorld {
             b.frames = m.update_deactivation(&solver, HAVOK_UNIT).unwrap_or(0);
             b.set_motion(&m);
         }
-        // Contacts begun this step (Havok adds a contact point once).
-        let now: HashSet<(usize, Toucher)> = self.this_step.keys().copied().collect();
-        for (key, event) in &self.this_step {
-            if !self.touching.contains(key) {
-                self.began.push(*event);
-            }
-        }
-        // A pair with a sleeping side stays as it was.
-        let kept: Vec<(usize, Toucher)> = self
-            .touching
-            .iter()
-            .filter(|(a, _)| self.bodies.get(*a).is_some_and(|b| b.asleep))
-            .copied()
-            .collect();
-        self.touching = now;
-        self.touching.extend(kept);
         // Each active island's fewest passing checks (each body's count
         // was updated with its step): more than 5 and still marked active,
         // it is marked inactive (`00cf8da0` → `00cb5420`) and goes to sleep
@@ -1212,6 +1229,7 @@ impl RigidWorld {
             }
         }
         self.collide_broadphase();
+        self.collide_narrowphase(collider);
     }
 
     /// The broadphase part of `hkpSimulation::collide` (`00cf8bc0`; the
@@ -1224,6 +1242,167 @@ impl RigidWorld {
             self.recalc_aabb(i);
         }
         self.update_pairs(&moved);
+    }
+
+    /// The narrowphase part of `hkpSimulation::collide` (`00cf8bc0`, per
+    /// active island's agents): for each agent with a body in an active
+    /// island, the contact points its bodies have now (this generator's,
+    /// within the collision tolerance: Havok's agents create and keep
+    /// points up to 0.1 Havok units apart, `00cfb570`), handed to the
+    /// contact manager ([`RigidWorld::update_manifold`]). The world's
+    /// triangles pair with every body: one agent per fixed body (here per
+    /// placed reference). Sleeping islands' points stay as they were.
+    // Translated from 00cf8bc0 and 00cfb570 (decompiled, FalloutNV.exe 1.4.0.525)
+    fn collide_narrowphase(&mut self, collider: &Collider) {
+        let tol = crate::havok::COLLISION_TOLERANCE * HAVOK_UNIT;
+        let owners: HashSet<u32> = self.bodies.iter().map(|b| b.setup.reference).collect();
+        let active = self.active_bodies();
+        for &i in &active {
+            if !self.bodies[i].dynamic() {
+                continue;
+            }
+            // The world's fixed bodies.
+            let (lo, hi) = self.bodies[i].aabb;
+            let (lo, hi) = (sub(lo, [tol; 3]), add(hi, [tol; 3]));
+            let tris: Vec<u32> = collider
+                .near(lo, hi)
+                .into_iter()
+                .filter(|&t| !owners.contains(&collider.owner(t)))
+                .filter(|&t| {
+                    let [p, q, s] = collider.triangle(t);
+                    p[2].max(q[2]).max(s[2]) >= lo[2] && p[2].min(q[2]).min(s[2]) <= hi[2]
+                })
+                .collect();
+            let mut groups: std::collections::BTreeMap<u32, Vec<Candidate>> = Default::default();
+            for (t, touch) in self.world_touches(collider, i, &tris, tol) {
+                let fixed = collider.reference(t);
+                let point = self.new_point(i, Partner::Fixed(fixed), &touch);
+                groups.entry(fixed).or_default().push(Candidate {
+                    point,
+                    surface: touch.surface,
+                    triangle: Some(t),
+                });
+            }
+            let old: Vec<u32> = self
+                .manifolds
+                .keys()
+                .filter_map(|&(a, p)| match p {
+                    Partner::Fixed(r) if a == i && !groups.contains_key(&r) => Some(r),
+                    _ => None,
+                })
+                .collect();
+            for r in old {
+                self.manifolds.remove(&(i, Partner::Fixed(r)));
+            }
+            for (r, found) in groups {
+                self.update_manifold(i, Partner::Fixed(r), found);
+            }
+        }
+        // Agents between bodies: each pair once, the lower index first.
+        let pairs: Vec<(usize, usize)> = self
+            .pairs
+            .iter()
+            .copied()
+            .filter(|&(a, b)| self.islands.is_active(a) || self.islands.is_active(b))
+            .collect();
+        for (a, b) in pairs {
+            let found: Vec<Candidate> = self
+                .body_touches(a, b, tol)
+                .into_iter()
+                .map(|touch| Candidate {
+                    point: self.new_point(a, Partner::Body(b), &touch),
+                    surface: touch.surface,
+                    triangle: None,
+                })
+                .collect();
+            self.update_manifold(a, Partner::Body(b), found);
+        }
+        // Agents gone with their pairs (`00cc10b0` removes their points).
+        let pairs = &self.pairs;
+        self.manifolds.retain(|&(a, p), _| match p {
+            Partner::Body(b) => pairs.contains(&(a.min(b), a.max(b))),
+            Partner::Fixed(_) => true,
+        });
+    }
+
+    /// A touch as a contact point: on the other side's surface, the normal
+    /// from it toward body `a`, the distance between the surfaces.
+    fn new_point(&self, a: usize, other: Partner, t: &Touch) -> crate::manifold::NewPoint {
+        let o = match other {
+            Partner::Body(j) => Other::Body(j),
+            Partner::Fixed(_) => Other::World(0),
+        };
+        let (pa, pb, _, _) = self.ends(a, o, t);
+        crate::manifold::NewPoint {
+            key: t.key,
+            position: add(pb, scale(t.n, t.radius_b)),
+            normal: t.n,
+            distance: dot(sub(pa, pb), t.n) - t.margin,
+        }
+    }
+
+    /// The contact manager's update for one agent (`hkpSimpleConstraint
+    /// ContactMgr`, vtable `010cc984`): points still found keep their
+    /// properties with the new position, normal and distance; points no
+    /// longer found are removed (`removeContactPointImpl` `00cfd320`); new
+    /// ones are added (`addContactPointImpl` `00cfcf80`) with the contact
+    /// properties of the two sides (`00cfd800`), each heard by the world's
+    /// contact listeners as "contact point added" (`fireContactPointAdded`
+    /// `00d01850`, the game's `FOCollisionListener::contactPointAdded
+    /// Callback` `00623cb0`: impact sounds, physics damage) with its
+    /// projected velocity: the first body's velocity at the point less the
+    /// other's, along the normal (`00ca0c40`).
+    // Translated from 00cfcf80, 00cfd320 and 00d01850 (decompiled, FalloutNV.exe 1.4.0.525)
+    fn update_manifold(&mut self, a: usize, other: Partner, found: Vec<Candidate>) {
+        let m = self.manifolds.entry((a, other)).or_default();
+        let mut k = 0;
+        while k < m.points.len() {
+            let key = m.points[k].key;
+            if let Some(c) = found.iter().find(|c| c.point.key == key) {
+                let p = &mut m.points[k];
+                p.position = c.point.position;
+                p.normal = c.point.normal;
+                p.distance = c.point.distance;
+                k += 1;
+            } else {
+                m.remove(k);
+            }
+        }
+        let mut added = Vec::new();
+        for c in found {
+            if m.points.iter().any(|p| p.key == c.point.key) {
+                continue;
+            }
+            let me = &self.bodies[a].setup;
+            let props = crate::manifold::point_properties(
+                (me.friction, c.surface.friction),
+                (me.restitution, c.surface.restitution),
+            );
+            m.add(c.point, props);
+            added.push(c);
+        }
+        if m.is_empty() {
+            self.manifolds.remove(&(a, other));
+        }
+        for c in added {
+            let p = c.point.position;
+            let va = self.bodies[a].point_velocity(sub(p, self.bodies[a].x));
+            let vb = match other {
+                Partner::Body(j) => self.bodies[j].point_velocity(sub(p, self.bodies[j].x)),
+                Partner::Fixed(_) => [0.0; 3],
+            };
+            let projected = dot(sub(va, vb), c.point.normal);
+            self.began.push(ContactEvent {
+                body: a,
+                other_body: match other {
+                    Partner::Body(j) => Some(j),
+                    Partner::Fixed(_) => None,
+                },
+                triangle: c.triangle,
+                point: p,
+                speed: projected.abs(),
+            });
+        }
     }
 
     fn substep(&mut self, collider: &Collider, nearby: &[Vec<u32>], h: f32) {
@@ -1247,7 +1426,7 @@ impl RigidWorld {
             if !self.bodies[i].solved() {
                 continue;
             }
-            for (tri, t) in self.world_touches(collider, i, tris) {
+            for (tri, t) in self.world_touches(collider, i, tris, 0.0) {
                 touches.push((i, Other::World(tri), t));
             }
             for j in 0..self.bodies.len() {
@@ -1258,7 +1437,7 @@ impl RigidWorld {
                 if gap > self.bodies[i].reach + self.bodies[j].reach + 2.0 {
                     continue;
                 }
-                let found = self.body_touches(i, j);
+                let found = self.body_touches(i, j, 0.0);
                 touches.extend(found.into_iter().map(|t| (i, Other::Body(j), t)));
             }
             if self.pushable(i) {
@@ -1281,33 +1460,6 @@ impl RigidWorld {
             .filter(|(_, &l)| l > 0.0)
             .map(|(&(a, other, t), &l)| self.contact(a, other, &t, l, &before))
             .collect();
-        for c in &contacts {
-            let (key, other_body, triangle) = match c.other {
-                Other::World(t) => (Toucher::World(collider.owner(t)), None, Some(t)),
-                Other::Body(j) => (Toucher::Body(j), Some(j), None),
-                Other::Mover(_) => continue,
-            };
-            // A pair of bodies once, under the lower index.
-            let pair = match key {
-                Toucher::Body(j) if j < c.a => (j, Toucher::Body(c.a)),
-                k => (c.a, k),
-            };
-            let event = ContactEvent {
-                body: c.a,
-                other_body,
-                triangle,
-                point: add(self.bodies[c.a].x, c.arm_a),
-                speed: c.approach.abs(),
-            };
-            self.this_step
-                .entry(pair)
-                .and_modify(|old| {
-                    if event.speed > old.speed {
-                        *old = event;
-                    }
-                })
-                .or_insert(event);
-        }
         // Velocities from the moves.
         for (b, (_, q, _, _)) in self.bodies.iter_mut().zip(&before) {
             if !b.solved() {
@@ -1486,116 +1638,135 @@ impl RigidWorld {
         }
     }
 
-    /// Where body `i` touches the collider's triangles `tris`.
-    fn world_touches(&self, collider: &Collider, i: usize, tris: &[u32]) -> Vec<(u32, Touch)> {
+    /// Where body `i` touches the collider's triangles `tris`, or comes
+    /// within `tol` of touching.
+    fn world_touches(
+        &self,
+        collider: &Collider,
+        i: usize,
+        tris: &[u32],
+        tol: f32,
+    ) -> Vec<(u32, Touch)> {
         let b = &self.bodies[i];
         let mut out = Vec::new();
         let mut tags = Vec::new();
         for &t in tris {
             let start = out.len();
-            self.triangle_touches(collider, b, t, &mut out);
+            self.triangle_touches(collider, b, t, tol, &mut out);
             tags.extend(std::iter::repeat(t).take(out.len() - start));
         }
         tags.into_iter().zip(out).collect()
     }
 
-    /// Where body `b` touches the collider's triangle `t`.
-    fn triangle_touches(&self, collider: &Collider, b: &Rigid, t: u32, out: &mut Vec<Touch>) {
-        {
-            let [ta, tb, tc] = collider.triangle(t);
-            let shell = collider.shell(t);
-            let surface = collider.surface(t).unwrap_or(DEFAULT_SURFACE);
-            let mut face = normalize(cross(sub(tb, ta), sub(tc, ta)));
-            if dot(face, sub(b.x, ta)) < 0.0 {
-                face = scale(face, -1.0);
-            }
-            for shape in &b.setup.shapes {
-                let mut point = |p_model: Vec3, radius: f32| {
-                    let p = b.to_world(p_model);
-                    if let Some((on_b, n, margin)) =
-                        point_triangle(p, radius + shell, [ta, tb, tc], face, b.reach)
-                    {
-                        out.push(Touch {
-                            on_a: p_model,
-                            on_b,
-                            n,
-                            margin,
-                            surface,
-                        });
+    /// Where body `b` touches the collider's triangle `t` (or comes within
+    /// `tol`).
+    fn triangle_touches(
+        &self,
+        collider: &Collider,
+        b: &Rigid,
+        t: u32,
+        tol: f32,
+        out: &mut Vec<Touch>,
+    ) {
+        let [ta, tb, tc] = collider.triangle(t);
+        let shell = collider.shell(t);
+        let surface = collider.surface(t).unwrap_or(DEFAULT_SURFACE);
+        let mut face = normalize(cross(sub(tb, ta), sub(tc, ta)));
+        if dot(face, sub(b.x, ta)) < 0.0 {
+            face = scale(face, -1.0);
+        }
+        for (si, shape) in b.setup.shapes.iter().enumerate() {
+            let mut point = |p_model: Vec3, radius: f32, feature: usize| {
+                let p = b.to_world(p_model);
+                if let Some((on_b, n, margin)) =
+                    point_triangle(p, radius + shell, tol, [ta, tb, tc], face, b.reach)
+                {
+                    out.push(Touch {
+                        on_a: p_model,
+                        on_b,
+                        n,
+                        margin,
+                        surface,
+                        key: feature_key(1, si, feature, t),
+                        radius_b: shell,
+                    });
+                }
+            };
+            match shape {
+                Shape::Hull {
+                    vertices, shell: s, ..
+                }
+                | Shape::Mesh {
+                    vertices, shell: s, ..
+                } => {
+                    for (k, &v) in vertices.iter().enumerate() {
+                        point(v, *s, k);
                     }
-                };
-                match shape {
-                    Shape::Hull {
-                        vertices, shell: s, ..
-                    }
-                    | Shape::Mesh {
-                        vertices, shell: s, ..
-                    } => {
-                        for &v in vertices {
-                            point(v, *s);
-                        }
-                    }
-                    Shape::Sphere { center, radius } => point(*center, *radius),
-                    Shape::Capsule { a, b: e, radius } => {
-                        point(*a, *radius);
-                        point(*e, *radius);
-                        let (pa, pe) = (b.to_world(*a), b.to_world(*e));
-                        let (on_axis, on_tri) = segment_triangle_closest(pa, pe, ta, tb, tc);
-                        let mid_model = b.to_model(on_axis);
-                        if dist2(on_axis, pa) > 1e-4 && dist2(on_axis, pe) > 1e-4 {
-                            let d = length(sub(on_axis, on_tri));
-                            let n = if d > 1e-5 {
-                                scale(sub(on_axis, on_tri), 1.0 / d)
-                            } else {
-                                face
-                            };
-                            if d < radius + shell {
-                                out.push(Touch {
-                                    on_a: mid_model,
-                                    on_b: on_tri,
-                                    n,
-                                    margin: radius + shell,
-                                    surface,
-                                });
-                            }
+                }
+                Shape::Sphere { center, radius } => point(*center, *radius, 0),
+                Shape::Capsule { a, b: e, radius } => {
+                    point(*a, *radius, 0);
+                    point(*e, *radius, 1);
+                    let (pa, pe) = (b.to_world(*a), b.to_world(*e));
+                    let (on_axis, on_tri) = segment_triangle_closest(pa, pe, ta, tb, tc);
+                    let mid_model = b.to_model(on_axis);
+                    if dist2(on_axis, pa) > 1e-4 && dist2(on_axis, pe) > 1e-4 {
+                        let d = length(sub(on_axis, on_tri));
+                        let n = if d > 1e-5 {
+                            scale(sub(on_axis, on_tri), 1.0 / d)
+                        } else {
+                            face
+                        };
+                        if d < radius + shell + tol {
+                            out.push(Touch {
+                                on_a: mid_model,
+                                on_b: on_tri,
+                                n,
+                                margin: radius + shell,
+                                surface,
+                                key: feature_key(2, si, 0, t),
+                                radius_b: shell,
+                            });
                         }
                     }
                 }
-                // The triangle's edges reaching into a hull (a rail's long
-                // edge under a bottle's base, a ridge of the ground): where
-                // each enters and leaves the hull grown by the shells, the
-                // hull is pushed off along its own face that faces the
-                // triangle the most squarely, under that point.
-                if let Shape::Hull {
-                    planes, shell: s, ..
-                } = shape
-                {
-                    let margin = s + shell;
-                    let r = quat_mat(b.q);
-                    for (e0, e1) in [(ta, tb), (tb, tc), (tc, ta)] {
-                        let (l0, l1) = (b.to_model(e0), b.to_model(e1));
-                        let Some((t0, t1)) = clip_segment(l0, l1, planes, margin) else {
+            }
+            // The triangle's edges reaching into a hull (a rail's long
+            // edge under a bottle's base, a ridge of the ground): where
+            // each enters and leaves the hull grown by the shells, the
+            // hull is pushed off along its own face that faces the
+            // triangle the most squarely, under that point.
+            if let Shape::Hull {
+                planes, shell: s, ..
+            } = shape
+            {
+                let margin = s + shell;
+                let r = quat_mat(b.q);
+                for (ei, (e0, e1)) in [(ta, tb), (tb, tc), (tc, ta)].into_iter().enumerate() {
+                    let (l0, l1) = (b.to_model(e0), b.to_model(e1));
+                    let Some((t0, t1)) = clip_segment(l0, l1, planes, margin + tol) else {
+                        continue;
+                    };
+                    for (end, t_) in [t0, t1].into_iter().enumerate() {
+                        let local = add(l0, scale(sub(l1, l0), t_));
+                        // Only a face the body is in front of (a rail's
+                        // top under a bottle, not its side).
+                        let to_body = normalize(sub(b.x, b.to_world(local)));
+                        if dot(face, to_body) < 0.5 {
                             continue;
-                        };
-                        for t in [t0, t1] {
-                            let local = add(l0, scale(sub(l1, l0), t));
-                            // Only a face the body is in front of (a rail's
-                            // top under a bottle, not its side).
-                            let to_body = normalize(sub(b.x, b.to_world(local)));
-                            if dot(face, to_body) < 0.5 {
-                                continue;
-                            }
-                            if let Some(touch) = edge_point_touch(
-                                &r,
-                                local,
-                                b.to_world(local),
-                                planes,
-                                face,
-                                margin,
-                                surface,
-                            ) {
-                                out.push(touch);
-                            }
+                        }
+                        if let Some(mut touch) = edge_point_touch(
+                            &r,
+                            local,
+                            b.to_world(local),
+                            planes,
+                            face,
+                            (margin, tol),
+                            surface,
+                        ) {
+                            touch.key = feature_key(3, si, ei * 2 + end, t);
+                            touch.radius_b = shell;
+                            out.push(touch);
                         }
                     }
                 }
@@ -1604,31 +1775,34 @@ impl RigidWorld {
     }
 
     /// Where body `i` touches body `j` (`j`'s side as model-space points
-    /// of `j`).
-    fn body_touches(&self, i: usize, j: usize) -> Vec<Touch> {
+    /// of `j`), or comes within `tol`.
+    fn body_touches(&self, i: usize, j: usize, tol: f32) -> Vec<Touch> {
         let (a, b) = (&self.bodies[i], &self.bodies[j]);
         let surface = Surface {
             friction: b.setup.friction,
             restitution: b.setup.restitution,
         };
         let mut out = Vec::new();
-        for sa in &a.setup.shapes {
-            for sb in &b.setup.shapes {
+        for (ia, sa) in a.setup.shapes.iter().enumerate() {
+            for (ib, sb) in b.setup.shapes.iter().enumerate() {
+                let shapes = ia * 16 + ib;
                 // a's corners and centres against b's hulls, b's against
                 // a's (turned around).
-                for (p, r) in feature_points(sa) {
+                for (k, (p, r)) in feature_points(sa).into_iter().enumerate() {
                     let world = a.to_world(p);
-                    if let Some(t) = point_in_shape(b, world, sb, r, surface) {
+                    if let Some(t) = point_in_shape(b, world, sb, r, tol, surface) {
                         out.push(Touch {
                             on_a: p,
                             on_b: b.to_model(t.on_b),
+                            key: feature_key(4, shapes, k, 0),
+                            radius_b: t.margin - r,
                             ..t
                         });
                     }
                 }
-                for (p, r) in feature_points(sb) {
+                for (k, (p, r)) in feature_points(sb).into_iter().enumerate() {
                     let world = b.to_world(p);
-                    if let Some(t) = point_in_shape(a, world, sa, r, surface) {
+                    if let Some(t) = point_in_shape(a, world, sa, r, tol, surface) {
                         // t: on_b is the point of b (world), n pushes b away
                         // from a; turn it around for a.
                         out.push(Touch {
@@ -1637,6 +1811,8 @@ impl RigidWorld {
                             n: scale(t.n, -1.0),
                             margin: t.margin,
                             surface,
+                            key: feature_key(5, shapes, k, 0),
+                            radius_b: r,
                         });
                     }
                 }
@@ -1646,13 +1822,15 @@ impl RigidWorld {
                     let (wb0, wb1) = (b.to_world(b0), b.to_world(b1));
                     let (pa, pb) = segment_segment_closest(wa0, wa1, wb0, wb1);
                     let d = length(sub(pa, pb));
-                    if d < ra + rb && d > 1e-5 {
+                    if d < ra + rb + tol && d > 1e-5 {
                         out.push(Touch {
                             on_a: a.to_model(pa),
                             on_b: b.to_model(pb),
                             n: scale(sub(pa, pb), 1.0 / d),
                             margin: ra + rb,
                             surface,
+                            key: feature_key(6, shapes, 0, 0),
+                            radius_b: rb,
                         });
                     }
                 }
@@ -1673,8 +1851,8 @@ impl RigidWorld {
             return Vec::new();
         }
         let mut out = Vec::new();
-        for shape in &b.setup.shapes {
-            for (p, r) in feature_points(shape) {
+        for (si, shape) in b.setup.shapes.iter().enumerate() {
+            for (k, (p, r)) in feature_points(shape).into_iter().enumerate() {
                 let world = b.to_world(p);
                 let on = closest_on_segment(world, s0, s1);
                 let d = length(sub(world, on));
@@ -1685,13 +1863,18 @@ impl RigidWorld {
                         n: scale(sub(world, on), 1.0 / d),
                         margin: r + radius,
                         surface,
+                        key: feature_key(7, si, k, 0),
+                        radius_b: radius,
                     });
                 }
             }
             if let Shape::Hull { planes, shell, .. } = shape {
                 for k in 0..=4 {
                     let p = add(s0, scale(sub(s1, s0), k as f32 / 4.0));
-                    if let Some(t) = corner_in_hull(b, p, planes, shell + radius, surface) {
+                    if let Some(mut t) = corner_in_hull(b, p, planes, shell + radius, 0.0, surface)
+                    {
+                        t.key = feature_key(8, si, k, 0);
+                        t.radius_b = radius;
                         out.push(t);
                     }
                 }
@@ -1769,6 +1952,7 @@ fn closest_on_segment(p: Vec3, a: Vec3, b: Vec3) -> Vec3 {
 fn point_triangle(
     p: Vec3,
     margin: f32,
+    tol: f32,
     [a, b, c]: [Vec3; 3],
     face: Vec3,
     deep: f32,
@@ -1784,11 +1968,11 @@ fn point_triangle(
                 >= 0.0
     };
     if inside {
-        return (s < margin && s > -deep).then_some((on_plane, face, margin));
+        return (s < margin + tol && s > -deep).then_some((on_plane, face, margin));
     }
     let q = closest_on_triangle(p, a, b, c);
     let d = length(sub(p, q));
-    (d < margin && d > 1e-5).then(|| (q, scale(sub(p, q), 1.0 / d), margin))
+    (d < margin + tol && d > 1e-5).then(|| (q, scale(sub(p, q), 1.0 / d), margin))
 }
 
 /// The part of segment `a`–`b` (model space) inside a hull's planes grown
@@ -1833,7 +2017,7 @@ fn edge_point_touch(
     world: Vec3,
     planes: &[[f32; 4]],
     face: Vec3,
-    margin: f32,
+    (margin, tol): (f32, f32),
     surface: Surface,
 ) -> Option<Touch> {
     let mut best: Option<(f32, Vec3, Vec3)> = None;
@@ -1849,12 +2033,14 @@ fn edge_point_touch(
         }
     }
     let (sd, n_local, n) = best?;
-    (sd < margin).then(|| Touch {
+    (sd < margin + tol).then(|| Touch {
         on_a: sub(local, scale(n_local, sd)),
         on_b: world,
         n: scale(n, -1.0),
         margin,
         surface,
+        key: 0,
+        radius_b: 0.0,
     })
 }
 
@@ -1866,6 +2052,7 @@ fn corner_in_hull(
     p: Vec3,
     planes: &[[f32; 4]],
     margin: f32,
+    tol: f32,
     surface: Surface,
 ) -> Option<Touch> {
     if planes.is_empty() {
@@ -1881,7 +2068,7 @@ fn corner_in_hull(
         }
     }
     let (sd, n_local) = best;
-    if sd >= margin {
+    if sd >= margin + tol {
         return None;
     }
     let r = quat_mat(b.q);
@@ -1895,6 +2082,8 @@ fn corner_in_hull(
         n: scale(n, -1.0),
         margin,
         surface,
+        key: 0,
+        radius_b: 0.0,
     })
 }
 
@@ -1902,10 +2091,17 @@ fn corner_in_hull(
 /// the touch pushing `p`'s side away from `b` (`n`), with `on_a` holding
 /// the shape's surface point (world) and `on_b` the shape's surface point
 /// too (filled by the caller).
-fn point_in_shape(b: &Rigid, p: Vec3, shape: &Shape, r: f32, surface: Surface) -> Option<Touch> {
+fn point_in_shape(
+    b: &Rigid,
+    p: Vec3,
+    shape: &Shape,
+    r: f32,
+    tol: f32,
+    surface: Surface,
+) -> Option<Touch> {
     match shape {
         Shape::Hull { planes, shell, .. } => {
-            let t = corner_in_hull(b, p, planes, shell + r, surface)?;
+            let t = corner_in_hull(b, p, planes, shell + r, tol, surface)?;
             // corner_in_hull pushes b away from p; for p's side, the other
             // way, and the surface point in the world.
             let on_surface = b.to_world(t.on_a);
@@ -1915,6 +2111,8 @@ fn point_in_shape(b: &Rigid, p: Vec3, shape: &Shape, r: f32, surface: Surface) -
                 n: scale(t.n, -1.0),
                 margin: t.margin,
                 surface,
+                key: 0,
+                radius_b: 0.0,
             })
         }
         Shape::Sphere { .. } | Shape::Capsule { .. } => {
@@ -1922,7 +2120,7 @@ fn point_in_shape(b: &Rigid, p: Vec3, shape: &Shape, r: f32, surface: Surface) -
             let (w0, w1) = (b.to_world(s0), b.to_world(s1));
             let on = closest_on_segment(p, w0, w1);
             let d = length(sub(p, on));
-            if d >= radius + r || d < 1e-5 {
+            if d >= radius + r + tol || d < 1e-5 {
                 return None;
             }
             Some(Touch {
@@ -1931,6 +2129,8 @@ fn point_in_shape(b: &Rigid, p: Vec3, shape: &Shape, r: f32, surface: Surface) -
                 n: scale(sub(p, on), 1.0 / d),
                 margin: radius + r,
                 surface,
+                key: 0,
+                radius_b: 0.0,
             })
         }
         Shape::Mesh { .. } => None,
@@ -2597,6 +2797,71 @@ mod tests {
         assert!(late.is_empty(), "{late:?}");
     }
 
+    #[test]
+    fn each_new_contact_point_is_heard_once() {
+        // A box dropped on the floor: one event per contact point the
+        // manager adds (its bottom corners), none while it rests on them.
+        let c = floor(0.0);
+        let mut w = RigidWorld::new();
+        let i = w.add(crate_(10, [3.0; 3], 1.0), (I3, [0.0, 0.0, 30.0]));
+        w.wake(i);
+        let mut events = Vec::new();
+        for _ in 0..90 {
+            w.update(&c, STEP);
+            events.extend(w.take_contacts());
+        }
+        let m = &w.manifolds[&(i, Partner::Fixed(0))];
+        assert!(m.points.len() >= 4, "{:?}", m.points.len());
+        // Every point now held was heard once when it came.
+        for p in &m.points {
+            let heard = events
+                .iter()
+                .filter(|e| length(sub(e.point, p.position)) < 3.0)
+                .count();
+            assert!(heard >= 1, "{p:?}");
+        }
+        let keys: Vec<u64> = m.points.iter().map(|p| p.key).collect();
+        // Resting: the same points, no more events.
+        for _ in 0..120 {
+            w.update(&c, STEP);
+            assert!(w.take_contacts().is_empty());
+        }
+        if let Some(m) = w.manifolds.get(&(i, Partner::Fixed(0))) {
+            let now: Vec<u64> = m.points.iter().map(|p| p.key).collect();
+            assert_eq!(now, keys);
+        }
+    }
+
+    #[test]
+    fn contact_points_carry_the_managers_properties() {
+        // A bottle-like box (0.5, 0.4) on a surface of 2.5 and 0.4.
+        let mut c = Collider::new();
+        c.add_solid_surface(
+            &[
+                [-100.0, -100.0, 0.0],
+                [100.0, -100.0, 0.0],
+                [100.0, 100.0, 0.0],
+                [-100.0, 100.0, 0.0],
+            ],
+            &[[0, 1, 2], [0, 2, 3]],
+            (0.0, 0, crate::NO_MATERIAL),
+            Some(Surface {
+                friction: 2.5,
+                restitution: 0.4,
+            }),
+        );
+        let mut w = RigidWorld::new();
+        let i = w.add(crate_(1, [3.0; 3], 1.0), (I3, [0.0, 0.0, 3.8]));
+        w.wake(i);
+        w.update(&c, STEP);
+        let m = w.manifolds.values().next().expect("points");
+        let p = m.points[0];
+        assert_eq!(crate::havok::UFLOAT8[p.props.friction as usize], 1.14);
+        assert_eq!(p.props.restitution, 51);
+        // Paired as they came: 1, 3, 1, 3.
+        assert_eq!(m.points[1].props.flags & crate::manifold::POINT_PAIRED, 2);
+        assert!(p.normal[2] > 0.99 && p.distance.abs() < 1.0, "{p:?}");
+    }
     #[test]
     fn the_grab_spring_carries_a_body_to_its_target() {
         let c = floor(0.0);

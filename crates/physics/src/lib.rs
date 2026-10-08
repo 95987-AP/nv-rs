@@ -27,6 +27,7 @@ pub mod havok;
 pub mod impulses;
 pub mod islands;
 pub mod layers;
+pub mod manifold;
 pub mod ragdoll;
 pub mod rigid;
 pub mod shapes;

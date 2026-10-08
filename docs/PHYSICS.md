@@ -305,6 +305,44 @@ split's choice of which part keeps the old island isn't followed (it
 changes nothing but storage). Islands are stepped together as before
 (this solver's contacts until PR 7).
 
+### Contact points (PR 6, `claude/b1-p6-contacts`)
+
+Each agent (a broadphase pair) has a contact manager
+(`hkpSimpleConstraintContactMgr`, vtable `010cc984`, one per pair of
+collidables: a body against one fixed body gets one, whatever triangles it
+touches) holding its points in a `hkpSimpleContactConstraintAtom` (0x30
+bytes + 0x20 a point + the properties): `physics::manifold`,
+`RigidWorld::manifolds`.
+
+| What | Where | Rule |
+| --- | --- | --- |
+| When | `hkpSimulation::collide` `00cf8bc0` (continuous `00d0ef40`) | after a step's integration, for the agents of active islands; a sleeping island's points stay as they were; a body added asleep has none until its island is first stepped (`addEntityBatch` `00c94bd0` makes agents, no points) |
+| Tolerance | `hkpCollisionDispatcher::initCollisionQualityInfo` `00cfb570` | points are made and kept up to the collision tolerance apart (0.1 Havok units, 0.7 game units) |
+| Adding | `addContactPointImpl` `00cfcf80` → `00d92df0` | the first point adds the contact constraint to the island; a point's impulse and solver data start at 0, its flags at 1 (new: the solver's callbacks finish it); when the point before it isn't paired and has no most impulse, it is paired with it (flags 3: the two are solved as one 2 × 2 block); the info's flag 4 (work the contact radius out again) is set |
+| Properties | `setContactPointProperties` `00cfd800` | friction √(f₁f₂) as hkUFloat8 (`00ca9360`: the table's next entry up, so 1.118 → 1.14), restitution √(r₁r₂) × 128 rounded to a byte, most impulse 0 (none) |
+| Event | `00cfcba0`, `hkpWorldCallbackUtil::fireContactPointAdded` `00d01850` → the world's contact listeners (`+0x1a0`, slot `+0x10`) | once per new point, with its projected velocity (`+0x1c`): body A's velocity at the point less B's (`00ca0c40`: v + ω × (p − centre)), along the normal. The game's `FOCollisionListener::contactPointAddedCallback` (`00623cb0`) plays the impact sounds and works out physics damage from it |
+| Removing | `removeContactPointImpl` `00cfd320` → `00cfd200` | the later points move down, the one now in its place loses its pairing, the info's flags 1 and 4 are set; the removed callbacks are empty in the game; the last point gone removes the constraint |
+
+So a body resting on its points hears nothing more, and a body that lands
+is heard once per corner that comes into contact (each with its own
+speed), where before a pair beginning to touch was heard each time it
+touched again after a bounce or a jitter (the repeated impact sounds).
+(`m_allowToSkipConfirmedCallbacks`, collision input `+0x6d`, is 0 in the
+game's world: `00c90b80` leaves cinfo `+0x75` 0 and Bethesda's `00c681c0`
+doesn't set it.)
+
+In nv-rs the points come from this solver's generator (Havok's agents —
+GSK, box-box, MOPP — aren't translated): a body's corners, sphere and
+capsule centres and a capsule's axis against triangles and other bodies'
+shapes, a triangle's edges into a hull; each point has a feature key (which
+corner, edge end, triangle) that keeps its identity from step to step, as
+Havok's agents keep their points. The position is on the other side's
+surface (taken: the agents aren't traced). A fixed body is a collider
+triangle's placed reference (0: the landscape and unowned statics).
+Walkers' pushes aren't Havok contacts and aren't heard. The contacts still
+move bodies by this solver's substeps until PR 7, which solves these
+points.
+
 ### Data layouts used (Xbox PDB, matched to the PC code)
 
 `hkpMotion` (0x120, entity `+0xe0`): `+0x08` type, `+0x09` deactivation
@@ -363,6 +401,10 @@ boxes put 0.2 apart share an island and a push wakes both, not a far one;
 a sliding box wakes a sleeper when their boxes meet, before the faces
 touch; two boxes shoved apart split and the one left sleeps alone; layers
 the filter keeps apart get no pair.
+PR 6: `manifold::tests` (points paired as they come, unpaired when one
+goes; properties as the manager combines them); `rigid::tests`: each new
+point of a landing box heard once and none while it rests on the same
+points; a point's friction, restitution, pairing, normal and distance.
 
 ## Tested
 

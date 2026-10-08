@@ -59,6 +59,7 @@ Vigor Tester step has no acceptance route yet (the doc route starts at
 stage 110).
 B1 PRs 1-4 (`claude/b1-havok-step`, 2026-10-07): the game's own Havok world constants, step driver, single-body integrator and sleeping translated (`physics::havok`; the invented sleep rules gone; contacts still this solver's until PR 7). Verified live: the VCG02 bottles stay on the rail, a shot one comes to rest and stays. Evidence: [PHYSICS.md](PHYSICS.md). **Next action:** B1 PR 5 (simulation islands).
 B1 PR 5 (`claude/b1-p5-islands`): Havok's simulation islands translated (`physics::islands`: swept broadphase boxes `00d1a330`, pairs merge islands `00cc0f40`/`00cb4c60` so a moving body wakes a sleeper when their boxes meet, parted pairs split at the next step `00cb6060`, sleep and wake per island through the dirty list `00cb55d0`). Evidence: [PHYSICS.md](PHYSICS.md) "Simulation islands". **Next action:** B1 PR 6 (contact manager).
+B1 PR 6 (`claude/b1-p6-contacts`): Havok's contact manager translated (`physics::manifold`: points per agent kept within 0.1 Havok units, properties `00cfd800`, pairing `00d92df0`, removal `00cfd200`; one "contact point added" event per new point `00cfcf80` → `00d01850`, so resting bodies stop re-sounding). Evidence: [PHYSICS.md](PHYSICS.md) "Contact points". **Next action:** B1 PR 7 (contact solver).
 
 Overnight batches, 2026-10-06 (local session; integration branch
 `claude/overnight-integration`, not merged into `main`; each batch also has
