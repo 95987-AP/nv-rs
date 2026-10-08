@@ -359,7 +359,8 @@ impl Proxy {
             // StInitialCast.
             let start = query.start_points(position, start_tolerance);
             let start: Vec<RootCdPoint> = start.into_iter().map(|p| to_game(&query, p)).collect();
-            let mut hits = query.linear_cast(position, self.old_displacement, 0.01);
+            let mut hits =
+                query.linear_cast(position, self.old_displacement, 0.01, start_tolerance);
             if !hits.is_empty() {
                 sort_hits(&mut hits);
                 Self::convert_hits(&mut hits, self.old_displacement);
@@ -402,7 +403,7 @@ impl Proxy {
             let mut used = None;
             if !same {
                 let to = add(position, solved);
-                let mut hits = query.linear_cast(position, solved, 0.01);
+                let mut hits = query.linear_cast(position, solved, 0.01, start_tolerance);
                 if !hits.is_empty() {
                     sort_hits(&mut hits);
                     Self::convert_hits(&mut hits, solved);

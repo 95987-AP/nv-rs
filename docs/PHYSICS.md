@@ -770,11 +770,38 @@ doesn't count as support. On the ground dynamic friction × `fSpeedPct`.
 
 ### Not translated / stand-ins (labelled in code)
 
-- Havok's collision agents (convex against triangles, linear casts): GJK
-  and separating axes, a conservative-advancement cast with the world's
-  early-out 0.01 and 20 iterations; contact points taken from the touching
-  features (Havok's choice isn't traced). `IsStep`'s convex-shape branch
-  (a ray against the whole shape) uses the triangle test too.
+- Havok's collision agents, what is translated and what not. The proxy's
+  cast is the game's GSK agent cast (`hkpGskBaseAgent::staticLinearCast`
+  `00daf8e0`; registered by `00d41fd0` for convex against convex, the
+  agent functions `{create, getPenetrations 00dac2b0, getClosestPoints
+  00dac450, linearCast 00daf8e0}`, a `TtGsk` timer in each): the closest
+  points are asked within the start tolerance plus the path's length; the
+  cast counts only if `distance + path . normal <= 0` and the path goes
+  into the surface by more than the 0.01 extra penetration; a first
+  distance within the early-out 0.01 (or penetrating) is a hit at
+  fraction 0; otherwise the fraction starts at `distance / -(path .
+  normal)` and up to 20 closest-points queries at the moved position
+  reject (nothing near, moving away, the rest of the path too short),
+  accept (distance within 0.01) or advance the fraction by `distance / -(path
+  . normal)`; running out of iterations accepts the last query at the
+  fraction it was made at. The hit's point and normal are the last
+  query's. (`character_cd::gsk_linear_cast`; the swept-AABB culling of the
+  MOPP/world caster `00df7340`/`00df7760`, which passes the same input
+  and the all-points collector, is our candidate search.) The static
+  getClosestPoints (`00dac450`) is followed for its results: normal from
+  the second shape toward the first, distance less both convex radii,
+  the point on the second shape's surface, nothing beyond the tolerance.
+  Not translated: the GJK underneath (`00daad40`: separate simplexes for
+  the two shapes, alternating support queries, a doubling tolerance from
+  1e-10, helpers `00da9340`, `00da8fb0`, `00da8500`, `00d22e40`,
+  `00da9880`) and the penetration depth for overlapping cores
+  (`00daa7e0`, called from it when the caller's flag is 0, as
+  getClosestPoints does; getPenetrations `00dac2b0` sets it and treats
+  overlap as a hit): here a generic GJK and separating axes, so which of
+  several equally close points (a hull's side against a wall) is the
+  contact point is ours (`contact_on`), as are the convex-vertices and
+  triangle shapes' support-vertex tie breaks. `IsStep`'s convex-shape
+  branch (a ray against the whole shape) uses the triangle test too.
 - `applySurfaceInteractions` (`00cacf80`, pushing bodies): clutter is still
   pushed by `physics::rigid`'s walker rule, now with the velocity the
   state asked for (`Character::pushing`).
