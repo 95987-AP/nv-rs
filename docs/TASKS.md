@@ -98,7 +98,7 @@ settings, (2) the step driver, (3) the single-body integrator,
 (4) sleeping, (5) simulation islands, (6) the contact manager with
 per-point events, (7) the contact solver (maybe two PRs), (8) ragdoll
 constraints, (9) continuous collision, (10) the character proxy (its
-own task). 1–4 should already stop the jitter and the jiggling. Progress: PRs 1-4 (constants, step driver, integrator, sleeping) on `claude/b1-havok-step` (docs/PHYSICS.md, "Havok's world step"); PR 5 (simulation islands) on `claude/b1-p5-islands`; PR 6 (contact manager, per-point events) on `claude/b1-p6-contacts`; PR 7 (contact solver) on `claude/b1-p7-solver`.
+own task). 1–4 should already stop the jitter and the jiggling. Progress: PRs 1–7 merged (#39, #43: constants, step driver, integrator, sleeping, islands, contact manager with per-point events, contact solver; docs/PHYSICS.md). PR 10 (the character proxy: Bethesda's controller, its states and Havok's proxy and simplex solver for every walker; docs/PHYSICS.md, "The character proxy"); left there: pushing bodies (`applySurfaceInteractions`), Havok's collision agents (stand-ins), swimming/flying/climbing. Not started: PR 8 (ragdoll constraints), PR 9 (continuous collision).
 
 **B2. Grab (Z) 1:1.** Carried objects flail, spasm and pass through
 things. Trace the game's grab spring (`0095f930`, `00960520`, the
@@ -271,7 +271,7 @@ build 25 first. Next suspect if it persists: his `headold.nif` and its
 NPCs sometimes walk waist-deep in the ground. B4's land rule only lifts
 feet more than 30 units under the land and its far-from-camera rule puts
 people at navmesh height (up to ~21 under the land); this is deeper, so
-something else is involved. Reproduce with `NV_GROUND_LOG=1`.
+something else is involved. Reproduce with `NV_GROUND_LOG=1`. Progress (`claude/b1-character-proxy`, B1 PR 10): with the game's own controller nobody near the camera stood more than 10 under the land in the gunfight, Back in the Saddle or the road runs (PHYSICS.md, "The character proxy"); not seen again, so likely the old controller's push-out. Close after a playtest.
 
 **B26. Ringo greets you as a stranger after the gunfight.** When he comes
 over after the Powder Gangers are dead he uses his first-meeting lines.

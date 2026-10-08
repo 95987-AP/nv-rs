@@ -3994,18 +3994,47 @@ pub fn ground_log(
     nav: Res<CellNav>,
     collision: Res<crate::walk::CellCollision>,
     state: Res<DialogueState>,
-    mut next: Local<f32>,
+    mut next: Local<(f32, f32)>,
     actors: Query<(&Walker, &Visibility)>,
+    player: Option<Res<crate::walk::Player>>,
 ) {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if !*ON.get_or_init(|| std::env::var("NV_GROUND_LOG").is_ok_and(|v| v == "1")) {
         return;
     }
     let now = time.elapsed_secs();
-    if now < *next {
+    let describe = |b: &physics::Character| {
+        let state = match b.controller.state {
+            physics::controller::State::OnGround => "ground",
+            physics::controller::State::Jumping => "jumping",
+            physics::controller::State::InAir => "air",
+        };
+        format!("{state} {:.1} vz {:.0}", b.ground, b.vertical_speed)
+    };
+    // The player, ten times a second.
+    if let Some(p) = player.filter(|p| p.walking && now >= next.1) {
+        next.1 = now + 0.1;
+        let f = p.character.feet;
+        let cast = collision
+            .0
+            .raycast([f[0], f[1], f[2] + 600.0], [0.0, 0.0, -1.0], 2000.0);
+        let hit = cast.map(|(t, _)| f[2] + 600.0 - t);
+        let land = nav.mesh.land_height(f);
+        println!(
+            "GROUND {now:.2} player at ({:.0}, {:.0}, {:.1}) collision {} land {} body {} walking {}",
+            f[0],
+            f[1],
+            f[2],
+            hit.map_or("-".into(), |h| format!("{h:.1} ({:+.1})", f[2] - h)),
+            land.map_or("-".into(), |h| format!("{h:.1} ({:+.1})", f[2] - h)),
+            describe(&p.character),
+            p.speed > 0.0,
+        );
+    }
+    if now < next.0 {
         return;
     }
-    *next = now + 1.0;
+    next.0 = now + 1.0;
     let state = &state.0;
     for (w, vis) in actors.iter() {
         if *vis == Visibility::Hidden || state.dead.contains(&w.reference) || w.fallen {
@@ -4026,8 +4055,7 @@ pub fn ground_log(
         let land = nav.mesh.land_height(p);
         let body = match &w.body {
             None => "none".to_string(),
-            Some(b) if b.on_ground => format!("ground {:.1}", b.ground),
-            Some(b) => format!("air vz {:.0}", b.vertical_speed),
+            Some(b) => describe(b),
         };
         println!(
             "GROUND {now:.1} {} at ({:.0}, {:.0}, {:.1}) collision {}{what} land {} body {} walking {}",
@@ -4434,7 +4462,7 @@ mod tests {
             step(&mut w, 85.0, dt);
             move_body(&mut w, &mut collider, &[], &mut Vec::new(), &rules, dt);
         }
-        assert!(w.body.is_some_and(|b| b.on_ground), "{:?}", w.body);
+        assert!(w.body.as_ref().is_some_and(|b| b.on_ground), "{:?}", w.body);
         assert!(w.position[2].abs() < 1.0, "{:?}", w.position);
         assert!(w.position[1] > -200.0 + 30.0, "walked on: {:?}", w.position);
     }
@@ -4593,7 +4621,9 @@ mod tests {
             );
             closest = closest.min((w.position[0] - 5.0).hypot(w.position[1] + 150.0));
         }
-        assert!(closest >= 2.0 * 20.25 - 0.5, "{closest}");
+        // Two octagonal hulls: flat against flat their centres are 2 ×
+        // (20.25 × cos 22.5° + the 0.7 convex radius) apart.
+        assert!(closest >= 2.0 * 19.4 - 0.5, "{closest}");
     }
 
     /// A square of navmesh, (0,0)–(200,200), two triangles.
