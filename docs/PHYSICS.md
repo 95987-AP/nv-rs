@@ -264,14 +264,46 @@ first check, at 4, sets the references; 16 and 32 are slot 1's) and sleeps
 at the start of step 37 (0.59 s); a body creeping 0.016 Havok units
 between checks never sleeps.
 
-In nv-rs: islands are approximated (until PR 5) by the awake bodies joined
-by this step's body–body contacts; an awake body touching a sleeping one
-wakes it (Havok merges their islands; here on contact, there on a
-broadphase pair). Waking an awake body (an impulse, the wind's force, the
-spring) cancels its island's pending sleep. Each ragdoll is one island.
+In nv-rs: sleeping is per simulation island (PR 5, below). Waking an awake
+body (an impulse, the wind's force, the spring) cancels its island's
+pending sleep. Each ragdoll is one island.
 Walkers still wake what they push faster than 2 units/s (this solver's
 walkers, PR 10). The invented rules are gone: "1 s under 2 units/s and
 0.3 rad/s" (clutter) and "1 s under 4 units/s and 0.6 rad/s" (ragdolls).
+
+### Simulation islands (PR 5, `claude/b1-p5-islands`)
+
+`hkpSimulationIsland` (Xbox PDB, 0x6c bytes): the bodies Havok steps,
+sleeps and wakes together (`physics::islands`; `RigidWorld::islands`).
+`iSimType` 1 makes the world continuous, so its `m_minDesiredIslandSize`
+(`+0xb4`) stays 0 (`00c95a80` sets it only for the multithreaded world):
+no "sparse" islands, an island is exactly a connected group.
+
+| What | Where | Rule |
+| --- | --- | --- |
+| Adding | `hkpWorld::addEntity` `00c914d0`, `addEntityBatch` `00c94bd0` | a body gets an island of its own, active or not by the add's activation (Bethesda's batch add: not); a fixed body joins the fixed island (none here) |
+| Boxes | `hkpEntityAabbUtil::entityBatchRecalcAabb` `00d1a330`, after each island's integration | the shape's box with half the collision tolerance (0.05 Havok units, collision input `+0x8` × 0.5); grown on each side by the step's turn × the object radius (motion `+0xac` × `+0xb0`) but not past the bounding sphere (centre ± (radius + 0.05)), then by the centre's travel back to the step's start (`+0x50` − `+0x60`): a swept box |
+| Pairs | broadphase `00cf9c60`/`00d0d3f0` (3-axis sweep), `00cf7080` (the collision filter), `hkpEntityEntityBroadPhaseListener::addCollisionPair` `00d10800` / `removeCollisionPair` `00d10860` (Xbox vtable names) | overlapping boxes the filter lets meet get an agent when the quality table (`dispatcher +0x1bb0`) has a non-zero entry for the two bodies' qualities (fixed against fixed has none) |
+| Merging | `hkpWorldAgentUtil::addAgent` `00cc0f40` → `hkpWorldOperationUtil::mergeIslands` `00cb5570` → `internalMergeTwoIslands` `00cb4c60` | unless either body is fixed (motion type 5) or they share one: the island with more bodies is kept (a tie: the one stored first); when either is active, the inactive one is activated first (`00cb5100`) — **a moving body wakes a sleeping one when their boxes meet**, before they touch; active marks and split requests are or-ed (the marks as they were before that activation); the kept island goes on the dirty list when either was |
+| Splitting | `removeAgent` `00cc10b0`; `hkpDefaultWorldMaintenanceMgr::performMaintenance` `00d0b280` → `splitSimulationIslands` `00cb6f30` → `00cb6e70` → `00cb6060`, connectivity `00d074c0` | a pair whose boxes part loses its agent; when both bodies share an island it asks for a split check (`+0x25` bits 0–1). At the next step's start (`hkpSimulation::integrate` `00cf9340`, before the dirty islands are cleaned up) each such island is split into its connected parts: bodies joined by an agent with a non-fixed partner (entity `+0x60`), a constraint between two non-fixed bodies (`+0xac`) or an action's bodies. New islands keep the old one's state, and are marked inactive when it was active but marked inactive |
+| Sleeping | `00cf8da0` → `markIslandInactive` `00cb5420`; `cleanupDirtyIslands` `00cb55d0` → `00cb5310` / `00cb5100` | PR 4's rule, now per island: more than 5 passing checks for its fewest, still marked active: marked inactive and put on the dirty list; cleaned up at the next step's start: asleep when every body passes `00d28560` (velocities zeroed), else marked active again; an island marked active is woken |
+| Waking | `hkpEntity::activate` (Xbox PDB) → `markIslandActive` (Xbox PDB) | an impulse, force or the spring on a sleeping body wakes its whole island (here at once; Havok at the next step's cleanup, before anything moves) |
+
+The island flags' bit positions on the PC are the PDB's mirrored
+(`m_splitCheckRequested` `bool:2@6` is `+0x25 & 3`, `m_activeMark`
+`@4` is `+0x26 & 0xc`), read from `00cb6f30` and `00cb55d0`.
+
+So a place's clutter that touches (or nearly: within 0.1 Havok units, 0.7
+game units, box to box) loads as islands asleep together, and knocking one
+wakes the lot (a stack, a shelf's worth); bodies that part sleep apart.
+
+In nv-rs: the broadphase is every pair of bodies' boxes (no 3-axis sweep;
+the same pairs); the body's step-start pose is its centre and rotation
+before this solver's substeps. The world's statics (the collider) are
+Havok's fixed bodies: they pair with every body and join no island. The
+split's choice of which part keeps the old island isn't followed (it
+changes nothing but storage). Islands are stepped together as before
+(this solver's contacts until PR 7).
 
 ### Data layouts used (Xbox PDB, matched to the PC code)
 
@@ -323,6 +355,14 @@ turning bodies never passing, the last test, rotation compression.
 box resting on the floor asleep at step 37; a stack asleep together and a
 nudge waking both; the earlier tests (falls and rests, rail bottles, shot
 off a rail, stacking, walkers, grab) unchanged.
+PR 5: `islands::tests` (bodies alone and merged on a pair, fixed bodies
+join nothing, an active island waking the one it merges with, a removed
+agent splitting at the next check, sleep and wake through the dirty list,
+a wake cancelling a pending sleep, removal renumbering); `rigid::tests`:
+boxes put 0.2 apart share an island and a push wakes both, not a far one;
+a sliding box wakes a sleeper when their boxes meet, before the faces
+touch; two boxes shoved apart split and the one left sleeps alone; layers
+the filter keeps apart get no pair.
 
 ## Tested
 
@@ -558,9 +598,9 @@ pushes something under it back up: the 30-unit rule does.
 
 - Nothing compared with the original game: how far bottles fly, how they
   tumble, settle heights, rest times, grab feel, sound choice and volume.
-- Havok's contact solver, contact manifolds, simulation islands and
-  penetration recovery are not reproduced yet (B1 PRs 5–9; the step
-  driver, integrator and deactivation are, above). Clutter constraints aren't
+- Havok's contact solver, contact manifolds and penetration recovery
+  are not reproduced yet (B1 PRs 6–9; the step driver, integrator,
+  deactivation and simulation islands are, above). Clutter constraints aren't
   simulated: joined or constrained clutter bodies stay solid (ragdolls'
   joints are, in `physics::ragdoll`). Inertia under a reference's
   scale isn't traced (scaled by s², mass kept).

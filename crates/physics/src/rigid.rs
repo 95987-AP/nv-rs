@@ -20,8 +20,7 @@
 //! other side's corners and a body's hull, not edge against edge; a
 //! surface added without a body's values rubs and bounces as Havok's
 //! default body does (friction 0.5, restitution 0.4, `hkpRigidBodyCinfo`'s
-//! defaults); islands for sleeping are the bodies joined by this step's
-//! contacts (Havok's simulation islands are B1 PR 5); walkers push bodies lighter than
+//! defaults); walkers push bodies lighter than
 //! `fMoveLimitMass` as unstoppable capsules (the character proxy's own
 //! impulse, `hkpCharacterProxy`, isn't translated; the game's proxy has
 //! infinite strength).
@@ -32,9 +31,11 @@
 //! mouse spring ([`Spring`], `00cbb1e0`); the saved velocities
 //! ([`RigidWorld::set_velocity`], `00563380`); Havok's step driver,
 //! single-body integrator, solver-path forces and velocity checks, and
-//! deactivation ([`crate::havok`], B1 PRs 1–4).
+//! deactivation ([`crate::havok`], B1 PRs 1–4); the broadphase's boxes
+//! and pairs and the simulation islands they merge and split
+//! ([`crate::islands`], B1 PR 5).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use crate::ragdoll::{
     conjugate, mat_quat, mat_t_vec, mat_vec, quat_mat, quat_mul, rotated, Mat3, Quat,
@@ -243,6 +244,12 @@ pub struct Rigid {
     /// Moved since it was put (the game's "Havok moved" reference change,
     /// `CHANGE_REFR_HAVOK_MOVE`, named by `0083fef0`).
     pub moved: bool,
+    /// Its box in the broadphase (`hkpCollidable::m_boundingVolumeData`,
+    /// [`RigidWorld::recalc_aabb`]), kept while it sleeps.
+    aabb: (Vec3, Vec3),
+    /// Where its step began (centre of mass and rotation): the swept
+    /// transform's start (`hkpMotion` `+0x50`, `+0x70`).
+    start: (Vec3, Quat),
 }
 
 /// The hkUFloat8 index of a model's most speed (Havok units a second, or
@@ -327,9 +334,11 @@ impl Rigid {
         motion.max_linear_velocity = speed_index(setup.max_linear_speed / HAVOK_UNIT);
         motion.max_angular_velocity = speed_index(setup.max_angular_speed);
         motion.object_radius = reach / HAVOK_UNIT;
-        Rigid {
-            x: add(mat_vec(&r, setup.center), t),
-            q: mat_quat(&r),
+        let x = add(mat_vec(&r, setup.center), t);
+        let q = mat_quat(&r);
+        let mut b = Rigid {
+            x,
+            q,
             v: [0.0; 3],
             w: [0.0; 3],
             rest: pose,
@@ -343,7 +352,52 @@ impl Rigid {
             inverse_inertia,
             inverse_mass,
             setup,
+            aabb: ([0.0; 3], [0.0; 3]),
+            start: (x, q),
+        };
+        b.aabb = b.shape_aabb();
+        b
+    }
+
+    /// Its shapes' box where it is now, grown by half the collision
+    /// tolerance (`hkpShape::getAabb` with the tolerance the box update
+    /// passes, `00d1a330`: the collision input's tolerance × 0.5).
+    // Translated from 00d1a330 (decompiled, FalloutNV.exe 1.4.0.525)
+    fn shape_aabb(&self) -> (Vec3, Vec3) {
+        let grow = crate::havok::COLLISION_TOLERANCE * 0.5 * HAVOK_UNIT;
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        let mut points: Vec<(Vec3, f32)> = Vec::new();
+        let mut take = |p: Vec3, r: f32| points.push((p, r));
+        for shape in &self.setup.shapes {
+            match shape {
+                Shape::Hull {
+                    vertices, shell, ..
+                }
+                | Shape::Mesh {
+                    vertices, shell, ..
+                } => {
+                    for &v in vertices {
+                        take(self.to_world(v), *shell);
+                    }
+                }
+                Shape::Sphere { center, radius } => take(self.to_world(*center), *radius),
+                Shape::Capsule { a, b, radius } => {
+                    take(self.to_world(*a), *radius);
+                    take(self.to_world(*b), *radius);
+                }
+            }
         }
+        if points.is_empty() {
+            points.push((self.x, 0.0));
+        }
+        for (p, r) in points {
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k] - r);
+                hi[k] = hi[k].max(p[k] + r);
+            }
+        }
+        (sub(lo, [grow; 3]), add(hi, [grow; 3]))
     }
 
     /// Model space to the world now.
@@ -574,9 +628,11 @@ pub struct RigidWorld {
     this_step: std::collections::HashMap<(usize, Toucher), ContactEvent>,
     /// Contacts begun since [`RigidWorld::take_contacts`].
     began: Vec<ContactEvent>,
-    /// Islands marked inactive at the last step, put to sleep at the next
-    /// one's start (the world's dirty islands, `+0x40`).
-    inactive_islands: Vec<Vec<usize>>,
+    /// The simulation islands (`crate::islands`).
+    pub islands: crate::islands::Islands,
+    /// The broadphase's pairs of bodies with an agent (lower index first):
+    /// their boxes overlap and the collision filter lets them meet.
+    pairs: BTreeSet<(usize, usize)>,
 }
 
 impl RigidWorld {
@@ -584,10 +640,117 @@ impl RigidWorld {
         Self::default()
     }
 
-    /// Adds a body at `pose`, asleep, and gives its index.
+    /// Adds a body at `pose`, asleep, and gives its index: in an inactive
+    /// island of its own (a fixed body in none), its box put in the
+    /// broadphase, which pairs it with the bodies it overlaps (merging
+    /// their islands: Bethesda adds a place's bodies in a batch with
+    /// activation 0, `00c674d0` → `hkpWorld::addEntityBatch` `00c94bd0`).
     pub fn add(&mut self, setup: RigidSetup, pose: Pose) -> usize {
-        self.bodies.push(Rigid::new(setup, pose));
-        self.bodies.len() - 1
+        let body = Rigid::new(setup, pose);
+        let fixed = !body.dynamic();
+        self.bodies.push(body);
+        let i = self.islands.add_body(fixed, false);
+        debug_assert_eq!(i, self.bodies.len() - 1);
+        self.update_pairs(&[i]);
+        i
+    }
+
+    /// Whether the broadphase pairs bodies `a` and `b`: their boxes
+    /// overlap, they aren't both fixed (the quality table gives fixed
+    /// against fixed no agent, `00d10800`) and the collision filter
+    /// (`00c84740`, `crate::layers`) lets their layers meet.
+    fn pairs_with(&self, a: usize, b: usize) -> bool {
+        let (x, y) = (&self.bodies[a], &self.bodies[b]);
+        if !x.dynamic() && !y.dynamic() {
+            return false;
+        }
+        let ((alo, ahi), (blo, bhi)) = (x.aabb, y.aabb);
+        let overlap = (0..3).all(|k| alo[k] <= bhi[k] && blo[k] <= ahi[k]);
+        overlap && crate::layers::Filter::shared().layers_touch(x.setup.layer, y.setup.layer)
+    }
+
+    /// The broadphase's update for bodies `moved` (their boxes recalculated):
+    /// pairs that begin get an agent, merging the two bodies' islands
+    /// (`00cc0f40` → `00cb5570`; an active island wakes the other); pairs
+    /// that end lose theirs, an island holding both asking for a split
+    /// check (`00cc10b0`).
+    // Translated from 00cf9c60, 00d10800, 00d10860, 00cc0f40 and 00cc10b0 (decompiled, FalloutNV.exe 1.4.0.525)
+    fn update_pairs(&mut self, moved: &[usize]) {
+        let mut added = Vec::new();
+        let mut removed = Vec::new();
+        let mut seen = HashSet::new();
+        for &a in moved {
+            for b in 0..self.bodies.len() {
+                if b == a {
+                    continue;
+                }
+                let key = (a.min(b), a.max(b));
+                if !seen.insert(key) {
+                    continue;
+                }
+                let now = self.pairs_with(a, b);
+                let was = self.pairs.contains(&key);
+                if now && !was {
+                    added.push(key);
+                } else if was && !now {
+                    removed.push(key);
+                }
+            }
+        }
+        for key in removed {
+            self.pairs.remove(&key);
+            self.islands.agent_removed(key.0, key.1);
+        }
+        for key in added {
+            self.pairs.insert(key);
+            let woken = self.islands.merge(key.0, key.1);
+            self.woken(&woken);
+        }
+    }
+
+    /// Bodies whose island was just woken (`00cb5100`): stepped again,
+    /// their deactivation counts started again.
+    fn woken(&mut self, bodies: &[usize]) {
+        let solver = self.solver;
+        for &i in bodies {
+            let b = &mut self.bodies[i];
+            b.asleep = false;
+            b.motion.activate(&solver);
+        }
+    }
+
+    /// The box of body `i` for the broadphase after a step
+    /// (`hkpEntityAabbUtil::entityBatchRecalcAabb` `00d1a330`): its
+    /// shapes' box ([`Rigid::shape_aabb`]) grown toward where the step
+    /// began, by the turn's sweep (the step's angle × the object radius,
+    /// held within the bounding sphere grown by half the tolerance) and by
+    /// the centre's travel back to the step's start.
+    // Translated from 00d1a330 (decompiled, FalloutNV.exe 1.4.0.525)
+    fn recalc_aabb(&mut self, i: usize) {
+        let b = &self.bodies[i];
+        let (mut lo, mut hi) = b.shape_aabb();
+        let (c0, q0) = b.start;
+        let c1 = b.x;
+        let cos = (q0[0] * b.q[0] + q0[1] * b.q[1] + q0[2] * b.q[2] + q0[3] * b.q[3]).abs();
+        let angle = 2.0 * cos.min(1.0).acos();
+        let radius = b.motion.object_radius * HAVOK_UNIT;
+        let sweep = angle * radius;
+        let sphere = radius + crate::havok::COLLISION_TOLERANCE * 0.5 * HAVOK_UNIT;
+        let back = sub(c0, c1);
+        for k in 0..3 {
+            hi[k] = hi[k].max((hi[k] + sweep).min(c1[k] + sphere));
+            lo[k] = lo[k].min((lo[k] - sweep).max(c1[k] - sphere));
+            hi[k] += back[k].max(0.0);
+            lo[k] += back[k].min(0.0);
+        }
+        self.bodies[i].aabb = (lo, hi);
+    }
+
+    /// The bodies of the active islands.
+    fn active_bodies(&self) -> Vec<usize> {
+        (0..self.bodies.len())
+            .filter(|&i| self.islands.is_active(i))
+            .collect()
     }
 
     /// The body of a reference.
@@ -673,7 +836,14 @@ impl RigidWorld {
         self.touching.clear();
         self.this_step.clear();
         self.began.clear();
-        self.inactive_islands.clear();
+        // Its agents go with it (`hkpWorld::removeEntity`), the rest keep
+        // theirs, renumbered; its island asks for a split check.
+        self.pairs = std::mem::take(&mut self.pairs)
+            .into_iter()
+            .filter(|&(a, b)| a != i && b != i)
+            .map(|(a, b)| (a - usize::from(a > i), b - usize::from(b > i)))
+            .collect();
+        self.islands.remove_body(i);
         if let Some(s) = &mut self.spring {
             if s.body == i {
                 self.spring = None;
@@ -756,8 +926,14 @@ impl RigidWorld {
         b.q = mat_quat(&r);
         b.v = [0.0; 3];
         b.w = [0.0; 3];
-        b.asleep = true;
         b.moved = moved;
+        b.start = (b.x, b.q);
+        // Moving a body doesn't activate it (Bethesda's world cinfo turns
+        // `m_shouldActivateOnRigidBodyTransformChange` off, `00c681c0`);
+        // its box moves in the broadphase.
+        b.asleep = !self.islands.is_active(body);
+        self.recalc_aabb(body);
+        self.update_pairs(&[body]);
     }
 
     /// How a body has moved since it was put: the rotation and translation
@@ -777,16 +953,19 @@ impl RigidWorld {
     }
 
     /// Wakes a body (`hkpEntity::activate`, Xbox PDB): a sleeping one's
-    /// island is activated (`00cb5100`: its counts start again); an awake
-    /// one's island marked inactive stays awake.
+    /// island is activated with all its bodies (`00cb5100`: their counts
+    /// start again; Havok marks it active and wakes it at the next step's
+    /// start, here at once); an awake one's island marked inactive is
+    /// marked active again, so it stays awake.
     pub fn wake(&mut self, body: usize) {
-        self.inactive_islands
-            .retain(|island| !island.contains(&body));
-        let solver = self.solver;
-        let b = &mut self.bodies[body];
-        if b.dynamic() && b.asleep {
-            b.asleep = false;
-            b.motion.activate(&solver);
+        let Some(id) = self.islands.island_of(body) else {
+            return;
+        };
+        if self.islands.is_active(body) {
+            self.islands.mark_active(id);
+        } else {
+            let woken = self.islands.activate(id);
+            self.woken(&woken);
         }
     }
 
@@ -865,28 +1044,31 @@ impl RigidWorld {
     /// integrate, collide, advance time; here the integration and this
     /// solver's contacts together).
     pub fn step(&mut self, collider: &Collider, dt: f32) {
-        // `hkpSimulation::integrateInternal` (`00cf8da0`) first cleans up
-        // the islands marked inactive last step (`00cb55d0` → `00cb5310`):
-        // each goes to sleep when every body passes the last test, its
-        // velocities zeroed; otherwise it stays awake.
-        for island in std::mem::take(&mut self.inactive_islands) {
-            if !crate::havok::WANT_DEACTIVATION {
-                break;
-            }
-            let all = island.iter().all(|&i| {
-                let b = &self.bodies[i];
-                !b.asleep && b.motion_now().can_deactivate(HAVOK_UNIT)
-            });
-            if all {
-                for &i in &island {
-                    let b = &mut self.bodies[i];
-                    let mut m = b.motion_now();
-                    m.deactivate();
-                    b.set_motion(&m);
-                    b.asleep = true;
-                }
-            }
+        // `hkpSimulation::integrate` (`00cf9340`): the world's maintenance
+        // first (`00d0b280`): the islands that asked are split into their
+        // connected parts, bodies joined by an agent (a broadphase pair; no
+        // constraints or many-body actions here).
+        let pairs = &self.pairs;
+        self.islands
+            .split(|a, b| pairs.contains(&(a.min(b), a.max(b))));
+        // `hkpSimulation::integrateInternal` (`00cf8da0`) then cleans up
+        // the dirty islands (`00cb55d0`): one marked inactive at the last
+        // step goes to sleep when every body passes the last test
+        // (`00cb5310`), its velocities zeroed; otherwise it stays awake.
+        let bodies = &self.bodies;
+        let cleanup = self.islands.cleanup(|members| {
+            members
+                .iter()
+                .all(|&i| bodies[i].motion_now().can_deactivate(HAVOK_UNIT))
+        });
+        for &i in &cleanup.deactivated {
+            let b = &mut self.bodies[i];
+            let mut m = b.motion_now();
+            m.deactivate();
+            b.set_motion(&m);
+            b.asleep = true;
         }
+        self.woken(&cleanup.activated);
         // Walkers wake what they push (this solver's walkers: the
         // character proxy's push, `hkpCharacterProxy`, is PR 10's).
         for i in 0..self.bodies.len() {
@@ -914,25 +1096,11 @@ impl RigidWorld {
         if !self.awake() || dt <= 0.0 {
             return;
         }
-        // An awake body touching a sleeping one wakes it: Havok merges the
-        // two islands, and an island with an active part is active
-        // (approximate until PR 5: Havok merges islands when the
-        // broadphase pairs the bodies, here when they touch).
-        for i in 0..self.bodies.len() {
-            if self.bodies[i].asleep {
-                continue;
-            }
-            for j in 0..self.bodies.len() {
-                if j == i || !self.bodies[j].asleep || !self.bodies[j].dynamic() {
-                    continue;
-                }
-                let gap = length(sub(self.bodies[i].x, self.bodies[j].x));
-                if gap > self.bodies[i].reach + self.bodies[j].reach + 2.0 {
-                    continue;
-                }
-                if !self.body_touches(i, j).is_empty() {
-                    self.wake(j);
-                }
+        // Where each moving body's step begins (its swept transform's
+        // start), for its box afterwards.
+        for b in &mut self.bodies {
+            if !b.asleep {
+                b.start = (b.x, b.q);
             }
         }
         let owners: HashSet<u32> = self.bodies.iter().map(|b| b.setup.reference).collect();
@@ -1017,48 +1185,45 @@ impl RigidWorld {
             .collect();
         self.touching = now;
         self.touching.extend(kept);
-        // Islands (approximate until PR 5: the awake bodies joined by this
-        // step's body–body contacts); each body's count of passing checks
-        // was updated with its step. An island whose fewest is more than
-        // 5 is marked inactive (`00cf8da0` → `00cb5420`) and put to sleep
+        // Each active island's fewest passing checks (each body's count
+        // was updated with its step): more than 5 and still marked active,
+        // it is marked inactive (`00cf8da0` → `00cb5420`) and goes to sleep
         // at the next step's start, above.
-        let n = self.bodies.len();
-        let mut root: Vec<usize> = (0..n).collect();
-        fn find(root: &mut [usize], mut i: usize) -> usize {
-            while root[i] != i {
-                root[i] = root[root[i]];
-                i = root[i];
-            }
-            i
-        }
-        for (a, other) in self.this_step.keys() {
-            if let Toucher::Body(b) = *other {
-                if self.bodies[*a].asleep || self.bodies[b].asleep {
-                    continue;
-                }
-                let (ra, rb) = (find(&mut root, *a), find(&mut root, b));
-                root[ra] = rb;
+        for b in &mut self.bodies {
+            if !b.asleep && b.dynamic() {
+                b.moved |= b.v != [0.0; 3] || b.w != [0.0; 3];
             }
         }
-        let mut islands: std::collections::BTreeMap<usize, (u32, Vec<usize>)> = Default::default();
-        for (i, b) in self.bodies.iter_mut().enumerate() {
-            if b.asleep || !b.dynamic() {
+        for id in self.islands.active() {
+            let Some(island) = self.islands.island(id) else {
                 continue;
-            }
-            b.moved |= b.v != [0.0; 3] || b.w != [0.0; 3];
-            let island = islands
-                .entry(find(&mut root, i))
-                .or_insert((u32::MAX, Vec::new()));
-            island.0 = island.0.min(b.frames);
-            island.1.push(i);
-        }
-        for (frames, members) in islands.into_values() {
-            if frames > crate::havok::INACTIVE_FRAMES_TO_DEACTIVATE
+            };
+            let fewest = island
+                .bodies
+                .iter()
+                .map(|&i| self.bodies[i].frames)
+                .min()
+                .unwrap_or(0);
+            if fewest > crate::havok::INACTIVE_FRAMES_TO_DEACTIVATE
+                && island.active_mark
                 && crate::havok::WANT_DEACTIVATION
             {
-                self.inactive_islands.push(members);
+                self.islands.mark_inactive(id);
             }
         }
+        self.collide_broadphase();
+    }
+
+    /// The broadphase part of `hkpSimulation::collide` (`00cf8bc0`; the
+    /// continuous simulation's `00d0d3f0` per island): the moving bodies'
+    /// boxes recalculated (`00d1a330`), then the pairs updated
+    /// ([`RigidWorld::update_pairs`]).
+    fn collide_broadphase(&mut self) {
+        let moved = self.active_bodies();
+        for &i in &moved {
+            self.recalc_aabb(i);
+        }
+        self.update_pairs(&moved);
     }
 
     fn substep(&mut self, collider: &Collider, nearby: &[Vec<u32>], h: f32) {
@@ -1925,6 +2090,95 @@ mod tests {
             w.update(&c, STEP);
         }
         assert!(w.bodies[lower].asleep && w.bodies[upper].asleep);
+    }
+
+    #[test]
+    fn bodies_placed_together_share_an_island_and_wake_together() {
+        // Two boxes put side by side, 0.2 apart (inside the broadphase's
+        // half tolerance on each box): one island at once, asleep; a third
+        // further off has its own.
+        let c = floor(0.0);
+        let mut w = RigidWorld::new();
+        let a = w.add(crate_(1, [10.0; 3], 5.0), (I3, [0.0, 0.0, 10.7]));
+        let b = w.add(crate_(2, [10.0; 3], 5.0), (I3, [21.6, 0.0, 10.7]));
+        let far = w.add(crate_(3, [10.0; 3], 5.0), (I3, [100.0, 0.0, 10.7]));
+        assert_eq!(w.islands.island_of(a), w.islands.island_of(b));
+        assert_ne!(w.islands.island_of(a), w.islands.island_of(far));
+        assert!(w.bodies.iter().all(|b| b.asleep));
+        // A push on one wakes its neighbour, not the far one.
+        w.apply_linear_impulse(a, [0.0, 0.0, 0.1]);
+        assert!(!w.bodies[b].asleep && w.bodies[far].asleep);
+        w.update(&c, STEP);
+        assert!(!w.bodies[a].asleep && !w.bodies[b].asleep && w.bodies[far].asleep);
+    }
+
+    #[test]
+    fn a_moving_body_wakes_a_sleeper_when_their_boxes_meet() {
+        // A box sliding along the floor toward a sleeping one: the sleeper
+        // wakes when the broadphase pairs them, before they touch.
+        let c = floor(0.0);
+        let mut w = RigidWorld::new();
+        let mover = w.add(crate_(1, [10.0; 3], 5.0), (I3, [0.0, 0.0, 10.7]));
+        let sleeper = w.add(crate_(2, [10.0; 3], 5.0), (I3, [40.0, 0.0, 10.7]));
+        w.wake(mover);
+        w.set_velocity(mover, [200.0, 0.0, 0.0], [0.0; 3]);
+        let mut woke_at = None;
+        for k in 0..60 {
+            w.update(&c, STEP);
+            if !w.bodies[sleeper].asleep {
+                woke_at = Some((k, w.bodies[mover].center()[0]));
+                break;
+            }
+        }
+        let (_, x) = woke_at.expect("the sleeper wakes");
+        // Faces 20 apart at the start; woken while the gap is still open.
+        assert!(x + 10.7 < 40.0 - 10.7, "{x}");
+        assert_eq!(w.islands.island_of(mover), w.islands.island_of(sleeper));
+    }
+
+    #[test]
+    fn bodies_that_part_split_and_sleep_apart() {
+        // Two boxes side by side, one shoved away hard along the floor:
+        // their pair ends, the island splits at the next step's start, and
+        // the one left still sleeps on its own while the other slides.
+        let c = floor(0.0);
+        let mut w = RigidWorld::new();
+        let a = w.add(crate_(1, [10.0; 3], 5.0), (I3, [0.0, 0.0, 10.7]));
+        let b = w.add(crate_(2, [10.0; 3], 5.0), (I3, [21.6, 0.0, 10.7]));
+        w.wake(a);
+        w.set_velocity(b, [300.0, 0.0, 0.0], [0.0; 3]);
+        let mut apart = false;
+        for _ in 0..400 {
+            w.update(&c, STEP);
+            if w.islands.island_of(a) != w.islands.island_of(b) {
+                apart = true;
+            }
+            if apart && w.bodies[a].asleep && !w.bodies[b].asleep {
+                break;
+            }
+        }
+        assert!(apart);
+        assert!(w.bodies[a].asleep);
+    }
+
+    #[test]
+    fn layers_that_dont_meet_dont_pair() {
+        // Two overlapping bodies on layers the collision filter keeps
+        // apart get no agent, so their islands stay apart.
+        let f = crate::layers::Filter::shared();
+        let mut w = RigidWorld::new();
+        let mut x = crate_(1, [10.0; 3], 5.0);
+        let mut y = crate_(2, [10.0; 3], 5.0);
+        // Find two layers the filter keeps apart.
+        let (la, lb) = (0..crate::layers::LAYERS as u8)
+            .flat_map(|a| (0..crate::layers::LAYERS as u8).map(move |b| (a, b)))
+            .find(|&(a, b)| !f.layers_touch(a, b) && !f.layers_touch(b, a))
+            .expect("two layers apart");
+        x.layer = la;
+        y.layer = lb;
+        let a = w.add(x, (I3, [0.0, 0.0, 10.7]));
+        let b = w.add(y, (I3, [5.0, 0.0, 10.7]));
+        assert_ne!(w.islands.island_of(a), w.islands.island_of(b));
     }
 
     #[test]

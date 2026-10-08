@@ -25,6 +25,7 @@ pub mod contacts;
 pub mod grab;
 pub mod havok;
 pub mod impulses;
+pub mod islands;
 pub mod layers;
 pub mod ragdoll;
 pub mod rigid;
