@@ -332,6 +332,15 @@ pub struct GameState {
     /// looked at every 20 s and each game hour (`world::movement::
     /// PackageClock`). Not saved.
     pub evaluate: HashSet<FormId>,
+    /// Everyone's packages to be looked at once at their next update (as
+    /// [`GameState::evaluate`] for each): set when the face menu closes.
+    /// Seen in a recording of the original (2026-10-08): Doc Mitchell gets
+    /// up from his chair the moment the opening's face menu closes, his
+    /// standing package's `GetStage VCG01 >= 40` having become true while
+    /// it was open; the executable's path for it isn't traced (not
+    /// `SetStage` `0060d510`, `StartQuest` `0060c9c0`, the line's end
+    /// `00935f60` nor the menu's finish `007ada40`). Not saved.
+    pub evaluate_everyone: bool,
     /// Actor resets queued by ResetAI (005c9530 -> 008a6ce0(0, 1)).
     /// Unlike EvaluatePackage, the deferred reset releases furniture and
     /// discards the running procedure before choosing a package. Not saved.
@@ -4405,8 +4414,11 @@ impl<'a> Runner<'a> {
                 events.push(Event::Weather(Some(w)));
             }
             "ReleaseWeatherOverride" => {
-                self.state.weather.forced = None;
-                events.push(Event::Weather(None));
+                // Nothing to tell when nothing was forced (a script calling
+                // it every frame would otherwise report it every frame).
+                if self.state.weather.forced.take().is_some() {
+                    events.push(Event::Weather(None));
+                }
             }
             "PlayBink" => {
                 let Value::Text(file) = arg(0) else {
