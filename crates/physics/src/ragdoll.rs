@@ -136,10 +136,16 @@ pub struct Ragdoll {
     /// Pairs of its own bodies that meet ([`parts_meet`]).
     pairs: Vec<(usize, usize)>,
     state: Vec<State>,
-    /// Time not yet stepped.
-    pending: f32,
-    /// How long everything has been nearly still.
-    still: f32,
+    /// Each body's Havok motion: speed limits and deactivation state
+    /// (`crate::havok::Motion`; position and velocities are in `state`).
+    motions: Vec<crate::havok::Motion>,
+    /// The world's step clock (`crate::havok::Clock`).
+    pub clock: crate::havok::Clock,
+    /// Marked inactive at the last step (put to sleep at the next one's
+    /// start).
+    inactive: bool,
+    /// Its solver settings' deactivation flags (`crate::havok::SolverInfo`).
+    solver: crate::havok::SolverInfo,
     /// At rest: no longer stepped.
     pub asleep: bool,
 }
@@ -163,6 +169,20 @@ impl Ragdoll {
                 w: [0.0; 3],
             })
             .collect();
+        let motions = bodies
+            .iter()
+            .zip(&state)
+            .map(|(b, s): (&BodySetup, &State)| {
+                let mut m = crate::havok::Motion::new(crate::havok::motion_type::DYNAMIC, s.x, s.q);
+                m.max_linear_velocity =
+                    crate::rigid::speed_index(b.max_linear_speed / crate::HAVOK_UNIT);
+                m.max_angular_velocity = crate::rigid::speed_index(b.max_angular_speed);
+                m.object_radius = b.capsule.map_or(0.0, |(a, e, r)| {
+                    length(sub(a, b.center)).max(length(sub(e, b.center))) + r
+                }) / crate::HAVOK_UNIT;
+                m
+            })
+            .collect();
         let mut pairs = Vec::new();
         for i in 0..bodies.len() {
             for j in i + 1..bodies.len() {
@@ -177,8 +197,10 @@ impl Ragdoll {
             joints,
             pairs,
             state,
-            pending: 0.0,
-            still: 0.0,
+            motions,
+            clock: crate::havok::Clock::default(),
+            inactive: false,
+            solver: crate::havok::SolverInfo::new(),
             asleep: false,
         }
     }
@@ -212,7 +234,7 @@ impl Ragdoll {
         for s in &mut self.state {
             s.v = velocity;
         }
-        self.asleep = false;
+        self.wake();
     }
 
     /// Every body's speed changes by `velocity`, whatever its mass (the
@@ -221,7 +243,7 @@ impl Ragdoll {
         for s in &mut self.state {
             s.v = add(s.v, velocity);
         }
-        self.asleep = false;
+        self.wake();
     }
 
     /// The game's death push (`0062b660`): every body's speed changes by
@@ -236,7 +258,7 @@ impl Ragdoll {
                 s.v = add(s.v, scale(away, speed * m / d));
             }
         }
-        self.asleep = false;
+        self.wake();
     }
 
     /// A blow (mass × units a second) to one body, through its centre.
@@ -245,7 +267,7 @@ impl Ragdoll {
         if m > 0.0 {
             let s = &mut self.state[body];
             s.v = add(s.v, scale(impulse, 1.0 / m));
-            self.asleep = false;
+            self.wake();
         }
     }
 
@@ -282,20 +304,24 @@ impl Ragdoll {
         length(sub(p(0), p(1)))
     }
 
-    /// Moves on by `dt` seconds, in steps of [`STEP`].
+    /// Moves on by a frame of `dt` seconds, in the world's whole steps
+    /// ([`crate::havok::Clock`], `00c66760`/`00c6ae70`).
     pub fn update(&mut self, collider: &Collider, dt: f32) {
-        if self.asleep {
-            return;
-        }
-        self.pending = (self.pending + dt).min(STEP * 8.0);
-        while self.pending >= STEP {
-            self.pending -= STEP;
+        let (n, _) = self.clock.advance(dt);
+        for _ in 0..n {
+            if self.asleep {
+                return;
+            }
             self.step(collider);
         }
     }
 
     /// One physics step.
     pub fn step(&mut self, collider: &Collider) {
+        self.begin_step();
+        if self.asleep {
+            return;
+        }
         let h = STEP / SUBSTEPS as f32;
         // Triangles each body might touch this step.
         let nearby: Vec<Vec<u32>> = (0..self.bodies.len())
@@ -326,23 +352,69 @@ impl Ragdoll {
                     .collect()
             })
             .collect();
+        // Havok's forces for a constrained island (`00d29830`): damping
+        // once a step, gravity per substep (below); after this solver's
+        // substeps, the velocity checks of `00d29bf0`.
+        for i in 0..self.bodies.len() {
+            if self.bodies[i].mass > 0.0 {
+                let mut m = self.motion(i);
+                m.apply_damping(STEP);
+                self.set_motion(i, &m);
+            }
+        }
         for _ in 0..SUBSTEPS {
             self.substep(collider, &nearby, h);
         }
-        // Asleep once everything has been nearly still for a second (this
-        // solver's thresholds; Havok's deactivation isn't traced).
-        let moving = self
-            .state
-            .iter()
-            .any(|s| length(s.v) > 4.0 || length(s.w) > 0.6);
-        self.still = if moving { 0.0 } else { self.still + STEP };
-        if self.still > 1.0 {
-            self.asleep = true;
-            for s in &mut self.state {
-                s.v = [0.0; 3];
-                s.w = [0.0; 3];
+        // The deactivation bookkeeping per body (`00d29bf0`); the ragdoll's
+        // bodies are one island (its constraints join them): marked
+        // inactive when the fewest passing checks is more than 5.
+        let mut fewest = u32::MAX;
+        for i in 0..self.bodies.len() {
+            if self.bodies[i].mass > 0.0 {
+                let mut m = self.motion(i);
+                m.reset_invalid_velocities(crate::HAVOK_UNIT);
+                m.clamp_linear_velocity(crate::HAVOK_UNIT);
+                m.clamp_angular_velocity(STEP);
+                if let Some(f) = m.update_deactivation(&self.solver, crate::HAVOK_UNIT) {
+                    fewest = fewest.min(f);
+                }
+                self.set_motion(i, &m);
             }
         }
+        self.inactive = fewest != u32::MAX
+            && fewest > crate::havok::INACTIVE_FRAMES_TO_DEACTIVATE
+            && crate::havok::WANT_DEACTIVATION;
+    }
+
+    /// The start of a step (`00cf8da0`): an island marked inactive goes to
+    /// sleep when every body passes the last test (`00d28560`), velocities
+    /// zeroed (`00cb5310`); then the deactivation flags.
+    fn begin_step(&mut self) {
+        if std::mem::take(&mut self.inactive) {
+            let all = (0..self.bodies.len())
+                .filter(|&i| self.bodies[i].mass > 0.0)
+                .all(|i| self.motion(i).can_deactivate(crate::HAVOK_UNIT));
+            if all {
+                self.asleep = true;
+                for s in &mut self.state {
+                    s.v = [0.0; 3];
+                    s.w = [0.0; 3];
+                }
+                return;
+            }
+        }
+        self.solver.increment_deactivation_flags();
+    }
+
+    /// Woken (`00cb5100`): every body's counts start again.
+    fn wake(&mut self) {
+        if self.asleep {
+            for m in &mut self.motions {
+                m.activate(&self.solver);
+            }
+        }
+        self.asleep = false;
+        self.inactive = false;
     }
 
     fn substep(&mut self, collider: &Collider, nearby: &[Vec<u32>], h: f32) {
@@ -403,18 +475,28 @@ impl Ragdoll {
                 }
             }
         }
-        for (s, b) in self.state.iter_mut().zip(&self.bodies) {
-            s.v = scale(s.v, (1.0 - b.linear_damping * h).max(0.0));
-            s.w = scale(s.w, (1.0 - b.angular_damping * h).max(0.0));
-            let speed = length(s.v);
-            if speed > b.max_linear_speed && b.max_linear_speed > 0.0 {
-                s.v = scale(s.v, b.max_linear_speed / speed);
-            }
-            let spin = length(s.w);
-            if spin > b.max_angular_speed && b.max_angular_speed > 0.0 {
-                s.w = scale(s.w, b.max_angular_speed / spin);
-            }
-        }
+    }
+
+    /// Body `i` as a Havok motion (game units), its velocities and limits.
+    fn motion(&self, i: usize) -> crate::havok::Motion {
+        let (b, s) = (&self.bodies[i], &self.state[i]);
+        let mut m = self.motions[i];
+        m.center = s.x;
+        m.rotation = s.q;
+        m.linear_velocity = s.v;
+        m.angular_velocity = s.w;
+        m.linear_damping = b.linear_damping;
+        m.angular_damping = b.angular_damping;
+        m
+    }
+
+    fn set_motion(&mut self, i: usize, m: &crate::havok::Motion) {
+        self.motions[i] = *m;
+        let s = &mut self.state[i];
+        s.x = m.center;
+        s.q = m.rotation;
+        s.v = m.linear_velocity;
+        s.w = m.angular_velocity;
     }
 
     /// The inverse of a body's inertia, in the world, applied to `a`.

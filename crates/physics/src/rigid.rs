@@ -20,9 +20,8 @@
 //! other side's corners and a body's hull, not edge against edge; a
 //! surface added without a body's values rubs and bounces as Havok's
 //! default body does (friction 0.5, restitution 0.4, `hkpRigidBodyCinfo`'s
-//! defaults); bodies fall asleep after a second nearly still and wake when
-//! pushed (Havok's deactivation, by its reference distance and frame
-//! counters, isn't translated); walkers push bodies lighter than
+//! defaults); islands for sleeping are the bodies joined by this step's
+//! contacts (Havok's simulation islands are B1 PR 5); walkers push bodies lighter than
 //! `fMoveLimitMass` as unstoppable capsules (the character proxy's own
 //! impulse, `hkpCharacterProxy`, isn't translated; the game's proxy has
 //! infinite strength).
@@ -31,7 +30,9 @@
 //! the two sides' product, the restitution kept as a byte × 128
 //! ([`combined_friction`], [`combined_restitution`], `00cfd800`); the
 //! mouse spring ([`Spring`], `00cbb1e0`); the saved velocities
-//! ([`RigidWorld::set_velocity`], `00563380`).
+//! ([`RigidWorld::set_velocity`], `00563380`); Havok's step driver,
+//! single-body integrator, solver-path forces and velocity checks, and
+//! deactivation ([`crate::havok`], B1 PRs 1–4).
 
 use std::collections::HashSet;
 
@@ -44,13 +45,11 @@ use crate::{
     Vec3, GRAVITY, HAVOK_UNIT,
 };
 
+pub use crate::havok::{Clock, MAX_STEPS};
+
 /// `[HAVOK] fMaxTime` as `Fallout_default.ini` sets it (the executable's
 /// default is 1/60).
-pub const STEP: f32 = 0.016;
-/// The most steps one frame takes: 3 (`00c66760`: 3 when its second
-/// argument is false, 1 when true; which the play loop passes, from
-/// `00525420`, is taken as false here, not traced further).
-pub const MAX_STEPS: u32 = 3;
+pub const STEP: f32 = crate::havok::MAX_TIME;
 /// Substeps per step, and position passes over the contacts per substep
 /// (choices of this solver, not the game's).
 const SUBSTEPS: usize = 8;
@@ -69,12 +68,10 @@ pub const DEFAULT_SURFACE: Surface = Surface {
     friction: 0.5,
     restitution: 0.4,
 };
-/// Nearly still: slower than this (game units a second, radians a second)
-/// for [`SLEEP_AFTER`] seconds puts a body to sleep (this solver's
-/// thresholds; Havok's deactivation isn't traced).
-const STILL_SPEED: f32 = 2.0;
-const STILL_SPIN: f32 = 0.3;
-const SLEEP_AFTER: f32 = 1.0;
+/// A walker moving into a sleeping body faster than this (game units a
+/// second) wakes it (this solver's walkers, until the character proxy,
+/// `hkpCharacterProxy`, is translated: B1 PR 10).
+const WALKER_WAKE_SPEED: f32 = 2.0;
 /// How far a walker reaches past its capsule to push a body (game units):
 /// walkers are kept their radius and the body's shell off it by the
 /// collider, so the push is felt this much further out (this solver's).
@@ -85,66 +82,6 @@ pub const PUSH_SKIN: f32 = 2.0;
 /// velocity only for lighter bodies). Read as: walkers push only bodies
 /// lighter than this (the proxy's handling past that branch isn't traced).
 pub const MOVE_LIMIT_MASS: f32 = 95.0;
-
-/// The game's Havok step clock (`00c66760` with `iUpdateType` 0): the frame
-/// time joins the time left over; it runs as many whole steps of
-/// [`Clock::step`] as it rounds to (at most [`Clock::max_steps`]) and keeps
-/// the rest (which can be negative after rounding up) for the next frame,
-/// never more than one step; less than half a step waits.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Clock {
-    pub step: f32,
-    pub max_steps: u32,
-    /// Time not yet stepped (`012677b0`).
-    left: f32,
-}
-
-impl Default for Clock {
-    fn default() -> Self {
-        Clock::new(STEP)
-    }
-}
-
-impl Clock {
-    pub fn new(step: f32) -> Self {
-        Clock {
-            step,
-            max_steps: MAX_STEPS,
-            left: 0.0,
-        }
-    }
-
-    /// The steps a frame of `frame` seconds takes: how many, and how long
-    /// each is.
-    // Translated from 00c66760 (decompiled, FalloutNV.exe 1.4.0.525)
-    pub fn advance(&mut self, frame: f32) -> (u32, f32) {
-        // The time multiplier at `011ac3a0` is 1 here (it isn't traced
-        // what changes it).
-        let step = self.step;
-        let t = (self.left + frame).min(166.666_67);
-        if t <= 0.0 {
-            self.left = 0.0;
-            return (0, 0.0);
-        }
-        // The x87's rounding: to the nearest, halves to even.
-        let q = t / step;
-        let mut r = q.round();
-        if (q - q.trunc()).abs() == 0.5 && r % 2.0 != 0.0 {
-            r -= q.signum();
-        }
-        let n = (r as u32).min(self.max_steps);
-        if n != 0 {
-            self.left = (t - n as f32 * step).min(step);
-            return (n, step);
-        }
-        if t < step * 0.5 {
-            self.left = t;
-            return (0, 0.0);
-        }
-        self.left = 0.0;
-        (1, t)
-    }
-}
 
 /// One solid piece of a body, in its model's space (game units).
 #[derive(Debug, Clone, PartialEq)]
@@ -289,16 +226,38 @@ pub struct Rigid {
     rest: Pose,
     /// How far its surface reaches from the centre of mass.
     reach: f32,
-    still: f32,
+    /// Its count of passing deactivation checks after its last step
+    /// (`crate::havok::Motion::update_deactivation`).
+    frames: u32,
     /// How far the centre moved this substep, kept apart from `x` (far
     /// from the origin a position's rounding is worth several units a
     /// second of speed).
     moved_by: Vec3,
     /// At rest: not stepped until something pushes it.
     pub asleep: bool,
+    /// Havok's motion: its speed limits, gravity factor and deactivation
+    /// state (the position and velocities are the fields above).
+    pub motion: crate::havok::Motion,
+    /// Stepped by Havok's integrator alone this step (nothing near it).
+    free: bool,
     /// Moved since it was put (the game's "Havok moved" reference change,
     /// `CHANGE_REFR_HAVOK_MOVE`, named by `0083fef0`).
     pub moved: bool,
+}
+
+/// The hkUFloat8 index of a model's most speed (Havok units a second, or
+/// radians a second): [`crate::havok::ufloat8`], taking the entry below
+/// when the value is that entry give or take the rounding of nv-rs's
+/// game-unit scaling (1e-5 of it).
+pub(crate) fn speed_index(v: f32) -> u8 {
+    let i = crate::havok::ufloat8(v);
+    if i > 0 {
+        let below = crate::havok::UFLOAT8[i as usize - 1];
+        if (below - v).abs() <= below * 1e-5 {
+            return i - 1;
+        }
+    }
+    i
 }
 
 fn mat_mul(a: &Mat3, b: &Mat3) -> Mat3 {
@@ -358,6 +317,16 @@ impl Rigid {
             .map(|s| s.reach(setup.center))
             .fold(0.0f32, f32::max);
         let (r, t) = pose;
+        let mut motion = crate::havok::Motion::new(
+            crate::havok::motion_type::DYNAMIC,
+            add(mat_vec(&r, setup.center), t),
+            mat_quat(&r),
+        );
+        motion.linear_damping = setup.linear_damping;
+        motion.angular_damping = setup.angular_damping;
+        motion.max_linear_velocity = speed_index(setup.max_linear_speed / HAVOK_UNIT);
+        motion.max_angular_velocity = speed_index(setup.max_angular_speed);
+        motion.object_radius = reach / HAVOK_UNIT;
         Rigid {
             x: add(mat_vec(&r, setup.center), t),
             q: mat_quat(&r),
@@ -365,10 +334,12 @@ impl Rigid {
             w: [0.0; 3],
             rest: pose,
             reach,
-            still: 0.0,
+            frames: 0,
             moved_by: [0.0; 3],
             asleep: true,
             moved: false,
+            motion,
+            free: false,
             inverse_inertia,
             inverse_mass,
             setup,
@@ -401,6 +372,30 @@ impl Rigid {
 
     pub fn dynamic(&self) -> bool {
         self.inverse_mass > 0.0
+    }
+
+    /// Moved by this solver's contact substeps this step.
+    fn solved(&self) -> bool {
+        !self.asleep && self.dynamic() && !self.free
+    }
+
+    /// Its Havok motion with the position and velocities as they are now
+    /// (game units).
+    fn motion_now(&self) -> crate::havok::Motion {
+        let mut m = self.motion;
+        m.center = self.x;
+        m.rotation = self.q;
+        m.linear_velocity = self.v;
+        m.angular_velocity = self.w;
+        m
+    }
+
+    fn set_motion(&mut self, m: &crate::havok::Motion) {
+        self.motion = *m;
+        self.x = m.center;
+        self.q = m.rotation;
+        self.v = m.linear_velocity;
+        self.w = m.angular_velocity;
     }
 
     /// The inverse inertia in the world applied to `a`.
@@ -568,6 +563,8 @@ enum Toucher {
 pub struct RigidWorld {
     pub bodies: Vec<Rigid>,
     pub clock: Clock,
+    /// The world's solver settings (`hkpSolverInfo`), rescaled each frame.
+    pub solver: crate::havok::SolverInfo,
     movers: Vec<Mover>,
     /// The player's grab, if they hold something.
     pub spring: Option<Spring>,
@@ -577,6 +574,9 @@ pub struct RigidWorld {
     this_step: std::collections::HashMap<(usize, Toucher), ContactEvent>,
     /// Contacts begun since [`RigidWorld::take_contacts`].
     began: Vec<ContactEvent>,
+    /// Islands marked inactive at the last step, put to sleep at the next
+    /// one's start (the world's dirty islands, `+0x40`).
+    inactive_islands: Vec<Vec<usize>>,
 }
 
 impl RigidWorld {
@@ -601,6 +601,25 @@ impl RigidWorld {
     pub fn remove(&mut self, reference: u32) -> Option<Rigid> {
         let i = self.find(reference)?;
         Some(self.remove_at(i))
+    }
+
+    /// Whether another body or a walker is within body `i`'s reach and a
+    /// step's travel (then this solver's contacts may act on it).
+    fn near_anything(&self, i: usize, dt: f32) -> bool {
+        let b = &self.bodies[i];
+        let travel = length(b.v) * dt;
+        let bodies = self
+            .bodies
+            .iter()
+            .enumerate()
+            .any(|(j, o)| j != i && length(sub(b.x, o.x)) <= b.reach + o.reach + 2.0 + travel);
+        bodies
+            || (self.pushable(i)
+                && self.movers.iter().any(|m| {
+                    let (s0, s1) = m.segment();
+                    length(sub(b.x, closest_on_segment(b.x, s0, s1)))
+                        <= b.reach + m.radius + PUSH_SKIN + travel
+                }))
     }
 
     /// Whether walkers push body `i`: it moves and is lighter than
@@ -654,6 +673,7 @@ impl RigidWorld {
         self.touching.clear();
         self.this_step.clear();
         self.began.clear();
+        self.inactive_islands.clear();
         if let Some(s) = &mut self.spring {
             if s.body == i {
                 self.spring = None;
@@ -756,13 +776,17 @@ impl RigidWorld {
         self.movers = movers;
     }
 
-    /// Wakes a body (it's stepped until it comes to rest again): a placed
-    /// object settling when its place loads.
+    /// Wakes a body (`hkpEntity::activate`, Xbox PDB): a sleeping one's
+    /// island is activated (`00cb5100`: its counts start again); an awake
+    /// one's island marked inactive stays awake.
     pub fn wake(&mut self, body: usize) {
+        self.inactive_islands
+            .retain(|island| !island.contains(&body));
+        let solver = self.solver;
         let b = &mut self.bodies[body];
-        if b.dynamic() {
+        if b.dynamic() && b.asleep {
             b.asleep = false;
-            b.still = 0.0;
+            b.motion.activate(&solver);
         }
     }
 
@@ -817,23 +841,60 @@ impl RigidWorld {
 
     /// Moves on by a frame of `frame` seconds, in the game's steps
     /// ([`Clock`]); the steps taken.
+    ///
+    /// As `bhkWorld::Update` (`00c6ae70`) runs a frame with a frame time
+    /// over 0: the solver settings scaled to the step (`00c66a00`), then
+    /// `hkpWorld::stepDeltaTime` for each whole step to the frame marker
+    /// (see [`Clock`]). The wind listener (`00c66e20`) runs after, with the
+    /// frame's time (the viewer's `clutter`).
+    // Translated from 00c6ae70 (decompiled, FalloutNV.exe 1.4.0.525)
     pub fn update(&mut self, collider: &Collider, frame: f32) -> u32 {
-        let (n, dt) = self.clock.advance(frame);
+        let (n, _) = self.clock.advance(frame);
+        if frame <= 0.0 {
+            return 0;
+        }
+        let step = self.clock.step();
+        self.solver.scale(step, crate::havok::TAU_RATIO);
         for _ in 0..n {
-            self.step(collider, dt);
+            self.step(collider, step);
         }
         n
     }
 
-    /// One step of `dt` seconds.
+    /// One step of `dt` seconds (`hkpSimulation::stepDeltaTime` `00cf8730`:
+    /// integrate, collide, advance time; here the integration and this
+    /// solver's contacts together).
     pub fn step(&mut self, collider: &Collider, dt: f32) {
-        // Walkers wake what they push.
+        // `hkpSimulation::integrateInternal` (`00cf8da0`) first cleans up
+        // the islands marked inactive last step (`00cb55d0` → `00cb5310`):
+        // each goes to sleep when every body passes the last test, its
+        // velocities zeroed; otherwise it stays awake.
+        for island in std::mem::take(&mut self.inactive_islands) {
+            if !crate::havok::WANT_DEACTIVATION {
+                break;
+            }
+            let all = island.iter().all(|&i| {
+                let b = &self.bodies[i];
+                !b.asleep && b.motion_now().can_deactivate(HAVOK_UNIT)
+            });
+            if all {
+                for &i in &island {
+                    let b = &mut self.bodies[i];
+                    let mut m = b.motion_now();
+                    m.deactivate();
+                    b.set_motion(&m);
+                    b.asleep = true;
+                }
+            }
+        }
+        // Walkers wake what they push (this solver's walkers: the
+        // character proxy's push, `hkpCharacterProxy`, is PR 10's).
         for i in 0..self.bodies.len() {
             if self.bodies[i].asleep && self.pushable(i) {
                 let pushed = self.movers.iter().any(|m| {
                     self.mover_touches(i, m)
                         .iter()
-                        .any(|t| dot(m.velocity, t.n) > STILL_SPEED)
+                        .any(|t| dot(m.velocity, t.n) > WALKER_WAKE_SPEED)
                 });
                 if pushed {
                     self.wake(i);
@@ -847,11 +908,16 @@ impl RigidWorld {
                 self.apply_spring(&s, dt);
             }
         }
+        // Actions (the spring, above), then the deactivation flags, then
+        // the islands.
+        self.solver.increment_deactivation_flags();
         if !self.awake() || dt <= 0.0 {
             return;
         }
-        // Moving bodies wake the sleeping ones they run into (from the
-        // next step on, a sleeping one holds still like the world).
+        // An awake body touching a sleeping one wakes it: Havok merges the
+        // two islands, and an island with an active part is active
+        // (approximate until PR 5: Havok merges islands when the
+        // broadphase pairs the bodies, here when they touch).
         for i in 0..self.bodies.len() {
             if self.bodies[i].asleep {
                 continue;
@@ -864,9 +930,7 @@ impl RigidWorld {
                 if gap > self.bodies[i].reach + self.bodies[j].reach + 2.0 {
                     continue;
                 }
-                let speed =
-                    length(self.bodies[i].v) + length(self.bodies[i].w) * self.bodies[i].reach;
-                if speed > STILL_SPEED && !self.body_touches(i, j).is_empty() {
+                if !self.body_touches(i, j).is_empty() {
                     self.wake(j);
                 }
             }
@@ -894,10 +958,48 @@ impl RigidWorld {
                     .collect()
             })
             .collect();
+        // Havok's integration (`00cf8da0`): a body with nothing near it
+        // (no triangle, body or walker within its reach and a step's
+        // travel: no contact constraints in its island) is stepped exactly
+        // by `hkRigidMotionUtilApplyForcesAndStep` (`00d28a30`); the others
+        // get the same forces (`00d29830`: damping now, gravity per
+        // substep), this solver's contacts, then the velocity checks of
+        // `hkRigidMotionUtilApplyAccumulators` (`00d29bf0`).
+        let gravity_step = scale(crate::havok::GRAVITY, dt * HAVOK_UNIT);
+        let solver = self.solver;
+        for (i, tris) in nearby.iter().enumerate() {
+            let free = !self.bodies[i].asleep
+                && self.bodies[i].dynamic()
+                && tris.is_empty()
+                && !self.near_anything(i, dt);
+            let b = &mut self.bodies[i];
+            b.free = free;
+            if b.asleep || !b.dynamic() {
+                continue;
+            }
+            let mut m = b.motion_now();
+            if free {
+                b.frames = m.step(dt, gravity_step, HAVOK_UNIT, &solver).unwrap_or(0);
+            } else {
+                m.apply_damping(dt);
+            }
+            b.set_motion(&m);
+        }
         let h = dt / SUBSTEPS as f32;
         self.this_step.clear();
         for _ in 0..SUBSTEPS {
             self.substep(collider, &nearby, h);
+        }
+        for b in &mut self.bodies {
+            if b.asleep || !b.dynamic() || b.free {
+                continue;
+            }
+            let mut m = b.motion_now();
+            m.reset_invalid_velocities(HAVOK_UNIT);
+            m.clamp_linear_velocity(HAVOK_UNIT);
+            m.clamp_angular_velocity(dt);
+            b.frames = m.update_deactivation(&solver, HAVOK_UNIT).unwrap_or(0);
+            b.set_motion(&m);
         }
         // Contacts begun this step (Havok adds a contact point once).
         let now: HashSet<(usize, Toucher)> = self.this_step.keys().copied().collect();
@@ -915,17 +1017,46 @@ impl RigidWorld {
             .collect();
         self.touching = now;
         self.touching.extend(kept);
-        for b in &mut self.bodies {
-            if b.asleep {
+        // Islands (approximate until PR 5: the awake bodies joined by this
+        // step's body–body contacts); each body's count of passing checks
+        // was updated with its step. An island whose fewest is more than
+        // 5 is marked inactive (`00cf8da0` → `00cb5420`) and put to sleep
+        // at the next step's start, above.
+        let n = self.bodies.len();
+        let mut root: Vec<usize> = (0..n).collect();
+        fn find(root: &mut [usize], mut i: usize) -> usize {
+            while root[i] != i {
+                root[i] = root[root[i]];
+                i = root[i];
+            }
+            i
+        }
+        for (a, other) in self.this_step.keys() {
+            if let Toucher::Body(b) = *other {
+                if self.bodies[*a].asleep || self.bodies[b].asleep {
+                    continue;
+                }
+                let (ra, rb) = (find(&mut root, *a), find(&mut root, b));
+                root[ra] = rb;
+            }
+        }
+        let mut islands: std::collections::BTreeMap<usize, (u32, Vec<usize>)> = Default::default();
+        for (i, b) in self.bodies.iter_mut().enumerate() {
+            if b.asleep || !b.dynamic() {
                 continue;
             }
-            let moving = length(b.v) > STILL_SPEED || length(b.w) > STILL_SPIN;
-            b.moved |= moving;
-            b.still = if moving { 0.0 } else { b.still + dt };
-            if b.still > SLEEP_AFTER {
-                b.asleep = true;
-                b.v = [0.0; 3];
-                b.w = [0.0; 3];
+            b.moved |= b.v != [0.0; 3] || b.w != [0.0; 3];
+            let island = islands
+                .entry(find(&mut root, i))
+                .or_insert((u32::MAX, Vec::new()));
+            island.0 = island.0.min(b.frames);
+            island.1.push(i);
+        }
+        for (frames, members) in islands.into_values() {
+            if frames > crate::havok::INACTIVE_FRAMES_TO_DEACTIVATE
+                && crate::havok::WANT_DEACTIVATION
+            {
+                self.inactive_islands.push(members);
             }
         }
     }
@@ -934,10 +1065,12 @@ impl RigidWorld {
         let before: Vec<(Vec3, Quat, Vec3, Vec3)> =
             self.bodies.iter().map(|b| (b.x, b.q, b.v, b.w)).collect();
         for b in &mut self.bodies {
-            if b.asleep || !b.dynamic() {
+            if !b.solved() {
                 continue;
             }
-            b.v[2] -= GRAVITY * h;
+            // The solver's gravity per substep, × the gravity factor.
+            let g = crate::havok::from_half(b.motion.gravity_factor) * h * HAVOK_UNIT;
+            b.v = add(b.v, scale(crate::havok::GRAVITY, g));
             b.x = add(b.x, scale(b.v, h));
             b.moved_by = scale(b.v, h);
             b.q = rotated(b.q, scale(b.w, h));
@@ -946,7 +1079,7 @@ impl RigidWorld {
         // (each correction measured from where the last left the bodies).
         let mut touches: Vec<(usize, Other, Touch)> = Vec::new();
         for (i, tris) in nearby.iter().enumerate() {
-            if self.bodies[i].asleep || !self.bodies[i].dynamic() {
+            if !self.bodies[i].solved() {
                 continue;
             }
             for (tri, t) in self.world_touches(collider, i, tris) {
@@ -1012,7 +1145,7 @@ impl RigidWorld {
         }
         // Velocities from the moves.
         for (b, (_, q, _, _)) in self.bodies.iter_mut().zip(&before) {
-            if b.asleep || !b.dynamic() {
+            if !b.solved() {
                 continue;
             }
             b.v = scale(b.moved_by, 1.0 / h);
@@ -1030,22 +1163,6 @@ impl RigidWorld {
         }
         for c in &contacts {
             self.friction_pass(c, h);
-        }
-        for b in &mut self.bodies {
-            if b.asleep || !b.dynamic() {
-                continue;
-            }
-            let s = &b.setup;
-            b.v = scale(b.v, (1.0 - s.linear_damping * h).max(0.0));
-            b.w = scale(b.w, (1.0 - s.angular_damping * h).max(0.0));
-            let speed = length(b.v);
-            if s.max_linear_speed > 0.0 && speed > s.max_linear_speed {
-                b.v = scale(b.v, s.max_linear_speed / speed);
-            }
-            let spin = length(b.w);
-            if s.max_angular_speed > 0.0 && spin > s.max_angular_speed {
-                b.w = scale(b.w, s.max_angular_speed / spin);
-            }
         }
     }
 
@@ -1725,7 +1842,7 @@ mod tests {
         // A long frame: three steps at most, the rest held to one step.
         let (n, dt) = c.advance(0.2);
         assert_eq!((n, dt), (3, 0.016));
-        assert!((c.left - 0.016).abs() < 1e-6, "{}", c.left);
+        assert!((c.left() - 0.016).abs() < 1e-6, "{}", c.left());
         // Less than half a step waits; half or more takes one of it all.
         let mut c = Clock::new(0.016);
         assert_eq!(c.advance(0.005), (0, 0.0));
@@ -1736,7 +1853,78 @@ mod tests {
         // Rounding up runs ahead: the rest is negative.
         let mut c = Clock::new(0.016);
         assert_eq!(c.advance(0.013).0, 1);
-        assert!(c.left < 0.0);
+        assert!(c.left() < 0.0);
+    }
+
+    #[test]
+    fn a_body_in_the_open_is_stepped_by_havoks_integrator() {
+        // Far above the floor: nothing near it, so each step is exactly
+        // `hkRigidMotionUtilApplyForcesAndStep` in game units.
+        let c = floor(0.0);
+        let mut w = RigidWorld::new();
+        let i = w.add(crate_(1, [10.0; 3], 5.0), (I3, [0.0, 0.0, 5000.0]));
+        w.wake(i);
+        w.bodies[i].w = [0.0, 0.0, 3.0];
+        let mut m = w.bodies[i].motion_now();
+        let g = scale(crate::havok::GRAVITY, STEP * HAVOK_UNIT);
+        for _ in 0..40 {
+            assert_eq!(w.update(&c, STEP), 1);
+            let solver = w.solver;
+            m.step(STEP, g, HAVOK_UNIT, &solver);
+            assert!(w.bodies[i].free);
+            assert_eq!(w.bodies[i].center(), m.center);
+            assert_eq!(w.bodies[i].velocity(), m.linear_velocity);
+            assert_eq!(w.bodies[i].spin(), m.angular_velocity);
+        }
+    }
+
+    #[test]
+    fn a_resting_body_sleeps_after_the_traced_number_of_steps() {
+        // Woken resting on the floor: its first check (step 4) sets the
+        // references (a new motion's are zero); slot 0 then passes at
+        // steps 8, 12, 20, 24, 28 and 36, the sixth pass marks its island
+        // inactive, and the next step's start puts it to sleep.
+        let c = floor(0.0);
+        let mut w = RigidWorld::new();
+        let i = w.add(crate_(1, [10.0; 3], 5.0), (I3, [0.0, 0.0, 10.7]));
+        w.wake(i);
+        for k in 1..=37 {
+            assert!(!w.bodies[i].asleep, "asleep before step {k}");
+            assert_eq!(w.update(&c, STEP), 1);
+        }
+        assert!(w.bodies[i].asleep);
+        assert_eq!(w.bodies[i].velocity(), [0.0; 3]);
+    }
+
+    #[test]
+    fn a_stack_sleeps_together_and_a_nudge_wakes_it() {
+        let c = floor(0.0);
+        let mut w = RigidWorld::new();
+        let lower = w.add(crate_(3, [10.0; 3], 10.0), (I3, [0.0, 0.0, 10.7]));
+        let upper = w.add(crate_(4, [10.0; 3], 10.0), (I3, [0.0, 0.0, 32.1]));
+        w.wake(lower);
+        w.wake(upper);
+        let mut slept = None;
+        for k in 1..=200 {
+            w.update(&c, STEP);
+            let (a, b) = (w.bodies[lower].asleep, w.bodies[upper].asleep);
+            if a || b {
+                // One island: both at once.
+                assert!(a && b, "step {k}: {a} {b}");
+                slept = Some(k);
+                break;
+            }
+        }
+        assert!(slept.is_some());
+        // A small push on the lower box: it wakes, and the box on it with
+        // it (their islands merge), and both settle again.
+        w.apply_linear_impulse(lower, [0.5, 0.0, 0.0]);
+        w.update(&c, STEP);
+        assert!(!w.bodies[lower].asleep && !w.bodies[upper].asleep);
+        for _ in 0..300 {
+            w.update(&c, STEP);
+        }
+        assert!(w.bodies[lower].asleep && w.bodies[upper].asleep);
     }
 
     #[test]

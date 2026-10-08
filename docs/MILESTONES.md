@@ -57,6 +57,7 @@ message box not ([MENU_FADES.md](MENU_FADES.md)).
 (opening), B23, then B1/B2 (physics), split into sub-PRs. The opening's
 Vigor Tester step has no acceptance route yet (the doc route starts at
 stage 110).
+B1 PRs 1-4 (`claude/b1-havok-step`, 2026-10-07): the game's own Havok world constants, step driver, single-body integrator and sleeping translated (`physics::havok`; the invented sleep rules gone; contacts still this solver's until PR 7). Verified live: the VCG02 bottles stay on the rail, a shot one comes to rest and stays. Evidence: [PHYSICS.md](PHYSICS.md). **Next action:** B1 PR 5 (simulation islands).
 
 Overnight batches, 2026-10-06 (local session; integration branch
 `claude/overnight-integration`, not merged into `main`; each batch also has
