@@ -1,0 +1,10 @@
+[project]
+name = "nv-rs-diagnostics-reader"
+version = "0.1.0"
+description = "Read-only MCP server and CLI for nv-rs diagnostic captures"
+requires-python = ">=3.10"
+dependencies = ["mcp==2.3.0"]
+
+[tool.uv]
+package = false
+

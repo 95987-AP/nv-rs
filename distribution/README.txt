@@ -24,6 +24,10 @@ You can also run app\nv-viewer.exe directly with the Data path and cell argument
 Controls: WASD move; hold right mouse to look; E interact; Tab Pip-Boy;
 F5 quicksave; F9 quickload; F12 bug report; Esc quit.
 Saves and F12 reports are written under userdata, not your game installation.
+After scene selection, Play.cmd offers diagnostics off/on. Play.ps1 accepts
+-Diagnostics or -DiagnosticsDir PATH. Captures default to userdata/reports/diagnostics.
+Recording is opt-in; F12 adds a session bookmark when enabled. CPU timing and
+logical texture bytes do not establish GPU timing or measured VRAM usage.
 These are nv-rs saves, not compatible with the original game's saves.
 
 Opening: the stage55 -> tester instruction -> E -> SPECIAL segment was tested.

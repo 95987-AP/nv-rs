@@ -102,3 +102,15 @@ intervals in off/on runs until exit, without a recorder thread in off runs.
 It is disabled in ordinary play. `scripts/acceptance.ps1 -Diagnostics` records
 the existing routes without altering their commands or pass conditions.
 First draft review: https://github.com/95987-AP/nv-rs/pull/1.
+
+Batch 3 update: all 12 synthetic reader tests and the SDK stdio query pass,
+including numeric IDs, ownership/fallback links, two report bookmarks,
+shortened windows, interrupted/malformed data, pagination, configuration
+mismatch and staged cell-loading duration distributions. The independent
+lockfile validates. The checked-in distribution launchers now offer the same
+diagnostics choice and preserve `NV_RS_VIEWER` overrides and `userdata`.
+PowerShell accepts `-Diagnostics` or `-DiagnosticsDir`. The ignored local
+launcher has the same choice. No official play package was published.
+Second draft review: https://github.com/95987-AP/nv-rs/pull/2.
+Core tests, clippy, formatting and release build pass. The viewer's latest
+172 tests pass; final clippy/release and live evidence are being completed.

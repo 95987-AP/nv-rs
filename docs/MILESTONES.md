@@ -929,7 +929,7 @@ results, process ownership and unfinished checks: [DIAGNOSTICS.md](DIAGNOSTICS.m
 The registered FPS, notification and launcher customizations are preserved.
 Initial full checks hit a full D: drive; package-scoped generated outputs were
 cleaned, and core checks moved to C: with incremental caching disabled.
-Core tests pass after fixing portable documentation paths; the 171-test viewer baseline and reader fixtures pass. Full final checks and live/overhead evidence are pending. Recorder draft PR #1 is open. Next action: finish the
+Core tests, clippy, formatting and release pass; 172 viewer tests and 12 MCP/CLI fixtures pass. Final viewer checks and live/overhead evidence are pending. Recorder/loading draft PRs #1/#2 are open. Next action: finish the
 checks and verify captures with the rebuilt release viewer.
 
 ## Deferred
