@@ -1100,6 +1100,41 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
     }
     for path in report.missing_textures.keys() {
         notes.push(format!("missing texture: {path}"));
+        if cache.observer.enabled() {
+            cache.observer.emit(
+                "texture_failure",
+                cache.observer.id(),
+                cache.observer.parent(),
+                &[
+                    ("requested_path", diagnostics::Value::Str(path.clone())),
+                    ("failure", diagnostics::Value::Str("missing".into())),
+                    ("stage", diagnostics::Value::Str("preview_load".into())),
+                    ("role", diagnostics::Value::Str("preview_reported".into())),
+                    ("owner", diagnostics::Value::Str("unknown".into())),
+                    ("automatic_marker", diagnostics::Value::Bool(true)),
+                    ("final", diagnostics::Value::Bool(true)),
+                ],
+            );
+        }
+    }
+    for (path, error) in &report.unreadable_textures {
+        if cache.observer.enabled() {
+            cache.observer.emit(
+                "texture_failure",
+                cache.observer.id(),
+                cache.observer.parent(),
+                &[
+                    ("requested_path", diagnostics::Value::Str(path.clone())),
+                    ("failure", diagnostics::Value::Str("unreadable".into())),
+                    ("error", diagnostics::Value::Str(error.clone())),
+                    ("stage", diagnostics::Value::Str("preview_load".into())),
+                    ("role", diagnostics::Value::Str("preview_reported".into())),
+                    ("owner", diagnostics::Value::Str("unknown".into())),
+                    ("automatic_marker", diagnostics::Value::Bool(true)),
+                    ("final", diagnostics::Value::Bool(true)),
+                ],
+            );
+        }
     }
     for (path, e) in report.unreadable_models.iter() {
         notes.push(format!("unreadable model: {path}: {e}"));
@@ -1999,6 +2034,65 @@ mod tests {
         assert!(!events
             .lines()
             .any(|line| { line.contains("texture_failure") && line.contains("layer.dds") }));
+        let _ = std::fs::remove_dir_all(capture_root);
+    }
+
+    #[test]
+    fn preview_missing_and_unreadable_textures_get_final_markers() {
+        let data = testdata::room("preview-texture-failures");
+        std::fs::write(
+            data.path().join("textures/test/wall.dds"),
+            b"corrupt preview texture",
+        )
+        .unwrap();
+        let capture_root = std::env::temp_dir().join(format!(
+            "nv-rs-preview-texture-failures-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let recorder = diagnostics::Recorder::start(&capture_root, &[]).unwrap();
+        let observer = recorder.observer();
+        let options = Options {
+            official: true,
+            ..Options::default()
+        };
+        let mut game = Game::open(data.path(), &options).unwrap();
+        game.assets.set_observer(observer.clone());
+        let cell = game.find_cell("TestRoom").unwrap();
+        let parent = observer.id();
+        let _context = observer.context(parent);
+        let scene = game.load_cell(cell).unwrap();
+        assert!(scene
+            .notes
+            .iter()
+            .any(|note| note.contains("missing texture: textures\\test\\gone.dds")));
+
+        let session = observer.path().unwrap().to_path_buf();
+        drop(scene);
+        drop(_context);
+        drop(game);
+        drop(recorder);
+        let events = std::fs::read_to_string(session.join("events-0000.jsonl")).unwrap();
+        let expected_parent = format!("\"parent_id\":{parent}");
+        assert!(events.lines().any(|line| {
+            line.contains("texture_failure")
+                && line.contains("textures\\\\test\\\\gone.dds")
+                && line.contains("\"failure\":\"missing\"")
+                && line.contains("\"stage\":\"preview_load\"")
+                && line.contains("\"final\":true")
+                && line.contains(&expected_parent)
+        }));
+        assert!(events.lines().any(|line| {
+            line.contains("texture_failure")
+                && line.contains("textures\\\\test\\\\wall.dds")
+                && line.contains("\"failure\":\"unreadable\"")
+                && line.contains("\"stage\":\"preview_load\"")
+                && line.contains("\"final\":true")
+                && line.contains(&expected_parent)
+        }));
         let _ = std::fs::remove_dir_all(capture_root);
     }
 

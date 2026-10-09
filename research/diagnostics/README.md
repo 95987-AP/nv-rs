@@ -55,6 +55,8 @@ phase includes counts for requested, completed, failed, and still-incomplete
 loads, plus bounded provenance. `benchmark_comparable` is false when configs
 differ or either capture is incomplete, dropped, malformed, or truncated; the
 result lists the reason for each side.
+Evidence references are capped at 1,000 per session; omitted reference counts
+are reported separately and do not make complete metric analysis unreliable.
 Cell and asset inspection normalizes numeric and string IDs and follows direct
 `id` correlations, `parent_id` links, and ownership events. Texture and fallback
 events can be matched through requested, candidate, fallback, resolved, asset,

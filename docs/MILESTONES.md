@@ -929,8 +929,13 @@ results, process ownership and unfinished checks: [DIAGNOSTICS.md](DIAGNOSTICS.m
 The registered FPS, notification and launcher customizations are preserved.
 Initial full checks hit a full D: drive; package-scoped generated outputs were
 cleaned, and core checks moved to C: with incremental caching disabled.
-Core tests, clippy, formatting and release pass; 172 viewer tests and 12 MCP/CLI fixtures pass. Final viewer checks and live/overhead evidence are pending. Recorder/loading draft PRs #1/#2 are open. Next action: finish the
-checks and verify captures with the rebuilt release viewer.
+Core and viewer tests, clippy, formatting and release pass; 172 viewer tests and
+14 MCP/CLI fixtures pass. Live Doc startup, Goodsprings boundary/F12-MCP, FPS
+and launcher preservation checks pass. Three focused Goodsprings off/on pairs
+meet the measured-route targets (+0.56..1.45% median, <=0.09 ms added p95);
+losses remain explicit. Three stacked draft PRs #1/#2/#3 are open. Final audit
+repairs and acceptance rerun remain. Next action: verify the audit repairs and
+complete the existing acceptance routes with the final release.
 
 ## Deferred
 

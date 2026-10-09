@@ -679,6 +679,10 @@ class CaptureStore:
                 "cell_failures": {"left": left["cell_failures"], "right": right["cell_failures"]},
                 "evidence_ids": left["evidence_ids"] + right["evidence_ids"],
                 "evidence": left["evidence"] + right["evidence"],
+                "evidence_references": {
+                    side: {"returned": len(report["evidence"]),
+                           "omitted": report["evidence_omitted_count"]}
+                    for side, report in (("left", left), ("right", right))},
                 "benchmark_comparability_reasons": comparison_reasons,
                 "truncated": left["truncated"] or right["truncated"]}
 
@@ -686,7 +690,7 @@ class CaptureStore:
         path, manifest, status = self._session(session_id)
         frame_values: dict[str, list[float]] = {"startup": [], "gameplay": []}
         phase, failures, optional_failures, cell_failures = "startup", [], [], []
-        ids, evidence, truncated = [], [], False
+        ids, evidence, evidence_omitted_count, truncated = [], [], 0, False
         read_issues: dict[str, int] = {}
         truncation_reasons: set[str] = set()
         cell_collector = _CellLoadingCollector()
@@ -706,8 +710,7 @@ class CaptureStore:
                 evidence.append({"id": str(event.get("id") or "")[:128], "sequence": event.get("sequence"),
                                  "time_us": event.get("time_us"), "type": str(event.get("type", ""))[:128]})
             else:
-                truncated = True
-                truncation_reasons.add("evidence_record_limit")
+                evidence_omitted_count += 1
             if event.get("type") == "phase":
                 name = (event.get("fields") or {}).get("name")
                 if isinstance(name, str) and name in frame_values:
@@ -763,6 +766,7 @@ class CaptureStore:
                 "optional_texture_failures": optional_failures, "cell_failures": cell_failures,
                 "cell_loading": cell_loading, "data_quality": data_quality,
                 "evidence_ids": ids[:1000], "evidence": evidence,
+                "evidence_omitted_count": evidence_omitted_count,
                 "truncated": truncated,
                 "meta": {**self._base(session_id, status), "duration_us": (status or {}).get("duration_us")}}
 

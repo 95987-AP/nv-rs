@@ -273,6 +273,22 @@ class CaptureReaderTests(unittest.TestCase):
         self.assertEqual(compared["startup_gameplay"]["left"]["gameplay"]["p95_interval_ms"], 90.0)
         self.assertEqual(len(compared["asset_failures"]["left"]), 0)
 
+    def test_evidence_reference_cap_does_not_invalidate_complete_comparison(self):
+        status = {"complete": True, "dropped_events": 0, "duration_us": 2_000_000}
+        events = [event(1, "main_frame_interval", {"interval_ms": 16.7})]
+        events.extend(event(index, "diagnostic_marker", {}) for index in range(2, 1002))
+        write_session(self.root, "many-left", events, status=status)
+        write_session(self.root, "many-right", events, status=status)
+
+        compared = CaptureStore(self.root).compare_sessions("many-left", "many-right")
+
+        self.assertTrue(compared["benchmark_comparable"])
+        self.assertFalse(compared["truncated"])
+        self.assertEqual(compared["benchmark_comparability_reasons"], [])
+        self.assertEqual(compared["startup_gameplay"]["left"]["startup"]["frame_count"], 1)
+        self.assertEqual(compared["evidence_references"]["left"], {"returned": 1000, "omitted": 1})
+        self.assertEqual(compared["evidence_references"]["right"], {"returned": 1000, "omitted": 1})
+
     def test_cli_module_does_not_import_mcp(self):
         sys.modules.pop("mcp", None)
         import cli  # noqa: PLC0415
