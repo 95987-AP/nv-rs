@@ -25,8 +25,9 @@ set "nvrs_choice=%errorlevel%"
 echo 1. Diagnostics off
 echo 2. Diagnostics on
 choice /c 12 /n /m "Record performance and loading evidence? Choose 1 or 2: "
+set "nvrs_diagnostics_choice=%errorlevel%"
 set "nvrs_diagnostics="
-if errorlevel 2 set "nvrs_diagnostics=--diagnostics"
+if "%nvrs_diagnostics_choice%"=="2" set "nvrs_diagnostics=--diagnostics"
 if not exist "%~dp0userdata" mkdir "%~dp0userdata"
 cd /d "%~dp0userdata"
 if defined NV_RS_VIEWER (

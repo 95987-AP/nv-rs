@@ -92,6 +92,7 @@ fn sample(
             .map(|a| a.name.as_str())
             .collect::<Vec<_>>()
             .join("|");
+        let dropped_before = o.dropped();
         o.emit(
             "configuration",
             o.id(),
@@ -101,7 +102,9 @@ fn sample(
                 ("archive_order", archives.into()),
             ],
         );
-        capture.configured = true;
+        // Retry if this snapshot was lost to queue contention. A concurrent
+        // drop can cause an extra harmless retry, but never suppress metadata.
+        capture.configured = o.dropped() == dropped_before;
     }
     if let Some(adapter) = adapter {
         let info = adapter.get_info();

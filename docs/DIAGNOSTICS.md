@@ -134,3 +134,11 @@ phase transition, so the current phase is now repeated once per second.
 The reader's live bookmark-window interpretation was corrected and covered by
 an exact regression fixture; 13 synthetic tests pass. Final release rerun and
 new overhead measurements will use the phase repetition change.
+
+Launcher verification found `set` cleared CMD's choice result before testing it.
+Both CMD launchers now save that result immediately. A live run confirmed the
+current release executable, `--diagnostics`, the existing `userdata` working
+directory and a new capture beneath it; orderly exit returned zero.
+A benchmark capture also lost its one-time plugin/archive configuration event.
+The sampler now retries that snapshot when emission loses evidence. Final
+checks, live metadata verification and overhead measurements are being rerun.
