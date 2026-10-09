@@ -73,8 +73,8 @@ timestamps, completeness and loss counts, with bounded pagination.
 
 Existing FPS code was preserved and committed with the customization register
 in `7a01072`; the prior uncommitted diff has a recoverable external patch at
-`C:/Users/Aleksander/Downloads/nvrust-before-diagnostics.patch`. Ignored launcher
-backup: `C:/Users/Aleksander/Downloads/Play-before-diagnostics.cmd`.
+`%USERPROFILE%/Downloads/nvrust-before-diagnostics.patch`. Ignored launcher
+backup: `%USERPROFILE%/Downloads/Play-before-diagnostics.cmd`.
 
 Initial full validation failed because D: ran out of space writing compiler
 caches. No source or captures were removed. Package-scoped `cargo clean` freed
