@@ -48,6 +48,7 @@ nv-rs/
 ├── viewer/            # the Bevy app (its own workspace, Bevy 0.16)
 ├── research/          # Ghidra scripts and native oracle tools
 │   ├── ghidra/        # identity, complete export, function cards, name import
+│   ├── diagnostics/  # saved-session read-only MCP server and CLI
 │   └── nv-oracle/     # nv-call, nv-probe, nv-inject (own workspace, 32-bit Windows)
 ├── docs/              # roadmap, method, decisions, topic findings
 ├── scripts/           # packaging
@@ -58,7 +59,7 @@ nv-rs/
 | --- | --- | --- |
 | **Formats** | `esm`, `bsa`, `nif`, `dds`, `mp3`, `speedtree`, `shaders`, `assets`, `fos` | Read the game's files: plugins and records, archives, meshes and animations, textures, audio, trees, compiled shaders, the loose-file/archive lookup, and the original game's saves (read-only). |
 | **Game** | `world`, `physics`, `script`, `ui`, `preview`, `cellview` | The game's rules: world state, actors, AI, combat, dialogue, quests, inventory, saves, collision, the script engine, menus built from the game's XML, and per-cell scene data. |
-| **Tools** | `nvinspect` | Command-line inspection of real game data: records, cells, meshes, collision walks, coverage tables and more. |
+| **Tools** | `nvinspect`, `diagnostics` | Command-line inspection of real game data, and an opt-in standard-library recorder for frame, loading and asset evidence. |
 | **Test content** | `testdata` | Builds synthetic plugins, archives and meshes for tests, so tests never need game files. |
 | **Engine** | `viewer` (binary `nv-viewer`) | The Bevy app: rendering, audio and input on top of the game crates. |
 
@@ -131,6 +132,11 @@ cd viewer
 cargo run --release -- "<path to Fallout New Vegas\Data>" GSDocMitchellHouse
 ```
 
+Add `--diagnostics` to record frame, cell-loading and asset evidence; output
+defaults to `reports/diagnostics` under the working directory. `F12` links its
+report to the recording. See [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) for the
+launcher choice, limits and read-only MCP/CLI workflow.
+
 The core crates and their tests need no game files. Running the viewer and
 `nvinspect` on real assets needs your `Data` folder. To replay the
 acceptance routes (Windows, PowerShell):
@@ -154,6 +160,7 @@ a fork.
 | [docs/METHODOLOGY.md](docs/METHODOLOGY.md) | How the game's program is read and reimplemented, with sources |
 | [docs/adr/](docs/adr/README.md) | Decisions: method, symbols, decompiled code, layout, tools |
 | [docs/RESEARCH_WORKFLOW.md](docs/RESEARCH_WORKFLOW.md) | Day-to-day research steps and provenance |
+| [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md) | Opt-in recording, F12 evidence, saved-session MCP/CLI and measured overhead |
 | [research/ghidra](research/ghidra/README.md), [research/nv-oracle](research/nv-oracle/README.md) | The research tools and how to run them |
 | [docs/TECHNICAL_REFERENCE.md](docs/TECHNICAL_REFERENCE.md) | Detailed feature descriptions |
 | [docs/OPENING.md](docs/OPENING.md), [docs/OPENING_LOOK_IK.md](docs/OPENING_LOOK_IK.md), [docs/FACE_CREATION.md](docs/FACE_CREATION.md), [docs/PERSISTENCE.md](docs/PERSISTENCE.md), [docs/VIGOR.md](docs/VIGOR.md) | M1 topic findings |

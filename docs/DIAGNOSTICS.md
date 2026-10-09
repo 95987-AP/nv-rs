@@ -70,7 +70,7 @@ Three stacked draft reviews are open in the contributor's fork:
 
 Core workspace tests, clippy, formatting and release build pass. Viewer checks
 run separately: 172 tests, clippy with warnings denied, formatting and release
-build pass. The final Rust release is clean source `9ae3334`. The reader has
+build pass. The final Rust release is clean source `7d2ddcf`. The reader has
 14 passing synthetic/SDK tests, covering numeric IDs, path confinement,
 pagination, interrupted/malformed files, multiple bookmarks, absolute time
 bounds, unknown loss counts, staged loading durations and mismatched comparison.
@@ -87,9 +87,11 @@ package-scoped generated outputs were cleaned; no sources or captures were
 removed. Core checks use a C: target directory with incremental caching disabled.
 Private check logs remain in Downloads as
 `nvrust-diagnostics-{core,viewer}-{tests,clippy,build}.log` and final-check variants.
-The initial acceptance run passed Doc's success condition, then was stopped to
-rebuild after audit repairs. All three routes will rerun on the final release
-through `scripts/acceptance.ps1`; pass conditions and route input are unchanged.
+The initial acceptance run was stopped for audit repairs; the complete final
+rerun with `scripts/acceptance.ps1 -Diagnostics -Background` passes all routes:
+`doc` (56 s), `vcg02` (401 s), `vms16` (338 s), each with exit zero and no panic.
+Logs, screenshots and captures are in `acceptance-final` beneath the private
+evidence root. Route inputs and pass conditions are unchanged.
 
 ## Live evidence
 
@@ -130,22 +132,32 @@ outside the measured interval.
 
 | Pair | Median off/on (ms) | Median change | p95 off/on (ms) | p95 change (ms) | On dropped events |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 6.1764 / 6.2661 | +1.45% | 7.6173 / 7.6721 | +0.0548 | 515 |
-| 2 | 6.1876 / 6.2381 | +0.82% | 7.7829 / 7.6688 | -0.1141 | 560 |
-| 3 | 6.1914 / 6.2259 | +0.56% | 7.5637 / 7.6480 | +0.0843 | 543 |
+| 1 | 6.2082 / 6.2272 | +0.31% | 7.5315 / 7.6603 | +0.1288 | 518 |
+| 2 | 6.1774 / 6.1241 | -0.86% | 7.5732 / 7.4911 | -0.0821 | 612 |
+| 3 | 6.0380 / 6.1366 | +1.63% | 7.3558 / 7.5904 | +0.2346 | 489 |
 
-Every pair meets the requested <=3% median and <=1 ms additional p95 targets on
-this measured route. Median paired change is +0.82%; median p95
-change is +0.0548 ms. This does not establish overhead for all
-worldspaces or GPU workloads. Dropped events prevent treating these JSONL captures
-as lossless comparisons: the frame benchmark instead uses the identical buffered
-harness in both off/on runs. Other machine load and run-to-run variation remain
-measurement limits. Earlier house measurements are supporting smoke evidence;
-one final house run lost focus and is excluded from the final acceptance claim.
+All three matched pairs meet the requested <=3% median and <=1 ms additional
+p95 targets on this route. Median paired change is +0.31%; median p95 change
+is +0.1288 ms. Range: -0.86..+1.63% median, -0.08..+0.23 ms p95.
+This does not establish overhead for all worldspaces or GPU workloads. Dropped
+events prevent treating JSONL captures as lossless comparisons: the benchmark
+uses the identical buffered frame harness in both off/on runs. Run-to-run
+variation and other machine activity remain measurement limits.
 
-Evidence: `goodsprings-benchmark/benchmark-results.json`, six CSVs/logs/screenshots
-and three captures; private reproduction script `run-goodsprings-pairs.py`.
-Executable SHA-256: `ce842ce8e8be7a63e8ea028d95a1c0f8abc98b4d21bc86c8ffb01dbda2555cd3`.
+The first on run after the audit repair deviated far beyond the scripted path
+(349 cell requests, ending around x +6883/y +98473). Its trace is preserved as
+stress evidence, including real file rotation, and excluded for route mismatch;
+its cause is unresolved. The entire off/on pair was replaced. The accepted
+runs, in chronological order, are original pairs 2/3 followed by the replacement
+pair. All have 100% focus in the measured interval; on samples follow the same
+path and have 30 requests. An earlier house run lost focus and is likewise
+excluded from the acceptance claim. Doc's house remains a startup/UI smoke test.
+
+Private evidence: `goodsprings-final/accepted-benchmark-results.json`, original
+CSVs/logs/screenshots/captures in `goodsprings-final` and `goodsprings-replacement`,
+and reproduction scripts `run-goodsprings-final.py`, `run-goodsprings-replacement.py`.
+No captures were discarded or overwritten to remove outliers.
+Executable SHA-256: `18b8703e2cfbc5bb1f806032cbe528791dbfcfd290384840d7b35bd8cd204d6f`.
 
 ## Customizations and handoff
 
@@ -172,6 +184,15 @@ comparisons and added missing/corrupt texture markers reported by preview loadin
 Both have regression fixtures (14 reader tests pass). The texture fixture checks
 final classification and the expected cell parent on each marker.
 
-Unfinished: final Rust checks/build, three exterior measurement pairs after the
-marker addition, all acceptance routes and pushing updated review evidence.
-Next action: validate the audit repairs and build the final release.
+Final core/viewer checks, repository hygiene, CLI summary, the final F12/MCP
+walk and the three matched exterior pairs pass. Final live session
+`1791580545412023-15532-0` has complete shutdown, 527 dropped events and five
+optional texture-input failures; the SDK returns the seven cell stages and
+correct bookmark bounds.
+
+Active processes: none from this batch. All required checks, live queries,
+matched Goodsprings measurements and acceptance routes are complete. Final
+implementation/fixtures are in `7d2ddcf`; the following delivery commit updates
+README, this topic, milestone tracker and customization register. No game data
+or captures are tracked. The three PRs remain drafts and unmerged.
+Next action: review the three stacked diagnostics PRs.
