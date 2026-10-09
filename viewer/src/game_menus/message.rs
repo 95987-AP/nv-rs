@@ -34,7 +34,12 @@ pub fn background_alpha(screen: &mut Screen) -> f32 {
 
 /// A message box request becomes a box in the message menu (opened if it
 /// isn't).
-pub fn open(screen: &mut Screen, game: &Game, request: Menu) {
+pub fn open(
+    screen: &mut Screen,
+    game: &Game,
+    state: &mut world::scripting::GameState,
+    request: Menu,
+) {
     if let Menu::Popup {
         title,
         text,
@@ -52,7 +57,9 @@ pub fn open(screen: &mut Screen, game: &Game, request: Menu) {
         b.icon = icon;
         b.sound = sound;
         b.owner = Some(POPUP_OWNER);
-        show(screen, game, b);
+        if !super::notifications::show(screen, game, b.clone()) {
+            show(screen, game, b);
+        }
         return;
     }
     let Menu::Message {
@@ -72,6 +79,19 @@ pub fn open(screen: &mut Screen, game: &Game, request: Menu) {
     }
     let alpha = background_alpha(screen);
     let b = MessageBox::script(&text, title.as_deref(), &slots, alpha);
+    // User-requested presentation adaptation: acknowledgement-only notices
+    // are cards. Preserve the script's original button index as an immediate
+    // acknowledgement; actual choices still use the traced message menu.
+    if super::notifications::is_notice(&b, screen.ui.setting_text("sOk").as_deref())
+        && super::notifications::show(screen, game, b.clone())
+    {
+        state.button = b
+            .buttons
+            .iter()
+            .position(|s| !s.is_empty())
+            .map(|i| b.first_number + i as i32);
+        return;
+    }
     show(screen, game, b);
 }
 

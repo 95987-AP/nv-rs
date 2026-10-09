@@ -27,6 +27,7 @@ pub mod dialog;
 pub mod hacking;
 pub mod levelup;
 pub(crate) mod message;
+mod notifications;
 pub mod recipe;
 pub mod repair;
 pub mod roulette;
@@ -83,6 +84,7 @@ pub struct Screen {
     /// Menus closed and fading out (`ui::fade`): drawn, not run; bottom
     /// first.
     pub fading: Vec<OpenMenu>,
+    notifications: notifications::Notifications,
     /// The menus' fade states and the fades running (`ui::fade`).
     pub fades: ui::fade::Fades,
     size: UVec2,
@@ -638,6 +640,7 @@ impl Screen {
             interface: Interface::default(),
             open: Vec::new(),
             fading: Vec::new(),
+            notifications: notifications::Notifications::default(),
             fades: ui::fade::Fades::default(),
             size,
             cursor,
@@ -818,11 +821,14 @@ fn screen<'a>(menus: &'a mut GameMenus, game: &Game, size: UVec2) -> Option<&'a 
             // Menus open (or fading out) keep their layout until they
             // close.
         } else {
-            let built = Screen::build(game, size);
+            let mut built = Screen::build(game, size);
             if built.ui.fonts.iter().all(Option::is_none) {
                 println!("The game's menus can't be shown: no fonts found.");
                 menus.failed = true;
                 return None;
+            }
+            if let Some(old) = menus.screen.as_deref_mut() {
+                built.notifications.move_cards(&mut old.notifications);
             }
             menus.screen = Some(Box::new(built));
         }
@@ -883,7 +889,7 @@ fn open_menus(
     while let Some(request) = queue.take_next(takes) {
         let before = screen.open.len();
         if message::takes(&request) {
-            message::open(screen, &game.0, request);
+            message::open(screen, &game.0, &mut state.0, request);
         } else if let crate::menus::Menu::Tutorial(form) = request {
             tutorial::show_form(screen, &game.0, form);
         } else if hacking::takes(&request) {
@@ -947,7 +953,9 @@ fn open_menus(
         if screen.open.len() > before && screen.open.last().is_some_and(OpenMenu::is_service) {
             dialog::service_opened(screen, time.delta_secs());
         }
-        player.ready = false;
+        if screen.busy() {
+            player.ready = false;
+        }
     }
     // The Pip-Boy's questions (over it, so the player isn't ready anyway).
     asks::open(screen, &game.0, &mut asks);
@@ -1678,6 +1686,7 @@ pub(crate) fn draw_menus(
         return;
     };
     let mut items: Vec<DrawItem> = Vec::new();
+    items.extend(screen.notifications.draw(time.delta_secs(), &screen.ui));
     // The fade to black moves every frame (`007011d0`) and is drawn under
     // the menus while it lasts.
     if let Some(fade) = screen.fade.as_mut() {
@@ -1824,6 +1833,7 @@ mod tests {
             interface: Interface::default(),
             open: Vec::new(),
             fading: Vec::new(),
+            notifications: notifications::Notifications::default(),
             fades: ui::fade::Fades::default(),
             size: UVec2::new(1920, 1080),
             cursor: None,

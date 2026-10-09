@@ -894,6 +894,16 @@ The maintainer set a one-week fast track (about 1.9 billion tokens).
   `iNumHWThreads`; six `?` rows and six position-only leads.
 - Next action: PR 2 (`world::frame`, the control flow of `0086e650`).
 
+## User-requested notification cards (`codex/subtle-notifications`, 2026-10-09)
+
+Acknowledgement-only startup boxes now use nonblocking right-side cards with
+five seconds of visible time; choices retain their message menu. Explicit
+user-requested deviation from retail. Evidence, files, checks and handoff:
+[NOTIFICATION_CARDS.md](NOTIFICATION_CARDS.md). Core checks and 171 viewer
+tests pass; live cards and automatic clearing verified in Doc's house.
+Both release builds pass; final card spacing checked live. No pending local
+checks. Next action: review the notification-card PR.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,
