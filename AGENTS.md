@@ -47,6 +47,46 @@ historical next-step lists do not determine current priorities.
   use a cheaper capable model and keep one owner for each edited file.
 - Explain outcomes and uncertainties in plain English.
 
+## User customizations and repository updates
+
+- Document every change made by the user or at the user's request in the
+  customization register below during the same batch. Record the requested
+  behavior, affected files, implementation/verification status and any commit,
+  PR or topic-document reference that is available. Keep detailed evidence in
+  the linked topic document. These explicit preferences take precedence over
+  the default retail-fidelity goal for the affected behavior.
+- Before pulling, merging, rebasing, switching to an updated checkout or
+  replacing a local play build, read this register and inspect Git status and
+  the incoming changes. Preserve both committed and uncommitted user work;
+  make a recoverable Git commit or patch backup before an operation that could
+  overwrite it. Never discard, reset or overwrite that work to simplify an
+  update.
+- Every updated checkout and local play build must retain the registered user
+  customizations unless the user explicitly chooses otherwise. Carry them
+  forward onto the updated code and verify the affected behavior; a clean Git
+  merge alone does not establish preservation. Report what was preserved,
+  what was checked and any remaining uncertainty.
+- If an incoming change contradicts, replaces or removes a customization,
+  including a behavior conflict without a textual merge conflict, notify the
+  user before applying the conflicting part. Explain the existing behavior,
+  the incoming behavior and the choices (keep the customization, accept the
+  incoming change, or combine them where feasible). Wait for the user's
+  choice; do not resolve it automatically. Independent, compatible work may
+  continue while that choice is pending.
+- Update this register whenever the user changes or retires a preference.
+  Keep it through upstream updates; do not treat missing upstream entries as
+  permission to remove local preferences. Add any newly discovered user work
+  before proceeding with an update.
+
+### Customization register
+
+| Date | User change to preserve | Files and evidence | Current status |
+| --- | --- | --- | --- |
+| 2026-10-09 | Opt-in diagnostic recorder, F12 evidence bookmarks, saved-session MCP/CLI and diagnostics off/on choice after launcher scene selection. Preserve existing FPS, notifications, release executable routing and save folder. | `crates/diagnostics`, asset/cellview observers, viewer capture hooks, `research/diagnostics`, ignored `Play.cmd`; [DIAGNOSTICS.md](docs/DIAGNOSTICS.md), branch `codex/diagnostics`. | Three batches implemented; validation and live overhead checks in progress. |
+| 2026-10-09 | FPS counter: visible at the top right by default, F3 toggles it, refreshes every 0.25 seconds, follows HUD visibility and is hidden in screenshots; retain existing `--fps` console reporting. | `viewer/src/main.rs` (`FpsText`, `FrameCounter`, `report_fps`, setup, screenshot exclusion and help text). | Preserved in commit `7a01072`; included in the checks reported in `docs/NOTIFICATION_CARDS.md`. Separate live FPS verification is not recorded. Preserve this customization during updates. |
+| 2026-10-09 | Subtle notifications: acknowledgement-only notices become nonblocking right-side cards, expire after five seconds of visible time, and queue overflow; questions retain their choice menu. | `viewer/src/game_menus/{message,mod,notifications}.rs`; evidence and handoff: [NOTIFICATION_CARDS.md](docs/NOTIFICATION_CARDS.md), branch `codex/subtle-notifications`. | Implemented; root and viewer checks and live cards/automatic clearing verified. Explicit user-requested deviation from retail. |
+| 2026-10-09 | Local playtest launcher uses the current viewer release build after rebuilding, while keeping its existing selection menu and save folder. | Local ignored `Launch-Playtest.cmd` and `playtest/nv-rs-experimental-2026-10-03.2-windows-x64/Play.cmd`; [NOTIFICATION_CARDS.md](docs/NOTIFICATION_CARDS.md) launcher follow-up. | Implemented; launched through the menu and verified the running executable is `viewer/target/release/nv-viewer.exe`. Preserve this routing when replacing the local playtest. |
+
 ## Machine and checking
 
 Project: current checkout, Windows/PowerShell is the tested platform.

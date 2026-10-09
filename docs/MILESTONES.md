@@ -904,6 +904,34 @@ tests pass; live cards and automatic clearing verified in Doc's house.
 Both release builds pass; final card spacing checked live. No pending local
 checks. Next action: review the notification-card PR.
 
+Local launcher follow-up: `Launch-Playtest.cmd` was still using an older
+packaged executable. It now selects the rebuilt viewer, retaining the menu
+and `userdata`. Verified by launching through the menu and checking the
+process path. Local backups and active test launch: [NOTIFICATION_CARDS.md](NOTIFICATION_CARDS.md).
+Next action: use the root launcher for the registered customizations.
+
+## User customization preservation (2026-10-09)
+
+`AGENTS.md` now registers the user's FPS counter and notification cards and
+requires future repository/build updates to preserve user work, document new
+customizations and wait for the user's choice on contradictory incoming
+changes. Documentation-only batch; inspected the staged FPS diff and
+`NOTIFICATION_CARDS.md`, with no source changes or build processes started.
+No pending documentation checks or blockers. Next action: use the register
+to verify preservation at the next upstream update.
+
+## User-requested diagnostic capture (2026-10-09)
+
+Three review batches on `codex/diagnostics`: standard-library recorder and
+CPU frame timing; asset/cell/texture evidence and F12 bookmarks; read-only
+saved-session MCP/CLI and local launcher choice. Implementation and fixture
+results, process ownership and unfinished checks: [DIAGNOSTICS.md](DIAGNOSTICS.md).
+The registered FPS, notification and launcher customizations are preserved.
+Initial full checks hit a full D: drive; package-scoped generated outputs were
+cleaned, and core checks moved to C: with incremental caching disabled.
+Validation and live/overhead evidence are pending. Next action: finish the
+checks and verify captures with the rebuilt release viewer.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,

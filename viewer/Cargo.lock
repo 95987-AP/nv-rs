@@ -185,6 +185,7 @@ name = "assets"
 version = "0.1.0"
 dependencies = [
  "bsa",
+ "diagnostics",
 ]
 
 [[package]]
@@ -1516,6 +1517,7 @@ version = "0.1.0"
 dependencies = [
  "assets",
  "dds",
+ "diagnostics",
  "esm",
  "mp3",
  "nif",
@@ -1852,6 +1854,10 @@ dependencies = [
  "syn 2.0.119",
  "unicode-xid",
 ]
+
+[[package]]
+name = "diagnostics"
+version = "0.1.0"
 
 [[package]]
 name = "dispatch"
@@ -3061,6 +3067,7 @@ dependencies = [
  "bevy",
  "bink",
  "cellview",
+ "diagnostics",
  "esm",
  "lewton",
  "nif",

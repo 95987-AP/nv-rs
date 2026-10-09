@@ -46,10 +46,10 @@ pub struct FrameWork {
 }
 
 #[derive(Resource, Default)]
-struct MainStart(Option<Instant>);
+struct MainStart(Option<Instant>, Option<Instant>, u64);
 
 #[derive(Resource, Default)]
-struct RenderStart(Option<Instant>);
+struct RenderStart(Option<Instant>, u64);
 
 pub struct FrameWorkPlugin;
 
@@ -59,11 +59,44 @@ impl Plugin for FrameWorkPlugin {
         app.insert_resource(work.clone())
             .init_resource::<MainStart>()
             .add_systems(First, |mut start: ResMut<MainStart>| {
-                start.0 = Some(Instant::now());
+                let now = Instant::now();
+                let o = diagnostics::Observer::current();
+                start.2 = o.id();
+                if o.enabled() {
+                    if let Some(previous) = start.1 {
+                        let ms = now.duration_since(previous).as_secs_f64() * 1000.0;
+                        o.emit(
+                            "main_frame_interval",
+                            start.2,
+                            0,
+                            &[("interval_ms", diagnostics::Value::F64(ms))],
+                        );
+                        if ms > 50.0 {
+                            o.emit(
+                                "marker",
+                                o.id(),
+                                start.2,
+                                &[
+                                    ("reason", "slow_frame".into()),
+                                    ("interval_ms", diagnostics::Value::F64(ms)),
+                                ],
+                            );
+                        }
+                    }
+                    start.1 = Some(now);
+                }
+                start.0 = Some(now);
             })
             .add_systems(Last, |start: Res<MainStart>, work: Res<FrameWork>| {
                 if let (Some(t), Ok(mut m)) = (start.0, work.main.lock()) {
-                    m.add(t.elapsed().as_secs_f64() * 1000.0);
+                    let ms = t.elapsed().as_secs_f64() * 1000.0;
+                    m.add(ms);
+                    diagnostics::Observer::current().emit(
+                        "main_frame",
+                        start.2,
+                        0,
+                        &[("cpu_ms", diagnostics::Value::F64(ms))],
+                    );
                 }
             });
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
@@ -74,6 +107,7 @@ impl Plugin for FrameWorkPlugin {
                     Render,
                     (|mut start: ResMut<RenderStart>| {
                         start.0 = Some(Instant::now());
+                        start.1 = diagnostics::Observer::current().id();
                     })
                     .in_set(RenderSet::ExtractCommands),
                 )
@@ -81,7 +115,14 @@ impl Plugin for FrameWorkPlugin {
                     Render,
                     (|start: Res<RenderStart>, work: Res<FrameWork>| {
                         if let (Some(t), Ok(mut r)) = (start.0, work.render.lock()) {
-                            r.add(t.elapsed().as_secs_f64() * 1000.0);
+                            let ms = t.elapsed().as_secs_f64() * 1000.0;
+                            r.add(ms);
+                            diagnostics::Observer::current().emit(
+                                "render_frame",
+                                start.1,
+                                0,
+                                &[("cpu_ms", diagnostics::Value::F64(ms))],
+                            );
                         }
                     })
                     .in_set(RenderSet::Cleanup),

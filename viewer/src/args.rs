@@ -35,6 +35,8 @@ OPTIONS:
                             size instead (to check other shapes of screen)
     --walk                  walk even with --screenshot (which otherwise
                             flies, keeping the exact eye position given)
+    --diagnostics           record performance/loading evidence (opt-in)
+    --diagnostics-dir PATH  enable recording under PATH (reports/diagnostics)
     --fps                   print the frame rate every two seconds, and how
                             long each frame's own work took on the main and
                             render threads (apart from waiting for the
@@ -235,6 +237,8 @@ pub struct Args {
     pub walk: bool,
     /// Print the frame rate.
     pub fps: bool,
+    pub diagnostics: bool,
+    pub diagnostics_dir: PathBuf,
     /// Talk to the nearest person once loaded.
     pub talk: bool,
     /// `--choose`: the replies to pick, in order, as number keys would.
@@ -344,6 +348,8 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
     let mut wait = 0.0;
     let mut walk = false;
     let mut fps = false;
+    let mut diagnostics = false;
+    let mut diagnostics_dir = PathBuf::from("reports/diagnostics");
     let mut talk = false;
     let mut choose = Vec::new();
     let mut stage = None;
@@ -407,6 +413,11 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             }
             "--walk" => walk = true,
             "--fps" => fps = true,
+            "--diagnostics" => diagnostics = true,
+            "--diagnostics-dir" => {
+                diagnostics_dir = PathBuf::from(value("--diagnostics-dir")?);
+                diagnostics = true;
+            }
             "--talk" => talk = true,
             "--choose" => {
                 let v = value("--choose")?;
@@ -585,6 +596,8 @@ pub fn parse(args: &[String]) -> Result<Option<Args>, String> {
             wait,
             walk,
             fps,
+            diagnostics,
+            diagnostics_dir,
             talk,
             choose,
             stage,

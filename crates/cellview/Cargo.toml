@@ -16,6 +16,7 @@ world = { path = "../world" }
 preview = { path = "../preview" }
 mp3 = { path = "../mp3" }
 speedtree = { path = "../speedtree" }
+diagnostics = { path = "../diagnostics" }
 
 [dev-dependencies]
 testdata = { path = "../testdata" }
