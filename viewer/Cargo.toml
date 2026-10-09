@@ -11,6 +11,7 @@ publish = false
 [workspace]
 
 [dependencies]
+diagnostics = { path = "../crates/diagnostics" }
 # Pinned: Bevy's API changes between releases.
 bevy = "0.16"
 # Bevy's own wgpu (the same version, no features of its own): the window's

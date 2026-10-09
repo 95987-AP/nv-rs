@@ -19,6 +19,7 @@ mod companions;
 mod controls;
 mod crosshair;
 mod daylight;
+mod diagnostic_capture;
 mod dialogue;
 mod doors;
 mod dress;
@@ -129,6 +130,12 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // Keep the owner alive until App::run returns; all producers share an observer.
+    let _recorder = diagnostic_capture::start(&args, &raw);
+    let observer = diagnostics::Observer::current();
+    let startup_id = observer.id();
+    let _startup_context = observer.context(startup_id);
+    let startup_span = observer.span("startup_loading", startup_id, 0);
     // `NV_GUESSES=1`: untraced behaviour marked [G] runs too
     // (`world::guesses`; the Dead Money contributor's follower rules).
     if std::env::var("NV_GUESSES").is_ok_and(|v| v == "1") {
@@ -257,6 +264,8 @@ fn main() {
             }
         }
     }
+    drop(startup_span);
+    drop(_startup_context);
     App::new()
         .insert_resource(ClearColor(Color::BLACK))
         // Lit surfaces do their own lighting (see `lighting`); nothing else
@@ -398,6 +407,7 @@ fn main() {
         }))
         .add_systems(Update, background::give_focus_back)
         .add_plugins(frame_work::FrameWorkPlugin)
+        .add_plugins(diagnostic_capture::CapturePlugin)
         .insert_resource(game_menus::StartMenu(args.open_menu.clone()))
         .insert_resource(scripts::StartUse(args.use_on.clone()))
         .insert_resource(game_menus::FixedPointer(args.menu_pointer))
@@ -1728,6 +1738,15 @@ impl UploadedTextures {
         upload: impl FnOnce() -> Option<Handle<Image>>,
     ) -> Option<Handle<Image>> {
         if let Some(held) = self.held.get(&key).and_then(std::sync::Weak::upgrade) {
+            let o = diagnostics::Observer::current();
+            if o.enabled() {
+                o.emit(
+                    "texture_upload_cache",
+                    o.id(),
+                    o.parent(),
+                    &[("path", key.0.clone().into()), ("outcome", "reuse".into())],
+                );
+            }
             return Some(Handle::Strong(held));
         }
         let handle = upload()?;
@@ -2726,6 +2745,9 @@ fn upload_texture(
     compressed: bool,
     anisotropy: u16,
 ) -> Option<Handle<Image>> {
+    let observer = diagnostics::Observer::current();
+    let id = observer.id();
+    let _span = observer.span("texture_image_preparation_cpu", id, observer.parent());
     // The game's sampling (see `anisotropy_setting`): anisotropic
     // trilinear at the INI's anisotropy, no LOD bias, repeating.
     let sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
@@ -2759,6 +2781,26 @@ fn upload_texture(
             return None;
         }
     };
+    if observer.enabled() {
+        observer.emit(
+            "texture_image",
+            id,
+            observer.parent(),
+            &[
+                ("path", texture.path.clone().into()),
+                ("state", "queued for rendering".into()),
+                ("width", diagnostics::Value::U64(texture.width as u64)),
+                ("height", diagnostics::Value::U64(texture.height as u64)),
+                ("mips", diagnostics::Value::U64(texture.mip_levels as u64)),
+                ("format", format!("{format:?}").into()),
+                (
+                    "logical_payload_bytes_estimate",
+                    diagnostics::Value::U64(data.len() as u64),
+                ),
+                ("ownership", "unknown".into()),
+            ],
+        );
+    }
     let image = Image {
         data: Some(data),
         texture_descriptor: TextureDescriptor {

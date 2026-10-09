@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 bsa = { path = "../bsa" }
+diagnostics = { path = "../diagnostics" }
 
 [dev-dependencies]
 testdata = { path = "../testdata" }

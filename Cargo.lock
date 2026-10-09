@@ -7,6 +7,7 @@ name = "assets"
 version = "0.1.0"
 dependencies = [
  "bsa",
+ "diagnostics",
  "testdata",
 ]
 
@@ -27,6 +28,7 @@ version = "0.1.0"
 dependencies = [
  "assets",
  "dds",
+ "diagnostics",
  "esm",
  "mp3",
  "nif",
@@ -43,6 +45,10 @@ version = "0.1.0"
 dependencies = [
  "esm",
 ]
+
+[[package]]
+name = "diagnostics"
+version = "0.1.0"
 
 [[package]]
 name = "engine"

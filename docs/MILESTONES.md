@@ -920,6 +920,18 @@ changes. Documentation-only batch; inspected the staged FPS diff and
 No pending documentation checks or blockers. Next action: use the register
 to verify preservation at the next upstream update.
 
+## User-requested diagnostic capture (2026-10-09)
+
+Three review batches on `codex/diagnostics`: standard-library recorder and
+CPU frame timing; asset/cell/texture evidence and F12 bookmarks; read-only
+saved-session MCP/CLI and local launcher choice. Implementation and fixture
+results, process ownership and unfinished checks: [DIAGNOSTICS.md](DIAGNOSTICS.md).
+The registered FPS, notification and launcher customizations are preserved.
+Initial full checks hit a full D: drive; package-scoped generated outputs were
+cleaned, and core checks moved to C: with incremental caching disabled.
+Validation and live/overhead evidence are pending. Next action: finish the
+checks and verify captures with the rebuilt release viewer.
+
 ## Deferred
 
 Cosmetic material/lighting discrepancies, isolated facial polish, sun glare,
