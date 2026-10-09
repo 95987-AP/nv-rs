@@ -9,9 +9,8 @@
 //! when the arguments do not parse. Bodies that never read a word
 //! (`005b5b90`, `005b5cc0`, ...) take no parameters here.
 //!
-//! Progress: the first 120 queue entries (`005b4b20` to `005ba750`) are
-//! translated. The next session continues at `005ba760`
-//! (`Script::ToggleDebugTextFunction`).
+//! Progress: the queue entries from `005b4b20` to `005bc3b0` (160 functions,
+//! the whole range `00000000` to `005bc430` of this file) are translated.
 //!
 //! Notes on the exe's code that the translations rely on:
 //! - Several tiny accessors are called by address and named here after what
@@ -93,7 +92,7 @@ impl Arg for ScriptArgs {
 impl ScriptArgs {
     /// `Script::ParseParameters` (`005accb0`) with the given output addresses
     /// after the seven fixed words: its `AL`.
-    fn parse(self, e: &mut Engine, outs: &[u32]) -> bool {
+    pub(crate) fn parse(self, e: &mut Engine, outs: &[u32]) -> bool {
         let mut words = args![
             self.param_info,
             self.script_data,
@@ -110,7 +109,11 @@ impl ScriptArgs {
     /// [`ScriptArgs::parse`] with `N` word-sized locals (the stack slots the
     /// game passes by address) initialised to `init`. `None` when the
     /// parameters do not parse, otherwise the values left in the locals.
-    fn parse_into<const N: usize>(self, e: &mut Engine, init: [u32; N]) -> Option<[u32; N]> {
+    pub(crate) fn parse_into<const N: usize>(
+        self,
+        e: &mut Engine,
+        init: [u32; N],
+    ) -> Option<[u32; N]> {
         let block = e.mem.alloc(4 * N as u32);
         let mut outs = [0u32; N];
         for (i, value) in init.iter().enumerate() {
@@ -130,480 +133,480 @@ impl ScriptArgs {
 // ---- Callees outside the unit (by exe address) -----------------------------
 
 /// `Script::ParseParameters` (Xbox PDB), `cdecl`, varargs.
-const PARSE_PARAMETERS: u32 = 0x005a_ccb0;
+pub(crate) const PARSE_PARAMETERS: u32 = 0x005a_ccb0;
 /// The console print: format address, then the arguments (`cdecl`).
-const CONSOLE_PRINT: u32 = 0x0070_3c00;
+pub(crate) const CONSOLE_PRINT: u32 = 0x0070_3c00;
 /// `Script::GetDistanceConditionFunction` (Xbox PDB), `cdecl`
 /// (`thisObj, object, 0, result`).
-const GET_DISTANCE_CONDITION: u32 = 0x0059_bfa0;
+pub(crate) const GET_DISTANCE_CONDITION: u32 = 0x0059_bfa0;
 /// `Script::GetInZoneConditionFunction` (Xbox PDB), `cdecl`, same arguments.
-const GET_IN_ZONE_CONDITION: u32 = 0x0059_c010;
+pub(crate) const GET_IN_ZONE_CONDITION: u32 = 0x0059_c010;
 /// `Script::GetItemCountConditionFunction` (Xbox PDB), `cdecl`
 /// (`actor, item, 0, double* result`).
-const GET_ITEM_COUNT_CONDITION: u32 = 0x0059_d8e0;
+pub(crate) const GET_ITEM_COUNT_CONDITION: u32 = 0x0059_d8e0;
 /// `__RTDynamicCast` (`object, 0, source type, target type, 0`).
-const DYNAMIC_CAST: u32 = 0x00ec_43fb;
+pub(crate) const DYNAMIC_CAST: u32 = 0x00ec_43fb;
 /// RTTI type descriptor of `TESObjectREFR` (`.?AVTESObjectREFR@@`).
-const RTTI_TES_OBJECT_REFR: u32 = 0x0118_41cc;
+pub(crate) const RTTI_TES_OBJECT_REFR: u32 = 0x0118_41cc;
 /// RTTI type descriptor of `Actor` (`.?AVActor@@`).
-const RTTI_ACTOR: u32 = 0x0118_46d4;
+pub(crate) const RTTI_ACTOR: u32 = 0x0118_46d4;
 /// `_ftol2_sse`: the `double` in `ST0` (a leading `f64` argument) truncated
 /// into `EAX`.
-const FTOL: u32 = 0x00ec_62c0;
+pub(crate) const FTOL: u32 = 0x00ec_62c0;
 /// `_memset` (`dest, value, count`).
-const MEMSET: u32 = 0x00ec_61c0;
+pub(crate) const MEMSET: u32 = 0x00ec_61c0;
 /// `_strlen`.
-const STRLEN: u32 = 0x00ec_6130;
+pub(crate) const STRLEN: u32 = 0x00ec_6130;
 /// `strcpy_s` (`dest, size, source`).
-const STRCPY_S: u32 = 0x0040_6d30;
+pub(crate) const STRCPY_S: u32 = 0x0040_6d30;
 /// `strcat_s` (`dest, size, source`).
-const STRCAT_S: u32 = 0x0040_6d50;
+pub(crate) const STRCAT_S: u32 = 0x0040_6d50;
 /// `sprintf_s` (`dest, size, format, ...`).
-const SPRINTF_S: u32 = 0x0040_6d00;
+pub(crate) const SPRINTF_S: u32 = 0x0040_6d00;
 /// `strncpy`-like copy that terminates (`dest, source, count`).
-const STRNCPY_S: u32 = 0x004a_dd50;
+pub(crate) const STRNCPY_S: u32 = 0x004a_dd50;
 /// `strstr`-like search (`haystack, needle`): non-zero when found.
-const FIND_SUBSTRING: u32 = 0x0048_12f0;
+pub(crate) const FIND_SUBSTRING: u32 = 0x0048_12f0;
 /// `eh_vector_constructor_iterator` (`array, size, count, constructor,
 /// destructor`).
-const VECTOR_CONSTRUCT: u32 = 0x00ec_782f;
+pub(crate) const VECTOR_CONSTRUCT: u32 = 0x00ec_782f;
 /// `eh_vector_destructor_iterator` (`array, size, count, destructor`).
-const VECTOR_DESTRUCT: u32 = 0x00ec_5fce;
+pub(crate) const VECTOR_DESTRUCT: u32 = 0x00ec_5fce;
 
 /// Form type byte (`this + 4`, `movzx`).
-const FORM_TYPE: u32 = 0x0040_1170;
+pub(crate) const FORM_TYPE: u32 = 0x0040_1170;
 /// `*(this + 0x20)`: the base form of a reference.
-const GET_BASE_FORM: u32 = 0x007a_f430;
+pub(crate) const GET_BASE_FORM: u32 = 0x007a_f430;
 /// `this + 0x44`: the extra data list of a reference.
-const EXTRA_DATA_LIST: u32 = 0x005d_43c0;
+pub(crate) const EXTRA_DATA_LIST: u32 = 0x005d_43c0;
 /// `ExtraDataList::GetContainerChanges` (Xbox PDB).
-const GET_CONTAINER_CHANGES: u32 = 0x0041_8520;
+pub(crate) const GET_CONTAINER_CHANGES: u32 = 0x0041_8520;
 /// `InventoryChanges::GetInventoryChanges` (Xbox PDB), `cdecl` (`reference`).
-const GET_INVENTORY_CHANGES: u32 = 0x004b_f220;
+pub(crate) const GET_INVENTORY_CHANGES: u32 = 0x004b_f220;
 /// `InventoryChanges::WearingObject` (Xbox PDB), `thiscall` (`item, 0`).
-const WEARING_OBJECT: u32 = 0x004b_fda0;
+pub(crate) const WEARING_OBJECT: u32 = 0x004b_fda0;
 /// `ExtraDataList::SetCanNotWear` (Xbox PDB), `thiscall` (`0`).
-const SET_CAN_NOT_WEAR: u32 = 0x0041_ab70;
+pub(crate) const SET_CAN_NOT_WEAR: u32 = 0x0041_ab70;
 /// `InventoryChanges::DuplicateAllItems` (Xbox PDB), `thiscall`
 /// (`reference, target`).
-const DUPLICATE_ALL_ITEMS: u32 = 0x004c_d9c0;
+pub(crate) const DUPLICATE_ALL_ITEMS: u32 = 0x004c_d9c0;
 /// `thiscall` on the inventory changes (`reference, item, 0, flag, 0, flag,
 /// slot, extra`); returns a `float` in `ST0` that the caller discards.
-const FN_004CE340: u32 = 0x004c_e340;
+pub(crate) const FN_004CE340: u32 = 0x004c_e340;
 /// Same shape as [`FN_004CE340`] (`reference, item, 0, flag, 0, flag, -1,
 /// 0`).
-const FN_004CE380: u32 = 0x004c_e380;
+pub(crate) const FN_004CE380: u32 = 0x004c_e380;
 /// `thiscall` on the inventory changes (`form`): the entry for the form.
-const FN_004CBA70: u32 = 0x004c_ba70;
+pub(crate) const FN_004CBA70: u32 = 0x004c_ba70;
 /// `thiscall` on an actor (`form`): whether the actor has the form.
-const FN_00575400: u32 = 0x0057_5400;
+pub(crate) const FN_00575400: u32 = 0x0057_5400;
 /// `thiscall` on an extra data list (`form`).
-const FN_00419700: u32 = 0x0041_9700;
+pub(crate) const FN_00419700: u32 = 0x0041_9700;
 /// `cdecl` (`reference, form, 0, result`).
-const FN_005A2E20: u32 = 0x005a_2e20;
+pub(crate) const FN_005A2E20: u32 = 0x005a_2e20;
 /// `PlayerCharacter::CheckForQuestTargetUpdate` (Xbox PDB), `thiscall` on
 /// the player (`reference`).
-const CHECK_QUEST_TARGET_UPDATE: u32 = 0x0095_2c30;
+pub(crate) const CHECK_QUEST_TARGET_UPDATE: u32 = 0x0095_2c30;
 /// `Interface::IsInMenuMode` (Xbox PDB).
-const IS_IN_MENU_MODE: u32 = 0x0070_2360;
+pub(crate) const IS_IN_MENU_MODE: u32 = 0x0070_2360;
 /// Interface function the item commands call after the player's inventory
 /// changed (`cdecl`, no arguments).
-const FN_00704AF0: u32 = 0x0070_4af0;
+pub(crate) const FN_00704AF0: u32 = 0x0070_4af0;
 /// `thiscall` on the base form of a reference (`reference, extra, 1`).
-const FN_00606540: u32 = 0x0060_6540;
+pub(crate) const FN_00606540: u32 = 0x0060_6540;
 /// `TESContainer::TESContainer` (Xbox PDB): a 0x10-byte object.
-const TES_CONTAINER_CONSTRUCT: u32 = 0x0048_1610;
+pub(crate) const TES_CONTAINER_CONSTRUCT: u32 = 0x0048_1610;
 /// Destructor of the 0x10-byte container object.
-const TES_CONTAINER_DESTRUCT: u32 = 0x0048_1680;
+pub(crate) const TES_CONTAINER_DESTRUCT: u32 = 0x0048_1680;
 /// `thiscall` on `leveled list + 0x30` (`level, count, container, 0`).
-const FN_00487F70: u32 = 0x0048_7f70;
+pub(crate) const FN_00487F70: u32 = 0x0048_7f70;
 /// `thiscall` on the container object (`item, count, 0`).
-const FN_004818E0: u32 = 0x0048_18e0;
+pub(crate) const FN_004818E0: u32 = 0x0048_18e0;
 /// `thiscall` on the container object (`float`).
-const FN_00482090: u32 = 0x0048_2090;
+pub(crate) const FN_00482090: u32 = 0x0048_2090;
 /// `thiscall` on the container object (`reference, flag`).
-const FN_004821A0: u32 = 0x0048_21a0;
+pub(crate) const FN_004821A0: u32 = 0x0048_21a0;
 /// `TESObjectREFR::GetCalcLevel` (Xbox PDB), `thiscall` (`0`).
-const GET_CALC_LEVEL: u32 = 0x0056_7e10;
+pub(crate) const GET_CALC_LEVEL: u32 = 0x0056_7e10;
 /// Signed byte at `this + 0xf4`.
-const FN_00446390: u32 = 0x0044_6390;
+pub(crate) const FN_00446390: u32 = 0x0044_6390;
 /// `TESObjectREFR::GetActionRef` (Xbox PDB).
-const GET_ACTION_REF: u32 = 0x0057_2e30;
+pub(crate) const GET_ACTION_REF: u32 = 0x0057_2e30;
 /// `thiscall` (`action`): whether the reference has the action set.
-const HAS_ACTION: u32 = 0x0057_2d30;
+pub(crate) const HAS_ACTION: u32 = 0x0057_2d30;
 /// `thiscall` (`action`): sets the action.
-const SET_ACTION: u32 = 0x0057_2d50;
+pub(crate) const SET_ACTION: u32 = 0x0057_2d50;
 /// `TESObjectREFR::ClearAction` (Xbox PDB), `thiscall` (`action`).
-const CLEAR_ACTION: u32 = 0x0057_2db0;
+pub(crate) const CLEAR_ACTION: u32 = 0x0057_2db0;
 /// `TESObjectREFR::Activate` (Xbox PDB), `thiscall` (`activator, 0, 0, 1`).
-const ACTIVATE: u32 = 0x0057_3170;
+pub(crate) const ACTIVATE: u32 = 0x0057_3170;
 /// Tests form flag `0x800` (`this + 8`).
-const FN_00440DA0: u32 = 0x0044_0da0;
+pub(crate) const FN_00440DA0: u32 = 0x0044_0da0;
 /// `thiscall` on the item list element: the actor's `+0x94` member
 /// (`item, 1`).
-const FN_008248E0: u32 = 0x0082_48e0;
+pub(crate) const FN_008248E0: u32 = 0x0082_48e0;
 /// `MiddleHighProcess::GetSavedAcquireObject` (Xbox PDB), `thiscall`.
-const MIDDLE_HIGH_PROCESS_SAVED_ACQUIRE: u32 = 0x008d_8520;
+pub(crate) const MIDDLE_HIGH_PROCESS_SAVED_ACQUIRE: u32 = 0x008d_8520;
 /// Interface message with icon (`cdecl`: `text, 0, icon path, sound, float,
 /// 0`).
-const SHOW_MESSAGE: u32 = 0x0070_52f0;
+pub(crate) const SHOW_MESSAGE: u32 = 0x0070_52f0;
 /// `Actor::GetPickUpSoundName` (Xbox PDB), `thiscall` on the player
 /// (`item, 0, 0`).
-const GET_PICK_UP_SOUND_NAME: u32 = 0x008a_dcf0;
+pub(crate) const GET_PICK_UP_SOUND_NAME: u32 = 0x008a_dcf0;
 /// `TESFullName::GetFullName` (Xbox PDB), `cdecl` (`form`).
-const GET_FULL_NAME: u32 = 0x0048_2720;
+pub(crate) const GET_FULL_NAME: u32 = 0x0048_2720;
 /// `this + 0x10` of the data handler (`00460140`): the world space list.
-const DATA_HANDLER_WORLD_SPACES: u32 = 0x0046_0140;
+pub(crate) const DATA_HANDLER_WORLD_SPACES: u32 = 0x0046_0140;
 /// `this + 0x40` of the data handler (`0087eaa0`): the spell list.
-const DATA_HANDLER_SPELLS: u32 = 0x0087_eaa0;
+pub(crate) const DATA_HANDLER_SPELLS: u32 = 0x0087_eaa0;
 /// `TESWorldSpace::BuildMapMarkerList` (Xbox PDB), `thiscall` (`0`): returns a
 /// freshly allocated list.
-const BUILD_MAP_MARKER_LIST: u32 = 0x0058_82a0;
+pub(crate) const BUILD_MAP_MARKER_LIST: u32 = 0x0058_82a0;
 /// `TESObjectREFR::GetMapMarkerData` (Xbox PDB).
-const GET_MAP_MARKER_DATA: u32 = 0x0056_9060;
+pub(crate) const GET_MAP_MARKER_DATA: u32 = 0x0056_9060;
 /// `MapMarkerData::GetHidden` (Xbox PDB).
-const MAP_MARKER_GET_HIDDEN: u32 = 0x0043_8f10;
+pub(crate) const MAP_MARKER_GET_HIDDEN: u32 = 0x0043_8f10;
 /// `MapMarkerData::GetTravelLoc` (Xbox PDB).
-const MAP_MARKER_GET_TRAVEL_LOC: u32 = 0x0043_8ef0;
+pub(crate) const MAP_MARKER_GET_TRAVEL_LOC: u32 = 0x0043_8ef0;
 /// `MapMarkerData::SetVisible` (Xbox PDB), `thiscall` (`bool`).
-const MAP_MARKER_SET_VISIBLE: u32 = 0x0044_de40;
+pub(crate) const MAP_MARKER_SET_VISIBLE: u32 = 0x0044_de40;
 /// `MapMarkerData::SetTravelLoc` (Xbox PDB), `thiscall` (`bool`).
-const MAP_MARKER_SET_TRAVEL_LOC: u32 = 0x0044_de80;
+pub(crate) const MAP_MARKER_SET_TRAVEL_LOC: u32 = 0x0044_de80;
 /// `ProcessLists::PrintLists` (Xbox PDB), `thiscall` (`detection, -1`).
-const PROCESS_LISTS_PRINT_LISTS: u32 = 0x008d_0600;
+pub(crate) const PROCESS_LISTS_PRINT_LISTS: u32 = 0x008d_0600;
 /// Empty `thiscall` on the process lists singleton.
-const FN_00483710: u32 = 0x0048_3710;
+pub(crate) const FN_00483710: u32 = 0x0048_3710;
 /// `PlayerCharacter::SetGodMode` (Xbox PDB), `cdecl` (`bool`).
-const SET_GOD_MODE: u32 = 0x0095_26a0;
+pub(crate) const SET_GOD_MODE: u32 = 0x0095_26a0;
 /// `PlayerCharacter::IsGodMode` (Xbox PDB).
-const IS_GOD_MODE: u32 = 0x0095_26b0;
+pub(crate) const IS_GOD_MODE: u32 = 0x0095_26b0;
 /// `PlayerCharacter::SetDemigodMode` (Xbox PDB), `cdecl` (`bool`).
-const SET_DEMIGOD_MODE: u32 = 0x0095_26e0;
+pub(crate) const SET_DEMIGOD_MODE: u32 = 0x0095_26e0;
 /// `PlayerCharacter::IsDemigodMode` (Xbox PDB).
-const IS_DEMIGOD_MODE: u32 = 0x0095_26f0;
+pub(crate) const IS_DEMIGOD_MODE: u32 = 0x0095_26f0;
 
 // Linked list nodes: item at +0, next node at +4 (`BSSimpleList`).
 /// `true` when the node has neither an item nor a next node.
-const LIST_IS_EMPTY: u32 = 0x0082_56d0;
+pub(crate) const LIST_IS_EMPTY: u32 = 0x0082_56d0;
 /// Returns `this`: the address of the node's item.
-const LIST_ITEM_PTR: u32 = 0x0068_15c0;
+pub(crate) const LIST_ITEM_PTR: u32 = 0x0068_15c0;
 /// `*(this + 4)`: the next node (the same code reads the reference count of
 /// an `NiRefObject`, whose field is also at +4).
-const LIST_NEXT: u32 = 0x0072_6070;
+pub(crate) const LIST_NEXT: u32 = 0x0072_6070;
 /// Pulls the next node's content into the head and frees that node.
-const LIST_POP_FRONT: u32 = 0x0063_f7b0;
+pub(crate) const LIST_POP_FRONT: u32 = 0x0063_f7b0;
 /// Number of nodes with a non-null item (`thiscall`).
-const LIST_COUNT: u32 = 0x005a_e380;
+pub(crate) const LIST_COUNT: u32 = 0x005a_e380;
 /// Initialises an empty list head (a two-word object).
-const LIST_CONSTRUCT: u32 = 0x0096_a2d0;
+pub(crate) const LIST_CONSTRUCT: u32 = 0x0096_a2d0;
 /// `thiscall` on the list head: appends the item whose *cell address* is
 /// passed.
-const LIST_APPEND: u32 = 0x005a_e3d0;
+pub(crate) const LIST_APPEND: u32 = 0x005a_e3d0;
 /// Destructor of the list head.
-const LIST_DESTRUCT: u32 = 0x0046_ffb0;
+pub(crate) const LIST_DESTRUCT: u32 = 0x0046_ffb0;
 /// Scalar deleting destructor of a heap list (`this, 1`).
-const LIST_DELETE: u32 = 0x0047_02f0;
+pub(crate) const LIST_DELETE: u32 = 0x0047_02f0;
 /// `this + 0x18`: the item list embedded in a form list.
-const FORM_LIST_ITEMS: u32 = 0x0050_0940;
+pub(crate) const FORM_LIST_ITEMS: u32 = 0x0050_0940;
 
 // Strings.
 /// `BSStringT` constructor (an 8-byte object).
-const BS_STRING_CONSTRUCT: u32 = 0x0040_37b0;
+pub(crate) const BS_STRING_CONSTRUCT: u32 = 0x0040_37b0;
 /// `BSStringT` destructor.
-const BS_STRING_DESTRUCT: u32 = 0x0040_37d0;
+pub(crate) const BS_STRING_DESTRUCT: u32 = 0x0040_37d0;
 /// `BSStringT` format (`string, format, ...`).
-const BS_STRING_FORMAT: u32 = 0x0040_6f60;
+pub(crate) const BS_STRING_FORMAT: u32 = 0x0040_6f60;
 /// `BSStringT<char>::operator=` / append (`string, text`).
-const BS_STRING_APPEND: u32 = 0x0040_4820;
+pub(crate) const BS_STRING_APPEND: u32 = 0x0040_4820;
 /// `*(this + 4)` of a string global: its text.
-const BS_STRING_TEXT: u32 = 0x0040_3df0;
+pub(crate) const BS_STRING_TEXT: u32 = 0x0040_3df0;
 /// `NiPointer::operator T*` and `BSStringT::c_str`: `*this`.
-const NI_POINTER_GET: u32 = 0x0055_9450;
+pub(crate) const NI_POINTER_GET: u32 = 0x0055_9450;
 
 // Memory statistics.
 /// Constructs the 0x18-byte memory heap dump file object (`file name`).
-const MEM_STATS_FILE_CONSTRUCT: u32 = 0x0087_83c0;
+pub(crate) const MEM_STATS_FILE_CONSTRUCT: u32 = 0x0087_83c0;
 /// Its destructor.
-const MEM_STATS_FILE_DESTRUCT: u32 = 0x0087_84d0;
+pub(crate) const MEM_STATS_FILE_DESTRUCT: u32 = 0x0087_84d0;
 /// `cdecl` (`dump object, flag`): returns the output object (global `011f6238`).
-const MEM_STATS_OUTPUT_GET: u32 = 0x0040_1020;
+pub(crate) const MEM_STATS_OUTPUT_GET: u32 = 0x0040_1020;
 /// `thiscall` on the output object (its `RET 8` pops the two words the
 /// previous call left).
-const MEM_STATS_OUTPUT_SET: u32 = 0x00aa_47c0;
+pub(crate) const MEM_STATS_OUTPUT_SET: u32 = 0x00aa_47c0;
 /// `BSFile::BSFile` (Xbox PDB), `thiscall` (`path, 1, 0x4000, 0`).
-const BS_FILE_CONSTRUCT: u32 = 0x00b0_0260;
+pub(crate) const BS_FILE_CONSTRUCT: u32 = 0x00b0_0260;
 /// `BSFile::Open` (Xbox PDB), `thiscall` (`0, 0`).
-const BS_FILE_OPEN: u32 = 0x00af_f300;
+pub(crate) const BS_FILE_OPEN: u32 = 0x00af_f300;
 /// `BSFile::Close` (Xbox PDB).
-const BS_FILE_CLOSE: u32 = 0x00af_fd10;
+pub(crate) const BS_FILE_CLOSE: u32 = 0x00af_fd10;
 /// `BSFile::~BSFile` (Xbox PDB).
-const BS_FILE_DESTRUCT: u32 = 0x00af_f240;
+pub(crate) const BS_FILE_DESTRUCT: u32 = 0x00af_f240;
 /// `thiscall` on a `BSFile` (`buffer, size`): writes bytes.
-const BS_FILE_WRITE: u32 = 0x00af_f950;
+pub(crate) const BS_FILE_WRITE: u32 = 0x00af_f950;
 /// `ModelLoader::OutputModelMapContents` (Xbox PDB), `thiscall`
 /// (`file, 0`).
-const MODEL_LOADER_OUTPUT_MODEL_MAP: u32 = 0x0044_3270;
+pub(crate) const MODEL_LOADER_OUTPUT_MODEL_MAP: u32 = 0x0044_3270;
 /// `BSFaceGenManager::GetModelCache` (Xbox PDB).
-const GET_MODEL_CACHE: u32 = 0x0065_2110;
+pub(crate) const GET_MODEL_CACHE: u32 = 0x0065_2110;
 /// `BSFaceGenModelMap::OutputModelMapContents` (Xbox PDB), `thiscall`
 /// (`file`).
-const FACE_GEN_OUTPUT_MODEL_MAP: u32 = 0x0064_fe80;
+pub(crate) const FACE_GEN_OUTPUT_MODEL_MAP: u32 = 0x0064_fe80;
 /// `NiPointer` constructor passed to the vector iterator.
-const NI_POINTER_CONSTRUCT: u32 = 0x0066_94e0;
+pub(crate) const NI_POINTER_CONSTRUCT: u32 = 0x0066_94e0;
 /// `NiPointer` destructor passed to the vector iterator.
-const NI_POINTER_DESTRUCT: u32 = 0x0045_cec0;
+pub(crate) const NI_POINTER_DESTRUCT: u32 = 0x0045_cec0;
 /// Zero-fills (`array, 0, bytes`).
-const ZERO_FILL: u32 = 0x0040_3d30;
+pub(crate) const ZERO_FILL: u32 = 0x0040_3d30;
 /// First texture of the global list.
-const FIRST_TEXTURE: u32 = 0x0045_6510;
+pub(crate) const FIRST_TEXTURE: u32 = 0x0045_6510;
 /// `this + 0x2c`: the next texture.
-const NEXT_TEXTURE: u32 = 0x0055_b980;
+pub(crate) const NEXT_TEXTURE: u32 = 0x0055_b980;
 /// `this + 0x24`: the texture's Direct3D texture.
-const GET_D3D_TEXTURE: u32 = 0x0059_bb30;
+pub(crate) const GET_D3D_TEXTURE: u32 = 0x0059_bb30;
 /// `NiPointer::operator=` (`to`, `from`).
-const NI_POINTER_ASSIGN: u32 = 0x006e_5cc0;
+pub(crate) const NI_POINTER_ASSIGN: u32 = 0x006e_5cc0;
 /// Assigns a raw pointer to an `NiPointer` (`slot, pointer`).
-const NI_POINTER_SET: u32 = 0x0066_b0d0;
+pub(crate) const NI_POINTER_SET: u32 = 0x0066_b0d0;
 /// `cdecl` (`class, texture`): whether the texture is of the class.
-const TEXTURE_IS_SOURCE: u32 = 0x0043_b300;
+pub(crate) const TEXTURE_IS_SOURCE: u32 = 0x0043_b300;
 /// `thiscall`: the C string of a name handle.
-const NAME_TEXT: u32 = 0x0043_b1b0;
+pub(crate) const NAME_TEXT: u32 = 0x0043_b1b0;
 /// `this + 8`.
-const FN_00413F40: u32 = 0x0041_3f40;
+pub(crate) const FN_00413F40: u32 = 0x0041_3f40;
 /// `cdecl` (`text, size`): fixes the path in place.
-const FIX_PATH: u32 = 0x004a_fb00;
+pub(crate) const FIX_PATH: u32 = 0x004a_fb00;
 /// `this + 0x14`.
-const FN_007D6BB0: u32 = 0x007d_6bb0;
+pub(crate) const FN_007D6BB0: u32 = 0x007d_6bb0;
 /// `cdecl` (`surface`): the Direct3D format id.
-const D3D_FORMAT_ID: u32 = 0x00e7_bd20;
+pub(crate) const D3D_FORMAT_ID: u32 = 0x00e7_bd20;
 /// `NiXenonRenderer::GetD3DFormatString` (Xbox PDB), `cdecl`
 /// (`format id`).
-const GET_D3D_FORMAT_STRING: u32 = 0x00e7_a9a0;
+pub(crate) const GET_D3D_FORMAT_STRING: u32 = 0x00e7_a9a0;
 /// `thiscall` (`texture`): 3 for the textures flagged "L".
-const TEXTURE_KIND: u32 = 0x0043_c430;
+pub(crate) const TEXTURE_KIND: u32 = 0x0043_c430;
 /// `BGSTextureUseMap` constructor (a 0x14-byte object).
-const TEXTURE_USE_MAP_CONSTRUCT: u32 = 0x004a_8f50;
+pub(crate) const TEXTURE_USE_MAP_CONSTRUCT: u32 = 0x004a_8f50;
 /// `thiscall` (`node, 1`): collects the textures below a scene node.
-const TEXTURE_USE_MAP_ADD_NODE: u32 = 0x004a_a3d0;
+pub(crate) const TEXTURE_USE_MAP_ADD_NODE: u32 = 0x004a_a3d0;
 /// `thiscall` (`1`): collects the textures of the whole scene.
-const TEXTURE_USE_MAP_ADD_SCENE: u32 = 0x004a_abb0;
+pub(crate) const TEXTURE_USE_MAP_ADD_SCENE: u32 = 0x004a_abb0;
 /// `BGSTextureUseMap::WriteToFile` (Xbox PDB), `thiscall` (`path`).
-const TEXTURE_USE_MAP_WRITE_TO_FILE: u32 = 0x004a_a900;
+pub(crate) const TEXTURE_USE_MAP_WRITE_TO_FILE: u32 = 0x004a_a900;
 /// Sum of the sizes of the textures in the map.
-const TEXTURE_USE_MAP_TOTAL_SIZE: u32 = 0x004a_a890;
+pub(crate) const TEXTURE_USE_MAP_TOTAL_SIZE: u32 = 0x004a_a890;
 /// `BGSTextureUseMap` destructor.
-const TEXTURE_USE_MAP_DESTRUCT: u32 = 0x004a_a340;
+pub(crate) const TEXTURE_USE_MAP_DESTRUCT: u32 = 0x004a_a340;
 /// Archive profiling (`BSSystem/archive.cpp`), compiled to `XOR AL,AL` in
 /// this build.
-const ARCHIVE_PROFILE_START: u32 = 0x00af_4390;
+pub(crate) const ARCHIVE_PROFILE_START: u32 = 0x00af_4390;
 
 // Process and memory level singletons.
 /// Singleton getter (loads the global `011f96a0`).
-const FN_0044F560: u32 = 0x0044_f560;
+pub(crate) const FN_0044F560: u32 = 0x0044_f560;
 /// Singleton getter (loads the global `011f35a0`).
-const FN_004DE490: u32 = 0x004d_e490;
+pub(crate) const FN_004DE490: u32 = 0x004d_e490;
 /// `this + 4` (`BaseProcess::GetActorPackageThatIsRunning` in the engine
 /// map).
-const PLUS_4: u32 = 0x0071_7e50;
+pub(crate) const PLUS_4: u32 = 0x0071_7e50;
 /// `thiscall` (`package`).
-const FN_005E01B0: u32 = 0x005e_01b0;
+pub(crate) const FN_005E01B0: u32 = 0x005e_01b0;
 /// `cdecl` (`scope, 1, 1, 1`): initialises a 12-byte level scope.
-const FN_00878160: u32 = 0x0087_8160;
+pub(crate) const FN_00878160: u32 = 0x0087_8160;
 /// `cdecl` (`scope`): tears the scope down.
-const FN_00878200: u32 = 0x0087_8200;
+pub(crate) const FN_00878200: u32 = 0x0087_8200;
 /// `MemoryLevelManager::FreeReleasedObjects` (Xbox PDB), `cdecl`
 /// (`level byte`).
-const FREE_RELEASED_OBJECTS: u32 = 0x0087_8250;
+pub(crate) const FREE_RELEASED_OBJECTS: u32 = 0x0087_8250;
 /// `thiscall` on the singleton [`GLOBAL_0011DEA10`] (`1, 0`).
-const FN_004539A0: u32 = 0x0045_39a0;
+pub(crate) const FN_004539A0: u32 = 0x0045_39a0;
 /// `thiscall` on the save/load singleton (`0, 0`).
-const FN_00848E70: u32 = 0x0084_8e70;
+pub(crate) const FN_00848E70: u32 = 0x0084_8e70;
 
 // ---- Globals ---------------------------------------------------------------
 
 /// The `PlayerCharacter` singleton pointer.
-const PLAYER: u32 = 0x011d_ea3c;
+pub(crate) const PLAYER: u32 = 0x011d_ea3c;
 /// Pointer to the data handler singleton.
-const DATA_HANDLER: u32 = 0x011c_3f2c;
+pub(crate) const DATA_HANDLER: u32 = 0x011c_3f2c;
 /// Singleton passed as `this` to `ProcessLists::PrintLists` and `00483710`.
-const PROCESS_LISTS: u32 = 0x011e_0e80;
+pub(crate) const PROCESS_LISTS: u32 = 0x011e_0e80;
 /// Pointer to the model loader (non-null once created).
-const MODEL_LOADER: u32 = 0x011c_3b3c;
+pub(crate) const MODEL_LOADER: u32 = 0x011c_3b3c;
 /// Texture class object passed to [`TEXTURE_IS_SOURCE`].
-const TEXTURE_CLASS: u32 = 0x011f_444c;
+pub(crate) const TEXTURE_CLASS: u32 = 0x011f_444c;
 /// Pointer to the singleton whose byte at `+1` `005b6cb0` sets.
-const GLOBAL_0011DEA0C: u32 = 0x011d_ea0c;
+pub(crate) const GLOBAL_0011DEA0C: u32 = 0x011d_ea0c;
 /// Pointer to the singleton `005b6cd0` calls `004539a0` on.
-const GLOBAL_0011DEA10: u32 = 0x011d_ea10;
+pub(crate) const GLOBAL_0011DEA10: u32 = 0x011d_ea10;
 /// Pointer to the save/load singleton.
-const SAVE_LOAD_GAME: u32 = 0x011d_df38;
+pub(crate) const SAVE_LOAD_GAME: u32 = 0x011d_df38;
 /// Byte set by `005b5d40`.
-const FLAG_0011F122D: u32 = 0x011f_122d;
+pub(crate) const FLAG_0011F122D: u32 = 0x011f_122d;
 /// Byte set by `005b5da0`.
-const FLAG_0011F9FC0: u32 = 0x011f_9fc0;
+pub(crate) const FLAG_0011F9FC0: u32 = 0x011f_9fc0;
 /// Byte toggled by `Script::ToggleOcclusion`.
-const OCCLUSION_QUERY: u32 = 0x011f_9181;
+pub(crate) const OCCLUSION_QUERY: u32 = 0x011f_9181;
 /// Byte of `005b6f60` / `005b6f70` (verbose messages).
-const VERBOSE_MESSAGES: u32 = 0x011f_158c;
+pub(crate) const VERBOSE_MESSAGES: u32 = 0x011f_158c;
 /// `float` the item commands pass as the pick-up message volume.
-const PICKUP_VOLUME: u32 = 0x0101_62c0;
+pub(crate) const PICKUP_VOLUME: u32 = 0x0101_62c0;
 /// `float` `005b4be0` passes to `00482090`.
-const ADD_ITEM_FLOAT: u32 = 0x0102_31e0;
+pub(crate) const ADD_ITEM_FLOAT: u32 = 0x0102_31e0;
 /// Byte at `+0x268` of the TLS block: commands echo to the console when set.
-const TLS_ECHO: u32 = 0x268;
+pub(crate) const TLS_ECHO: u32 = 0x268;
 /// Dword at `+0x28c` of the TLS block: nesting depth of the Activate command.
-const TLS_ACTIVATE_DEPTH: u32 = 0x28c;
+pub(crate) const TLS_ACTIVATE_DEPTH: u32 = 0x28c;
 /// An Activate nested deeper than this does nothing.
-const ACTIVATE_DEPTH_LIMIT: u32 = 5;
+pub(crate) const ACTIVATE_DEPTH_LIMIT: u32 = 5;
 /// The player's list of message parts: the texts pasted into the "item
 /// removed" message (`BSStringT`-like globals whose text is at +4).
-const MESSAGE_PART_A: u32 = 0x011d_3db4;
-const MESSAGE_PART_B: u32 = 0x011d_3114;
+pub(crate) const MESSAGE_PART_A: u32 = 0x011d_3db4;
+pub(crate) const MESSAGE_PART_B: u32 = 0x011d_3114;
 
 /// Size of a `BSFile` object (`BSFile::BSFile`).
-const BS_FILE_SIZE: u32 = 0x160;
+pub(crate) const BS_FILE_SIZE: u32 = 0x160;
 /// Number of slots in `OutputMemStats`'s sorted texture table.
-const TEXTURE_SLOTS: u32 = 0x800;
+pub(crate) const TEXTURE_SLOTS: u32 = 0x800;
 
 // ---- String literals (addresses in the exe's data) ---------------------------
 
 /// `"SCRIPTS: AddItem in script '%s' failed to generate an item."`
-const MSG_ADD_ITEM_FAILED: u32 = 0x0103_9358;
+pub(crate) const MSG_ADD_ITEM_FAILED: u32 = 0x0103_9358;
 /// `"SCRIPTS: Never have the player character activate something in a script very Bad"`
-const MSG_PLAYER_ACTIVATE: u32 = 0x0103_93b0;
+pub(crate) const MSG_PLAYER_ACTIVATE: u32 = 0x0103_93b0;
 /// `"IsActionRef >> %0.2f"`
-const MSG_IS_ACTION_REF: u32 = 0x0103_9394;
+pub(crate) const MSG_IS_ACTION_REF: u32 = 0x0103_9394;
 /// `"Command removed. Use TDT and switch to COMBAT INFO page."`
-const MSG_COMBAT_STATS_REMOVED: u32 = 0x0103_9404;
+pub(crate) const MSG_COMBAT_STATS_REMOVED: u32 = 0x0103_9404;
 /// `"%d spells added to Player Character"`
-const MSG_SPELLS_ADDED: u32 = 0x0103_9440;
+pub(crate) const MSG_SPELLS_ADDED: u32 = 0x0103_9440;
 /// `"Detection list printed"`
-const MSG_DETECTION_LIST_PRINTED: u32 = 0x0103_9464;
+pub(crate) const MSG_DETECTION_LIST_PRINTED: u32 = 0x0103_9464;
 /// `"Ai Lists Printed"`
-const MSG_AI_LISTS_PRINTED: u32 = 0x0103_947c;
+pub(crate) const MSG_AI_LISTS_PRINTED: u32 = 0x0103_947c;
 /// `"Deprecated, use TFC 2 instead"`
-const MSG_FREEZE_RENDERER_DEPRECATED: u32 = 0x0103_9490;
+pub(crate) const MSG_FREEZE_RENDERER_DEPRECATED: u32 = 0x0103_9490;
 /// `"Occlusion Query : %s"`
-const MSG_OCCLUSION_QUERY: u32 = 0x0103_94b0;
+pub(crate) const MSG_OCCLUSION_QUERY: u32 = 0x0103_94b0;
 /// `"off"`
-const TEXT_OFF: u32 = 0x0103_94c8;
+pub(crate) const TEXT_OFF: u32 = 0x0103_94c8;
 /// `"on"`
-const TEXT_ON: u32 = 0x0101_22c8;
+pub(crate) const TEXT_ON: u32 = 0x0101_22c8;
 /// `"OutputMemContexts is no longer supported.  Use Sherlock or OutputMemStats for context info."`
-const MSG_MEM_CONTEXTS_UNSUPPORTED: u32 = 0x0103_94d0;
+pub(crate) const MSG_MEM_CONTEXTS_UNSUPPORTED: u32 = 0x0103_94d0;
 /// `"Bye."`
-const MSG_BYE: u32 = 0x0103_97a4;
+pub(crate) const MSG_BYE: u32 = 0x0103_97a4;
 /// `"shown."`
-const TEXT_SHOWN: u32 = 0x0103_97c8;
+pub(crate) const TEXT_SHOWN: u32 = 0x0103_97c8;
 /// `"hidden."`
-const TEXT_HIDDEN: u32 = 0x0103_97c0;
+pub(crate) const TEXT_HIDDEN: u32 = 0x0103_97c0;
 /// `"Verbose messages %s"`
-const MSG_VERBOSE: u32 = 0x0103_97d0;
+pub(crate) const MSG_VERBOSE: u32 = 0x0103_97d0;
 /// `"All map markers %s"`
-const MSG_MAP_MARKERS: u32 = 0x0103_97ac;
+pub(crate) const MSG_MAP_MARKERS: u32 = 0x0103_97ac;
 /// `"God Mode %s"`
-const MSG_GOD_MODE: u32 = 0x0103_97e4;
+pub(crate) const MSG_GOD_MODE: u32 = 0x0103_97e4;
 /// `"Demigod Mode %s"`
-const MSG_DEMIGOD_MODE: u32 = 0x0103_9820;
+pub(crate) const MSG_DEMIGOD_MODE: u32 = 0x0103_9820;
 /// `"Demigod Mode disabled"`
-const MSG_DEMIGOD_DISABLED: u32 = 0x0103_9808;
+pub(crate) const MSG_DEMIGOD_DISABLED: u32 = 0x0103_9808;
 /// `"enabled."`
-const TEXT_ENABLED: u32 = 0x0103_97fc;
+pub(crate) const TEXT_ENABLED: u32 = 0x0103_97fc;
 /// `"disabled."`
-const TEXT_DISABLED: u32 = 0x0103_97f0;
+pub(crate) const TEXT_DISABLED: u32 = 0x0103_97f0;
 /// `".txt"`
-const EXTENSION_TXT: u32 = 0x0103_9788;
+pub(crate) const EXTENSION_TXT: u32 = 0x0103_9788;
 /// `"ArchiveProfile.txt"`
-const DEFAULT_ARCHIVE_PROFILE: u32 = 0x0103_9790;
+pub(crate) const DEFAULT_ARCHIVE_PROFILE: u32 = 0x0103_9790;
 /// `"Outputting Archive profile to file %s"`
-const MSG_ARCHIVE_PROFILE_OUTPUT: u32 = 0x0103_9760;
+pub(crate) const MSG_ARCHIVE_PROFILE_OUTPUT: u32 = 0x0103_9760;
 /// `"Archive profiling is not enabled"`
-const MSG_ARCHIVE_PROFILE_DISABLED: u32 = 0x0103_973c;
+pub(crate) const MSG_ARCHIVE_PROFILE_DISABLED: u32 = 0x0103_973c;
 /// `"TextureUseMap.txt"`
-const DEFAULT_TEXTURE_USE_MAP: u32 = 0x0103_9728;
+pub(crate) const DEFAULT_TEXTURE_USE_MAP: u32 = 0x0103_9728;
 /// `"FAILED to write to '%s'"`
-const MSG_MAP_WRITE_FAILED: u32 = 0x0103_96f4;
+pub(crate) const MSG_MAP_WRITE_FAILED: u32 = 0x0103_96f4;
 /// `"map written to file '%s'"`
-const MSG_MAP_WRITTEN: u32 = 0x0103_970c;
+pub(crate) const MSG_MAP_WRITTEN: u32 = 0x0103_970c;
 /// `"%d MB"`
-const FORMAT_MB: u32 = 0x0103_96ec;
+pub(crate) const FORMAT_MB: u32 = 0x0103_96ec;
 /// `"%d KB"`
-const FORMAT_KB: u32 = 0x0103_96e4;
+pub(crate) const FORMAT_KB: u32 = 0x0103_96e4;
 /// `"%d bytes"`
-const FORMAT_BYTES: u32 = 0x0103_96d8;
+pub(crate) const FORMAT_BYTES: u32 = 0x0103_96d8;
 /// `" textures in use."`
-const TEXT_TEXTURES_IN_USE: u32 = 0x0103_96c4;
+pub(crate) const TEXT_TEXTURES_IN_USE: u32 = 0x0103_96c4;
 /// `"OutputMemStats.mhd"`
-const DEFAULT_MEM_STATS: u32 = 0x0103_96b0;
+pub(crate) const DEFAULT_MEM_STATS: u32 = 0x0103_96b0;
 /// `"MemStats%s.mhd"`
-const FORMAT_MEM_STATS: u32 = 0x0103_96a0;
+pub(crate) const FORMAT_MEM_STATS: u32 = 0x0103_96a0;
 /// `"ModelDump%s.txt"`
-const FORMAT_MODEL_DUMP: u32 = 0x0103_9690;
+pub(crate) const FORMAT_MODEL_DUMP: u32 = 0x0103_9690;
 /// `"TextureDump%s.txt"`
-const FORMAT_TEXTURE_DUMP: u32 = 0x0103_967c;
+pub(crate) const FORMAT_TEXTURE_DUMP: u32 = 0x0103_967c;
 /// `"UNNAMED SOURCE TEXTURE"`
-const TEXT_UNNAMED_SOURCE_TEXTURE: u32 = 0x0103_9664;
+pub(crate) const TEXT_UNNAMED_SOURCE_TEXTURE: u32 = 0x0103_9664;
 /// `"RENDERED_TEXTURE (%s)"`
-const FORMAT_RENDERED_TEXTURE: u32 = 0x0103_964c;
+pub(crate) const FORMAT_RENDERED_TEXTURE: u32 = 0x0103_964c;
 /// `"RENDERED_TEXTURE (none)"`
-const TEXT_RENDERED_TEXTURE_NONE: u32 = 0x0103_9634;
+pub(crate) const TEXT_RENDERED_TEXTURE_NONE: u32 = 0x0103_9634;
 /// `"TEXTURES: %d:\t%s\t%s\t%dx%d\t%d\t%s\trefcount %d\t%s\t%s\r\n"`
-const FORMAT_TEXTURE_LINE: u32 = 0x0103_952c;
+pub(crate) const FORMAT_TEXTURE_LINE: u32 = 0x0103_952c;
 /// `"L"`
-const TEXT_L: u32 = 0x0103_9564;
+pub(crate) const TEXT_L: u32 = 0x0103_9564;
 /// `"H"`
-const TEXT_H: u32 = 0x0103_9560;
+pub(crate) const TEXT_H: u32 = 0x0103_9560;
 /// `"%i %s%s %s"`
-const FORMAT_ITEM_COUNT_MESSAGE: u32 = 0x0101_c178;
+pub(crate) const FORMAT_ITEM_COUNT_MESSAGE: u32 = 0x0101_c178;
 /// `"%s %s"`
-const FORMAT_ITEM_MESSAGE: u32 = 0x0101_2058;
+pub(crate) const FORMAT_ITEM_MESSAGE: u32 = 0x0101_2058;
 /// `"Interface\Icons\Message Icons\glow_message_vaultboy_neutral.dds"`
-const ICON_VAULT_BOY: u32 = 0x0102_08e0;
+pub(crate) const ICON_VAULT_BOY: u32 = 0x0102_08e0;
 // The path fragments `OutputMemStats` groups textures by.
 /// `"\armor\"`
-const PATH_ARMOR: u32 = 0x0103_9624;
+pub(crate) const PATH_ARMOR: u32 = 0x0103_9624;
 /// `"\creatures\"`
-const PATH_CREATURES: u32 = 0x0103_9618;
+pub(crate) const PATH_CREATURES: u32 = 0x0103_9618;
 /// `"\characters\"`
-const PATH_CHARACTERS: u32 = 0x0103_9608;
+pub(crate) const PATH_CHARACTERS: u32 = 0x0103_9608;
 /// `"\pipboy3000\"`
-const PATH_PIPBOY: u32 = 0x0103_95f8;
+pub(crate) const PATH_PIPBOY: u32 = 0x0103_95f8;
 /// `"\weapons\"`
-const PATH_WEAPONS: u32 = 0x0103_95ec;
+pub(crate) const PATH_WEAPONS: u32 = 0x0103_95ec;
 /// `"\decals\"`
-const PATH_DECALS: u32 = 0x0103_95e0;
+pub(crate) const PATH_DECALS: u32 = 0x0103_95e0;
 /// `"\projectiles\"`
-const PATH_PROJECTILES: u32 = 0x0103_95d0;
+pub(crate) const PATH_PROJECTILES: u32 = 0x0103_95d0;
 /// `"\fonts\"`
-const PATH_FONTS: u32 = 0x0103_95c0;
+pub(crate) const PATH_FONTS: u32 = 0x0103_95c0;
 /// `"\interface\"`
-const PATH_INTERFACE: u32 = 0x0103_95b4;
+pub(crate) const PATH_INTERFACE: u32 = 0x0103_95b4;
 /// `"\effects\"`
-const PATH_EFFECTS: u32 = 0x0103_95a0;
+pub(crate) const PATH_EFFECTS: u32 = 0x0103_95a0;
 /// `"\gore\"`
-const PATH_GORE: u32 = 0x0103_9598;
+pub(crate) const PATH_GORE: u32 = 0x0103_9598;
 /// `"\sky\"`
-const PATH_SKY: u32 = 0x0103_9588;
+pub(crate) const PATH_SKY: u32 = 0x0103_9588;
 /// `"\lod\"`
-const PATH_LOD: u32 = 0x0103_957c;
+pub(crate) const PATH_LOD: u32 = 0x0103_957c;
 /// `"\water\"`
-const PATH_WATER: u32 = 0x0103_9570;
+pub(crate) const PATH_WATER: u32 = 0x0103_9570;
 /// `"SYSTEM"`
-const CATEGORY_SYSTEM: u32 = 0x0103_962c;
+pub(crate) const CATEGORY_SYSTEM: u32 = 0x0103_962c;
 /// `"ACTOR"`
-const CATEGORY_ACTOR: u32 = 0x0103_95c8;
+pub(crate) const CATEGORY_ACTOR: u32 = 0x0103_95c8;
 /// `"MENUS"`
-const CATEGORY_MENUS: u32 = 0x0103_95ac;
+pub(crate) const CATEGORY_MENUS: u32 = 0x0103_95ac;
 /// `"EFFECTS"`
-const CATEGORY_EFFECTS: u32 = 0x0103_9590;
+pub(crate) const CATEGORY_EFFECTS: u32 = 0x0103_9590;
 /// `"SKY"`
-const CATEGORY_SKY: u32 = 0x0103_9584;
+pub(crate) const CATEGORY_SKY: u32 = 0x0103_9584;
 /// `"LOD"`
-const CATEGORY_LOD: u32 = 0x0103_9578;
+pub(crate) const CATEGORY_LOD: u32 = 0x0103_9578;
 /// `"WATER"`
-const CATEGORY_WATER: u32 = 0x0102_3014;
+pub(crate) const CATEGORY_WATER: u32 = 0x0102_3014;
 /// `"MISCREF"`
-const CATEGORY_MISCREF: u32 = 0x0103_9568;
+pub(crate) const CATEGORY_MISCREF: u32 = 0x0103_9568;
 
 // ---- Second batch (`005b7070` onward): callees, globals and strings --------------
 //
@@ -611,550 +614,550 @@ const CATEGORY_MISCREF: u32 = 0x0103_9568;
 // of `TESObjectREFR` and `TESObjectCELL` differ from the PC ones.
 
 /// `Script::SetProcessScripts` (Xbox PDB), `cdecl` (`bool`).
-const SET_PROCESS_SCRIPTS: u32 = 0x005a_c730;
+pub(crate) const SET_PROCESS_SCRIPTS: u32 = 0x005a_c730;
 /// `Script::GetProcessScripts` (Xbox PDB).
-const GET_PROCESS_SCRIPTS: u32 = 0x005a_c740;
+pub(crate) const GET_PROCESS_SCRIPTS: u32 = 0x005a_c740;
 
 // Grass display.
 /// `cdecl`, no arguments: loads the global `011ca438`, the object the grass
 /// toggle works on (zero when there is none).
-const FN_0054F4C0: u32 = 0x0054_f4c0;
+pub(crate) const FN_0054F4C0: u32 = 0x0054_f4c0;
 /// `thiscall` on that object: the flag the toggle reads (calls
 /// `00456630(this, 1)`).
-const FN_00456610: u32 = 0x0045_6610;
+pub(crate) const FN_00456610: u32 = 0x0045_6610;
 /// `thiscall` on that object (`flag`): calls `0043b370(this, flag, 1)`.
-const FN_00450F90: u32 = 0x0045_0f90;
+pub(crate) const FN_00450F90: u32 = 0x0045_0f90;
 /// `cdecl`, no arguments: run when the flag is set.
-const FN_00B62A20: u32 = 0x00b6_2a20;
+pub(crate) const FN_00B62A20: u32 = 0x00b6_2a20;
 /// `cdecl`, no arguments: loads the global `011deb7c`.
-const FN_0045C670: u32 = 0x0045_c670;
+pub(crate) const FN_0045C670: u32 = 0x0045_c670;
 /// `BSFaceGenNiNode::GetAnimationData` (engine map name; the body reads the
 /// pointer at `this + 0xac`).
-const FN_006629F0: u32 = 0x0066_29f0;
+pub(crate) const FN_006629F0: u32 = 0x0066_29f0;
 /// `thiscall` (a vector and a `float`, all ignored): returns `this + 0x8c`,
 /// the address of a vector.
-const FN_0045BB80: u32 = 0x0045_bb80;
+pub(crate) const FN_0045BB80: u32 = 0x0045_bb80;
 /// `cdecl` (`x, y, z`): takes the three words of that vector.
-const FN_0057D0A0: u32 = 0x0057_d0a0;
+pub(crate) const FN_0057D0A0: u32 = 0x0057_d0a0;
 
 // Cell tests and the `TES` singleton (`GLOBAL_0011DEA10`).
 /// `TES::TestAllCells` (Xbox PDB), `thiscall` (`cell count or -1`).
-const TES_TEST_ALL_CELLS: u32 = 0x0045_56d0;
+pub(crate) const TES_TEST_ALL_CELLS: u32 = 0x0045_56d0;
 /// `thiscall` on the `TES`: `bRunningCellTests` or `bRunningCellTests2`
 /// (`+0x51`, `+0x52`).
-const TES_IS_RUNNING_CELL_TESTS: u32 = 0x0045_1530;
+pub(crate) const TES_IS_RUNNING_CELL_TESTS: u32 = 0x0045_1530;
 /// `thiscall` on a reference: the parent cell (PC offset `+0x40`).
-const REFR_GET_PARENT_CELL: u32 = 0x008d_6f30;
+pub(crate) const REFR_GET_PARENT_CELL: u32 = 0x008d_6f30;
 /// `TESObjectCELL::RenderTestCell` (Xbox PDB), `cdecl` (`cell, 0, flag`).
-const CELL_RENDER_TEST_CELL: u32 = 0x0055_7dd0;
+pub(crate) const CELL_RENDER_TEST_CELL: u32 = 0x0055_7dd0;
 /// `thiscall` on the `TES`, no arguments.
-const FN_00456A60: u32 = 0x0045_6a60;
+pub(crate) const FN_00456A60: u32 = 0x0045_6a60;
 /// `thiscall` on the `TES`, no arguments.
-const FN_00456AA0: u32 = 0x0045_6aa0;
+pub(crate) const FN_00456AA0: u32 = 0x0045_6aa0;
 /// `thiscall` on the `TES` (`flag`): sets `bShowLANDborders` (`+0x60`) and
 /// passes it on.
-const TES_SET_SHOW_LAND_BORDERS: u32 = 0x0045_6cb0;
+pub(crate) const TES_SET_SHOW_LAND_BORDERS: u32 = 0x0045_6cb0;
 /// `thiscall` on the `TES` (`name`): appends `".hkx"` (`01017cec`) to the
 /// name and hands the path to `00c67430`.
-const FN_00456B10: u32 = 0x0045_6b10;
+pub(crate) const FN_00456B10: u32 = 0x0045_6b10;
 /// `*(this + 0x34)` (the engine map names it
 /// `ActorMover::GetPreferredMoveMode`; the code is shared).
-const FN_005F36F0: u32 = 0x005f_36f0;
+pub(crate) const FN_005F36F0: u32 = 0x005f_36f0;
 
 // Ini refresh.
 /// `cdecl`, no arguments: the address `01202fa0`.
-const FN_004DC110: u32 = 0x004d_c110;
+pub(crate) const FN_004DC110: u32 = 0x004d_c110;
 /// `thiscall` on an ini collection singleton (`path`): calls
 /// `005e0830(this, path, 0)` and, when that succeeds, virtual slots `0x24`
 /// and `0x1c`.
-const FN_005E0200: u32 = 0x005e_0200;
+pub(crate) const FN_005E0200: u32 = 0x005e_0200;
 
 // Sky and weather.
 /// `Sky::GetInstance` (Xbox PDB), `cdecl`.
-const SKY_GET_INSTANCE: u32 = 0x0046_dd00;
+pub(crate) const SKY_GET_INSTANCE: u32 = 0x0046_dd00;
 /// `*(sky + 0x0c)`: `pCurrentClimate` (Xbox PDB, same on PC).
-const SKY_GET_CURRENT_CLIMATE: u32 = 0x0084_e3a0;
+pub(crate) const SKY_GET_CURRENT_CLIMATE: u32 = 0x0084_e3a0;
 /// `*(sky + 0x10)`: `pCurrentWeather` (Xbox PDB, same on PC); the engine map
 /// names it `BaseProcess::GetCurrentProcedureIndex` (identical code).
-const SKY_GET_CURRENT_WEATHER: u32 = 0x0044_edb0;
+pub(crate) const SKY_GET_CURRENT_WEATHER: u32 = 0x0044_edb0;
 /// `TESForm::GetFile` (Xbox PDB), `thiscall` (`-1`).
-const FORM_GET_FILE: u32 = 0x0048_4e60;
+pub(crate) const FORM_GET_FILE: u32 = 0x0048_4e60;
 /// `TESFile::GetThreadSafeFile` (Xbox PDB), `thiscall`.
-const FILE_GET_THREAD_SAFE_FILE: u32 = 0x0047_39b0;
+pub(crate) const FILE_GET_THREAD_SAFE_FILE: u32 = 0x0047_39b0;
 /// `TESFile::OpenTES` (Xbox PDB), `thiscall` (`0, 0`).
-const FILE_OPEN_TES: u32 = 0x0047_0c70;
+pub(crate) const FILE_OPEN_TES: u32 = 0x0047_0c70;
 /// `TESFile::FindForm` (Xbox PDB), `thiscall` (`form`).
-const FILE_FIND_FORM: u32 = 0x0047_34d0;
+pub(crate) const FILE_FIND_FORM: u32 = 0x0047_34d0;
 /// `Sky::SetCurrentClimate` (Xbox PDB), `thiscall` (`climate, 1`).
-const SKY_SET_CURRENT_CLIMATE: u32 = 0x0063_c8f0;
+pub(crate) const SKY_SET_CURRENT_CLIMATE: u32 = 0x0063_c8f0;
 /// `Sky::ForceWeather` (Xbox PDB), `thiscall` (`weather, flag`).
-const SKY_FORCE_WEATHER: u32 = 0x0063_d0e0;
+pub(crate) const SKY_FORCE_WEATHER: u32 = 0x0063_d0e0;
 /// `thiscall` on the player (`0`), run after the default weather was set.
-const FN_0093A7A0: u32 = 0x0093_a7a0;
+pub(crate) const FN_0093A7A0: u32 = 0x0093_a7a0;
 /// `thiscall` on the sky (`1`), run after a weather was set.
-const FN_0063E860: u32 = 0x0063_e860;
+pub(crate) const FN_0063E860: u32 = 0x0063_e860;
 /// Stores 0 at `this + 0x1c` (`pOverrideWeather`); the engine map names it
 /// `MagicHitEffect::ClearTarget` (identical code).
-const SKY_CLEAR_OVERRIDE_WEATHER: u32 = 0x0081_bc50;
+pub(crate) const SKY_CLEAR_OVERRIDE_WEATHER: u32 = 0x0081_bc50;
 /// `pDefaultWeather` in `Sky` (Xbox PDB, same on PC).
-const SKY_DEFAULT_WEATHER: u32 = 0x18;
+pub(crate) const SKY_DEFAULT_WEATHER: u32 = 0x18;
 /// `pOverrideWeather` in `Sky` (Xbox PDB, same on PC).
-const SKY_OVERRIDE_WEATHER: u32 = 0x1c;
+pub(crate) const SKY_OVERRIDE_WEATHER: u32 = 0x1c;
 
 // Image space modifiers.
 /// `ImageSpaceModifierInstanceForm::Trigger` (Xbox PDB), `cdecl` (`form,
 /// strength, 0`).
-const IMAGE_SPACE_MODIFIER_TRIGGER: u32 = 0x0052_99a0;
+pub(crate) const IMAGE_SPACE_MODIFIER_TRIGGER: u32 = 0x0052_99a0;
 /// `ImageSpaceModifierInstanceForm::Stop` (Xbox PDB), `cdecl` (`form`).
-const IMAGE_SPACE_MODIFIER_STOP: u32 = 0x0052_9c90;
+pub(crate) const IMAGE_SPACE_MODIFIER_STOP: u32 = 0x0052_9c90;
 /// `thiscall` (`argument`): calls `004610d0(this, argument)` and
 /// `0041c290` on its result.
-const FN_00547750: u32 = 0x0054_7750;
+pub(crate) const FN_00547750: u32 = 0x0054_7750;
 /// `cdecl`, no arguments: loads the global `011f91ac`.
-const GET_IMAGE_SPACE_MANAGER: u32 = 0x004e_3270;
+pub(crate) const GET_IMAGE_SPACE_MANAGER: u32 = 0x004e_3270;
 /// `thiscall` on that object (`form`): stores the form at `this + 0xb0`.
-const IMAGE_SPACE_MANAGER_SET_OVERRIDE: u32 = 0x00b8_cb00;
+pub(crate) const IMAGE_SPACE_MANAGER_SET_OVERRIDE: u32 = 0x00b8_cb00;
 /// `thiscall` on that object, no arguments.
-const FN_00B8B500: u32 = 0x00b8_b500;
+pub(crate) const FN_00B8B500: u32 = 0x00b8_b500;
 
 // Allocation and construction.
 /// `operator new` (`MemoryManager::Allocate`), `cdecl` (`size`).
-const OPERATOR_NEW: u32 = 0x0040_1000;
+pub(crate) const OPERATOR_NEW: u32 = 0x0040_1000;
 /// `NiMemObject::operator new`, `cdecl` (`size`).
-const NI_ALLOC: u32 = 0x00aa_13e0;
+pub(crate) const NI_ALLOC: u32 = 0x00aa_13e0;
 /// Allocates an array of `short`s, `cdecl` (`bytes`).
-const NI_ALLOC_SHORTS: u32 = 0x00aa_1070;
+pub(crate) const NI_ALLOC_SHORTS: u32 = 0x00aa_1070;
 /// `NiNode::NiNode(capacity)`, `thiscall` (`0`).
-const NI_NODE_CONSTRUCT: u32 = 0x00a5_ecb0;
+pub(crate) const NI_NODE_CONSTRUCT: u32 = 0x00a5_ecb0;
 /// The array constructor loop, `cdecl` (`array, element size, count,
 /// constructor`): calls the constructor (`thiscall`) on every element.
-const VECTOR_CONSTRUCT_SIMPLE: u32 = 0x0040_1050;
+pub(crate) const VECTOR_CONSTRUCT_SIMPLE: u32 = 0x0040_1050;
 /// A trivial constructor: returns `this` (the same code as
 /// [`LIST_ITEM_PTR`]).
-const TRIVIAL_CONSTRUCT: u32 = 0x0068_15c0;
+pub(crate) const TRIVIAL_CONSTRUCT: u32 = 0x0068_15c0;
 /// `NiPoint3::NiPoint3` (`x, y, z`), `thiscall`, returns `this`.
-const NI_POINT3_CONSTRUCT: u32 = 0x0041_6870;
+pub(crate) const NI_POINT3_CONSTRUCT: u32 = 0x0041_6870;
 /// `NiColorA::NiColorA` (`r, g, b, a`), `thiscall`, returns `this`.
-const NI_COLOR_A_CONSTRUCT: u32 = 0x0041_4430;
+pub(crate) const NI_COLOR_A_CONSTRUCT: u32 = 0x0041_4430;
 /// The constructor of one `NiColorA` element: `NiColorA(0, 0, 0, 0)`.
-const NI_COLOR_A_ZERO_CONSTRUCT: u32 = 0x004a_7800;
+pub(crate) const NI_COLOR_A_ZERO_CONSTRUCT: u32 = 0x004a_7800;
 /// `NiPoint2::NiPoint2` (`u, v`), `thiscall`, returns `this`.
-const NI_POINT2_CONSTRUCT: u32 = 0x0045_2dc0;
+pub(crate) const NI_POINT2_CONSTRUCT: u32 = 0x0045_2dc0;
 /// `thiscall` (`angle`): fills the 36-byte matrix at `this` with the
 /// rotation about z by `angle`.
-const NI_MATRIX_FROM_Z_ANGLE: u32 = 0x004a_0c90;
+pub(crate) const NI_MATRIX_FROM_Z_ANGLE: u32 = 0x004a_0c90;
 /// `thiscall` on a node (`matrix`): copies the 36 bytes to `this + 0x34`.
-const NODE_SET_LOCAL_ROTATE: u32 = 0x0043_fa80;
+pub(crate) const NODE_SET_LOCAL_ROTATE: u32 = 0x0043_fa80;
 /// `thiscall` on a node (`vector`): copies 12 bytes to `this + 0x58`.
-const NODE_SET_LOCAL_TRANSLATE: u32 = 0x0044_0460;
+pub(crate) const NODE_SET_LOCAL_TRANSLATE: u32 = 0x0044_0460;
 /// `thiscall` on a node (`x, y, z`): stores the vector at `this + 0x58`.
-const NODE_SET_LOCAL_TRANSLATE_XYZ: u32 = 0x004b_c1f0;
+pub(crate) const NODE_SET_LOCAL_TRANSLATE_XYZ: u32 = 0x004b_c1f0;
 /// `thiscall` on a node (`update data`): calls its virtual slot `0xa4`
 /// (`data, 0`) and, when `this + 0x18` is set, slot `0xfc` of that object.
-const NODE_UPDATE_WITH_DATA: u32 = 0x00a5_9c60;
+pub(crate) const NODE_UPDATE_WITH_DATA: u32 = 0x00a5_9c60;
 /// `NiAVObject::UpdateProperties` (Xbox PDB), `thiscall`.
-const NODE_UPDATE_PROPERTIES: u32 = 0x00a5_a040;
+pub(crate) const NODE_UPDATE_PROPERTIES: u32 = 0x00a5_a040;
 /// Constructor of a 9-byte object, `thiscall` (`float`, `byte`, `byte`).
-const UPDATE_DATA_CONSTRUCT: u32 = 0x0043_d410;
+pub(crate) const UPDATE_DATA_CONSTRUCT: u32 = 0x0043_d410;
 /// `TES::AddTempDebugObject` (Xbox PDB), `thiscall` on the `TES` (`node,
 /// seconds`).
-const TES_ADD_TEMP_DEBUG_OBJECT: u32 = 0x0045_8e20;
+pub(crate) const TES_ADD_TEMP_DEBUG_OBJECT: u32 = 0x0045_8e20;
 /// `NiTriShape::NiTriShape` (Xbox PDB), `thiscall` (`vertex count,
 /// positions, normals, colours, uvs, 1, 0, triangle count, indices`).
-const NI_TRI_SHAPE_CONSTRUCT: u32 = 0x00a7_4410;
+pub(crate) const NI_TRI_SHAPE_CONSTRUCT: u32 = 0x00a7_4410;
 /// `NiTexturingProperty` constructor, `thiscall`.
-const NI_TEXTURING_PROPERTY_CONSTRUCT: u32 = 0x00a6_aa40;
+pub(crate) const NI_TEXTURING_PROPERTY_CONSTRUCT: u32 = 0x00a6_aa40;
 /// `thiscall` on the texturing property (`0`): sets a value of its base map
 /// (the engine map names it `NiTexturingProperty::SetBaseClampMode`).
-const NI_TEXTURING_PROPERTY_SET_BASE_CLAMP_MODE: u32 = 0x004f_3200;
+pub(crate) const NI_TEXTURING_PROPERTY_SET_BASE_CLAMP_MODE: u32 = 0x004f_3200;
 /// `thiscall` on the texturing property (`2`): calls
 /// `00439360(this, 2, 0xe, 1)`.
-const FN_00533FB0: u32 = 0x0053_3fb0;
+pub(crate) const FN_00533FB0: u32 = 0x0053_3fb0;
 /// `thiscall` on a shape (`property`): attaches the property (engine map
 /// name `NiAVObject::AttachProperty`).
-const NI_AV_OBJECT_ATTACH_PROPERTY: u32 = 0x0043_9410;
+pub(crate) const NI_AV_OBJECT_ATTACH_PROPERTY: u32 = 0x0043_9410;
 /// `NiPointer` constructor taking the pointer, `thiscall` (`pointer`).
-const NI_POINTER_INIT: u32 = 0x0063_3c90;
+pub(crate) const NI_POINTER_INIT: u32 = 0x0063_3c90;
 /// `MakeTriangle` (Xbox PDB), `cdecl` (three vectors by value, `colour`,
 /// `1`): a coloured triangle node.
-const MAKE_TRIANGLE: u32 = 0x004b_3570;
+pub(crate) const MAKE_TRIANGLE: u32 = 0x004b_3570;
 /// Address of element `index` (`base + index * 4`) of the array at `this`,
 /// `thiscall` (`index`).
-const ARRAY_ELEMENT_ADDRESS: u32 = 0x0087_7a30;
+pub(crate) const ARRAY_ELEMENT_ADDRESS: u32 = 0x0087_7a30;
 /// `thiscall` on an array (`index, &value`): stores the element.
-const ARRAY_SET_ELEMENT: u32 = 0x0096_ae90;
+pub(crate) const ARRAY_SET_ELEMENT: u32 = 0x0096_ae90;
 /// Constructor of a 0x10-byte object (the map of a texturing property),
 /// `thiscall`.
-const TEXTURE_MAP_CONSTRUCT: u32 = 0x00a6_9dd0;
+pub(crate) const TEXTURE_MAP_CONSTRUCT: u32 = 0x00a6_9dd0;
 /// `thiscall` on that object (`texture`): stores the texture through
 /// `NI_POINTER_SET`.
-const TEXTURE_MAP_SET_TEXTURE: u32 = 0x004d_c540;
+pub(crate) const TEXTURE_MAP_SET_TEXTURE: u32 = 0x004d_c540;
 
 // Cells, references and the player.
 /// `TESObjectREFR::GetInterior` (Xbox PDB), `thiscall`.
-const REFR_GET_INTERIOR: u32 = 0x0057_5d10;
+pub(crate) const REFR_GET_INTERIOR: u32 = 0x0057_5d10;
 /// `TESObjectREFR::GetWorldSpace` (Xbox PDB), `thiscall`.
-const REFR_GET_WORLD_SPACE: u32 = 0x0057_5d70;
+pub(crate) const REFR_GET_WORLD_SPACE: u32 = 0x0057_5d70;
 /// `TESWorldSpace::GetCellFromCellCoord` (Xbox PDB), `thiscall` (`x, y`).
-const WORLD_SPACE_GET_CELL_FROM_CELL_COORD: u32 = 0x0058_75a0;
+pub(crate) const WORLD_SPACE_GET_CELL_FROM_CELL_COORD: u32 = 0x0058_75a0;
 /// The seen data of a cell (`ExtraDataList::GetSeenData` of its extra data
 /// list), `thiscall` on the cell.
-const CELL_GET_SEEN_DATA: u32 = 0x0055_5bc0;
+pub(crate) const CELL_GET_SEEN_DATA: u32 = 0x0055_5bc0;
 /// `TESObjectCELL::AdjustCoordForNorthRotation` (Xbox PDB), `thiscall`
 /// (`source vector, destination vector, 1`).
-const CELL_ADJUST_COORD_FOR_NORTH_ROTATION: u32 = 0x0055_5b10;
+pub(crate) const CELL_ADJUST_COORD_FOR_NORTH_ROTATION: u32 = 0x0055_5b10;
 /// `TESObjectCELL::GetIntSeenSection` (Xbox PDB), `thiscall` (`x, y, 0`).
-const CELL_GET_INT_SEEN_SECTION: u32 = 0x0055_6ef0;
+pub(crate) const CELL_GET_INT_SEEN_SECTION: u32 = 0x0055_6ef0;
 /// `TESObjectCELL::GetInteriorLocalMapTexture` (Xbox PDB), `thiscall` (`x,
 /// y, texture slot`).
-const CELL_GET_INTERIOR_LOCAL_MAP_TEXTURE: u32 = 0x0054_e750;
+pub(crate) const CELL_GET_INTERIOR_LOCAL_MAP_TEXTURE: u32 = 0x0054_e750;
 /// `thiscall` on a cell (`texture slot`).
-const FN_0054E640: u32 = 0x0054_e640;
+pub(crate) const FN_0054E640: u32 = 0x0054_e640;
 /// `TESObjectCELL::GetSeenValue` (Xbox PDB), `cdecl` (`vector`): an `int`.
-const CELL_GET_SEEN_VALUE: u32 = 0x0055_6870;
+pub(crate) const CELL_GET_SEEN_VALUE: u32 = 0x0055_6870;
 /// `TESObjectCELL::GetDataX` (Xbox PDB), `thiscall`.
-const CELL_GET_DATA_X: u32 = 0x0054_4c30;
+pub(crate) const CELL_GET_DATA_X: u32 = 0x0054_4c30;
 /// `TESObjectCELL::GetDataY` (Xbox PDB), `thiscall`.
-const CELL_GET_DATA_Y: u32 = 0x0054_4c60;
+pub(crate) const CELL_GET_DATA_Y: u32 = 0x0054_4c60;
 /// Bit 0 of the byte at `+0x24` (PC offset): the cell is an interior.
-const CELL_IS_INTERIOR: u32 = 0x0042_5fd0;
+pub(crate) const CELL_IS_INTERIOR: u32 = 0x0042_5fd0;
 /// `float` result in `ST0`: the north rotation of an interior cell, 0 for an
 /// exterior.
-const CELL_GET_NORTH_ROTATION: u32 = 0x0055_5ad0;
+pub(crate) const CELL_GET_NORTH_ROTATION: u32 = 0x0055_5ad0;
 /// `thiscall` on the `TES` (`x, y`): the address of the cell slot of a grid
 /// position.
-const TES_GET_GRID_CELL_SLOT: u32 = 0x0045_7050;
+pub(crate) const TES_GET_GRID_CELL_SLOT: u32 = 0x0045_7050;
 /// Virtual slot of the player that returns the address of its position
 /// vector.
-const PLAYER_POSITION_SLOT: u32 = 0x1f4;
+pub(crate) const PLAYER_POSITION_SLOT: u32 = 0x1f4;
 /// Virtual slot of the seen data that draws it (`node, vector, 1`).
-const SEEN_DATA_DRAW_SLOT: u32 = 0x4;
+pub(crate) const SEEN_DATA_DRAW_SLOT: u32 = 0x4;
 /// Virtual slot of a node that attaches a child (`child, 1`).
-const NODE_ATTACH_CHILD_SLOT: u32 = 0xdc;
+pub(crate) const NODE_ATTACH_CHILD_SLOT: u32 = 0xdc;
 /// `thiscall` on the player: `this + 0x24` (PC offset).
-const FN_00430830: u32 = 0x0043_0830;
+pub(crate) const FN_00430830: u32 = 0x0043_0830;
 /// Float to `int`, `cdecl` (`float`), rounding like `FISTP`.
-const FLOAT_TO_INT: u32 = 0x0040_6d90;
+pub(crate) const FLOAT_TO_INT: u32 = 0x0040_6d90;
 /// `float` result in `ST0`: the global `011a31e8`.
-const GET_LOCAL_MAP_SCALE: u32 = 0x0087_9d90;
+pub(crate) const GET_LOCAL_MAP_SCALE: u32 = 0x0087_9d90;
 /// `thiscall` on a vector (`other`): adds `other` in place.
-const POINT3_ADD_ASSIGN: u32 = 0x0063_c8a0;
+pub(crate) const POINT3_ADD_ASSIGN: u32 = 0x0063_c8a0;
 /// `thiscall` on a vector (`out, reference`): `out = this - reference`.
-const POINT3_SUBTRACT: u32 = 0x0043_9ef0;
+pub(crate) const POINT3_SUBTRACT: u32 = 0x0043_9ef0;
 /// The `uGridsToLoad` setting (`Setting` object at `011c63cc`).
-const SETTING_GRIDS_TO_LOAD: u32 = 0x011c_63cc;
+pub(crate) const SETTING_GRIDS_TO_LOAD: u32 = 0x011c_63cc;
 /// Address of the value of an integer setting (`this + 4`), `thiscall`.
-const SETTING_INT_VALUE_ADDRESS: u32 = 0x0043_d4d0;
+pub(crate) const SETTING_INT_VALUE_ADDRESS: u32 = 0x0043_d4d0;
 /// `cdecl` (`&a, &b, 1, 0`): fills two `float`s; the second is a size in
 /// bytes.
-const FN_004A8BB0: u32 = 0x004a_8bb0;
+pub(crate) const FN_004A8BB0: u32 = 0x004a_8bb0;
 
 // The interface.
 /// `Interface::ToggleFullHelp` (Xbox PDB), `cdecl`.
-const INTERFACE_TOGGLE_FULL_HELP: u32 = 0x0070_3100;
+pub(crate) const INTERFACE_TOGGLE_FULL_HELP: u32 = 0x0070_3100;
 /// `Interface::GetFullHelp` (Xbox PDB), `cdecl`.
-const INTERFACE_GET_FULL_HELP: u32 = 0x0070_3150;
+pub(crate) const INTERFACE_GET_FULL_HELP: u32 = 0x0070_3150;
 /// `Interface::ToggleSafeZone` (Xbox PDB), `cdecl` (`2`).
-const INTERFACE_TOGGLE_SAFE_ZONE: u32 = 0x0070_38e0;
+pub(crate) const INTERFACE_TOGGLE_SAFE_ZONE: u32 = 0x0070_38e0;
 /// `cdecl` (`flag`).
-const FN_00703810: u32 = 0x0070_3810;
+pub(crate) const FN_00703810: u32 = 0x0070_3810;
 /// `MobileObject::GetCharController` (Xbox PDB), `thiscall`.
-const MOBILE_OBJECT_GET_CHAR_CONTROLLER: u32 = 0x0093_06d0;
+pub(crate) const MOBILE_OBJECT_GET_CHAR_CONTROLLER: u32 = 0x0093_06d0;
 /// `bhkCharacterController::SetShapeType` (Xbox PDB), `thiscall` (`type`).
-const CHAR_CONTROLLER_SET_SHAPE_TYPE: u32 = 0x00c7_0830;
+pub(crate) const CHAR_CONTROLLER_SET_SHAPE_TYPE: u32 = 0x00c7_0830;
 
 // Globals of the second batch.
 /// Byte: `1` when the grass display is on.
-const GRASS_DISPLAY_FLAG: u32 = 0x0118_c000;
+pub(crate) const GRASS_DISPLAY_FLAG: u32 = 0x0118_c000;
 /// Three words (a vector) in the data section.
-const START_VECTOR: u32 = 0x011f_426c;
+pub(crate) const START_VECTOR: u32 = 0x011f_426c;
 /// Byte: the NPC facial emotions flag.
-const EMOTIONS_FLAG: u32 = 0x0119_b4e0;
+pub(crate) const EMOTIONS_FLAG: u32 = 0x0119_b4e0;
 /// Pointer to the name of `Fallout.ini`.
-const FALLOUT_INI_NAME: u32 = 0x011a_2ff0;
+pub(crate) const FALLOUT_INI_NAME: u32 = 0x011a_2ff0;
 /// Pointer to the name of `Custom.ini`.
-const CUSTOM_INI_NAME: u32 = 0x011a_2ff4;
+pub(crate) const CUSTOM_INI_NAME: u32 = 0x011a_2ff4;
 /// Pointer to the name of `FalloutPrefs.ini`.
-const FALLOUT_PREFS_INI_NAME: u32 = 0x011a_2ff8;
+pub(crate) const FALLOUT_PREFS_INI_NAME: u32 = 0x011a_2ff8;
 /// Byte: the conversation stats flag.
-const CONVERSATION_STATS_FLAG: u32 = 0x011c_beac;
+pub(crate) const CONVERSATION_STATS_FLAG: u32 = 0x011c_beac;
 /// Byte: the magic stats flag.
-const MAGIC_STATS_FLAG: u32 = 0x011c_3534;
+pub(crate) const MAGIC_STATS_FLAG: u32 = 0x011c_3534;
 /// Byte set to 1 while `005b9240` runs `00456a60`.
-const FLAG_012680FC: u32 = 0x0126_80fc;
+pub(crate) const FLAG_012680FC: u32 = 0x0126_80fc;
 /// Byte: the borders flag.
-const BORDERS_FLAG: u32 = 0x011c_ae44;
+pub(crate) const BORDERS_FLAG: u32 = 0x011c_ae44;
 /// Byte: the projectile debug flag.
-const PROJECTILE_DEBUG_FLAG: u32 = 0x011f_20a4;
+pub(crate) const PROJECTILE_DEBUG_FLAG: u32 = 0x011f_20a4;
 /// Byte: the menus flag.
-const MENUS_FLAG: u32 = 0x0118_c6f0;
+pub(crate) const MENUS_FLAG: u32 = 0x0118_c6f0;
 /// Four words: a colour.
-const DEFAULT_TILE_COLOUR: u32 = 0x011a_9be0;
+pub(crate) const DEFAULT_TILE_COLOUR: u32 = 0x011a_9be0;
 /// Nine words: a 3x3 matrix.
-const MATRIX_011A9448: u32 = 0x011a_9448;
+pub(crate) const MATRIX_011A9448: u32 = 0x011a_9448;
 /// `double` constants in `.rdata`: 0.0, -1.0, 2.0, 4.0, 10.0, 4096.0,
 /// 1048576.0.
-const DOUBLE_ZERO: u32 = 0x0101_2060;
-const DOUBLE_MINUS_ONE: u32 = 0x0101_a6b0;
-const DOUBLE_TWO: u32 = 0x0101_1590;
-const DOUBLE_FOUR: u32 = 0x0101_db80;
-const DOUBLE_TEN: u32 = 0x0102_0758;
-const DOUBLE_4096: u32 = 0x0101_7a10;
-const DOUBLE_MEGABYTE: u32 = 0x0101_ece0;
+pub(crate) const DOUBLE_ZERO: u32 = 0x0101_2060;
+pub(crate) const DOUBLE_MINUS_ONE: u32 = 0x0101_a6b0;
+pub(crate) const DOUBLE_TWO: u32 = 0x0101_1590;
+pub(crate) const DOUBLE_FOUR: u32 = 0x0101_db80;
+pub(crate) const DOUBLE_TEN: u32 = 0x0102_0758;
+pub(crate) const DOUBLE_4096: u32 = 0x0101_7a10;
+pub(crate) const DOUBLE_MEGABYTE: u32 = 0x0101_ece0;
 /// `float` constants: the seconds a debug object stays, and the corners of
 /// the player marker triangle.
-const DEBUG_OBJECT_SECONDS: u32 = 0x0101_8f5c;
-const MARKER_TOP_Y: u32 = 0x0101_6088;
-const MARKER_RIGHT_X: u32 = 0x0101_6248;
-const MARKER_BOTTOM: u32 = 0x0102_295c;
+pub(crate) const DEBUG_OBJECT_SECONDS: u32 = 0x0101_8f5c;
+pub(crate) const MARKER_TOP_Y: u32 = 0x0101_6088;
+pub(crate) const MARKER_RIGHT_X: u32 = 0x0101_6248;
+pub(crate) const MARKER_BOTTOM: u32 = 0x0102_295c;
 
 // Strings of the second batch.
 /// `"Script processing %s"`
-const MSG_SCRIPT_PROCESSING: u32 = 0x0103_9830;
+pub(crate) const MSG_SCRIPT_PROCESSING: u32 = 0x0103_9830;
 /// `"Grass Display %s"`
-const MSG_GRASS_DISPLAY: u32 = 0x0103_9848;
+pub(crate) const MSG_GRASS_DISPLAY: u32 = 0x0103_9848;
 /// `"Disabled."`
-const TEXT_DISABLED_CAPITAL: u32 = 0x0103_985c;
+pub(crate) const TEXT_DISABLED_CAPITAL: u32 = 0x0103_985c;
 /// `"Enabled."`
-const TEXT_ENABLED_CAPITAL: u32 = 0x0103_9868;
+pub(crate) const TEXT_ENABLED_CAPITAL: u32 = 0x0103_9868;
 /// `"TestAllCells %s"`
-const MSG_TEST_ALL_CELLS: u32 = 0x0103_9874;
+pub(crate) const MSG_TEST_ALL_CELLS: u32 = 0x0103_9874;
 /// `"stopped"`
-const TEXT_STOPPED: u32 = 0x0103_9884;
+pub(crate) const TEXT_STOPPED: u32 = 0x0103_9884;
 /// `"running"`
-const TEXT_RUNNING: u32 = 0x0103_988c;
+pub(crate) const TEXT_RUNNING: u32 = 0x0103_988c;
 /// `"RenderTestCell failed: no cell"`
-const MSG_RENDER_TEST_CELL_FAILED: u32 = 0x0103_9894;
+pub(crate) const MSG_RENDER_TEST_CELL_FAILED: u32 = 0x0103_9894;
 /// `"RenderTestCell complete. Check warnings file for more info."`
-const MSG_RENDER_TEST_CELL_COMPLETE: u32 = 0x0103_98b4;
+pub(crate) const MSG_RENDER_TEST_CELL_COMPLETE: u32 = 0x0103_98b4;
 /// `"The in-game settings have been refreshed from the Fallout.ini file."`
-const MSG_INI_REFRESHED: u32 = 0x0103_98f0;
+pub(crate) const MSG_INI_REFRESHED: u32 = 0x0103_98f0;
 /// `"NPC Facial Emotions %s"`
-const MSG_NPC_EMOTIONS: u32 = 0x0103_9934;
+pub(crate) const MSG_NPC_EMOTIONS: u32 = 0x0103_9934;
 /// `"M# for loaded area = %.0f MB"`
-const MSG_LOADED_AREA_MEGABYTES: u32 = 0x0103_994c;
+pub(crate) const MSG_LOADED_AREA_MEGABYTES: u32 = 0x0103_994c;
 /// `"Conversation stats %s"`
-const MSG_CONVERSATION_STATS: u32 = 0x0103_996c;
+pub(crate) const MSG_CONVERSATION_STATS: u32 = 0x0103_996c;
 /// `"Toggle Full Help %s"`
-const MSG_TOGGLE_FULL_HELP: u32 = 0x0103_9984;
+pub(crate) const MSG_TOGGLE_FULL_HELP: u32 = 0x0103_9984;
 /// `"Magic stats %s"`
-const MSG_MAGIC_STATS: u32 = 0x0103_9998;
+pub(crate) const MSG_MAGIC_STATS: u32 = 0x0103_9998;
 /// `"Borders -> %s"`
-const MSG_BORDERS: u32 = 0x0103_99a8;
+pub(crate) const MSG_BORDERS: u32 = 0x0103_99a8;
 /// `"Off"`
-const TEXT_OFF_CAPITAL: u32 = 0x0103_99b8;
+pub(crate) const TEXT_OFF_CAPITAL: u32 = 0x0103_99b8;
 /// `"On"`
-const TEXT_ON_CAPITAL: u32 = 0x0103_99bc;
+pub(crate) const TEXT_ON_CAPITAL: u32 = 0x0103_99bc;
 /// `"Debug lines/shapes now show for projectiles."`
-const MSG_PROJECTILE_DEBUG_1: u32 = 0x0103_9a88;
+pub(crate) const MSG_PROJECTILE_DEBUG_1: u32 = 0x0103_9a88;
 /// `"    -Yellow line for targeting."`
-const MSG_PROJECTILE_DEBUG_2: u32 = 0x0103_9a68;
+pub(crate) const MSG_PROJECTILE_DEBUG_2: u32 = 0x0103_9a68;
 /// `"    -Red diamond for spawn point."`
-const MSG_PROJECTILE_DEBUG_3: u32 = 0x0103_9a44;
+pub(crate) const MSG_PROJECTILE_DEBUG_3: u32 = 0x0103_9a44;
 /// `"    -Blue diamond for non-supersonic/non-hit-scan projectile sound start."`
-const MSG_PROJECTILE_DEBUG_4: u32 = 0x0103_99f8;
+pub(crate) const MSG_PROJECTILE_DEBUG_4: u32 = 0x0103_99f8;
 /// `"    -Teal diamond for near miss sound from supersonic."`
-const MSG_PROJECTILE_DEBUG_5: u32 = 0x0103_99c0;
+pub(crate) const MSG_PROJECTILE_DEBUG_5: u32 = 0x0103_99c0;
 /// `"Menus -> %s"`
-const MSG_MENUS: u32 = 0x0103_9ab8;
+pub(crate) const MSG_MENUS: u32 = 0x0103_9ab8;
 
 // ---- Third batch (`005b9540` onward): callees, globals and strings ------------
 
 /// The `pSky` member of the `TES` (`TES::pSky`, Xbox PDB, `+0x68`, the same on
 /// PC): `*(this + 0x68)`. The engine map names this body
 /// `MiddleHighProcess::GetSavedAcquireObject` (identical code).
-const TES_GET_SKY: u32 = 0x008d_8520;
+pub(crate) const TES_GET_SKY: u32 = 0x008d_8520;
 /// `Sky::SetMode` (Xbox PDB), `thiscall` on the sky (`mode`).
-const SKY_SET_MODE: u32 = 0x0063_a3f0;
+pub(crate) const SKY_SET_MODE: u32 = 0x0063_a3f0;
 /// `thiscall` on a cell: tests bit `0x80` of the byte at `this + 0x24` (PC
 /// offset).
-const CELL_TEST_FLAG_80: u32 = 0x0045_4b10;
+pub(crate) const CELL_TEST_FLAG_80: u32 = 0x0045_4b10;
 /// `thiscall` on a form: tests bit `0x10` of the flags dword at `this + 8`.
-const FORM_TEST_FLAG_10: u32 = 0x0050_d4a0;
+pub(crate) const FORM_TEST_FLAG_10: u32 = 0x0050_d4a0;
 /// `thiscall` on a form (`set`): sets or clears bit `0x10` of the flags dword
 /// at `this + 8`.
-const FORM_SET_FLAG_10: u32 = 0x0069_3ef0;
+pub(crate) const FORM_SET_FLAG_10: u32 = 0x0069_3ef0;
 /// `thiscall` on the `TES`, no arguments: flips the byte [`FN_00456C70`]
 /// reads and passes the new value on to the setters that apply it.
-const FN_00456BE0: u32 = 0x0045_6be0;
+pub(crate) const FN_00456BE0: u32 = 0x0045_6be0;
 /// `cdecl`, no arguments: the byte at `011c3c0d` (the global collision flag).
-const FN_00456C70: u32 = 0x0045_6c70;
+pub(crate) const FN_00456C70: u32 = 0x0045_6c70;
 /// `thiscall` on a reference, no arguments: the text of its name (the
 /// `%s` of the messages).
-const REFR_GET_NAME_TEXT: u32 = 0x0055_d520;
+pub(crate) const REFR_GET_NAME_TEXT: u32 = 0x0055_d520;
 
 // Tree leaves.
 /// `cdecl`, no arguments: `0051d740()` (a byte setting) and the byte at `+0x18`
 /// of the object [`FN_00664840`] returns.
-const FN_0054EE20: u32 = 0x0054_ee20;
+pub(crate) const FN_0054EE20: u32 = 0x0054_ee20;
 /// `cdecl` (`create`): the singleton in the global `011d5c48`, created when it
 /// is missing and `create` is non-zero.
-const FN_00664840: u32 = 0x0066_4840;
+pub(crate) const FN_00664840: u32 = 0x0066_4840;
 
 // Wireframe.
 /// `cdecl` (`index`): the dword at `011f91c8 + index * 4`.
-const FN_00450B80: u32 = 0x0045_0b80;
+pub(crate) const FN_00450B80: u32 = 0x0045_0b80;
 
 // Refraction, falloff and motion blur.
 /// `cdecl`, no arguments: the byte at `011f9180`.
-const FN_004DC0A0: u32 = 0x004d_c0a0;
+pub(crate) const FN_004DC0A0: u32 = 0x004d_c0a0;
 /// `cdecl` (`flag`): the dword at `011f91bc` when `flag` is non-zero,
 /// otherwise the one at `011f91c0`.
-const FN_004DC060: u32 = 0x004d_c060;
+pub(crate) const FN_004DC060: u32 = 0x004d_c060;
 /// `cdecl` (`a, b`), result in `ST0`: `b` when `b <= a` (or the two are
 /// unordered), otherwise `a`.
-const FLOAT_MIN: u32 = 0x0040_ebd0;
+pub(crate) const FLOAT_MIN: u32 = 0x0040_ebd0;
 /// `cdecl` (`a, b`), result in `ST0`: `a` when `b < a`, otherwise `b`.
-const FLOAT_MAX: u32 = 0x0040_4010;
+pub(crate) const FLOAT_MAX: u32 = 0x0040_4010;
 /// `BSShaderPPLightingProperty::SetRefractionRecurse` (Xbox PDB), `cdecl`
 /// (`property, enable, power, fire flag, fire period, 0`).
-const SET_REFRACTION_RECURSE: u32 = 0x00b6_8770;
+pub(crate) const SET_REFRACTION_RECURSE: u32 = 0x00b6_8770;
 /// `BSShaderNoLightingProperty::SetFalloffRecurse` (Xbox PDB), `cdecl`
 /// (`property, falloff colour`).
-const SET_FALLOFF_RECURSE: u32 = 0x00b6_fa40;
+pub(crate) const SET_FALLOFF_RECURSE: u32 = 0x00b6_fa40;
 /// `BSShaderProperty::ToggleMotionBlurRecurse` (Xbox PDB), `cdecl`
 /// (`property`).
-const TOGGLE_MOTION_BLUR_RECURSE: u32 = 0x00ba_90a0;
+pub(crate) const TOGGLE_MOTION_BLUR_RECURSE: u32 = 0x00ba_90a0;
 /// `thiscall` on a four-float colour (`out, scalar`): `out = *this * scalar`,
 /// returns `out`.
-const COLOUR_SCALE: u32 = 0x0053_2f60;
+pub(crate) const COLOUR_SCALE: u32 = 0x0053_2f60;
 /// `cdecl` (`float`), result in `ST0`: a conversion of an angle in radians
 /// (forwards to `004e4490`, which calls the runtime library on a `double`).
-const FN_004E4470: u32 = 0x004e_4470;
+pub(crate) const FN_004E4470: u32 = 0x004e_4470;
 /// Virtual slot of an `Actor` (`enable, power`): sets the refraction of the
 /// actor.
-const ACTOR_SET_REFRACTION_SLOT: u32 = 0x384;
+pub(crate) const ACTOR_SET_REFRACTION_SLOT: u32 = 0x384;
 /// Virtual slot of a reference with no arguments: the object whose shader
 /// properties the commands change (and whose velocity `SetVel` changes).
-const REFR_GET_TARGET_SLOT: u32 = 0x1d0;
+pub(crate) const REFR_GET_TARGET_SLOT: u32 = 0x1d0;
 /// Virtual slot of a reference with no arguments: the text of its name.
-const REFR_NAME_SLOT: u32 = 0x130;
+pub(crate) const REFR_NAME_SLOT: u32 = 0x130;
 
 // Image space values (`004e3270` is the image space manager getter above).
 /// `thiscall` on the singleton [`GET_IMAGE_SPACE_MANAGER`] returns (`index`):
 /// the element at `index` of the array at `this + 4`
 /// (`*[ARRAY_ELEMENT_ADDRESS](this + 4, index)`).
-const IMAGE_SPACE_ARRAY_GET: u32 = 0x004e_bbc0;
+pub(crate) const IMAGE_SPACE_ARRAY_GET: u32 = 0x004e_bbc0;
 /// Takes nothing and does nothing but return 1 in `AL`.
-const FN_005D4A40: u32 = 0x005d_4a40;
+pub(crate) const FN_005D4A40: u32 = 0x005d_4a40;
 
 // Inverse kinematics and animation flags.
 /// `thiscall` (`this`): `this ? this + 4 : address of a static zero byte`, the
 /// address of the value byte of a global object.
-const GLOBAL_VALUE_ADDRESS: u32 = 0x0040_8d60;
+pub(crate) const GLOBAL_VALUE_ADDRESS: u32 = 0x0040_8d60;
 /// The global object whose value byte `00495580` reads: the foot IK flag.
-const FOOT_IK_OBJECT: u32 = 0x0126_7c30;
+pub(crate) const FOOT_IK_OBJECT: u32 = 0x0126_7c30;
 /// The global object of the grab IK flag.
-const GRAB_IK_OBJECT: u32 = 0x0126_7c3c;
+pub(crate) const GRAB_IK_OBJECT: u32 = 0x0126_7c3c;
 /// The global object of the look IK flag.
-const LOOK_IK_OBJECT: u32 = 0x0126_7c48;
+pub(crate) const LOOK_IK_OBJECT: u32 = 0x0126_7c48;
 /// `cdecl`, no arguments: the value byte of [`FOOT_IK_OBJECT`].
-const FOOT_IK_GET: u32 = 0x0049_5580;
+pub(crate) const FOOT_IK_GET: u32 = 0x0049_5580;
 /// `cdecl`, no arguments: the value byte of the global object `01267c24`
 /// (the ragdoll animation flag).
-const RAGDOLL_ANIM_GET: u32 = 0x0055_24d0;
+pub(crate) const RAGDOLL_ANIM_GET: u32 = 0x0055_24d0;
 /// `cdecl` (`value`): sets the value byte of that object.
-const RAGDOLL_ANIM_SET: u32 = 0x0045_6c90;
+pub(crate) const RAGDOLL_ANIM_SET: u32 = 0x0045_6c90;
 /// `TESHavokUtilities::AddVelocity` (Xbox PDB), `cdecl` (`object, velocity,
 /// 1`).
-const ADD_VELOCITY: u32 = 0x0062_b8d0;
+pub(crate) const ADD_VELOCITY: u32 = 0x0062_b8d0;
 /// Offset in an `Actor` (PC) of the pointer to the object that holds the foot,
 /// grab and look IK flags.
-const ACTOR_IK_DATA: u32 = 0xac;
+pub(crate) const ACTOR_IK_DATA: u32 = 0xac;
 
 // Globals of the third batch.
 /// Byte: the sky flag.
-const SKY_FLAG: u32 = 0x011c_ae45;
+pub(crate) const SKY_FLAG: u32 = 0x011c_ae45;
 /// Byte: the wireframe flag.
-const WIREFRAME_FLAG: u32 = 0x011c_ae46;
+pub(crate) const WIREFRAME_FLAG: u32 = 0x011c_ae46;
 /// Byte: the AI detection stats flag.
-const DETECTION_STATS_FLAG: u32 = 0x011f_1222;
+pub(crate) const DETECTION_STATS_FLAG: u32 = 0x011f_1222;
 /// Dword set by `ToggleDetectionStats`.
-const DETECTION_STATS_VALUE: u32 = 0x011f_1224;
+pub(crate) const DETECTION_STATS_VALUE: u32 = 0x011f_1224;
 /// Byte flipped by `005ba6b0`.
-const FLAG_011F9FC2: u32 = 0x011f_9fc2;
+pub(crate) const FLAG_011F9FC2: u32 = 0x011f_9fc2;
 /// Byte: the Lite Brite flag.
-const LITE_BRITE_FLAG: u32 = 0x011f_91a7;
+pub(crate) const LITE_BRITE_FLAG: u32 = 0x011f_91a7;
 /// The four-float colour `SetTargetFalloff` starts from (`this` of
 /// [`COLOUR_SCALE`]).
-const FALLOFF_BASE_COLOUR: u32 = 0x011a_9be0;
+pub(crate) const FALLOFF_BASE_COLOUR: u32 = 0x011a_9be0;
 /// `float` `-1.0`: the scalar applied to that colour, and so the "unset"
 /// value of each channel.
-const FLOAT_MINUS_ONE: u32 = 0x0101_2054;
+pub(crate) const FLOAT_MINUS_ONE: u32 = 0x0101_2054;
 /// `float` `90.0`: the largest angle of the falloff angles.
-const FALLOFF_MAX_ANGLE: u32 = 0x0102_49d8;
+pub(crate) const FALLOFF_MAX_ANGLE: u32 = 0x0102_49d8;
 /// `double` `pi / 180`.
-const DOUBLE_DEGREES_TO_RADIANS: u32 = 0x0102_3128;
+pub(crate) const DOUBLE_DEGREES_TO_RADIANS: u32 = 0x0102_3128;
 
 // Strings of the third batch.
 /// `"Sky -> %s"`
-const MSG_SKY: u32 = 0x0103_9ac4;
+pub(crate) const MSG_SKY: u32 = 0x0103_9ac4;
 /// `"Collision -> %s"`
-const MSG_COLLISION: u32 = 0x0103_9ad0;
+pub(crate) const MSG_COLLISION: u32 = 0x0103_9ad0;
 /// `"Ref '%s' Collision -> %s"`
-const MSG_REF_COLLISION: u32 = 0x0103_9ae0;
+pub(crate) const MSG_REF_COLLISION: u32 = 0x0103_9ae0;
 /// `"Leaves -> %s"`
-const MSG_LEAVES: u32 = 0x0103_9afc;
+pub(crate) const MSG_LEAVES: u32 = 0x0103_9afc;
 /// `"Wireframe -> %s"`
-const MSG_WIREFRAME: u32 = 0x0103_9b0c;
+pub(crate) const MSG_WIREFRAME: u32 = 0x0103_9b0c;
 /// `"AI Detection stats printing is  %s"`
-const MSG_DETECTION_STATS: u32 = 0x0103_9b1c;
+pub(crate) const MSG_DETECTION_STATS: u32 = 0x0103_9b1c;
 /// `"%s refraction has been set to %f"`
-const MSG_REFRACTION_SET: u32 = 0x0103_9b40;
+pub(crate) const MSG_REFRACTION_SET: u32 = 0x0103_9b40;
 /// `"%s refraction fire has been set to %f, period of %d"`
-const MSG_REFRACTION_FIRE_SET: u32 = 0x0103_9b64;
+pub(crate) const MSG_REFRACTION_FIRE_SET: u32 = 0x0103_9b64;
 /// `"No Reference Selected"`
-const MSG_NO_REFERENCE: u32 = 0x0103_9b98;
+pub(crate) const MSG_NO_REFERENCE: u32 = 0x0103_9b98;
 /// `"This function is no longer supported"`
-const MSG_NO_LONGER_SUPPORTED: u32 = 0x0103_9bb0;
+pub(crate) const MSG_NO_LONGER_SUPPORTED: u32 = 0x0103_9bb0;
 /// `"FootIK on REF %s %s"`
-const MSG_FOOT_IK_REF: u32 = 0x0103_9bd8;
+pub(crate) const MSG_FOOT_IK_REF: u32 = 0x0103_9bd8;
 /// `"FootIK %s"`
-const MSG_FOOT_IK: u32 = 0x0103_9bec;
+pub(crate) const MSG_FOOT_IK: u32 = 0x0103_9bec;
 /// `"GrabIK on REF %s %s"`
-const MSG_GRAB_IK_REF: u32 = 0x0103_9bf8;
+pub(crate) const MSG_GRAB_IK_REF: u32 = 0x0103_9bf8;
 /// `"GrabIK %s"`
-const MSG_GRAB_IK: u32 = 0x0103_9c0c;
+pub(crate) const MSG_GRAB_IK: u32 = 0x0103_9c0c;
 /// `"LookIK on REF %s %s"`
-const MSG_LOOK_IK_REF: u32 = 0x0103_9c18;
+pub(crate) const MSG_LOOK_IK_REF: u32 = 0x0103_9c18;
 /// `"LookIK %s"`
-const MSG_LOOK_IK: u32 = 0x0103_9c2c;
+pub(crate) const MSG_LOOK_IK: u32 = 0x0103_9c2c;
 /// `"Ragdoll Animation %s"`
-const MSG_RAGDOLL_ANIMATION: u32 = 0x0103_9c38;
+pub(crate) const MSG_RAGDOLL_ANIMATION: u32 = 0x0103_9c38;
 /// `"Lite Brite -> %s"`
-const MSG_LITE_BRITE: u32 = 0x0103_9c50;
+pub(crate) const MSG_LITE_BRITE: u32 = 0x0103_9c50;
 
 // ---- Small helpers -------------------------------------------------------------
 
-fn console_print(e: &mut Engine, words: &[u32]) {
+pub(crate) fn console_print(e: &mut Engine, words: &[u32]) {
     e.call(CONSOLE_PRINT, words);
 }
 
 /// The item of a list node (`*LIST_ITEM_PTR(node)`).
-fn node_item(e: &mut Engine, node: u32) -> u32 {
+pub(crate) fn node_item(e: &mut Engine, node: u32) -> u32 {
     let slot = e.call(LIST_ITEM_PTR, &args![node]).u32();
     e.mem.u32(slot)
 }
 
-fn list_is_empty(e: &mut Engine, node: u32) -> bool {
+pub(crate) fn list_is_empty(e: &mut Engine, node: u32) -> bool {
     e.call(LIST_IS_EMPTY, &args![node]).bool()
 }
 
-fn form_type(e: &mut Engine, form: u32) -> u32 {
+pub(crate) fn form_type(e: &mut Engine, form: u32) -> u32 {
     e.call(FORM_TYPE, &args![form]).u32()
 }
 
-fn ni_pointer_get(e: &mut Engine, slot: u32) -> u32 {
+pub(crate) fn ni_pointer_get(e: &mut Engine, slot: u32) -> u32 {
     e.call(NI_POINTER_GET, &args![slot]).u32()
 }
 
-fn player(e: &Engine) -> u32 {
+pub(crate) fn player(e: &Engine) -> u32 {
     e.global::<u32>(PLAYER)
 }
 
 /// Appends `element` to the list head `list`: `005ae3d0` takes the address of
 /// a cell holding the element (the game's stack local).
-fn list_append(e: &mut Engine, list: Ptr, element: u32) {
+pub(crate) fn list_append(e: &mut Engine, list: Ptr, element: u32) {
     e.with_stack(4, |e, cell| {
         e.mem.set_u32(cell.addr(), element);
         e.call(LIST_APPEND, &args![list, cell]);
@@ -1163,19 +1166,19 @@ fn list_append(e: &mut Engine, list: Ptr, element: u32) {
 
 /// Whether the commands echo their result to the console: the byte at
 /// `+0x268` of the TLS block.
-fn echo_enabled(e: &mut Engine) -> bool {
+pub(crate) fn echo_enabled(e: &mut Engine) -> bool {
     let tls = e.tls();
     e.mem.u8(tls + TLS_ECHO) != 0
 }
 
 /// An `int` stored in a `float` the way `FILD` then `FSTP` does it.
-fn float_from_int(value: i32) -> f32 {
+pub(crate) fn float_from_int(value: i32) -> f32 {
     value as f32
 }
 
 /// `NiPoint3::NiPoint3(x, y, z)`: builds the point in a 12-byte block of its
 /// own and returns its three words.
-fn make_point(e: &mut Engine, x: f32, y: f32, z: f32) -> [u32; 3] {
+pub(crate) fn make_point(e: &mut Engine, x: f32, y: f32, z: f32) -> [u32; 3] {
     e.with_stack(12, |e, block| {
         let point = e.call(NI_POINT3_CONSTRUCT, &args![block, x, y, z]).u32();
         [e.mem.u32(point), e.mem.u32(point + 4), e.mem.u32(point + 8)]
@@ -1184,7 +1187,7 @@ fn make_point(e: &mut Engine, x: f32, y: f32, z: f32) -> [u32; 3] {
 
 /// `new NiNode(0)`: the allocation (0xac bytes) and the constructor, zero
 /// when the allocation failed.
-fn new_ni_node(e: &mut Engine) -> u32 {
+pub(crate) fn new_ni_node(e: &mut Engine) -> u32 {
     let block = e.call(NI_ALLOC, &args![0xacu32]).u32();
     if block == 0 {
         0
@@ -1197,7 +1200,7 @@ fn new_ni_node(e: &mut Engine) -> u32 {
 /// on the stack, the node updated with it and its properties updated, and the
 /// node handed to `TES::AddTempDebugObject` for the time in
 /// [`DEBUG_OBJECT_SECONDS`].
-fn show_debug_node(e: &mut Engine, node: u32) {
+pub(crate) fn show_debug_node(e: &mut Engine, node: u32) {
     e.with_stack(12, |e, data| {
         e.call(UPDATE_DATA_CONSTRUCT, &args![data, 0.0f32, 0u32, 0u32]);
         e.call(NODE_UPDATE_WITH_DATA, &args![node, data]);
@@ -1210,7 +1213,7 @@ fn show_debug_node(e: &mut Engine, node: u32) {
 
 /// The value of the `uGridsToLoad` setting (`SETTING_GRIDS_TO_LOAD`), read
 /// through the setting's address getter every time the game does.
-fn grids_to_load(e: &mut Engine) -> u32 {
+pub(crate) fn grids_to_load(e: &mut Engine) -> u32 {
     let value = e
         .call(SETTING_INT_VALUE_ADDRESS, &args![SETTING_GRIDS_TO_LOAD])
         .u32();
@@ -1218,14 +1221,14 @@ fn grids_to_load(e: &mut Engine) -> u32 {
 }
 
 /// `FISTP` of a `float` through `00406d90`.
-fn float_to_int(e: &mut Engine, value: f32) -> i32 {
+pub(crate) fn float_to_int(e: &mut Engine, value: f32) -> i32 {
     e.call(FLOAT_TO_INT, &args![value]).i32()
 }
 
 /// An array of `count` elements of `size` bytes: `operator new` of
 /// `count * size` (all ones when that overflows) and the element constructor
 /// loop (`00401050`) when the block came back.
-fn new_element_array(e: &mut Engine, count: u32, size: u32, constructor: u32) -> u32 {
+pub(crate) fn new_element_array(e: &mut Engine, count: u32, size: u32, constructor: u32) -> u32 {
     let bytes = count.saturating_mul(size);
     let block = e.call(OPERATOR_NEW, &args![bytes]).u32();
     if block != 0 {
@@ -1240,7 +1243,7 @@ fn new_element_array(e: &mut Engine, count: u32, size: u32, constructor: u32) ->
 /// `NiPoint3::NiPoint3(x, y, z)` in a 12-byte block of its own that lives
 /// while `f` runs with the block's address (a point the game keeps on its
 /// stack and passes by address).
-fn with_point<R>(
+pub(crate) fn with_point<R>(
     e: &mut Engine,
     x: f32,
     y: f32,
@@ -3606,7 +3609,7 @@ pub fn fn_005b9520(e: &mut Engine) -> bool {
 
 /// "On" or "Off" for a flag, the way the toggles print it (`"On"` for a
 /// non-zero flag).
-fn on_off(flag: bool) -> u32 {
+pub(crate) fn on_off(flag: bool) -> u32 {
     if flag {
         TEXT_ON_CAPITAL
     } else {
@@ -4263,6 +4266,1337 @@ pub fn fn_005ba750(e: &mut Engine, value: u8) {
     e.set_global(LITE_BRITE_FLAG, value);
 }
 
+// ---- Fourth batch (`005ba760` onward): callees, globals and strings ----------
+
+// The debug text and the scene graph windows.
+/// `Interface::ToggleDebugTextVisible` (Xbox PDB), `cdecl`, no arguments (it
+/// never reads `ECX`).
+pub(crate) const INTERFACE_TOGGLE_DEBUG_TEXT_VISIBLE: u32 = 0x0070_3000;
+/// `Interface::IsDebugTextVisible` (Xbox PDB), `cdecl`: `AL`.
+pub(crate) const INTERFACE_IS_DEBUG_TEXT_VISIBLE: u32 = 0x0070_2fc0;
+/// The debug text table (`0x1120` bytes), created on first use by
+/// [`FN_00802A90`]; zero until then.
+pub(crate) const DEBUG_TEXT_TABLE: u32 = 0x011d_b800;
+/// `cdecl`, no arguments: creates the object [`DEBUG_TEXT_TABLE`] points to
+/// (`new` of 0x1120 bytes and its constructor `008027d0`) when it is missing.
+pub(crate) const FN_00802A90: u32 = 0x0080_2a90;
+/// `thiscall` on the debug text table (`RET 4`: `callback`): builds the
+/// table's names in rows of up to five, 0x44-byte entries from `this + 0x20`
+/// (separated by the string at `01012630`) and calls `callback(row text)` for
+/// each row.
+pub(crate) const DEBUG_TEXT_TABLE_LIST: u32 = 0x0080_2880;
+/// `thiscall` on the debug text table (`RET 8`: `name, value`): looks the name
+/// up (`00802a20`); when found stores the index at `this + 0x18` and `value`
+/// at `this + 0x1c`. Returns whether the name was found.
+pub(crate) const DEBUG_TEXT_TABLE_SELECT: u32 = 0x0080_29c0;
+/// Import slot of `WritePrivateProfileStringA` (`stdcall`: section, key, value,
+/// file name).
+pub(crate) const WRITE_PRIVATE_PROFILE_STRING: u32 = 0x00fd_f0bc;
+/// The scene graph window callback `005ba8f0` and `005bac90` store with
+/// [`fn_005bac80`].
+pub(crate) const SCENE_GRAPH_CALLBACK: u32 = 0x004d_78c0;
+/// Global stored by [`fn_005bac80`].
+pub(crate) const SCENE_GRAPH_CALLBACK_GLOBAL: u32 = 0x011c_6f18;
+/// `thiscall` on the singleton in [`GLOBAL_0011DEA0C`]: `*(this + 8)`.
+pub(crate) const FN_0044DDC0: u32 = 0x0044_ddc0;
+/// `thiscall` on the singleton in [`GLOBAL_0011DEA0C`]: `*(this + 0x0c)` (the
+/// engine map and [`SKY_GET_CURRENT_CLIMATE`] name this body for a `Sky`; the
+/// code is the same).
+pub(crate) const FN_0084E3A0: u32 = 0x0084_e3a0;
+/// `thiscall` constructor of a scene graph window object (0x30 bytes, `RET
+/// 0x20`): (`value +0 of the window`, `value +4`, `root object`, `title`,
+/// `x`, `y`, `width`, `height`); returns `this`.
+pub(crate) const SCENE_GRAPH_WINDOW_CONSTRUCT: u32 = 0x004d_61b0;
+/// `thiscall` on a scene graph window (`RET 8`: `object, title`): adds an
+/// object to the window's tree (the title is used when it is non-zero).
+pub(crate) const SCENE_GRAPH_WINDOW_ADD_OBJECT: u32 = 0x004d_64c0;
+/// `thiscall` on a scene graph window (`RET 4`: `object`): fills the window
+/// from a reference's object.
+pub(crate) const SCENE_GRAPH_WINDOW_FILL: u32 = 0x004d_65a0;
+/// `thiscall` on the player: the byte at `this + 0x64a` (the third-person
+/// flag).
+pub(crate) const PLAYER_IS_THIRD_PERSON: u32 = 0x004e_af60;
+/// `thiscall` on the player (`RET 4`: `flag`): a `NiPointer` read at `this +
+/// 0x694` when the flag is non-zero, otherwise the result of `0043fcd0`.
+pub(crate) const PLAYER_GET_PERSON_OBJECT: u32 = 0x0095_0bb0;
+/// `thiscall` on the player: the `NiPointer` read at `this + 0x69c` (the
+/// inventory menu object).
+pub(crate) const PLAYER_GET_INVENTORY_MENU_OBJECT: u32 = 0x0049_0f80;
+/// `thiscall` on an object: `this + 0x9c` handed to `009938b0`.
+pub(crate) const FN_00453470: u32 = 0x0045_3470;
+/// `NiPointer` slot globals read through [`NI_POINTER_GET`] by the scene graph
+/// commands.
+pub(crate) const SLOT_SPLATTER_SCENE: u32 = 0x011c_786c;
+pub(crate) const SLOT_INTERFACE_SCENE: u32 = 0x011d_ee84;
+pub(crate) const SLOT_INTERFACE_3D_SCENE: u32 = 0x011d_eca4;
+/// Virtual slot of an object (no arguments) the viewer command tests: non-zero
+/// when the object is a node.
+pub(crate) const OBJECT_IS_NODE_SLOT: u32 = 0xc;
+/// Virtual slot of an object (`collector`): collects the object's strings into
+/// the collector.
+pub(crate) const OBJECT_COLLECT_STRINGS_SLOT: u32 = 0x60;
+/// `thiscall` constructor of a string collector (`RET 8`: `0, 1`).
+pub(crate) const STRING_COLLECTOR_CONSTRUCT: u32 = 0x004d_9100;
+/// `thiscall` on a node: the number of children.
+pub(crate) const NODE_CHILD_COUNT: u32 = 0x0043_b480;
+/// `thiscall` on a node (`index`): the child at `index`.
+pub(crate) const NODE_CHILD_AT: u32 = 0x0043_b4a0;
+/// `thiscall` on a string collector: the number of collected strings.
+pub(crate) const STRING_COLLECTOR_COUNT: u32 = 0x0065_8930;
+/// `thiscall` on a string collector (`index`): the address of the string
+/// pointer at `index` (`*(this + 4) + index * 4`).
+pub(crate) const STRING_COLLECTOR_STRING_ADDRESS: u32 = 0x0087_7a30;
+/// `thiscall` on a string collector: clears its entries and its counts
+/// (`005e03d0`, a function of this unit outside this range).
+pub(crate) const STRING_COLLECTOR_CLEAR: u32 = 0x005e_03d0;
+/// `thiscall` on a node: an attached object (zero when none).
+pub(crate) const NODE_GET_ATTACHED_OBJECT: u32 = 0x0068_38b0;
+/// `cdecl` (`type descriptor, object`): the object cast to that type (zero
+/// when it does not convert).
+pub(crate) const FN_00653270: u32 = 0x0065_3270;
+/// The type descriptor passed to [`FN_00653270`].
+pub(crate) const TYPE_012043F8: u32 = 0x0120_43f8;
+/// `thiscall` on the object [`FN_00653270`] returns: the object whose strings
+/// are collected next.
+pub(crate) const FN_006FA820: u32 = 0x006f_a820;
+/// `TES::GetWorldSpace` (Xbox PDB), `thiscall` on the `TES`: `*(this + 0x88)`.
+pub(crate) const TES_GET_WORLD_SPACE: u32 = 0x004f_d3e0;
+/// `TESWorldSpace::GetTerrainManager` (Xbox PDB), `thiscall`.
+pub(crate) const WORLD_SPACE_GET_TERRAIN_MANAGER: u32 = 0x0058_6170;
+/// A wrapper of `_stricmp` (`00ec6da0`), `cdecl` (`a, b`): zero when the two
+/// strings are equal, ignoring case.
+pub(crate) const COMPARE_STRINGS_NO_CASE: u32 = 0x0040_8b20;
+/// `thiscall` on any object (ignores `this`): the trees LOD object, a
+/// `NiPointer` read of the global `011d86bc`.
+pub(crate) const LOD_TREES_OBJECT: u32 = 0x004e_a9e0;
+/// As [`LOD_TREES_OBJECT`] for the land LOD object.
+pub(crate) const LOD_LAND_OBJECT: u32 = 0x004e_a9a0;
+/// As [`LOD_TREES_OBJECT`] for the objects LOD object.
+pub(crate) const LOD_OBJECTS_OBJECT: u32 = 0x004e_a9c0;
+/// As [`LOD_TREES_OBJECT`] for the water LOD object.
+pub(crate) const LOD_WATER_OBJECT: u32 = 0x0043_b230;
+/// `thiscall` on a LOD object: the flag the toggle reads (`00456630(this,
+/// 1)`), `AL`.
+pub(crate) const LOD_OBJECT_GET_FLAG: u32 = FN_00456610;
+/// `thiscall` on a LOD object (`flag`): `0043b370(this, flag, 1)`.
+pub(crate) const LOD_OBJECT_SET_FLAG: u32 = FN_00450F90;
+/// `thiscall` on a setting (`float`, `RET 4`): sets the setting's value
+/// (`004de290`) and returns `this`.
+pub(crate) const SETTING_SET_FLOAT: u32 = 0x004e_d780;
+/// The two settings `SetLODObjectDistance` sets.
+pub(crate) const SETTING_LOD_DISTANCE_NEAR: u32 = 0x011d_8724;
+pub(crate) const SETTING_LOD_DISTANCE_FAR: u32 = 0x011d_877c;
+/// `thiscall` (`0`) on the object [`FN_0045C670`] returns: forwards to
+/// `0045bc00`.
+pub(crate) const FN_00558310: u32 = 0x0055_8310;
+/// `thiscall`: `this + 0x58`, the address of a position vector.
+pub(crate) const FN_0043C490: u32 = 0x0043_c490;
+/// `BGSTerrainManager::Update` (Xbox PDB), `thiscall` (`position, 1`).
+pub(crate) const TERRAIN_MANAGER_UPDATE: u32 = 0x006f_ca90;
+
+// Strings: the debug text and the scene graph titles.
+/// `"Debug Text -> %s"`
+pub(crate) const MSG_DEBUG_TEXT: u32 = 0x0103_9c64;
+/// `"Display"`
+pub(crate) const TEXT_SECTION_DISPLAY: u32 = 0x0103_9c78;
+/// `"sDebugText"`
+pub(crate) const TEXT_KEY_DEBUG_TEXT: u32 = 0x0103_9c80;
+/// `"Custom.ini"`
+pub(crate) const TEXT_CUSTOM_INI: u32 = 0x0103_9c8c;
+/// `"Fallout Screen Splatter Scene Graph"`
+pub(crate) const TITLE_SPLATTER_SCENE: u32 = 0x0103_9c98;
+/// `"Fallout Menu Player 3D Scene Graph"`
+pub(crate) const TITLE_MENU_PLAYER_3D: u32 = 0x0103_9cbc;
+/// `"Fallout Menu Object 3D Scene Graph"`
+pub(crate) const TITLE_MENU_OBJECT_3D: u32 = 0x0103_9ce0;
+/// `"Fallout Interface 3D Object Scene Graph"`
+pub(crate) const TITLE_INTERFACE_3D_OBJECT: u32 = 0x0103_9d04;
+/// `"Fallout Interface Scene Graph"`
+pub(crate) const TITLE_INTERFACE: u32 = 0x0103_9d2c;
+/// `"Fallout World Scene Graph"`
+pub(crate) const TITLE_WORLD: u32 = 0x0103_9d4c;
+/// `"Player Inventory Menu"`
+pub(crate) const TITLE_PLAYER_INVENTORY_MENU: u32 = 0x0103_9d68;
+/// `"Player 1st Person"`
+pub(crate) const TITLE_PLAYER_FIRST_PERSON: u32 = 0x0103_9d80;
+/// `"Player 3rd Person"`
+pub(crate) const TITLE_PLAYER_THIRD_PERSON: u32 = 0x0103_9d94;
+/// `"Fallout Rendered Menu 3D Scene Graph"`
+pub(crate) const TITLE_RENDERED_MENU_3D: u32 = 0x0103_9da8;
+/// `"Must supply a valid reference to show viewer string."`
+pub(crate) const MSG_VIEWER_NEEDS_REFERENCE: u32 = 0x0103_9dd0;
+/// `"Node with no children supplied as reference..."`
+pub(crate) const MSG_VIEWER_NODE_WITHOUT_CHILDREN: u32 = 0x0103_9e08;
+/// `"Invalid parameter.  Please specify land, objects, trees, water, or all."`
+pub(crate) const MSG_LOD_INVALID_PARAMETER: u32 = 0x0103_9e38;
+/// `"Toggling objects."`
+pub(crate) const MSG_TOGGLING_OBJECTS: u32 = 0x0103_9e80;
+/// `"buildings"`
+pub(crate) const TEXT_BUILDINGS: u32 = 0x0103_9e94;
+/// `"objects"`
+pub(crate) const TEXT_OBJECTS: u32 = 0x0103_9ea0;
+/// `"Toggling trees."`
+pub(crate) const MSG_TOGGLING_TREES: u32 = 0x0103_9ea8;
+/// `"trees"`
+pub(crate) const TEXT_TREES: u32 = 0x0103_9eb8;
+/// `"Toggling land."`
+pub(crate) const MSG_TOGGLING_LAND: u32 = 0x0103_9ec0;
+/// `"land"`
+pub(crate) const TEXT_LAND: u32 = 0x0103_9ed0;
+/// `"Toggling water."`
+pub(crate) const MSG_TOGGLING_WATER: u32 = 0x0103_9ed8;
+/// `"Toggling all LOD."`
+pub(crate) const MSG_TOGGLING_ALL_LOD: u32 = 0x0103_9ee8;
+/// `"all"`
+pub(crate) const TEXT_ALL: u32 = 0x0103_9efc;
+/// `"water"`
+pub(crate) const TEXT_WATER: u32 = 0x0102_36fc;
+
+// Translated from 005ba760 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::ToggleDebugTextFunction` (Xbox PDB): `Interface::ToggleDebugTextVisible`
+/// and, when the commands echo, "Debug Text -> On" or "Off"
+/// (`Interface::IsDebugTextVisible`). The decompiler shows an `ECX` argument
+/// that neither callee reads.
+pub fn script_toggle_debug_text_function(e: &mut Engine) -> bool {
+    e.call(INTERFACE_TOGGLE_DEBUG_TEXT_VISIBLE, &args![]);
+    if echo_enabled(e) {
+        let visible = e.call(INTERFACE_IS_DEBUG_TEXT_VISIBLE, &args![]).u8();
+        console_print(e, &args![MSG_DEBUG_TEXT, on_off(visible != 0)]);
+    }
+    true
+}
+
+// Translated from 005ba7c0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses a string (up to 0x200 bytes, empty by default) and an `int`. With
+/// no string it asks the debug text table (`005ba8d0`) to list its names
+/// through the console print (`00802880`). With a string it selects that name
+/// in the table (`008029c0`) and writes it to `Custom.ini` under `[Display]`
+/// `sDebugText` (`WritePrivateProfileStringA` on `<game directory>Custom.ini`).
+/// (The stack protector cookie check is left out.)
+pub fn fn_005ba7c0(e: &mut Engine, a: ScriptArgs) -> bool {
+    e.with_stack(0x200, |e, name| {
+        e.with_stack(4, |e, value| {
+            if !a.parse(e, &[name.addr(), value.addr()]) {
+                return false;
+            }
+            let table = fn_005ba8d0(e);
+            if e.mem.u8(name.addr()) == 0 {
+                e.call(DEBUG_TEXT_TABLE_LIST, &args![table, CONSOLE_PRINT]);
+            } else {
+                let value = e.mem.u32(value.addr());
+                e.call(DEBUG_TEXT_TABLE_SELECT, &args![table, name, value]);
+                e.with_stack(0x104, |e, path| {
+                    let directory = e.call(FN_004DC110, &args![]).u32();
+                    e.call(STRCPY_S, &args![path, 0x104u32, directory]);
+                    e.call(STRCAT_S, &args![path, 0x104u32, TEXT_CUSTOM_INI]);
+                    e.call(
+                        WRITE_PRIVATE_PROFILE_STRING,
+                        &args![TEXT_SECTION_DISPLAY, TEXT_KEY_DEBUG_TEXT, name, path],
+                    );
+                });
+            }
+            true
+        })
+    })
+}
+
+// Translated from 005ba8d0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The debug text table ([`DEBUG_TEXT_TABLE`]), created by `00802a90` when it
+/// does not exist yet.
+pub fn fn_005ba8d0(e: &mut Engine) -> u32 {
+    if e.global::<u32>(DEBUG_TEXT_TABLE) == 0 {
+        e.call(FN_00802A90, &args![]);
+    }
+    e.global::<u32>(DEBUG_TEXT_TABLE)
+}
+
+/// A scene graph window object: `new` of 0x30 bytes and, when the block came
+/// back, the constructor `004d61b0` with the values of the singleton in
+/// [`GLOBAL_0011DEA0C`] (`*(this + 0x0c)` and `*(this + 8)`), the title and
+/// root object that `inputs` produces (called after the allocation, as the
+/// game computes them there) and the fixed placement 0x80000000, 0x80000000,
+/// 800 by 600. Zero when the allocation failed.
+fn new_scene_graph_window(e: &mut Engine, inputs: impl FnOnce(&mut Engine) -> (u32, u32)) -> u32 {
+    let block = e.call(OPERATOR_NEW, &args![0x30u32]).u32();
+    if block == 0 {
+        return 0;
+    }
+    let (title, root) = inputs(e);
+    let singleton = e.global::<u32>(GLOBAL_0011DEA0C);
+    let field_8 = e.call(FN_0044DDC0, &args![singleton]).u32();
+    let singleton = e.global::<u32>(GLOBAL_0011DEA0C);
+    let field_c = e.call(FN_0084E3A0, &args![singleton]).u32();
+    e.call(
+        SCENE_GRAPH_WINDOW_CONSTRUCT,
+        &args![
+            block,
+            field_c,
+            field_8,
+            root,
+            title,
+            0x8000_0000u32,
+            0x8000_0000u32,
+            800u32,
+            600u32
+        ],
+    )
+    .u32()
+}
+
+/// `window.AddObject(object, title)`.
+fn scene_graph_add(e: &mut Engine, window: u32, object: u32, title: u32) {
+    e.call(SCENE_GRAPH_WINDOW_ADD_OBJECT, &args![window, object, title]);
+}
+
+/// The objects the world scene graph windows add after the first, in the order
+/// of the game: the interface and the 3D object interface scenes, then the
+/// object of `FN_00450B80(1)` (when set) under `menu_title`.
+fn add_interface_scenes(e: &mut Engine, window: u32, menu_title: u32) {
+    let object = fn_005bac60(e);
+    scene_graph_add(e, window, object, TITLE_INTERFACE);
+    let object = fn_005bac70(e);
+    scene_graph_add(e, window, object, TITLE_INTERFACE_3D_OBJECT);
+    if e.call(FN_00450B80, &args![1u32]).u32() != 0 {
+        let object = e.call(FN_00450B80, &args![1u32]).u32();
+        scene_graph_add(e, window, object, menu_title);
+    }
+}
+
+/// Adds the splatter scene to a scene graph window when it exists.
+fn add_splatter_scene(e: &mut Engine, window: u32) {
+    if fn_005bac20(e) {
+        let object = fn_005bac50(e);
+        scene_graph_add(e, window, object, TITLE_SPLATTER_SCENE);
+    }
+}
+
+// Translated from 005ba8f0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Opens a scene graph window (the debugging "show scene graph" command) after
+/// storing the window callback ([`fn_005bac80`]). Without a reference (or with
+/// one whose object slot `0x1d0` returns zero) the window is titled "Fallout
+/// World Scene Graph" with the world scene (`0045c670`) and gets the interface
+/// scenes, the menu object scene (`FN_00450B80(1)`), the menu player scene
+/// (`FN_00450B80(3)`) and the splatter scene. For the player it is titled
+/// "Player 1st Person" or "Player 3rd Person" after the player's third person
+/// flag, holds the object of the other person (`00950bb0`) and the inventory
+/// menu object; for any other reference it is titled with the reference's
+/// name (`0055d520`) and holds the reference's object only. (Exception
+/// unwinding frames are not translated.)
+pub fn fn_005ba8f0(e: &mut Engine, a: ScriptArgs) -> bool {
+    fn_005bac80(e, SCENE_GRAPH_CALLBACK);
+    let object = if a.this_obj.is_null() {
+        0
+    } else {
+        e.vcall(a.this_obj.addr(), REFR_GET_TARGET_SLOT, &args![])
+            .u32()
+    };
+    if object == 0 {
+        let window = new_scene_graph_window(e, |e| {
+            let world = e.call(FN_0045C670, &args![]).u32();
+            (TITLE_WORLD, world)
+        });
+        add_interface_scenes(e, window, TITLE_MENU_OBJECT_3D);
+        if e.call(FN_00450B80, &args![3u32]).u32() != 0 {
+            let object = e.call(FN_00450B80, &args![3u32]).u32();
+            scene_graph_add(e, window, object, TITLE_MENU_PLAYER_3D);
+        }
+        add_splatter_scene(e, window);
+        return true;
+    }
+    let name = e.call(REFR_GET_NAME_TEXT, &args![a.this_obj]).u32();
+    let player = e.global::<u32>(PLAYER);
+    if a.this_obj.addr() == player {
+        let window = new_scene_graph_window(e, |e| {
+            let player = e.global::<u32>(PLAYER);
+            let third = e.call(PLAYER_IS_THIRD_PERSON, &args![player]).u8();
+            let title = if third != 0 {
+                TITLE_PLAYER_THIRD_PERSON
+            } else {
+                TITLE_PLAYER_FIRST_PERSON
+            };
+            let root = e
+                .vcall(a.this_obj.addr(), REFR_GET_TARGET_SLOT, &args![])
+                .u32();
+            (title, root)
+        });
+        let player = e.global::<u32>(PLAYER);
+        let third = e.call(PLAYER_IS_THIRD_PERSON, &args![player]).u8();
+        let title = if third != 0 {
+            TITLE_PLAYER_FIRST_PERSON
+        } else {
+            TITLE_PLAYER_THIRD_PERSON
+        };
+        let player = e.global::<u32>(PLAYER);
+        let third = e.call(PLAYER_IS_THIRD_PERSON, &args![player]).u8();
+        let player = e.global::<u32>(PLAYER);
+        let other = e
+            .call(PLAYER_GET_PERSON_OBJECT, &args![player, u32::from(third)])
+            .u32();
+        scene_graph_add(e, window, other, title);
+        let player = e.global::<u32>(PLAYER);
+        if e.call(PLAYER_GET_INVENTORY_MENU_OBJECT, &args![player])
+            .u32()
+            != 0
+        {
+            let player = e.global::<u32>(PLAYER);
+            let menu = e
+                .call(PLAYER_GET_INVENTORY_MENU_OBJECT, &args![player])
+                .u32();
+            scene_graph_add(e, window, menu, TITLE_PLAYER_INVENTORY_MENU);
+        }
+    } else {
+        new_scene_graph_window(e, |e| {
+            let root = e
+                .vcall(a.this_obj.addr(), REFR_GET_TARGET_SLOT, &args![])
+                .u32();
+            (name, root)
+        });
+    }
+    true
+}
+
+// Translated from 005bac20 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether the splatter scene (the `NiPointer` at `011c786c`) exists and its
+/// object answers `00453470` with a non-zero value.
+pub fn fn_005bac20(e: &mut Engine) -> bool {
+    if ni_pointer_get(e, SLOT_SPLATTER_SCENE) == 0 {
+        return false;
+    }
+    let scene = ni_pointer_get(e, SLOT_SPLATTER_SCENE);
+    e.call(FN_00453470, &args![scene]).u32() != 0
+}
+
+// Translated from 005bac50 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The splatter scene: the `NiPointer` at `011c786c` read.
+pub fn fn_005bac50(e: &mut Engine) -> u32 {
+    ni_pointer_get(e, SLOT_SPLATTER_SCENE)
+}
+
+// Translated from 005bac60 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The interface scene: the `NiPointer` at `011dee84` read.
+pub fn fn_005bac60(e: &mut Engine) -> u32 {
+    ni_pointer_get(e, SLOT_INTERFACE_SCENE)
+}
+
+// Translated from 005bac70 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The 3D object interface scene: the `NiPointer` at `011deca4` read.
+pub fn fn_005bac70(e: &mut Engine) -> u32 {
+    ni_pointer_get(e, SLOT_INTERFACE_3D_SCENE)
+}
+
+// Translated from 005bac80 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Stores `value` in the global `011c6f18` (the scene graph window callback).
+pub fn fn_005bac80(e: &mut Engine, value: u32) {
+    e.set_global(SCENE_GRAPH_CALLBACK_GLOBAL, value);
+}
+
+// Translated from 005bac90 (decompiled, FalloutNV.exe 1.4.0.525)
+/// As [`fn_005ba8f0`] for the world: stores the callback, opens the world
+/// scene graph window, fills it from the reference's object (slot `0x1d0`,
+/// `SCENE_GRAPH_WINDOW_FILL`) when a reference is given, then adds the
+/// interface scenes, the rendered menu scene (`FN_00450B80(1)`) and the
+/// splatter scene.
+pub fn fn_005bac90(e: &mut Engine, a: ScriptArgs) -> bool {
+    fn_005bac80(e, SCENE_GRAPH_CALLBACK);
+    let window = new_scene_graph_window(e, |e| {
+        let world = e.call(FN_0045C670, &args![]).u32();
+        (TITLE_WORLD, world)
+    });
+    if !a.this_obj.is_null() {
+        let object = e
+            .vcall(a.this_obj.addr(), REFR_GET_TARGET_SLOT, &args![])
+            .u32();
+        e.call(SCENE_GRAPH_WINDOW_FILL, &args![window, object]);
+    }
+    add_interface_scenes(e, window, TITLE_RENDERED_MENU_3D);
+    add_splatter_scene(e, window);
+    true
+}
+
+/// The strings a collector holds, printed one by one through the console
+/// print (the string is the format), then the collector cleared.
+fn print_collected_strings(e: &mut Engine, collector: u32) {
+    let mut index = 0u32;
+    while index < e.call(STRING_COLLECTOR_COUNT, &args![collector]).u32() {
+        let slot = e
+            .call(STRING_COLLECTOR_STRING_ADDRESS, &args![collector, index])
+            .u32();
+        let text = e.mem.u32(slot);
+        console_print(e, &args![text]);
+        index += 1;
+    }
+    e.call(STRING_COLLECTOR_CLEAR, &args![collector]);
+}
+
+// Translated from 005bade0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::ShowViewerStringsFunction` (Xbox PDB): prints the strings of the
+/// reference's object. Without a reference (or an object) it prints "Must
+/// supply a valid reference to show viewer string." A node (slot `0xc`
+/// non-zero) is replaced by its first child (`0043b480`, `0043b4a0`); none
+/// prints "Node with no children supplied as reference...". Otherwise the
+/// object collects its strings (slot `0x60`) into a collector (`004d9100`,
+/// 0x10 bytes) that are printed; when the object has an attached object
+/// (`006838b0`) that converts through `00653270` with the type descriptor
+/// `012043f8`, that object's strings (`006fa820`, slot `0x60`) are printed
+/// too. The collector is deleted (virtual slot 0, argument 1); the "no
+/// children" path leaves it allocated, as the game does.
+pub fn script_show_viewer_strings_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    let has_object = !a.this_obj.is_null()
+        && e.vcall(a.this_obj.addr(), REFR_GET_TARGET_SLOT, &args![])
+            .u32()
+            != 0;
+    if !has_object {
+        console_print(e, &args![MSG_VIEWER_NEEDS_REFERENCE]);
+        return true;
+    }
+    let mut object = e
+        .vcall(a.this_obj.addr(), REFR_GET_TARGET_SLOT, &args![])
+        .u32();
+    let block = e.call(OPERATOR_NEW, &args![0x10u32]).u32();
+    let collector = if block != 0 {
+        e.call(STRING_COLLECTOR_CONSTRUCT, &args![block, 0u32, 1u32])
+            .u32()
+    } else {
+        0
+    };
+    if object != 0 && e.vcall(object, OBJECT_IS_NODE_SLOT, &args![]).u32() != 0 {
+        let node = object;
+        object = 0;
+        let mut index = 0u32;
+        while index < e.call(NODE_CHILD_COUNT, &args![node]).u32() && object == 0 {
+            object = e.call(NODE_CHILD_AT, &args![node, index]).u32();
+            index += 1;
+        }
+    }
+    if object == 0 {
+        console_print(e, &args![MSG_VIEWER_NODE_WITHOUT_CHILDREN]);
+        return true;
+    }
+    e.vcall(object, OBJECT_COLLECT_STRINGS_SLOT, &args![collector]);
+    print_collected_strings(e, collector);
+    if e.call(NODE_GET_ATTACHED_OBJECT, &args![object]).u32() != 0 {
+        let attached = e.call(NODE_GET_ATTACHED_OBJECT, &args![object]).u32();
+        let converted = e.call(FN_00653270, &args![TYPE_012043F8, attached]).u32();
+        if converted != 0 {
+            let target = e.call(FN_006FA820, &args![converted]).u32();
+            e.vcall(target, OBJECT_COLLECT_STRINGS_SLOT, &args![collector]);
+            print_collected_strings(e, collector);
+        }
+    }
+    if collector != 0 {
+        e.vcall(collector, 0, &args![1u32]);
+    }
+    true
+}
+
+/// One LOD toggle of `Script::ToggleLODLandFunction`: when the LOD object
+/// `getter` returns exists and `selected`, sets its flag to the opposite of
+/// what `00456610` reads.
+fn toggle_lod_object(e: &mut Engine, terrain: u32, getter: u32, selected: bool) {
+    if e.call(getter, &args![terrain]).u32() != 0 && selected {
+        let object = e.call(getter, &args![terrain]).u32();
+        let flag = e.call(LOD_OBJECT_GET_FLAG, &args![object]).u8();
+        let object = e.call(getter, &args![terrain]).u32();
+        e.call(LOD_OBJECT_SET_FLAG, &args![object, u32::from(flag == 0)]);
+    }
+}
+
+/// Whether the string at `text` equals `word` ignoring case (`00408b20`).
+fn text_is(e: &mut Engine, text: u32, word: u32) -> bool {
+    e.call(COMPARE_STRINGS_NO_CASE, &args![text, word]).u32() == 0
+}
+
+// Translated from 005bb030 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::ToggleLODLandFunction` (Xbox PDB): parses an optional string
+/// (0x200 bytes; skipped when the first word is zero). With the current world
+/// space's terrain manager (`TES::GetWorldSpace`, `GetTerrainManager`; none
+/// ends the command) it selects the LOD kinds: an empty string or "all" (all
+/// four, "Toggling all LOD."), "water", "land", "trees", "objects" or
+/// "buildings" (each prints "Toggling <kind>."; "objects" and "buildings"
+/// both select the objects). Nothing selected prints the invalid parameter
+/// message. Each selected, existing LOD object (trees `004ea9e0`, land
+/// `004ea9a0`, objects `004ea9c0`, water `0043b230`) gets its flag set to the
+/// opposite of the one `00456610` reads, through `00450f90`.
+pub fn script_toggle_lod_land_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    e.with_stack(0x200, |e, text| {
+        let text = text.addr();
+        if a.param_info != 0 && !a.parse(e, &[text]) {
+            return false;
+        }
+        let tes = e.global::<u32>(GLOBAL_0011DEA10);
+        let world_space = e.call(TES_GET_WORLD_SPACE, &args![tes]).u32();
+        let terrain = e
+            .call(WORLD_SPACE_GET_TERRAIN_MANAGER, &args![world_space])
+            .u32();
+        if terrain == 0 {
+            return true;
+        }
+        let (mut objects, mut trees, mut land, mut water) = (false, false, false, false);
+        if e.mem.u8(text) == 0 || text_is(e, text, TEXT_ALL) {
+            console_print(e, &args![MSG_TOGGLING_ALL_LOD]);
+            objects = true;
+            trees = true;
+            land = true;
+            water = true;
+        }
+        if text_is(e, text, TEXT_WATER) {
+            console_print(e, &args![MSG_TOGGLING_WATER]);
+            water = true;
+        }
+        if text_is(e, text, TEXT_LAND) {
+            console_print(e, &args![MSG_TOGGLING_LAND]);
+            land = true;
+        }
+        if text_is(e, text, TEXT_TREES) {
+            console_print(e, &args![MSG_TOGGLING_TREES]);
+            trees = true;
+        }
+        if text_is(e, text, TEXT_OBJECTS) || text_is(e, text, TEXT_BUILDINGS) {
+            console_print(e, &args![MSG_TOGGLING_OBJECTS]);
+            objects = true;
+        }
+        if !(water || land || trees || objects) {
+            console_print(e, &args![MSG_LOD_INVALID_PARAMETER]);
+            return true;
+        }
+        toggle_lod_object(e, terrain, LOD_TREES_OBJECT, trees);
+        toggle_lod_object(e, terrain, LOD_LAND_OBJECT, land);
+        toggle_lod_object(e, terrain, LOD_OBJECTS_OBJECT, objects);
+        toggle_lod_object(e, terrain, LOD_WATER_OBJECT, water);
+        true
+    })
+}
+
+// ---- Fourth batch, second part (`005bb390` onward) ---------------------------
+
+// The interface objects the commands hand values to.
+/// `thiscall`-free getter, `cdecl`, no arguments: `Interface + 0x1dc` when the
+/// interface singleton (`004b7210`) exists and `009373f0` agrees, otherwise
+/// zero.
+pub(crate) const INTERFACE_GET_1DC_OBJECT: u32 = 0x0070_5910;
+/// As [`INTERFACE_GET_1DC_OBJECT`] for `Interface + 0x178`.
+pub(crate) const INTERFACE_GET_178_OBJECT: u32 = 0x0070_5950;
+/// `Interface::GetPipboy` (Xbox PDB), `cdecl`, no arguments.
+pub(crate) const INTERFACE_GET_PIPBOY: u32 = 0x0070_5990;
+/// `thiscall` (`RET 4`: `source`): `*this = *source`.
+pub(crate) const FN_0044AC20: u32 = 0x0044_ac20;
+/// `thiscall` on [`INTERFACE_GET_1DC_OBJECT`]'s object (`RET 0xc`: `reference,
+/// ticks, 0`).
+pub(crate) const FN_00800AC0: u32 = 0x0080_0ac0;
+/// `thiscall` on that object (`RET 4`: `reference`).
+pub(crate) const FN_00800D50: u32 = 0x0080_0d50;
+/// `thiscall` on that object (`RET 4`: `reference`).
+pub(crate) const FN_00800E50: u32 = 0x0080_0e50;
+/// `thiscall` on that object, no arguments.
+pub(crate) const FN_00800ED0: u32 = 0x0080_0ed0;
+/// `cdecl` (`float, float, float`).
+pub(crate) const FN_007E4FE0: u32 = 0x007e_4fe0;
+/// `thiscall` on [`INTERFACE_GET_178_OBJECT`]'s object (`RET 0xc`: `float,
+/// float, float`): stores the three values and the time of the clock at
+/// `011f6394` in the object.
+pub(crate) const FN_007F7880: u32 = 0x007f_7880;
+/// `FOPipboyManager::MoveKnob` (Xbox PDB), `thiscall` (`RET 0x10`: `knob,
+/// amount, step, 1`).
+pub(crate) const FN_007F8610: u32 = 0x007f_8610;
+/// `thiscall` on the global object `011e090c`: `this ? this + 4 : address of a
+/// static zero float`, the address of the `float` the object holds.
+pub(crate) const FLOAT_VALUE_ADDRESS: u32 = 0x0040_3e20;
+/// The global object whose float `005bb870` sets.
+pub(crate) const GLOBAL_011E090C: u32 = 0x011e_090c;
+/// `thiscall` on the object `FN_00450B80(0)` returns (`RET 0x18`: `flag, vector
+/// x, y, z, float, float`); a three-byte stub in this build.
+pub(crate) const FN_00B5A8C0: u32 = 0x00b5_a8c0;
+/// Byte flipped (or set) by `005bb8c0`.
+pub(crate) const FLAG_011CAE47: u32 = 0x011c_ae47;
+/// `thiscall` on a matrix (`out, other`; `RET 8`): `NiMatrix3::operator*`
+/// (engine map name): writes `this * other` to `out` and returns `out`.
+pub(crate) const NI_MATRIX_MULTIPLY: u32 = 0x0043_f8d0;
+/// `thiscall`: `this + 0x68`, the address of a matrix.
+pub(crate) const FN_00461130: u32 = 0x0046_1130;
+/// `thiscall`: `*(this + 0x1e0)`.
+pub(crate) const FN_00454B30: u32 = 0x0045_4b30;
+/// `thiscall` on the object `FN_00454B30` returns (`RET 4`: `object`): adds the
+/// object to a list kept at `this + 8`.
+pub(crate) const FN_00C5AE70: u32 = 0x00c5_ae70;
+/// Constructor of a 0xfc-byte object, `thiscall` (`RET 0xc`: `position, 2D
+/// point, matrix`).
+pub(crate) const FN_004A5FF0: u32 = 0x004a_5ff0;
+/// `thiscall` on `this + 8` of the object `FN_00454B30` returns: removes all
+/// entries (`NiTPointerListBase::RemoveAll`, Xbox PDB).
+pub(crate) const FN_004ED900: u32 = 0x004e_d900;
+/// `float` `15.0`.
+pub(crate) const F32_0101E580: u32 = 0x0101_e580;
+/// `float` `500.0`.
+pub(crate) const F32_01013D84: u32 = 0x0101_3d84;
+/// `float` `0.1`.
+pub(crate) const F32_0101E2BC: u32 = 0x0101_e2bc;
+/// `float` `0.05`.
+pub(crate) const F32_010181BC: u32 = 0x0101_81bc;
+/// `float` `0.0005`.
+pub(crate) const F32_010780A4: u32 = 0x0107_80a4;
+/// `float` `0.5`.
+pub(crate) const F32_01016248: u32 = 0x0101_6248;
+/// `float` `50.0`.
+pub(crate) const F32_0101B268: u32 = 0x0101_b268;
+/// `float` `pi / 2`.
+pub(crate) const FLOAT_HALF_PI: u32 = 0x0103_9f00;
+/// `ImageSpaceModifierInstance::Stop` (Xbox PDB), `cdecl` (`instance`).
+pub(crate) const IMAGE_SPACE_MODIFIER_INSTANCE_STOP: u32 = 0x0052_93f0;
+/// `ImageSpaceModifierInstanceRB::Trigger` (Xbox PDB), `cdecl` (`strength,
+/// ramp up, start, ramp down, down start, 2D point, 0.0`): the new instance.
+pub(crate) const RADIAL_BLUR_TRIGGER: u32 = 0x0052_a440;
+/// Pointer: the radial blur instance `SetGlobalRadialBlur` made.
+pub(crate) const RADIAL_BLUR_INSTANCE: u32 = 0x011c_ae48;
+/// Byte flipped by `005bbc30`.
+pub(crate) const FLAG_011AD884: u32 = 0x011a_d884;
+/// Byte: AI detection (flipped by `005bbda0`).
+pub(crate) const AI_DETECTION_FLAG: u32 = 0x011f_1221;
+/// Byte: all AI processing (flipped by `ToggleAI` without an actor).
+pub(crate) const ALL_AI_FLAG: u32 = 0x011f_1220;
+/// Byte: AI processing for actors in high (flipped by `ToggleHighProcess`).
+pub(crate) const HIGH_PROCESS_FLAG: u32 = 0x011f_1228;
+/// Byte: all combat AI processing (flipped by `005bc130`).
+pub(crate) const COMBAT_AI_FLAG: u32 = 0x011a_4880;
+/// Byte set by `005bc1a0` from its argument.
+pub(crate) const FLAG_011DF678: u32 = 0x011d_f678;
+/// Byte set by `005bc200` from its argument.
+pub(crate) const FLAG_012682F8: u32 = 0x0126_82f8;
+/// Offset in an `Actor` (PC) of the byte the AI commands flip and print.
+pub(crate) const ACTOR_AI_FLAG: u32 = 0xbc;
+/// `Actor::EndMovement` (Xbox PDB), `thiscall`.
+pub(crate) const ACTOR_END_MOVEMENT: u32 = 0x0087_faa0;
+/// `ProcessLists::TurnOffMovementinHigh` (Xbox PDB), `thiscall` on
+/// [`PROCESS_LISTS`].
+pub(crate) const PROCESS_LISTS_TURN_OFF_MOVEMENT_IN_HIGH: u32 = 0x0097_1ba0;
+/// `thiscall` on the player (`RET 4`: `flag`): `AL`.
+pub(crate) const FN_00961E30: u32 = 0x0096_1e30;
+/// `cdecl` (`flag`).
+pub(crate) const FN_00BA8B60: u32 = 0x00ba_8b60;
+/// `ExtraDataList::GetHeadTrackTargetExtra` (Xbox PDB), `thiscall`: the
+/// reference the actor looks at, zero when none.
+pub(crate) const HEAD_TRACK_TARGET_EXTRA: u32 = 0x0041_9ea0;
+
+// Strings.
+/// `"SetGlobalRadialBlur strength rampup start rampdown downstart"`
+pub(crate) const MSG_SET_GLOBAL_RADIAL_BLUR_USAGE: u32 = 0x0103_9f04;
+/// `"AI Detection is  %s"`
+pub(crate) const MSG_AI_DETECTION_IS: u32 = 0x0103_9f44;
+/// `"%s processing is  %s"`
+pub(crate) const MSG_PROCESSING_IS: u32 = 0x0103_9f58;
+/// `"All AI Processing is  %s"`
+pub(crate) const MSG_ALL_AI_PROCESSING_IS: u32 = 0x0103_9f70;
+/// `"All Combat AI processing is %s"`
+pub(crate) const MSG_ALL_COMBAT_AI_PROCESSING_IS: u32 = 0x0103_9f8c;
+/// `"%s set to not look at anyone"`
+pub(crate) const MSG_NOT_LOOKING_AT_ANYONE: u32 = 0x0103_9fac;
+/// `"%s set to look at %s"`
+pub(crate) const MSG_LOOKING_AT: u32 = 0x0103_9fcc;
+/// `"AI Processing for actors in high is  %s"`
+pub(crate) const MSG_HIGH_AI_PROCESSING_IS: u32 = 0x0103_9fe4;
+
+/// `__RTDynamicCast(object, 0, TESObjectREFR, Actor, 0)`: the object as an
+/// `Actor`, zero when it is none (also for a null object).
+fn cast_to_actor(e: &mut Engine, object: Ptr) -> u32 {
+    e.call(
+        DYNAMIC_CAST,
+        &args![object, 0u32, RTTI_TES_OBJECT_REFR, RTTI_ACTOR, 0u32],
+    )
+    .u32()
+}
+
+/// The three words at `address` (a vector).
+fn read_vector(e: &Engine, address: u32) -> [u32; 3] {
+    [
+        e.mem.u32(address),
+        e.mem.u32(address + 4),
+        e.mem.u32(address + 8),
+    ]
+}
+
+// Translated from 005bb390 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::SetLODObjectDistanceFunction` (Xbox PDB): parses two `float`s
+/// (zero by default; not parsed when the first word is zero). With the current
+/// world space's terrain manager (none ends the command) it sets the two
+/// settings `011d8724` and `011d877c` to them (`004ed780`) and updates the
+/// terrain manager (`BGSTerrainManager::Update`) with the player's position
+/// (virtual slot `0x1f4`). The game also builds a local vector from the start
+/// vector `011f426c` and from the cell position (`005bb4d0` set) or the player
+/// position and never uses it; only its calls are kept.
+pub fn script_set_lod_object_distance_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    let (near, far) = if a.param_info == 0 {
+        (0, 0)
+    } else {
+        let Some([near, far]) = a.parse_into(e, [0, 0]) else {
+            return false;
+        };
+        (near, far)
+    };
+    let tes = e.global::<u32>(GLOBAL_0011DEA10);
+    let world_space = e.call(TES_GET_WORLD_SPACE, &args![tes]).u32();
+    let terrain = e
+        .call(WORLD_SPACE_GET_TERRAIN_MANAGER, &args![world_space])
+        .u32();
+    if terrain == 0 {
+        return true;
+    }
+    e.call(SETTING_SET_FLOAT, &args![SETTING_LOD_DISTANCE_NEAR, near]);
+    e.call(SETTING_SET_FLOAT, &args![SETTING_LOD_DISTANCE_FAR, far]);
+    let singleton = e.global::<u32>(GLOBAL_0011DEA0C);
+    if fn_005bb4d0(e, Ptr::new(singleton)) != 0 {
+        let world = e.call(FN_0045C670, &args![]).u32();
+        let cell = e.call(FN_00558310, &args![world]).u32();
+        e.call(FN_0043C490, &args![cell]);
+    } else {
+        let player = e.global::<u32>(PLAYER);
+        e.vcall(player, PLAYER_POSITION_SLOT, &args![]);
+    }
+    let player = e.global::<u32>(PLAYER);
+    let position = e.vcall(player, PLAYER_POSITION_SLOT, &args![]).u32();
+    e.call(TERRAIN_MANAGER_UPDATE, &args![terrain, position, 1u32]);
+    true
+}
+
+// Translated from 005bb4d0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The byte at `this + 6`.
+pub fn fn_005bb4d0(e: &mut Engine, this: Ptr) -> u8 {
+    e.mem.u8(this.addr() + 6)
+}
+
+// Translated from 005bb4f0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses three `float`s (0.0, 0.0 and 1.0 by default, and a fourth word the
+/// game never reads) and passes the first three to `007e4fe0`.
+pub fn fn_005bb4f0(e: &mut Engine, a: ScriptArgs) -> bool {
+    let defaults = [0.0f32.to_bits(), 0.0f32.to_bits(), 1.0f32.to_bits(), 0];
+    let Some([first, second, third, _]) = a.parse_into(e, defaults) else {
+        return false;
+    };
+    e.call(FN_007E4FE0, &args![first, second, third]);
+    true
+}
+
+/// Stores `value` in the first word of the interface object
+/// [`INTERFACE_GET_1DC_OBJECT`] returns, the way the game does: a local
+/// holding the value passed by address to `0044ac20`.
+fn set_interface_object_word(e: &mut Engine, value: u32) {
+    e.with_stack(4, |e, local| {
+        e.mem.set_u32(local.addr(), value);
+        let target = e.call(INTERFACE_GET_1DC_OBJECT, &args![]).u32();
+        e.call(FN_0044AC20, &args![target, local]);
+    });
+}
+
+// Translated from 005bb570 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses a `float` (default: the global `0101e580`, 15.0) and three words the
+/// game never reads. For a reference with an object (slot `0x1d0`) it hands
+/// the reference and the value truncated to an `int` (`_ftol2`) to
+/// `00800ac0` on the interface object [`INTERFACE_GET_1DC_OBJECT`], with 0
+/// as third argument, and then stores 0 in the first word of that object.
+pub fn fn_005bb570(e: &mut Engine, a: ScriptArgs) -> bool {
+    let default = e.global::<u32>(F32_0101E580);
+    let Some([value, _, _, _]) = a.parse_into(e, [default, 0, 0, 0]) else {
+        return false;
+    };
+    if !a.this_obj.is_null()
+        && e.vcall(a.this_obj.addr(), REFR_GET_TARGET_SLOT, &args![])
+            .u32()
+            != 0
+    {
+        let ticks = e.call(FTOL, &args![f64::from(f32::from_bits(value))]).u32();
+        let target = e.call(INTERFACE_GET_1DC_OBJECT, &args![]).u32();
+        e.call(FN_00800AC0, &args![target, a.this_obj, ticks, 0u32]);
+        set_interface_object_word(e, 0);
+    }
+    true
+}
+
+// Translated from 005bb610 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses the same arguments as [`fn_005bb570`] and ignores them. For a
+/// reference with an object it hands the reference to `00800d50` and `00800e50`
+/// on the interface object [`INTERFACE_GET_1DC_OBJECT`] and stores 1 in the
+/// first word of that object.
+pub fn fn_005bb610(e: &mut Engine, a: ScriptArgs) -> bool {
+    let default = e.global::<u32>(F32_0101E580);
+    if a.parse_into(e, [default, 0, 0, 0]).is_none() {
+        return false;
+    }
+    if !a.this_obj.is_null()
+        && e.vcall(a.this_obj.addr(), REFR_GET_TARGET_SLOT, &args![])
+            .u32()
+            != 0
+    {
+        let target = e.call(INTERFACE_GET_1DC_OBJECT, &args![]).u32();
+        e.call(FN_00800D50, &args![target, a.this_obj]);
+        let target = e.call(INTERFACE_GET_1DC_OBJECT, &args![]).u32();
+        e.call(FN_00800E50, &args![target, a.this_obj]);
+        set_interface_object_word(e, 1);
+    }
+    true
+}
+
+// Translated from 005bb6c0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses the same arguments as [`fn_005bb570`] and ignores them. For a
+/// reference with an object it calls `00800ac0(0, 0, 0)` and `00800ed0` on the
+/// interface object [`INTERFACE_GET_1DC_OBJECT`] and stores 0 in the first word
+/// of that object.
+pub fn fn_005bb6c0(e: &mut Engine, a: ScriptArgs) -> bool {
+    let default = e.global::<u32>(F32_0101E580);
+    if a.parse_into(e, [default, 0, 0, 0]).is_none() {
+        return false;
+    }
+    if !a.this_obj.is_null()
+        && e.vcall(a.this_obj.addr(), REFR_GET_TARGET_SLOT, &args![])
+            .u32()
+            != 0
+    {
+        let target = e.call(INTERFACE_GET_1DC_OBJECT, &args![]).u32();
+        e.call(FN_00800AC0, &args![target, 0u32, 0u32, 0u32]);
+        let target = e.call(INTERFACE_GET_1DC_OBJECT, &args![]).u32();
+        e.call(FN_00800ED0, &args![target]);
+        set_interface_object_word(e, 0);
+    }
+    true
+}
+
+// Translated from 005bb770 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses three `float`s (defaults: the globals `01013d84`, `0101e2bc` and
+/// `010181bc`, 500.0, 0.1 and 0.05) and a fourth word the game never reads, and
+/// hands them to `007f7880` on the object [`INTERFACE_GET_178_OBJECT`] returns.
+pub fn fn_005bb770(e: &mut Engine, a: ScriptArgs) -> bool {
+    let defaults = [
+        e.global::<u32>(F32_01013D84),
+        e.global::<u32>(F32_0101E2BC),
+        e.global::<u32>(F32_010181BC),
+        0,
+    ];
+    let Some([first, second, third, _]) = a.parse_into(e, defaults) else {
+        return false;
+    };
+    let target = e.call(INTERFACE_GET_178_OBJECT, &args![]).u32();
+    e.call(FN_007F7880, &args![target, first, second, third]);
+    true
+}
+
+// Translated from 005bb800 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::MovePipboyKnobFunction` (Xbox PDB): parses an `int` and a `float`
+/// and calls `FOPipboyManager::MoveKnob(knob, amount, step, 1)` on
+/// `Interface::GetPipboy`, with `step` the global `float` `010780a4`.
+pub fn script_move_pipboy_knob_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([knob, amount]) = a.parse_into(e, [0, 0]) else {
+        return false;
+    };
+    let step = e.global::<u32>(F32_010780A4);
+    let pipboy = e.call(INTERFACE_GET_PIPBOY, &args![]).u32();
+    e.call(FN_007F8610, &args![pipboy, knob, amount, step, 1u32]);
+    true
+}
+
+// Translated from 005bb870 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses a `float` and stores it in the `float` of the global object
+/// `011e090c` (`00403e20` gives its address).
+pub fn fn_005bb870(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([value]) = a.parse_into(e, [0]) else {
+        return false;
+    };
+    let address = e.call(FLOAT_VALUE_ADDRESS, &args![GLOBAL_011E090C]).u32();
+    e.mem.set_f32(address, f32::from_bits(value));
+    true
+}
+
+// Translated from 005bb8c0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses two `float`s (both -1.0, the global `01012054`, by default). When
+/// either is above zero (or not a number) the byte `011cae47` is set to 1,
+/// otherwise it is flipped. Then calls `00b5a8c0` on the object
+/// `FN_00450B80(0)` returns with that byte, the three words at its `+0x1f0`
+/// ([`fn_005bb9b0`]) and the two values (a stub in this build).
+pub fn fn_005bb8c0(e: &mut Engine, a: ScriptArgs) -> bool {
+    let unset = e.global::<u32>(FLOAT_MINUS_ONE);
+    let Some([first, second]) = a.parse_into(e, [unset, unset]) else {
+        return false;
+    };
+    let zero = e.global::<f64>(DOUBLE_ZERO);
+    let (first_value, second_value) = (
+        f64::from(f32::from_bits(first)),
+        f64::from(f32::from_bits(second)),
+    );
+    // `FCOMP` against zero: above it, or not comparable (not a number).
+    let above = |value: f64| value > zero || value.is_nan();
+    if above(first_value) || above(second_value) {
+        e.set_global(FLAG_011CAE47, 1u8);
+    } else {
+        let flag = e.global::<u8>(FLAG_011CAE47);
+        e.set_global(FLAG_011CAE47, u8::from(flag == 0));
+    }
+    let object = e.call(FN_00450B80, &args![0u32]).u32();
+    let vector = e.with_stack(12, |e, vector| {
+        fn_005bb9b0(e, Ptr::new(object), vector);
+        read_vector(e, vector.addr())
+    });
+    let flag = e.global::<u8>(FLAG_011CAE47);
+    let object = e.call(FN_00450B80, &args![0u32]).u32();
+    e.call(
+        FN_00B5A8C0,
+        &args![
+            object,
+            u32::from(flag),
+            vector[0],
+            vector[1],
+            vector[2],
+            first,
+            second
+        ],
+    );
+    true
+}
+
+// Translated from 005bb9b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Copies the three words at `this + 0x1f0` to `out` and returns `out`.
+pub fn fn_005bb9b0(e: &mut Engine, this: Ptr, out: Ptr) -> u32 {
+    for offset in [0, 4, 8] {
+        let word = e.mem.u32(this.addr() + 0x1f0 + offset);
+        e.mem.set_u32(out.addr() + offset, word);
+    }
+    out.addr()
+}
+
+/// Copies the nine words (a 3x3 matrix) at `from` to `to`.
+fn copy_matrix(e: &mut Engine, from: u32, to: u32) {
+    let bytes = e.mem.bytes(from, 36);
+    e.mem.write(to, &bytes);
+}
+
+// Translated from 005bb9e0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses two `float`s into a 2D point (-1.0, the global `01012054`, by
+/// default; the first is parsed into the point's second component). When
+/// either value is zero it empties the list kept by the object
+/// `FN_00450B80(0)` refers to (`00454b30`, `005bbc10`). Otherwise a negative
+/// value becomes 50.0 (`0101b268`) and a 0xfc-byte object (`004a5ff0`) is built
+/// from the position at `+0x1f0` of that object (`005bb9b0`), the 2D point and
+/// a matrix: the matrix of the world scene's animation data (`0045c670`,
+/// `006629f0`, `00461130`) times a rotation about z of pi / 2
+/// (`004a0c90`, `0043f8d0`). The new object is held in a `NiPointer` (`00633c90`)
+/// and added to that list (`00c5ae70`). (Exception unwinding frames are not
+/// translated.)
+pub fn fn_005bb9e0(e: &mut Engine, a: ScriptArgs) -> bool {
+    e.with_stack(8, |e, point| {
+        let point = point.addr();
+        let unset = e.global::<f32>(FLOAT_MINUS_ONE);
+        e.call(NI_POINT2_CONSTRUCT, &args![point, unset, unset]);
+        if !a.parse(e, &[point + 4, point]) {
+            return false;
+        }
+        let (x, y) = (e.mem.f32(point), e.mem.f32(point + 4));
+        let zero = e.global::<f64>(DOUBLE_ZERO);
+        if f64::from(x) == zero || f64::from(y) == zero {
+            let object = e.call(FN_00450B80, &args![0u32]).u32();
+            let list = e.call(FN_00454B30, &args![object]).u32();
+            fn_005bbc10(e, Ptr::new(list));
+            return true;
+        }
+        let default = e.global::<f32>(F32_0101B268);
+        if f64::from(x) <= zero {
+            e.mem.set_f32(point, default);
+        }
+        if f64::from(y) <= zero {
+            e.mem.set_f32(point + 4, default);
+        }
+        let object = e.call(FN_00450B80, &args![0u32]).u32();
+        e.with_stack(12, |e, position| {
+            fn_005bb9b0(e, Ptr::new(object), position);
+            let world = e.call(FN_0045C670, &args![]).u32();
+            let animation = e.call(FN_006629F0, &args![world]).u32();
+            let source = e.call(FN_00461130, &args![animation]).u32();
+            e.with_stack(36, |e, matrix| {
+                copy_matrix(e, source, matrix.addr());
+                e.with_stack(36, |e, rotation| {
+                    e.call(TRIVIAL_CONSTRUCT, &args![rotation]);
+                    let angle = e.global::<f32>(FLOAT_HALF_PI);
+                    e.call(NI_MATRIX_FROM_Z_ANGLE, &args![rotation, angle]);
+                    e.with_stack(36, |e, product| {
+                        let result = e
+                            .call(NI_MATRIX_MULTIPLY, &args![matrix, product, rotation])
+                            .u32();
+                        copy_matrix(e, result, matrix.addr());
+                    });
+                });
+                let block = e.call(NI_ALLOC, &args![0xfcu32]).u32();
+                let created = if block != 0 {
+                    e.call(FN_004A5FF0, &args![block, position, point, matrix])
+                        .u32()
+                } else {
+                    0
+                };
+                e.with_stack(4, |e, held| {
+                    e.call(NI_POINTER_INIT, &args![held, created]);
+                    let object = e.call(NI_POINTER_GET, &args![held]).u32();
+                    let owner = e.call(FN_00450B80, &args![0u32]).u32();
+                    let list = e.call(FN_00454B30, &args![owner]).u32();
+                    e.call(FN_00C5AE70, &args![list, object]);
+                    e.call(NI_POINTER_DESTRUCT, &args![held]);
+                });
+            });
+        });
+        true
+    })
+}
+
+// Translated from 005bbc10 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `fastcall` (`ECX = this`): `NiTPointerListBase::RemoveAll` (`004ed900`, Xbox
+/// PDB) on `this + 8`.
+pub fn fn_005bbc10(e: &mut Engine, this: Ptr) {
+    e.call(FN_004ED900, &args![this.addr() + 8]);
+}
+
+// Translated from 005bbc30 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Flips the byte `011ad884`.
+pub fn fn_005bbc30(e: &mut Engine) -> bool {
+    let flag = e.global::<u8>(FLAG_011AD884);
+    e.set_global(FLAG_011AD884, u8::from(flag == 0));
+    true
+}
+
+// Translated from 005bbc50 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::SetGlobalRadialBlur` (Xbox PDB): stops the instance in the global
+/// `011cae48` (`ImageSpaceModifierInstance::Stop`) and clears it, then parses
+/// five `float`s. When they do not parse it prints the usage text if the
+/// commands echo and returns false. Otherwise it triggers a radial blur
+/// (`ImageSpaceModifierInstanceRB::Trigger`) from them with the 2D point
+/// (0.5, 0.5, the global `01016248`) and 0.0, keeps the instance in the global
+/// and, if there is one, sets bit 0 of its field `+0x18` ([`fn_005bbd60`]).
+pub fn script_set_global_radial_blur(e: &mut Engine, a: ScriptArgs) -> bool {
+    let instance = e.global::<u32>(RADIAL_BLUR_INSTANCE);
+    if instance != 0 {
+        e.call(IMAGE_SPACE_MODIFIER_INSTANCE_STOP, &args![instance]);
+        e.set_global(RADIAL_BLUR_INSTANCE, 0u32);
+    }
+    let Some([strength, ramp_up, start, ramp_down, down_start]) = a.parse_into(e, [0; 5]) else {
+        if echo_enabled(e) {
+            console_print(e, &args![MSG_SET_GLOBAL_RADIAL_BLUR_USAGE]);
+        }
+        return false;
+    };
+    let instance = e.with_stack(8, |e, point| {
+        let half = e.global::<f32>(F32_01016248);
+        e.call(NI_POINT2_CONSTRUCT, &args![point, half, half]);
+        e.call(
+            RADIAL_BLUR_TRIGGER,
+            &args![strength, ramp_up, start, ramp_down, down_start, point, 0.0f32],
+        )
+        .u32()
+    });
+    e.set_global(RADIAL_BLUR_INSTANCE, instance);
+    if instance != 0 {
+        fn_005bbd60(e, Ptr::new(instance), 1);
+    }
+    true
+}
+
+// Translated from 005bbd60 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Sets (`set` non-zero) or clears bit 0 of the dword at `this + 0x18`.
+pub fn fn_005bbd60(e: &mut Engine, this: Ptr, set: u8) {
+    let flags = e.mem.u32(this.addr() + 0x18);
+    let flags = if set != 0 { flags | 1 } else { flags & !1 };
+    e.mem.set_u32(this.addr() + 0x18, flags);
+}
+
+// Translated from 005bbda0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::ToggleAiDetection` (Xbox PDB): flips the byte `011f1221` and
+/// echoes "AI Detection is  On" or "Off".
+pub fn script_toggle_ai_detection(e: &mut Engine) -> bool {
+    let flag = e.global::<u8>(AI_DETECTION_FLAG);
+    e.set_global(AI_DETECTION_FLAG, u8::from(flag == 0));
+    if echo_enabled(e) {
+        let flag = e.global::<u8>(AI_DETECTION_FLAG);
+        console_print(e, &args![MSG_AI_DETECTION_IS, on_off(flag != 0)]);
+    }
+    true
+}
+
+/// Prints "<name> processing is  <On|Off>" for an actor after the byte at
+/// `+0xbc` changed, when the commands echo.
+fn print_actor_processing(e: &mut Engine, actor: u32) {
+    if echo_enabled(e) {
+        let state = on_off(e.mem.u8(actor + ACTOR_AI_FLAG) != 0);
+        let name = e.call(REFR_GET_NAME_TEXT, &args![actor]).u32();
+        console_print(e, &args![MSG_PROCESSING_IS, name, state]);
+    }
+}
+
+// Translated from 005bbe10 (decompiled, FalloutNV.exe 1.4.0.525)
+/// For the reference as an `Actor` (none does nothing): flips the byte at
+/// `+0xbc` and echoes "<name> processing is  On" or "Off".
+pub fn fn_005bbe10(e: &mut Engine, a: ScriptArgs) -> bool {
+    let actor = cast_to_actor(e, a.this_obj);
+    if actor != 0 {
+        let flag = e.mem.u8(actor + ACTOR_AI_FLAG);
+        e.mem.set_u8(actor + ACTOR_AI_FLAG, u8::from(flag == 0));
+        print_actor_processing(e, actor);
+    }
+    true
+}
+
+// Translated from 005bbec0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// For the reference as an `Actor` (none does nothing): writes 1.0 to the
+/// result `double` when the byte at `+0xbc` is zero, otherwise 0.0, and echoes
+/// "<name> processing is  On" or "Off".
+pub fn fn_005bbec0(e: &mut Engine, a: ScriptArgs) -> bool {
+    let actor = cast_to_actor(e, a.this_obj);
+    if actor != 0 {
+        let flag = e.mem.u8(actor + ACTOR_AI_FLAG);
+        e.mem
+            .set_f64(a.result.addr(), if flag == 0 { 1.0 } else { 0.0 });
+        print_actor_processing(e, actor);
+    }
+    true
+}
+
+// Translated from 005bbf70 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::ToggleAI` (Xbox PDB): parses an optional actor reference (the
+/// reference the command runs on, as an `Actor`, when it is omitted). For an
+/// actor it flips the byte at `+0xbc`, calls `Actor::EndMovement` and echoes
+/// "<name> processing is  On" or "Off". Without an actor it flips the byte
+/// `011f1220`, echoes "All AI Processing is  On" or "Off" and, when the byte
+/// became zero, calls `ProcessLists::TurnOffMovementinHigh`.
+pub fn script_toggle_ai(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([parsed]) = a.parse_into(e, [0]) else {
+        return false;
+    };
+    let actor = if parsed == 0 {
+        cast_to_actor(e, a.this_obj)
+    } else {
+        parsed
+    };
+    if actor != 0 {
+        let flag = e.mem.u8(actor + ACTOR_AI_FLAG);
+        e.mem.set_u8(actor + ACTOR_AI_FLAG, u8::from(flag == 0));
+        e.call(ACTOR_END_MOVEMENT, &args![actor]);
+        print_actor_processing(e, actor);
+    } else {
+        let flag = e.global::<u8>(ALL_AI_FLAG);
+        e.set_global(ALL_AI_FLAG, u8::from(flag == 0));
+        if echo_enabled(e) {
+            let flag = e.global::<u8>(ALL_AI_FLAG);
+            console_print(e, &args![MSG_ALL_AI_PROCESSING_IS, on_off(flag != 0)]);
+        }
+        if e.global::<u8>(ALL_AI_FLAG) == 0 {
+            e.call(
+                PROCESS_LISTS_TURN_OFF_MOVEMENT_IN_HIGH,
+                &args![PROCESS_LISTS],
+            );
+        }
+    }
+    true
+}
+
+// Translated from 005bc0d0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::ToggleCombatAI` (Xbox PDB): flips the combat AI byte
+/// ([`fn_005bc130`]) and echoes "All Combat AI processing is On" or "Off".
+pub fn script_toggle_combat_ai(e: &mut Engine) -> bool {
+    let flag = fn_005bc130(e);
+    if echo_enabled(e) {
+        console_print(e, &args![MSG_ALL_COMBAT_AI_PROCESSING_IS, on_off(flag)]);
+    }
+    true
+}
+
+// Translated from 005bc130 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Flips the combat AI byte `011a4880` and returns the new value.
+pub fn fn_005bc130(e: &mut Engine) -> bool {
+    let flag = e.global::<u8>(COMBAT_AI_FLAG);
+    e.set_global(COMBAT_AI_FLAG, u8::from(flag == 0));
+    e.global::<u8>(COMBAT_AI_FLAG) != 0
+}
+
+// Translated from 005bc150 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses an `int` and ignores it: whether the arguments parse.
+pub fn fn_005bc150(e: &mut Engine, a: ScriptArgs) -> bool {
+    a.parse_into(e, [0]).is_some()
+}
+
+// Translated from 005bc1a0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses an `int` and sets the byte `011df678` to whether it is non-zero.
+pub fn fn_005bc1a0(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([value]) = a.parse_into(e, [0]) else {
+        return false;
+    };
+    e.set_global(FLAG_011DF678, u8::from(value != 0));
+    true
+}
+
+// Translated from 005bc200 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses an `int` and sets the byte `012682f8` to whether it is non-zero.
+pub fn fn_005bc200(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([value]) = a.parse_into(e, [0]) else {
+        return false;
+    };
+    e.set_global(FLAG_012682F8, u8::from(value != 0));
+    true
+}
+
+// Translated from 005bc260 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses an `int` mode. Unless the mode is 4 it asks the player
+/// (`00961e30`) with 1 for modes 1, 2 and 5 and 0 for the others. Then calls
+/// `00ba8b60` with 1 when that answer is non-zero and the mode is at least 1,
+/// otherwise 0.
+pub fn fn_005bc260(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([mode]) = a.parse_into(e, [0]) else {
+        return false;
+    };
+    let mode = mode as i32;
+    let mut answer = 0u8;
+    if mode != 4 {
+        let flag = (1..=2).contains(&mode) || mode == 5;
+        let player = e.global::<u32>(PLAYER);
+        answer = e.call(FN_00961E30, &args![player, u32::from(flag)]).u8();
+    }
+    e.call(FN_00BA8B60, &args![u32::from(answer != 0 && mode >= 1)]);
+    true
+}
+
+// Translated from 005bc310 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::ShowHeadTrackTarget` (Xbox PDB): for the reference as an `Actor`
+/// (none does nothing) looks up the head track target of its extra data
+/// (`ExtraDataList::GetHeadTrackTargetExtra`) and, when the commands echo,
+/// prints "<name> set to look at <target name>" or "<name> set to not look at
+/// anyone".
+pub fn script_show_head_track_target(e: &mut Engine, a: ScriptArgs) -> bool {
+    let actor = cast_to_actor(e, a.this_obj);
+    if actor != 0 {
+        let list = e.call(EXTRA_DATA_LIST, &args![actor]).u32();
+        let target = e.call(HEAD_TRACK_TARGET_EXTRA, &args![list]).u32();
+        if echo_enabled(e) {
+            if target != 0 {
+                let target_name = e.call(REFR_GET_NAME_TEXT, &args![target]).u32();
+                let name = e.call(REFR_GET_NAME_TEXT, &args![actor]).u32();
+                console_print(e, &args![MSG_LOOKING_AT, name, target_name]);
+            } else {
+                let name = e.call(REFR_GET_NAME_TEXT, &args![actor]).u32();
+                console_print(e, &args![MSG_NOT_LOOKING_AT_ANYONE, name]);
+            }
+        }
+    }
+    true
+}
+
+// Translated from 005bc3b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::ToggleHighProcess` (Xbox PDB): flips the byte `011f1228`, echoes
+/// "AI Processing for actors in high is  On" or "Off" and, when the byte
+/// became zero, calls `ProcessLists::TurnOffMovementinHigh`.
+pub fn script_toggle_high_process(e: &mut Engine) -> bool {
+    let flag = e.global::<u8>(HIGH_PROCESS_FLAG);
+    e.set_global(HIGH_PROCESS_FLAG, u8::from(flag == 0));
+    if echo_enabled(e) {
+        let flag = e.global::<u8>(HIGH_PROCESS_FLAG);
+        console_print(e, &args![MSG_HIGH_AI_PROCESSING_IS, on_off(flag != 0)]);
+    }
+    if e.global::<u8>(HIGH_PROCESS_FLAG) == 0 {
+        e.call(
+            PROCESS_LISTS_TURN_OFF_MOVEMENT_IN_HIGH,
+            &args![PROCESS_LISTS],
+        );
+    }
+    true
+}
+
 /// This unit's translated functions, by exe address.
 pub fn funcs() -> Vec<(u32, AbiFn)> {
     vec![
@@ -4434,6 +5768,61 @@ pub fn funcs() -> Vec<(u32, AbiFn)> {
         ),
         entry!(0x005ba740, fn_005ba740() -> u8),
         entry!(0x005ba750, fn_005ba750(u8)),
+        entry!(0x005ba760, script_toggle_debug_text_function() -> bool),
+        entry!(0x005ba7c0, fn_005ba7c0(ScriptArgs) -> bool),
+        entry!(0x005ba8d0, fn_005ba8d0() -> u32),
+        entry!(0x005ba8f0, fn_005ba8f0(ScriptArgs) -> bool),
+        entry!(0x005bac20, fn_005bac20() -> bool),
+        entry!(0x005bac50, fn_005bac50() -> u32),
+        entry!(0x005bac60, fn_005bac60() -> u32),
+        entry!(0x005bac70, fn_005bac70() -> u32),
+        entry!(0x005bac80, fn_005bac80(u32)),
+        entry!(0x005bac90, fn_005bac90(ScriptArgs) -> bool),
+        entry!(
+            0x005bade0,
+            script_show_viewer_strings_function(ScriptArgs) -> bool
+        ),
+        entry!(
+            0x005bb030,
+            script_toggle_lod_land_function(ScriptArgs) -> bool
+        ),
+        entry!(
+            0x005bb390,
+            script_set_lod_object_distance_function(ScriptArgs) -> bool
+        ),
+        entry!(0x005bb4d0, fn_005bb4d0(Ptr) -> u8),
+        entry!(0x005bb4f0, fn_005bb4f0(ScriptArgs) -> bool),
+        entry!(0x005bb570, fn_005bb570(ScriptArgs) -> bool),
+        entry!(0x005bb610, fn_005bb610(ScriptArgs) -> bool),
+        entry!(0x005bb6c0, fn_005bb6c0(ScriptArgs) -> bool),
+        entry!(0x005bb770, fn_005bb770(ScriptArgs) -> bool),
+        entry!(
+            0x005bb800,
+            script_move_pipboy_knob_function(ScriptArgs) -> bool
+        ),
+        entry!(0x005bb870, fn_005bb870(ScriptArgs) -> bool),
+        entry!(0x005bb8c0, fn_005bb8c0(ScriptArgs) -> bool),
+        entry!(0x005bb9b0, fn_005bb9b0(Ptr, Ptr) -> u32),
+        entry!(0x005bb9e0, fn_005bb9e0(ScriptArgs) -> bool),
+        entry!(0x005bbc10, fn_005bbc10(Ptr)),
+        entry!(0x005bbc30, fn_005bbc30() -> bool),
+        entry!(0x005bbc50, script_set_global_radial_blur(ScriptArgs) -> bool),
+        entry!(0x005bbd60, fn_005bbd60(Ptr, u8)),
+        entry!(0x005bbda0, script_toggle_ai_detection() -> bool),
+        entry!(0x005bbe10, fn_005bbe10(ScriptArgs) -> bool),
+        entry!(0x005bbec0, fn_005bbec0(ScriptArgs) -> bool),
+        entry!(0x005bbf70, script_toggle_ai(ScriptArgs) -> bool),
+        entry!(0x005bc0d0, script_toggle_combat_ai() -> bool),
+        entry!(0x005bc130, fn_005bc130() -> bool),
+        entry!(0x005bc150, fn_005bc150(ScriptArgs) -> bool),
+        entry!(0x005bc1a0, fn_005bc1a0(ScriptArgs) -> bool),
+        entry!(0x005bc200, fn_005bc200(ScriptArgs) -> bool),
+        entry!(0x005bc260, fn_005bc260(ScriptArgs) -> bool),
+        entry!(
+            0x005bc310,
+            script_show_head_track_target(ScriptArgs) -> bool
+        ),
+        entry!(0x005bc3b0, script_toggle_high_process() -> bool),
     ]
 }
 
@@ -8292,5 +9681,1537 @@ mod tests {
         // Any non-zero value counts as set and is switched off.
         assert!(e.call(0x005b_a6d0, &args![]).bool());
         assert_eq!(e.global::<u8>(LITE_BRITE_FLAG), 0);
+    }
+
+    // ---- Fourth batch (`005ba760` onward) -----------------------------------
+
+    /// `engine_c` plus the pages of the fourth batch's globals.
+    fn engine_d() -> Engine {
+        let mut e = engine_c();
+        for page in [
+            0x011a_4000,
+            0x011a_d000,
+            0x011c_6000,
+            0x011c_7000,
+            0x011c_a000,
+            0x011d_8000,
+            0x011d_b000,
+            0x011d_f000,
+            0x011f_4000,
+            0x0120_4000,
+            0x0126_8000,
+            0x0101_3000,
+            0x0101_8000,
+            0x0101_b000,
+            0x0101_e000,
+            0x0107_8000,
+        ] {
+            if !e.mem.is_mapped(page) {
+                e.map(page, 0x1000);
+            }
+        }
+        e
+    }
+
+    static NEXT_FAKE_SLOT_FUNCTION: std::sync::atomic::AtomicU32 =
+        std::sync::atomic::AtomicU32::new(0x0a00_0000);
+
+    /// An object (0x100 bytes) whose virtual slots return the given `(byte
+    /// offset, value)` pairs.
+    fn object_answering(e: &mut Engine, slots: &[(u32, u32)]) -> u32 {
+        let mut table = vec![];
+        for (slot, value) in slots {
+            let function =
+                NEXT_FAKE_SLOT_FUNCTION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let value = *value;
+            e.register_double(function, move |_, _| value.into_ret());
+            table.push((*slot, function));
+        }
+        object_with(e, &table)
+    }
+
+    /// A NUL-terminated copy of `text` in the heap.
+    fn text_at(e: &mut Engine, text: &[u8]) -> u32 {
+        let at = e.mem.alloc(text.len() as u32 + 1);
+        e.mem.set_cstr(at, text);
+        at
+    }
+
+    /// `ParseParameters` double that writes the string `text` to its first
+    /// output and `value` to its second.
+    fn parse_gives_text(e: &mut Engine, text: &'static [u8], value: u32) {
+        e.register_double(PARSE_PARAMETERS, move |e, a| {
+            e.mem.set_cstr(a[7], text);
+            e.mem.set_u32(a[8], value);
+            true.into_ret()
+        });
+    }
+
+    #[test]
+    fn toggle_debug_text_prints_the_new_state_when_echoing() {
+        let mut e = engine_d();
+        accept(
+            &mut e,
+            &[CONSOLE_PRINT, INTERFACE_TOGGLE_DEBUG_TEXT_VISIBLE],
+        );
+        e.register(INTERFACE_IS_DEBUG_TEXT_VISIBLE, |_, _| true.into_ret());
+        start_log(&mut e);
+        assert!(e.call(0x005b_a760, &args![]).bool());
+        assert!(printed(&e).is_empty());
+        assert_eq!(calls(&e, INTERFACE_TOGGLE_DEBUG_TEXT_VISIBLE).len(), 1);
+        set_echo(&mut e, true);
+        assert!(e.call(0x005b_a760, &args![]).bool());
+        assert_eq!(printed(&e), vec![vec![MSG_DEBUG_TEXT, TEXT_ON_CAPITAL]]);
+        e.register(INTERFACE_IS_DEBUG_TEXT_VISIBLE, |_, _| false.into_ret());
+        assert!(e.call(0x005b_a760, &args![]).bool());
+        assert_eq!(
+            printed(&e).last().unwrap(),
+            &vec![MSG_DEBUG_TEXT, TEXT_OFF_CAPITAL]
+        );
+    }
+
+    #[test]
+    fn debug_text_table_is_created_once() {
+        let mut e = engine_d();
+        e.register(FN_00802A90, |e, _| {
+            e.set_global(DEBUG_TEXT_TABLE, 0x7000u32);
+            0x7000u32.into_ret()
+        });
+        start_log(&mut e);
+        assert_eq!(e.call(0x005b_a8d0, &args![]).u32(), 0x7000);
+        assert_eq!(e.call(0x005b_a8d0, &args![]).u32(), 0x7000);
+        assert_eq!(calls(&e, FN_00802A90).len(), 1);
+    }
+
+    #[test]
+    fn debug_text_command_lists_or_selects_a_name() {
+        let mut e = engine_d();
+        e.set_global(DEBUG_TEXT_TABLE, 0x7000u32);
+        accept(
+            &mut e,
+            &[
+                DEBUG_TEXT_TABLE_LIST,
+                DEBUG_TEXT_TABLE_SELECT,
+                WRITE_PRIVATE_PROFILE_STRING,
+            ],
+        );
+        let directory = text_at(&mut e, b"C:\\Game\\");
+        e.mem.set_cstr(TEXT_CUSTOM_INI, b"Custom.ini");
+        e.register_double(FN_004DC110, move |_, _| directory.into_ret());
+        e.register(STRCPY_S, |e, a| {
+            let text = e.mem.cstr(a[2]);
+            e.mem.set_cstr(a[0], &text);
+            Ret::default()
+        });
+        e.register(STRCAT_S, |e, a| {
+            let mut text = e.mem.cstr(a[0]);
+            text.extend(e.mem.cstr(a[2]));
+            e.mem.set_cstr(a[0], &text);
+            Ret::default()
+        });
+        e.register_double(WRITE_PRIVATE_PROFILE_STRING, |e, a| {
+            let line = format!(
+                "{}|{}|{}|{}",
+                a[0],
+                a[1],
+                String::from_utf8(e.mem.cstr(a[2])).unwrap(),
+                String::from_utf8(e.mem.cstr(a[3])).unwrap()
+            );
+            e.mem.set_cstr(0x0126_8200, line.as_bytes());
+            Ret::default()
+        });
+        // No name: the table lists its names through the console print.
+        parse_gives_text(&mut e, b"", 0);
+        start_log(&mut e);
+        assert!(e.call(0x005b_a7c0, &args![script(0)]).bool());
+        assert_eq!(
+            calls(&e, DEBUG_TEXT_TABLE_LIST),
+            vec![vec![0x7000, CONSOLE_PRINT]]
+        );
+        assert!(calls(&e, DEBUG_TEXT_TABLE_SELECT).is_empty());
+        assert!(calls(&e, WRITE_PRIVATE_PROFILE_STRING).is_empty());
+        // A name: selected in the table and saved to Custom.ini.
+        parse_gives_text(&mut e, b"Stats", 3);
+        start_log(&mut e);
+        assert!(e.call(0x005b_a7c0, &args![script(0)]).bool());
+        assert!(calls(&e, DEBUG_TEXT_TABLE_LIST).is_empty());
+        let select = calls(&e, DEBUG_TEXT_TABLE_SELECT);
+        assert_eq!((select[0][0], select[0][2]), (0x7000, 3));
+        assert_eq!(
+            String::from_utf8(e.mem.cstr(0x0126_8200)).unwrap(),
+            format!(
+                "{}|{}|Stats|C:\\Game\\Custom.ini",
+                TEXT_SECTION_DISPLAY, TEXT_KEY_DEBUG_TEXT
+            )
+        );
+        // Parameters that do not parse: false, nothing else.
+        parse_gives(&mut e, false, &[]);
+        start_log(&mut e);
+        assert!(!e.call(0x005b_a7c0, &args![script(0)]).bool());
+        assert!(calls(&e, DEBUG_TEXT_TABLE_LIST).is_empty());
+        assert!(calls(&e, DEBUG_TEXT_TABLE_SELECT).is_empty());
+    }
+
+    #[test]
+    fn scene_slot_getters_and_the_callback_global() {
+        let mut e = engine_d();
+        e.mem.set_u32(SLOT_SPLATTER_SCENE, 0x1111);
+        e.mem.set_u32(SLOT_INTERFACE_SCENE, 0x2222);
+        e.mem.set_u32(SLOT_INTERFACE_3D_SCENE, 0x3333);
+        assert_eq!(e.call(0x005b_ac50, &args![]).u32(), 0x1111);
+        assert_eq!(e.call(0x005b_ac60, &args![]).u32(), 0x2222);
+        assert_eq!(e.call(0x005b_ac70, &args![]).u32(), 0x3333);
+        e.call(0x005b_ac80, &args![0x4d78c0u32]);
+        assert_eq!(e.global::<u32>(SCENE_GRAPH_CALLBACK_GLOBAL), 0x4d78c0);
+    }
+
+    #[test]
+    fn splatter_scene_needs_the_scene_and_a_non_zero_answer() {
+        let mut e = engine_d();
+        e.register(FN_00453470, |_, a| (a[0] == 0x1111).into_ret());
+        // No scene: false, the object is not asked.
+        start_log(&mut e);
+        assert!(!e.call(0x005b_ac20, &args![]).bool());
+        assert!(calls(&e, FN_00453470).is_empty());
+        // A scene the object answers for.
+        e.mem.set_u32(SLOT_SPLATTER_SCENE, 0x1111);
+        assert!(e.call(0x005b_ac20, &args![]).bool());
+        assert_eq!(calls(&e, FN_00453470), vec![vec![0x1111]]);
+        // A scene it answers zero for.
+        e.mem.set_u32(SLOT_SPLATTER_SCENE, 0x2222);
+        assert!(!e.call(0x005b_ac20, &args![]).bool());
+    }
+
+    /// Doubles for the scene graph windows: the allocation, the singleton
+    /// getters and the constructor and `AddObject` (which log their words);
+    /// `FN_00450B80(i)` answers `0x5000 + i` for the menu slots 1 and 3 and
+    /// zero for the others.
+    fn scene_graph_doubles(e: &mut Engine) {
+        e.register(OPERATOR_NEW, |e, a| e.mem.alloc(a[0]).into_ret());
+        e.register(FN_0044DDC0, |_, _| 0x8888u32.into_ret());
+        e.register(FN_0084E3A0, |_, _| 0x9999u32.into_ret());
+        e.register(FN_0045C670, |_, _| 0x4444u32.into_ret());
+        e.register(SCENE_GRAPH_WINDOW_CONSTRUCT, |_, a| a[0].into_ret());
+        e.register(SCENE_GRAPH_WINDOW_ADD_OBJECT, |_, _| Ret::default());
+        e.register(SCENE_GRAPH_WINDOW_FILL, |_, _| Ret::default());
+        e.register(FN_00450B80, |_, a| {
+            (if a[0] == 1 || a[0] == 3 {
+                0x5000 + a[0]
+            } else {
+                0
+            })
+            .into_ret()
+        });
+        e.mem.set_u32(SLOT_INTERFACE_SCENE, 0x2222);
+        e.mem.set_u32(SLOT_INTERFACE_3D_SCENE, 0x3333);
+        e.set_global(GLOBAL_0011DEA0C, 0x7777u32);
+    }
+
+    /// The `(object, title)` pairs added to windows, in order.
+    fn added_objects(e: &Engine) -> Vec<(u32, u32)> {
+        calls(e, SCENE_GRAPH_WINDOW_ADD_OBJECT)
+            .iter()
+            .map(|words| (words[1], words[2]))
+            .collect()
+    }
+
+    #[test]
+    fn scene_graph_command_without_a_reference_opens_the_world_window() {
+        let mut e = engine_d();
+        scene_graph_doubles(&mut e);
+        e.mem.set_u32(SLOT_SPLATTER_SCENE, 0x1111);
+        e.register(FN_00453470, |_, _| true.into_ret());
+        start_log(&mut e);
+        assert!(e.call(0x005b_a8f0, &args![script(0)]).bool());
+        assert_eq!(
+            e.global::<u32>(SCENE_GRAPH_CALLBACK_GLOBAL),
+            SCENE_GRAPH_CALLBACK
+        );
+        let construct = calls(&e, SCENE_GRAPH_WINDOW_CONSTRUCT);
+        let window = construct[0][0];
+        assert_ne!(window, 0);
+        // this, *(singleton + 0x0c), *(singleton + 8), world scene, title,
+        // placement.
+        assert_eq!(
+            construct[0][1..],
+            [
+                0x9999,
+                0x8888,
+                0x4444,
+                TITLE_WORLD,
+                0x8000_0000,
+                0x8000_0000,
+                800,
+                600
+            ]
+        );
+        assert_eq!(
+            added_objects(&e),
+            vec![
+                (0x2222, TITLE_INTERFACE),
+                (0x3333, TITLE_INTERFACE_3D_OBJECT),
+                (0x5001, TITLE_MENU_OBJECT_3D),
+                (0x5003, TITLE_MENU_PLAYER_3D),
+                (0x1111, TITLE_SPLATTER_SCENE),
+            ]
+        );
+        assert!(calls(&e, SCENE_GRAPH_WINDOW_ADD_OBJECT)
+            .iter()
+            .all(|words| words[0] == window));
+        // A reference whose object slot gives nothing is the same command.
+        let nothing = object_answering(&mut e, &[(0x1d0, 0)]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_a8f0, &args![script(nothing)]).bool());
+        assert_eq!(calls(&e, SCENE_GRAPH_WINDOW_CONSTRUCT).len(), 1);
+        assert_eq!(added_objects(&e).len(), 5);
+    }
+
+    #[test]
+    fn scene_graph_command_without_optional_scenes_adds_only_the_interface() {
+        let mut e = engine_d();
+        scene_graph_doubles(&mut e);
+        e.register(FN_00450B80, |_, _| 0u32.into_ret());
+        start_log(&mut e);
+        assert!(e.call(0x005b_a8f0, &args![script(0)]).bool());
+        assert_eq!(
+            added_objects(&e),
+            vec![
+                (0x2222, TITLE_INTERFACE),
+                (0x3333, TITLE_INTERFACE_3D_OBJECT)
+            ]
+        );
+    }
+
+    #[test]
+    fn scene_graph_command_for_the_player_names_the_window_after_the_view() {
+        let mut e = engine_d();
+        scene_graph_doubles(&mut e);
+        let player = object_answering(&mut e, &[(0x1d0, 0x6000)]);
+        e.set_global(PLAYER, player);
+        e.register(REFR_GET_NAME_TEXT, |_, _| 0xaaaau32.into_ret());
+        e.register(PLAYER_GET_PERSON_OBJECT, |_, a| (0x6100 + a[1]).into_ret());
+        e.register(PLAYER_GET_INVENTORY_MENU_OBJECT, |_, _| {
+            0x6200u32.into_ret()
+        });
+        for (third, window_title, other_title) in [
+            (1u8, TITLE_PLAYER_THIRD_PERSON, TITLE_PLAYER_FIRST_PERSON),
+            (0u8, TITLE_PLAYER_FIRST_PERSON, TITLE_PLAYER_THIRD_PERSON),
+        ] {
+            e.register_double(PLAYER_IS_THIRD_PERSON, move |_, _| third.into_ret());
+            start_log(&mut e);
+            assert!(e.call(0x005b_a8f0, &args![script(player)]).bool());
+            let construct = calls(&e, SCENE_GRAPH_WINDOW_CONSTRUCT);
+            assert_eq!(
+                construct[0][1..],
+                [
+                    0x9999,
+                    0x8888,
+                    0x6000,
+                    window_title,
+                    0x8000_0000,
+                    0x8000_0000,
+                    800,
+                    600
+                ]
+            );
+            assert_eq!(
+                added_objects(&e),
+                vec![
+                    (0x6100 + u32::from(third), other_title),
+                    (0x6200, TITLE_PLAYER_INVENTORY_MENU),
+                ]
+            );
+        }
+        // Without an inventory menu object only the other person is added.
+        e.register(PLAYER_GET_INVENTORY_MENU_OBJECT, |_, _| 0u32.into_ret());
+        start_log(&mut e);
+        assert!(e.call(0x005b_a8f0, &args![script(player)]).bool());
+        assert_eq!(added_objects(&e).len(), 1);
+    }
+
+    #[test]
+    fn scene_graph_command_for_another_reference_is_titled_with_its_name() {
+        let mut e = engine_d();
+        scene_graph_doubles(&mut e);
+        let player = object_answering(&mut e, &[(0x1d0, 0x6000)]);
+        e.set_global(PLAYER, player);
+        let other = object_answering(&mut e, &[(0x1d0, 0x6500)]);
+        e.register(REFR_GET_NAME_TEXT, |_, a| (a[0] + 1).into_ret());
+        start_log(&mut e);
+        assert!(e.call(0x005b_a8f0, &args![script(other)]).bool());
+        let construct = calls(&e, SCENE_GRAPH_WINDOW_CONSTRUCT);
+        assert_eq!(
+            construct[0][1..],
+            [
+                0x9999,
+                0x8888,
+                0x6500,
+                other + 1,
+                0x8000_0000,
+                0x8000_0000,
+                800,
+                600
+            ]
+        );
+        assert!(added_objects(&e).is_empty());
+    }
+
+    #[test]
+    fn world_scene_graph_command_fills_the_window_from_the_reference() {
+        let mut e = engine_d();
+        scene_graph_doubles(&mut e);
+        e.register(FN_00450B80, |_, a| {
+            (if a[0] == 1 { 0x5001u32 } else { 0 }).into_ret()
+        });
+        let target = object_answering(&mut e, &[(0x1d0, 0x6500)]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_ac90, &args![script(target)]).bool());
+        assert_eq!(
+            e.global::<u32>(SCENE_GRAPH_CALLBACK_GLOBAL),
+            SCENE_GRAPH_CALLBACK
+        );
+        let window = calls(&e, SCENE_GRAPH_WINDOW_CONSTRUCT)[0][0];
+        assert_eq!(
+            calls(&e, SCENE_GRAPH_WINDOW_FILL),
+            vec![vec![window, 0x6500]]
+        );
+        assert_eq!(
+            added_objects(&e),
+            vec![
+                (0x2222, TITLE_INTERFACE),
+                (0x3333, TITLE_INTERFACE_3D_OBJECT),
+                (0x5001, TITLE_RENDERED_MENU_3D),
+            ]
+        );
+        // No reference: no fill.
+        start_log(&mut e);
+        assert!(e.call(0x005b_ac90, &args![script(0)]).bool());
+        assert!(calls(&e, SCENE_GRAPH_WINDOW_FILL).is_empty());
+    }
+
+    /// Doubles for the viewer strings: a collector of the strings in
+    /// `strings`, and a log of the object whose slot `0x60` collected.
+    fn viewer_doubles(e: &mut Engine, strings: &[&'static [u8]]) {
+        e.register(OPERATOR_NEW, |e, a| e.mem.alloc(a[0]).into_ret());
+        // A collector is an object whose virtual slot 0 is its deleting
+        // destructor ([`V_COLLECTOR_DELETE`]).
+        e.register(STRING_COLLECTOR_CONSTRUCT, |e, a| {
+            let vtable = e.mem.alloc(0x10);
+            e.mem.set_u32(vtable, V_COLLECTOR_DELETE);
+            e.mem.set_u32(a[0], vtable);
+            a[0].into_ret()
+        });
+        e.register(V_COLLECTOR_DELETE, |_, _| Ret::default());
+        let addresses: Vec<u32> = strings.iter().map(|s| text_at(e, s)).collect();
+        // The string pointers are in an array at 0x0126_8300.
+        for (i, address) in addresses.iter().enumerate() {
+            e.mem.set_u32(0x0126_8300 + 4 * i as u32, *address);
+        }
+        let count = addresses.len() as u32;
+        e.register_double(STRING_COLLECTOR_COUNT, move |_, _| count.into_ret());
+        e.register(STRING_COLLECTOR_STRING_ADDRESS, |_, a| {
+            (0x0126_8300 + 4 * a[1]).into_ret()
+        });
+        e.register(STRING_COLLECTOR_CLEAR, |_, _| Ret::default());
+        e.register(NODE_GET_ATTACHED_OBJECT, |_, _| 0u32.into_ret());
+    }
+
+    /// Slot 0 of the collectors the viewer doubles make.
+    const V_COLLECTOR_DELETE: u32 = 0x0900_0060;
+
+    #[test]
+    fn viewer_strings_needs_a_reference_with_an_object() {
+        let mut e = engine_d();
+        accept(&mut e, &[CONSOLE_PRINT]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_ade0, &args![script(0)]).bool());
+        let no_object = object_answering(&mut e, &[(0x1d0, 0)]);
+        assert!(e.call(0x005b_ade0, &args![script(no_object)]).bool());
+        assert_eq!(
+            printed(&e),
+            vec![
+                vec![MSG_VIEWER_NEEDS_REFERENCE],
+                vec![MSG_VIEWER_NEEDS_REFERENCE]
+            ]
+        );
+    }
+
+    #[test]
+    fn viewer_strings_prints_the_collected_strings_of_the_object() {
+        let mut e = engine_d();
+        accept(&mut e, &[CONSOLE_PRINT]);
+        viewer_doubles(&mut e, &[b"first", b"second"]);
+        e.register(0x0a10_0001, |e, a| {
+            // Collects: remember the collector in a global.
+            e.mem.set_u32(0x0126_8388, a[1]);
+            Ret::default()
+        });
+        let object = object_with(&mut e, &[(0x0c, V_FALSE), (0x60, 0x0a10_0001)]);
+        let reference = object_answering(&mut e, &[(0x1d0, object)]);
+        // `object_answering` made a new vtable: the reference returns `object`.
+        start_log(&mut e);
+        assert!(e.call(0x005b_ade0, &args![script(reference)]).bool());
+        let collector = e.mem.u32(0x0126_8388);
+        assert_ne!(collector, 0);
+        let printed_text: Vec<Vec<u32>> = printed(&e);
+        assert_eq!(printed_text.len(), 2);
+        assert_eq!(e.mem.cstr(printed_text[0][0]), b"first".to_vec());
+        assert_eq!(e.mem.cstr(printed_text[1][0]), b"second".to_vec());
+        assert_eq!(calls(&e, STRING_COLLECTOR_CLEAR).len(), 1);
+        // The collector is deleted (slot 0, argument 1).
+        assert_eq!(calls(&e, V_COLLECTOR_DELETE), vec![vec![collector, 1]]);
+    }
+
+    #[test]
+    fn viewer_strings_uses_the_first_child_of_a_node_and_the_attached_object() {
+        let mut e = engine_d();
+        accept(&mut e, &[CONSOLE_PRINT]);
+        viewer_doubles(&mut e, &[b"only"]);
+        e.register(0x0a10_0002, |e, a| {
+            let n = e.mem.u32(0x0126_8390);
+            e.mem.set_u32(0x0126_8390, n + 1);
+            e.mem.set_u32(0x0126_8394 + 4 * n, a[0]);
+            Ret::default()
+        });
+        let child = object_with(&mut e, &[(0x0c, V_FALSE), (0x60, 0x0a10_0002)]);
+        let node = object_with(&mut e, &[(0x0c, V_TRUE), (0x60, 0x0a10_0002)]);
+        let reference = object_answering(&mut e, &[(0x1d0, node)]);
+        // The node has two children; the first is empty, the second used.
+        e.register(NODE_CHILD_COUNT, |_, _| 2u32.into_ret());
+        e.register_double(NODE_CHILD_AT, move |_, a| {
+            (if a[1] == 0 { 0 } else { child }).into_ret()
+        });
+        // The child has an attached object that converts to a target object.
+        e.register(NODE_GET_ATTACHED_OBJECT, |_, _| 0xb000u32.into_ret());
+        e.register(FN_00653270, |_, a| {
+            assert_eq!(a, [TYPE_012043F8, 0xb000]);
+            0xb100u32.into_ret()
+        });
+        let target = object_with(&mut e, &[(0x60, 0x0a10_0002)]);
+        e.register_double(FN_006FA820, move |_, a| {
+            assert_eq!(a, [0xb100]);
+            target.into_ret()
+        });
+        start_log(&mut e);
+        assert!(e.call(0x005b_ade0, &args![script(reference)]).bool());
+        // Collected from the child, then from the target object.
+        assert_eq!(e.mem.u32(0x0126_8390), 2);
+        assert_eq!(e.mem.u32(0x0126_8394), child);
+        assert_eq!(e.mem.u32(0x0126_8398), target);
+        assert_eq!(printed(&e).len(), 2);
+        assert_eq!(calls(&e, STRING_COLLECTOR_CLEAR).len(), 2);
+        // The child was fetched for index 0 (empty) and index 1.
+        assert_eq!(calls(&e, NODE_CHILD_AT).len(), 2);
+    }
+
+    #[test]
+    fn viewer_strings_reports_a_node_without_children() {
+        let mut e = engine_d();
+        accept(&mut e, &[CONSOLE_PRINT]);
+        viewer_doubles(&mut e, &[]);
+        e.register(NODE_CHILD_COUNT, |_, _| 0u32.into_ret());
+        let node = object_with(&mut e, &[(0x0c, V_TRUE)]);
+        let reference = object_answering(&mut e, &[(0x1d0, node)]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_ade0, &args![script(reference)]).bool());
+        assert_eq!(printed(&e), vec![vec![MSG_VIEWER_NODE_WITHOUT_CHILDREN]]);
+        assert!(calls(&e, STRING_COLLECTOR_CLEAR).is_empty());
+    }
+
+    /// Doubles for the LOD command: the world space and terrain manager
+    /// getters, a string compare ignoring case, and four LOD objects
+    /// (`0x7100` trees, `0x7200` land, `0x7300` objects, `0x7400` water) whose
+    /// flag byte is at `+0`; the flag setter logs.
+    fn lod_doubles(e: &mut Engine, terrain: u32) {
+        e.map(0x7000, 0x1000);
+        e.set_global(GLOBAL_0011DEA10, 0x7000u32);
+        e.register(TES_GET_WORLD_SPACE, |_, a| (a[0] + 1).into_ret());
+        for (address, text) in [
+            (TEXT_ALL, &b"all"[..]),
+            (TEXT_WATER, b"water"),
+            (TEXT_LAND, b"land"),
+            (TEXT_TREES, b"trees"),
+            (TEXT_OBJECTS, b"objects"),
+            (TEXT_BUILDINGS, b"buildings"),
+        ] {
+            e.mem.set_cstr(address, text);
+        }
+        e.register_double(WORLD_SPACE_GET_TERRAIN_MANAGER, move |_, a| {
+            assert_eq!(a, [0x7001]);
+            terrain.into_ret()
+        });
+        e.register(COMPARE_STRINGS_NO_CASE, |e, a| {
+            let (x, y) = (e.mem.cstr(a[0]), e.mem.cstr(a[1]));
+            (x.eq_ignore_ascii_case(&y) as u32 ^ 1).into_ret()
+        });
+        for (getter, object) in [
+            (LOD_TREES_OBJECT, 0x7100u32),
+            (LOD_LAND_OBJECT, 0x7200),
+            (LOD_OBJECTS_OBJECT, 0x7300),
+            (LOD_WATER_OBJECT, 0x7400),
+        ] {
+            e.register_double(getter, move |_, _| object.into_ret());
+        }
+        e.register(LOD_OBJECT_GET_FLAG, |e, a| e.mem.u8(a[0]).into_ret());
+        e.register(LOD_OBJECT_SET_FLAG, |e, a| {
+            e.mem.set_u8(a[0], a[1] as u8);
+            Ret::default()
+        });
+    }
+
+    #[test]
+    fn lod_command_selects_the_kinds_named_by_the_argument() {
+        let flags = |e: &Engine| [0x7100u32, 0x7200, 0x7300, 0x7400].map(|object| e.mem.u8(object));
+        for (word, expected, message) in [
+            (&b"all"[..], [1, 1, 1, 1], MSG_TOGGLING_ALL_LOD),
+            (b"", [1, 1, 1, 1], MSG_TOGGLING_ALL_LOD),
+            (b"TREES", [1, 0, 0, 0], MSG_TOGGLING_TREES),
+            (b"land", [0, 1, 0, 0], MSG_TOGGLING_LAND),
+            (b"objects", [0, 0, 1, 0], MSG_TOGGLING_OBJECTS),
+            (b"buildings", [0, 0, 1, 0], MSG_TOGGLING_OBJECTS),
+            (b"water", [0, 0, 0, 1], MSG_TOGGLING_WATER),
+        ] {
+            let mut e = engine_d();
+            lod_doubles(&mut e, 0x7500);
+            accept(&mut e, &[CONSOLE_PRINT]);
+            let text = word;
+            e.register_double(PARSE_PARAMETERS, move |e, a| {
+                e.mem.set_cstr(a[7], text);
+                true.into_ret()
+            });
+            start_log(&mut e);
+            assert!(e.call(0x005b_b030, &args![script(0)]).bool());
+            assert_eq!(printed(&e), vec![vec![message]]);
+            // Every selected flag byte went from 0 to 1.
+            assert_eq!(flags(&e), expected, "{:?}", String::from_utf8_lossy(word));
+        }
+    }
+
+    #[test]
+    fn lod_command_flips_a_set_flag_back_and_skips_missing_objects() {
+        let mut e = engine_d();
+        lod_doubles(&mut e, 0x7500);
+        accept(&mut e, &[CONSOLE_PRINT]);
+        e.register_double(PARSE_PARAMETERS, |e, a| {
+            e.mem.set_cstr(a[7], b"land");
+            true.into_ret()
+        });
+        e.mem.set_u8(0x7200, 1);
+        assert!(e.call(0x005b_b030, &args![script(0)]).bool());
+        assert_eq!(e.mem.u8(0x7200), 0);
+        // A missing LOD object is skipped: land answers nothing.
+        e.register(LOD_LAND_OBJECT, |_, _| 0u32.into_ret());
+        assert!(e.call(0x005b_b030, &args![script(0)]).bool());
+        assert_eq!(e.mem.u8(0x7200), 0);
+    }
+
+    #[test]
+    fn lod_command_rejects_an_unknown_kind_and_needs_a_terrain_manager() {
+        let mut e = engine_d();
+        lod_doubles(&mut e, 0x7500);
+        accept(&mut e, &[CONSOLE_PRINT]);
+        e.register_double(PARSE_PARAMETERS, |e, a| {
+            e.mem.set_cstr(a[7], b"sky");
+            true.into_ret()
+        });
+        start_log(&mut e);
+        assert!(e.call(0x005b_b030, &args![script(0)]).bool());
+        assert_eq!(printed(&e), vec![vec![MSG_LOD_INVALID_PARAMETER]]);
+        assert!(calls(&e, LOD_OBJECT_SET_FLAG).is_empty());
+        // The first word zero: the string is not parsed and counts as empty.
+        let mut quiet = ScriptArgs {
+            param_info: 0,
+            ..script(0)
+        };
+        quiet.param_info = 0;
+        start_log(&mut e);
+        assert!(e.call(0x005b_b030, &args![quiet]).bool());
+        assert!(calls(&e, PARSE_PARAMETERS).is_empty());
+        assert_eq!(printed(&e).last().unwrap(), &vec![MSG_TOGGLING_ALL_LOD]);
+        // Parameters that do not parse: false.
+        parse_gives(&mut e, false, &[]);
+        assert!(!e.call(0x005b_b030, &args![script(0)]).bool());
+        // No terrain manager: true, nothing printed or toggled.
+        let mut e = engine_d();
+        lod_doubles(&mut e, 0);
+        accept(&mut e, &[CONSOLE_PRINT]);
+        parse_gives(&mut e, true, &[]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b030, &args![script(0)]).bool());
+        assert!(printed(&e).is_empty());
+    }
+
+    // ---- Fourth batch, second part (`005bb390` onward) ----------------------
+
+    /// Doubles for the interface objects: [`INTERFACE_GET_1DC_OBJECT`] answers
+    /// `0x7100`, [`INTERFACE_GET_178_OBJECT`] `0x7200` and
+    /// [`INTERFACE_GET_PIPBOY`] `0x7300`; `0044ac20` copies the word at its
+    /// argument to `this`.
+    fn interface_doubles(e: &mut Engine) {
+        e.map(0x7000, 0x1000);
+        e.register(INTERFACE_GET_1DC_OBJECT, |_, _| 0x7100u32.into_ret());
+        e.register(INTERFACE_GET_178_OBJECT, |_, _| 0x7200u32.into_ret());
+        e.register(INTERFACE_GET_PIPBOY, |_, _| 0x7300u32.into_ret());
+        e.register(FN_0044AC20, |e, a| {
+            let word = e.mem.u32(a[1]);
+            e.mem.set_u32(a[0], word);
+            Ret::default()
+        });
+    }
+
+    /// `ParseParameters` double for commands whose arguments are all
+    /// `float`s: the values are given as `f32`.
+    fn parse_gives_floats(e: &mut Engine, values: &[f32]) {
+        let bits: Vec<u32> = values.iter().map(|v| v.to_bits()).collect();
+        parse_gives(e, true, &bits);
+    }
+
+    #[test]
+    fn set_lod_object_distance_sets_the_settings_and_updates_the_terrain() {
+        let mut e = engine_d();
+        e.map(0x7000, 0x1000);
+        e.set_global(GLOBAL_0011DEA10, 0x7000u32);
+        e.set_global(GLOBAL_0011DEA0C, 0x7400u32);
+        let player = object_answering(&mut e, &[(PLAYER_POSITION_SLOT, 0x7800)]);
+        e.set_global(PLAYER, player);
+        e.register(TES_GET_WORLD_SPACE, |_, a| (a[0] + 1).into_ret());
+        e.register(WORLD_SPACE_GET_TERRAIN_MANAGER, |_, a| {
+            assert_eq!(a, [0x7001]);
+            0x7500u32.into_ret()
+        });
+        accept(
+            &mut e,
+            &[
+                SETTING_SET_FLOAT,
+                TERRAIN_MANAGER_UPDATE,
+                FN_00558310,
+                FN_0043C490,
+            ],
+        );
+        e.register(FN_0045C670, |_, _| 0x7600u32.into_ret());
+        parse_gives_floats(&mut e, &[250.0, 600.0]);
+        // The singleton's byte at +6 is zero: the player's position is read
+        // twice (the unused local vector, then the update).
+        start_log(&mut e);
+        assert!(e.call(0x005b_b390, &args![script(0)]).bool());
+        assert_eq!(
+            calls(&e, SETTING_SET_FLOAT),
+            vec![
+                vec![SETTING_LOD_DISTANCE_NEAR, 250.0f32.to_bits()],
+                vec![SETTING_LOD_DISTANCE_FAR, 600.0f32.to_bits()]
+            ]
+        );
+        assert_eq!(
+            calls(&e, TERRAIN_MANAGER_UPDATE),
+            vec![vec![0x7500, 0x7800, 1]]
+        );
+        let position_calls = e
+            .call_log
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter(|(_, words)| words.first() == Some(&player))
+            .count();
+        assert_eq!(position_calls, 2);
+        assert!(calls(&e, FN_00558310).is_empty());
+        // The byte at +6 set: the cell position route, and one player read.
+        e.mem.set_u8(0x7406, 1);
+        e.register(FN_00558310, |_, a| {
+            assert_eq!(a, [0x7600]);
+            0x7700u32.into_ret()
+        });
+        start_log(&mut e);
+        assert!(e.call(0x005b_b390, &args![script(0)]).bool());
+        assert_eq!(calls(&e, FN_0043C490), vec![vec![0x7700]]);
+        let position_calls = e
+            .call_log
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter(|(_, words)| words.first() == Some(&player))
+            .count();
+        assert_eq!(position_calls, 1);
+    }
+
+    #[test]
+    fn set_lod_object_distance_without_parsing_or_a_terrain_manager() {
+        let mut e = engine_d();
+        e.map(0x7000, 0x1000);
+        e.set_global(GLOBAL_0011DEA10, 0x7000u32);
+        e.register(TES_GET_WORLD_SPACE, |_, _| 0u32.into_ret());
+        e.register(WORLD_SPACE_GET_TERRAIN_MANAGER, |_, _| 0u32.into_ret());
+        accept(&mut e, &[SETTING_SET_FLOAT]);
+        // Bad arguments.
+        parse_gives(&mut e, false, &[]);
+        assert!(!e.call(0x005b_b390, &args![script(0)]).bool());
+        // The first word zero: not parsed; no terrain manager: nothing set.
+        let unparsed = ScriptArgs {
+            param_info: 0,
+            ..script(0)
+        };
+        start_log(&mut e);
+        assert!(e.call(0x005b_b390, &args![unparsed]).bool());
+        assert!(calls(&e, PARSE_PARAMETERS).is_empty());
+        assert!(calls(&e, SETTING_SET_FLOAT).is_empty());
+        // A terrain manager with the first word zero: both values are 0.0.
+        e.register(WORLD_SPACE_GET_TERRAIN_MANAGER, |_, _| 0x7500u32.into_ret());
+        e.set_global(GLOBAL_0011DEA0C, 0x7400u32);
+        let player = object_answering(&mut e, &[(PLAYER_POSITION_SLOT, 1)]);
+        e.set_global(PLAYER, player);
+        accept(&mut e, &[TERRAIN_MANAGER_UPDATE]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b390, &args![unparsed]).bool());
+        assert_eq!(
+            calls(&e, SETTING_SET_FLOAT),
+            vec![
+                vec![SETTING_LOD_DISTANCE_NEAR, 0],
+                vec![SETTING_LOD_DISTANCE_FAR, 0]
+            ]
+        );
+    }
+
+    #[test]
+    fn byte_accessor_at_offset_six() {
+        let mut e = engine_d();
+        let object = e.mem.alloc(16);
+        e.mem.set_u8(object + 6, 0x5a);
+        assert_eq!(e.call(0x005b_b4d0, &args![object]).u8(), 0x5a);
+    }
+
+    #[test]
+    fn three_float_command_passes_the_values_on() {
+        let mut e = engine_d();
+        accept(&mut e, &[FN_007E4FE0]);
+        // Defaults: 0.0, 0.0, 1.0.
+        parse_gives(&mut e, true, &[]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b4f0, &args![script(0)]).bool());
+        assert_eq!(calls(&e, FN_007E4FE0), vec![vec![0, 0, 1.0f32.to_bits()]]);
+        // Parsed values (four outputs are passed).
+        parse_gives_floats(&mut e, &[2.0, 3.0, 4.0, 9.0]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b4f0, &args![script(0)]).bool());
+        assert_eq!(calls(&e, PARSE_PARAMETERS)[0].len(), 11);
+        assert_eq!(
+            calls(&e, FN_007E4FE0),
+            vec![vec![2.0f32.to_bits(), 3.0f32.to_bits(), 4.0f32.to_bits()]]
+        );
+        // Bad arguments.
+        parse_gives(&mut e, false, &[]);
+        start_log(&mut e);
+        assert!(!e.call(0x005b_b4f0, &args![script(0)]).bool());
+        assert!(calls(&e, FN_007E4FE0).is_empty());
+    }
+
+    #[test]
+    fn interface_object_commands_need_a_reference_with_an_object() {
+        let mut e = engine_d();
+        interface_doubles(&mut e);
+        e.set_global(F32_0101E580, 15.0f32);
+        e.register(FTOL, |_, a| (f64::take(a, &mut 0) as i32 as u32).into_ret());
+        accept(
+            &mut e,
+            &[FN_00800AC0, FN_00800D50, FN_00800E50, FN_00800ED0],
+        );
+        let target = object_answering(&mut e, &[(0x1d0, 0x6000)]);
+        let no_object = object_answering(&mut e, &[(0x1d0, 0)]);
+
+        // 005bb570: the value (-2.75, truncated to -2) and the reference.
+        parse_gives_floats(&mut e, &[-2.75]);
+        e.mem.set_u32(0x7100, 0xdead);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b570, &args![script(target)]).bool());
+        assert_eq!(calls(&e, PARSE_PARAMETERS)[0].len(), 11);
+        assert_eq!(
+            calls(&e, FN_00800AC0),
+            vec![vec![0x7100, target, (-2i32) as u32, 0]]
+        );
+        assert_eq!(e.mem.u32(0x7100), 0);
+        // The default is the global 15.0.
+        parse_gives(&mut e, true, &[]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b570, &args![script(target)]).bool());
+        assert_eq!(calls(&e, FN_00800AC0), vec![vec![0x7100, target, 15, 0]]);
+        // No reference, or one without an object: nothing.
+        for this_obj in [0, no_object] {
+            e.mem.set_u32(0x7100, 0xdead);
+            start_log(&mut e);
+            assert!(e.call(0x005b_b570, &args![script(this_obj)]).bool());
+            assert!(calls(&e, FN_00800AC0).is_empty());
+            assert_eq!(e.mem.u32(0x7100), 0xdead);
+        }
+        parse_gives(&mut e, false, &[]);
+        assert!(!e.call(0x005b_b570, &args![script(target)]).bool());
+
+        // 005bb610: the reference to two methods, then the word 1.
+        parse_gives(&mut e, true, &[]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b610, &args![script(target)]).bool());
+        assert_eq!(calls(&e, FN_00800D50), vec![vec![0x7100, target]]);
+        assert_eq!(calls(&e, FN_00800E50), vec![vec![0x7100, target]]);
+        assert_eq!(e.mem.u32(0x7100), 1);
+        e.mem.set_u32(0x7100, 0xdead);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b610, &args![script(no_object)]).bool());
+        assert!(calls(&e, FN_00800D50).is_empty());
+        assert_eq!(e.mem.u32(0x7100), 0xdead);
+        parse_gives(&mut e, false, &[]);
+        assert!(!e.call(0x005b_b610, &args![script(target)]).bool());
+
+        // 005bb6c0: zeros to one method, another one, then the word 0.
+        parse_gives(&mut e, true, &[]);
+        e.mem.set_u32(0x7100, 0xdead);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b6c0, &args![script(target)]).bool());
+        assert_eq!(calls(&e, FN_00800AC0), vec![vec![0x7100, 0, 0, 0]]);
+        assert_eq!(calls(&e, FN_00800ED0), vec![vec![0x7100]]);
+        assert_eq!(e.mem.u32(0x7100), 0);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b6c0, &args![script(0)]).bool());
+        assert!(calls(&e, FN_00800ED0).is_empty());
+        parse_gives(&mut e, false, &[]);
+        assert!(!e.call(0x005b_b6c0, &args![script(target)]).bool());
+    }
+
+    #[test]
+    fn interface_float_command_hands_three_values_to_the_object() {
+        let mut e = engine_d();
+        interface_doubles(&mut e);
+        accept(&mut e, &[FN_007F7880]);
+        e.set_global(F32_01013D84, 500.0f32);
+        e.set_global(F32_0101E2BC, 0.1f32);
+        e.set_global(F32_010181BC, 0.05f32);
+        parse_gives(&mut e, true, &[]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b770, &args![script(0)]).bool());
+        assert_eq!(
+            calls(&e, FN_007F7880),
+            vec![vec![
+                0x7200,
+                500.0f32.to_bits(),
+                0.1f32.to_bits(),
+                0.05f32.to_bits()
+            ]]
+        );
+        parse_gives_floats(&mut e, &[1.0, 2.0, 3.0, 4.0]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b770, &args![script(0)]).bool());
+        assert_eq!(
+            calls(&e, FN_007F7880),
+            vec![vec![
+                0x7200,
+                1.0f32.to_bits(),
+                2.0f32.to_bits(),
+                3.0f32.to_bits()
+            ]]
+        );
+        parse_gives(&mut e, false, &[]);
+        start_log(&mut e);
+        assert!(!e.call(0x005b_b770, &args![script(0)]).bool());
+        assert!(calls(&e, FN_007F7880).is_empty());
+    }
+
+    #[test]
+    fn move_pipboy_knob_passes_the_knob_the_amount_and_the_step() {
+        let mut e = engine_d();
+        interface_doubles(&mut e);
+        accept(&mut e, &[FN_007F8610]);
+        e.set_global(F32_010780A4, 0.0005f32);
+        e.register_double(PARSE_PARAMETERS, |e, a| {
+            assert_eq!(a.len(), 9);
+            e.mem.set_u32(a[7], 3);
+            e.mem.set_u32(a[8], (-0.5f32).to_bits());
+            true.into_ret()
+        });
+        start_log(&mut e);
+        assert!(e.call(0x005b_b800, &args![script(0)]).bool());
+        assert_eq!(
+            calls(&e, FN_007F8610),
+            vec![vec![0x7300, 3, (-0.5f32).to_bits(), 0.0005f32.to_bits(), 1]]
+        );
+        parse_gives(&mut e, false, &[]);
+        start_log(&mut e);
+        assert!(!e.call(0x005b_b800, &args![script(0)]).bool());
+        assert!(calls(&e, FN_007F8610).is_empty());
+    }
+
+    #[test]
+    fn float_setting_command_stores_the_value_in_the_global_object() {
+        let mut e = engine_d();
+        e.register(FLOAT_VALUE_ADDRESS, |_, a| {
+            assert_eq!(a, [GLOBAL_011E090C]);
+            (a[0] + 4).into_ret()
+        });
+        parse_gives_floats(&mut e, &[2.5]);
+        assert!(e.call(0x005b_b870, &args![script(0)]).bool());
+        assert_eq!(e.mem.f32(GLOBAL_011E090C + 4), 2.5);
+        parse_gives(&mut e, false, &[]);
+        e.mem.set_f32(GLOBAL_011E090C + 4, 7.0);
+        assert!(!e.call(0x005b_b870, &args![script(0)]).bool());
+        assert_eq!(e.mem.f32(GLOBAL_011E090C + 4), 7.0);
+    }
+
+    #[test]
+    fn position_copy_reads_the_three_words_at_0x1f0() {
+        let mut e = engine_d();
+        let object = e.mem.alloc(0x210);
+        for (i, word) in [11u32, 22, 33].iter().enumerate() {
+            e.mem.set_u32(object + 0x1f0 + 4 * i as u32, *word);
+        }
+        let out = e.mem.alloc(16);
+        assert_eq!(e.call(0x005b_b9b0, &args![object, out]).u32(), out);
+        assert_eq!(read_vector(&e, out), [11, 22, 33]);
+    }
+
+    #[test]
+    fn debug_marker_command_flips_or_sets_its_byte() {
+        let mut e = engine_d();
+        e.set_global(FLOAT_MINUS_ONE, -1.0f32);
+        e.register(FN_00450B80, |e, a| {
+            assert_eq!(a, [0]);
+            let object = e.mem.u32(0x0126_8500);
+            object.into_ret()
+        });
+        let object = e.mem.alloc(0x210);
+        for (i, word) in [1u32, 2, 3].iter().enumerate() {
+            e.mem.set_u32(object + 0x1f0 + 4 * i as u32, *word);
+        }
+        e.mem.set_u32(0x0126_8500, object);
+        accept(&mut e, &[FN_00B5A8C0]);
+        // Defaults (-1.0, -1.0): both below zero, so the byte is flipped.
+        parse_gives(&mut e, true, &[]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b8c0, &args![script(0)]).bool());
+        assert_eq!(e.global::<u8>(FLAG_011CAE47), 1);
+        let minus_one = (-1.0f32).to_bits();
+        assert_eq!(
+            calls(&e, FN_00B5A8C0),
+            vec![vec![object, 1, 1, 2, 3, minus_one, minus_one]]
+        );
+        assert!(e.call(0x005b_b8c0, &args![script(0)]).bool());
+        assert_eq!(e.global::<u8>(FLAG_011CAE47), 0);
+        // Zero is not above zero: the byte is flipped again.
+        parse_gives_floats(&mut e, &[0.0, -0.0]);
+        assert!(e.call(0x005b_b8c0, &args![script(0)]).bool());
+        assert_eq!(e.global::<u8>(FLAG_011CAE47), 1);
+        // A value above zero (either one) sets the byte whatever it was.
+        for values in [[2.0f32, -1.0], [-1.0, 0.25], [f32::NAN, -1.0]] {
+            e.set_global(FLAG_011CAE47, 0u8);
+            parse_gives_floats(&mut e, &values);
+            assert!(e.call(0x005b_b8c0, &args![script(0)]).bool());
+            assert_eq!(e.global::<u8>(FLAG_011CAE47), 1, "{values:?}");
+            e.set_global(FLAG_011CAE47, 1u8);
+            assert!(e.call(0x005b_b8c0, &args![script(0)]).bool());
+            assert_eq!(e.global::<u8>(FLAG_011CAE47), 1, "{values:?}");
+        }
+        // The two values reach the callee in parse order.
+        parse_gives_floats(&mut e, &[2.0, 4.0]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b8c0, &args![script(0)]).bool());
+        assert_eq!(
+            calls(&e, FN_00B5A8C0),
+            vec![vec![object, 1, 1, 2, 3, 2.0f32.to_bits(), 4.0f32.to_bits()]]
+        );
+        parse_gives(&mut e, false, &[]);
+        assert!(!e.call(0x005b_b8c0, &args![script(0)]).bool());
+    }
+
+    /// Doubles for `005bb9e0`: the list owner object (with a position at
+    /// `+0x1f0`), the list and the construction calls, which are logged.
+    fn marker_doubles(e: &mut Engine) -> u32 {
+        e.set_global(FLOAT_MINUS_ONE, -1.0f32);
+        e.set_global(F32_0101B268, 50.0f32);
+        e.set_global(FLOAT_HALF_PI, std::f32::consts::FRAC_PI_2);
+        let owner = e.mem.alloc(0x210);
+        for (i, word) in [1.5f32, 2.5, 3.5].iter().enumerate() {
+            e.mem.set_f32(owner + 0x1f0 + 4 * i as u32, *word);
+        }
+        e.mem.set_u32(0x0126_8500, owner);
+        e.register(NI_POINT2_CONSTRUCT, |e, a| {
+            e.mem.set_u32(a[0], a[1]);
+            e.mem.set_u32(a[0] + 4, a[2]);
+            a[0].into_ret()
+        });
+        e.register(FN_00450B80, |e, a| {
+            assert_eq!(a, [0]);
+            e.mem.u32(0x0126_8500).into_ret()
+        });
+        e.register(FN_00454B30, |_, a| (a[0] + 0x10).into_ret());
+        accept(
+            e,
+            &[
+                FN_004ED900,
+                TRIVIAL_CONSTRUCT,
+                NI_MATRIX_FROM_Z_ANGLE,
+                NI_POINTER_DESTRUCT,
+                FN_00C5AE70,
+            ],
+        );
+        e.register(FN_0045C670, |_, _| 0x7600u32.into_ret());
+        e.register(FN_006629F0, |_, a| {
+            assert_eq!(a, [0x7600]);
+            0x7700u32.into_ret()
+        });
+        // The matrix lives at 0x7770 + ..., nine words 1..=9.
+        e.map(0x7000, 0x1000);
+        e.register(FN_00461130, |_, a| {
+            assert_eq!(a, [0x7700]);
+            0x7770u32.into_ret()
+        });
+        for i in 0..9u32 {
+            e.mem.set_u32(0x7770 + 4 * i, i + 1);
+        }
+        // The product: every word 100 + index, returned as the out pointer.
+        e.register(NI_MATRIX_MULTIPLY, |e, a| {
+            for i in 0..9u32 {
+                e.mem.set_u32(a[1] + 4 * i, 100 + i);
+            }
+            a[1].into_ret()
+        });
+        e.register(NI_ALLOC, |e, a| {
+            assert_eq!(a, [0xfc]);
+            e.mem.alloc(0xfc).into_ret()
+        });
+        // The 0xfc-byte object constructor: records what it was given.
+        e.register_double(FN_004A5FF0, |e, a| {
+            e.mem.set_u32(0x0126_8600, a[0]);
+            for i in 0..3u32 {
+                let word = e.mem.u32(a[1] + 4 * i);
+                e.mem.set_u32(0x0126_8610 + 4 * i, word);
+            }
+            for i in 0..2u32 {
+                let word = e.mem.u32(a[2] + 4 * i);
+                e.mem.set_u32(0x0126_8620 + 4 * i, word);
+            }
+            for i in 0..9u32 {
+                let word = e.mem.u32(a[3] + 4 * i);
+                e.mem.set_u32(0x0126_8630 + 4 * i, word);
+            }
+            a[0].into_ret()
+        });
+        e.register(NI_POINTER_INIT, |e, a| {
+            e.mem.set_u32(a[0], a[1]);
+            a[0].into_ret()
+        });
+        owner
+    }
+
+    #[test]
+    fn marker_command_builds_an_object_from_the_position_point_and_matrix() {
+        let mut e = engine_d();
+        let owner = marker_doubles(&mut e);
+        // First value goes to the second component: y = 3.0, x = -2.0 (becomes
+        // 50.0).
+        parse_gives_floats(&mut e, &[3.0, -2.0]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_b9e0, &args![script(0)]).bool());
+        let block = e.mem.u32(0x0126_8600);
+        assert_ne!(block, 0);
+        let float_words = |e: &Engine, at: u32, n: u32| -> Vec<f32> {
+            (0..n).map(|i| e.mem.f32(at + 4 * i)).collect()
+        };
+        assert_eq!(float_words(&e, 0x0126_8610, 3), vec![1.5, 2.5, 3.5]);
+        assert_eq!(float_words(&e, 0x0126_8620, 2), vec![50.0, 3.0]);
+        let matrix: Vec<u32> = (0..9).map(|i| e.mem.u32(0x0126_8630 + 4 * i)).collect();
+        assert_eq!(matrix, (100..109).collect::<Vec<u32>>());
+        // The rotation about z is pi / 2 and the product is of the world matrix.
+        assert_eq!(
+            calls(&e, NI_MATRIX_FROM_Z_ANGLE)[0][1],
+            std::f32::consts::FRAC_PI_2.to_bits()
+        );
+        assert_eq!(calls(&e, NI_MATRIX_MULTIPLY)[0].len(), 3);
+        // The new object is held, added to the owner's list and released.
+        let held = calls(&e, FN_00C5AE70);
+        assert_eq!(held, vec![vec![owner + 0x10, block]]);
+        assert_eq!(calls(&e, NI_POINTER_INIT)[0][1], block);
+        assert_eq!(calls(&e, NI_POINTER_DESTRUCT).len(), 1);
+        assert!(calls(&e, FN_004ED900).is_empty());
+        // A value of 0.0 empties the list instead.
+        for values in [[0.0f32, 4.0], [4.0, 0.0]] {
+            parse_gives_floats(&mut e, &values);
+            start_log(&mut e);
+            assert!(e.call(0x005b_b9e0, &args![script(0)]).bool());
+            assert_eq!(calls(&e, FN_004ED900), vec![vec![owner + 0x10 + 8]]);
+            assert!(calls(&e, NI_ALLOC).is_empty());
+        }
+        // Bad arguments.
+        parse_gives(&mut e, false, &[]);
+        start_log(&mut e);
+        assert!(!e.call(0x005b_b9e0, &args![script(0)]).bool());
+        assert!(calls(&e, FN_004ED900).is_empty());
+    }
+
+    #[test]
+    fn marker_command_keeps_positive_values_and_defaults_negative_ones() {
+        let mut e = engine_d();
+        marker_doubles(&mut e);
+        // Both parsed values positive: kept (y = 7.0 first, x = 6.0 second).
+        parse_gives_floats(&mut e, &[7.0, 6.0]);
+        assert!(e.call(0x005b_b9e0, &args![script(0)]).bool());
+        assert_eq!(e.mem.f32(0x0126_8620), 6.0);
+        assert_eq!(e.mem.f32(0x0126_8624), 7.0);
+        // Both negative: both become 50.0.
+        parse_gives_floats(&mut e, &[-7.0, -6.0]);
+        assert!(e.call(0x005b_b9e0, &args![script(0)]).bool());
+        assert_eq!(e.mem.f32(0x0126_8620), 50.0);
+        assert_eq!(e.mem.f32(0x0126_8624), 50.0);
+    }
+
+    #[test]
+    fn list_clear_and_small_flag_commands() {
+        let mut e = engine_d();
+        accept(&mut e, &[FN_004ED900]);
+        start_log(&mut e);
+        e.call(0x005b_bc10, &args![0x7000u32]);
+        assert_eq!(calls(&e, FN_004ED900), vec![vec![0x7008]]);
+        assert!(e.call(0x005b_bc30, &args![]).bool());
+        assert_eq!(e.global::<u8>(FLAG_011AD884), 1);
+        assert!(e.call(0x005b_bc30, &args![]).bool());
+        assert_eq!(e.global::<u8>(FLAG_011AD884), 0);
+        e.mem.set_u8(FLAG_011AD884, 9);
+        assert!(e.call(0x005b_bc30, &args![]).bool());
+        assert_eq!(e.global::<u8>(FLAG_011AD884), 0);
+        // Bit 0 of the dword at +0x18.
+        let object = e.mem.alloc(0x40);
+        e.mem.set_u32(object + 0x18, 0x10);
+        e.call(0x005b_bd60, &args![object, 1u32]);
+        assert_eq!(e.mem.u32(object + 0x18), 0x11);
+        e.call(0x005b_bd60, &args![object, 0u32]);
+        assert_eq!(e.mem.u32(object + 0x18), 0x10);
+    }
+
+    #[test]
+    fn radial_blur_replaces_the_running_instance() {
+        let mut e = engine_d();
+        e.set_global(F32_01016248, 0.5f32);
+        e.register(NI_POINT2_CONSTRUCT, |e, a| {
+            e.mem.set_u32(a[0], a[1]);
+            e.mem.set_u32(a[0] + 4, a[2]);
+            a[0].into_ret()
+        });
+        accept(&mut e, &[IMAGE_SPACE_MODIFIER_INSTANCE_STOP, CONSOLE_PRINT]);
+        e.register_double(RADIAL_BLUR_TRIGGER, |e, a| {
+            // The 2D point is read while it lives.
+            e.mem.set_u32(0x0126_8700, e.mem.u32(a[5]));
+            e.mem.set_u32(0x0126_8704, e.mem.u32(a[5] + 4));
+            0x7400u32.into_ret()
+        });
+        e.map(0x7000, 0x1000);
+        e.set_global(RADIAL_BLUR_INSTANCE, 0x7200u32);
+        parse_gives_floats(&mut e, &[1.0, 2.0, 3.0, 4.0, 5.0]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_bc50, &args![script(0)]).bool());
+        assert_eq!(calls(&e, PARSE_PARAMETERS)[0].len(), 12);
+        assert_eq!(
+            calls(&e, IMAGE_SPACE_MODIFIER_INSTANCE_STOP),
+            vec![vec![0x7200]]
+        );
+        let trigger = calls(&e, RADIAL_BLUR_TRIGGER);
+        assert_eq!(trigger.len(), 1);
+        assert_eq!(
+            trigger[0][..5],
+            [1.0f32, 2.0, 3.0, 4.0, 5.0].map(f32::to_bits)
+        );
+        assert_eq!(trigger[0][6], 0);
+        assert_eq!(e.mem.f32(0x0126_8700), 0.5);
+        assert_eq!(e.mem.f32(0x0126_8704), 0.5);
+        assert_eq!(e.global::<u32>(RADIAL_BLUR_INSTANCE), 0x7400);
+        // Bit 0 of the new instance's +0x18 is set.
+        assert_eq!(e.mem.u32(0x7418) & 1, 1);
+        assert!(printed(&e).is_empty());
+    }
+
+    #[test]
+    fn radial_blur_with_bad_arguments_prints_the_usage_and_fails() {
+        let mut e = engine_d();
+        accept(&mut e, &[IMAGE_SPACE_MODIFIER_INSTANCE_STOP, CONSOLE_PRINT]);
+        e.register(RADIAL_BLUR_TRIGGER, |_, _| 0u32.into_ret());
+        e.set_global(RADIAL_BLUR_INSTANCE, 0x7200u32);
+        parse_gives(&mut e, false, &[]);
+        start_log(&mut e);
+        // Not echoing: no usage text, the old instance is still stopped.
+        assert!(!e.call(0x005b_bc50, &args![script(0)]).bool());
+        assert!(printed(&e).is_empty());
+        assert_eq!(calls(&e, IMAGE_SPACE_MODIFIER_INSTANCE_STOP).len(), 1);
+        assert_eq!(e.global::<u32>(RADIAL_BLUR_INSTANCE), 0);
+        set_echo(&mut e, true);
+        assert!(!e.call(0x005b_bc50, &args![script(0)]).bool());
+        assert_eq!(printed(&e), vec![vec![MSG_SET_GLOBAL_RADIAL_BLUR_USAGE]]);
+        // No old instance: nothing stopped. No new instance: no flag set.
+        parse_gives(&mut e, true, &[]);
+        start_log(&mut e);
+        e.register(NI_POINT2_CONSTRUCT, |_, a| a[0].into_ret());
+        assert!(e.call(0x005b_bc50, &args![script(0)]).bool());
+        assert!(calls(&e, IMAGE_SPACE_MODIFIER_INSTANCE_STOP).is_empty());
+        assert_eq!(e.global::<u32>(RADIAL_BLUR_INSTANCE), 0);
+    }
+
+    /// `__RTDynamicCast` double: an object is an actor when the byte at
+    /// `+0xf0` is set; a null object gives zero.
+    fn actor_cast_double(e: &mut Engine) {
+        e.register(DYNAMIC_CAST, |e, a| {
+            assert_eq!(a[1..], [0, RTTI_TES_OBJECT_REFR, RTTI_ACTOR, 0]);
+            (if a[0] != 0 && e.mem.u8(a[0] + 0xf0) != 0 {
+                a[0]
+            } else {
+                0
+            })
+            .into_ret()
+        });
+        e.register(REFR_GET_NAME_TEXT, |_, a| (a[0] + 0x1000).into_ret());
+    }
+
+    #[test]
+    fn ai_detection_toggle_flips_its_byte() {
+        let mut e = engine_d();
+        accept(&mut e, &[CONSOLE_PRINT]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_bda0, &args![]).bool());
+        assert_eq!(e.global::<u8>(AI_DETECTION_FLAG), 1);
+        assert!(printed(&e).is_empty());
+        set_echo(&mut e, true);
+        assert!(e.call(0x005b_bda0, &args![]).bool());
+        assert_eq!(e.global::<u8>(AI_DETECTION_FLAG), 0);
+        assert_eq!(
+            printed(&e),
+            vec![vec![MSG_AI_DETECTION_IS, TEXT_OFF_CAPITAL]]
+        );
+        assert!(e.call(0x005b_bda0, &args![]).bool());
+        assert_eq!(printed(&e)[1], vec![MSG_AI_DETECTION_IS, TEXT_ON_CAPITAL]);
+    }
+
+    #[test]
+    fn actor_ai_flag_commands_work_on_actors_only() {
+        let mut e = engine_d();
+        actor_cast_double(&mut e);
+        accept(&mut e, &[CONSOLE_PRINT]);
+        set_echo(&mut e, true);
+        let actor = reference(&mut e, &[], true);
+        let other = reference(&mut e, &[], false);
+        // 005bbe10 flips the byte and echoes the new state.
+        start_log(&mut e);
+        assert!(e.call(0x005b_be10, &args![script(actor)]).bool());
+        assert_eq!(e.mem.u8(actor + 0xbc), 1);
+        assert_eq!(
+            printed(&e),
+            vec![vec![MSG_PROCESSING_IS, actor + 0x1000, TEXT_ON_CAPITAL]]
+        );
+        assert!(e.call(0x005b_be10, &args![script(actor)]).bool());
+        assert_eq!(e.mem.u8(actor + 0xbc), 0);
+        assert_eq!(printed(&e)[1][2], TEXT_OFF_CAPITAL);
+        // 005bbec0 writes 1.0 when the byte is zero, 0.0 otherwise.
+        let result = e.mem.alloc(8);
+        let with_result = ScriptArgs {
+            result: Ptr::new(result),
+            ..script(actor)
+        };
+        assert!(e.call(0x005b_bec0, &args![with_result]).bool());
+        assert_eq!(e.mem.f64(result), 1.0);
+        e.mem.set_u8(actor + 0xbc, 5);
+        assert!(e.call(0x005b_bec0, &args![with_result]).bool());
+        assert_eq!(e.mem.f64(result), 0.0);
+        assert_eq!(e.mem.u8(actor + 0xbc), 5);
+        // Not an actor, or no reference: nothing.
+        start_log(&mut e);
+        for this_obj in [other, 0] {
+            assert!(e.call(0x005b_be10, &args![script(this_obj)]).bool());
+            assert!(e.call(0x005b_bec0, &args![script(this_obj)]).bool());
+        }
+        assert!(printed(&e).is_empty());
+        assert_eq!(e.mem.u8(other + 0xbc), 0);
+    }
+
+    #[test]
+    fn toggle_ai_works_on_an_actor_or_on_all_ai() {
+        let mut e = engine_d();
+        actor_cast_double(&mut e);
+        accept(
+            &mut e,
+            &[
+                CONSOLE_PRINT,
+                ACTOR_END_MOVEMENT,
+                PROCESS_LISTS_TURN_OFF_MOVEMENT_IN_HIGH,
+            ],
+        );
+        set_echo(&mut e, true);
+        let actor = reference(&mut e, &[], true);
+        let other = reference(&mut e, &[], true);
+        // The reference the command runs on, as an actor.
+        parse_gives(&mut e, true, &[0]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_bf70, &args![script(actor)]).bool());
+        assert_eq!(e.mem.u8(actor + 0xbc), 1);
+        assert_eq!(calls(&e, ACTOR_END_MOVEMENT), vec![vec![actor]]);
+        assert_eq!(
+            printed(&e),
+            vec![vec![MSG_PROCESSING_IS, actor + 0x1000, TEXT_ON_CAPITAL]]
+        );
+        assert!(calls(&e, DYNAMIC_CAST).len() == 1);
+        // A parsed actor wins and is not cast.
+        parse_gives(&mut e, true, &[other]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_bf70, &args![script(actor)]).bool());
+        assert_eq!(e.mem.u8(other + 0xbc), 1);
+        assert_eq!(e.mem.u8(actor + 0xbc), 1);
+        assert!(calls(&e, DYNAMIC_CAST).is_empty());
+        // Neither: all AI processing is flipped; turned off, movement stops.
+        parse_gives(&mut e, true, &[0]);
+        start_log(&mut e);
+        assert!(e.call(0x005b_bf70, &args![script(0)]).bool());
+        assert_eq!(e.global::<u8>(ALL_AI_FLAG), 1);
+        assert_eq!(
+            printed(&e),
+            vec![vec![MSG_ALL_AI_PROCESSING_IS, TEXT_ON_CAPITAL]]
+        );
+        assert!(calls(&e, PROCESS_LISTS_TURN_OFF_MOVEMENT_IN_HIGH).is_empty());
+        assert!(e.call(0x005b_bf70, &args![script(0)]).bool());
+        assert_eq!(e.global::<u8>(ALL_AI_FLAG), 0);
+        assert_eq!(printed(&e)[1][1], TEXT_OFF_CAPITAL);
+        assert_eq!(
+            calls(&e, PROCESS_LISTS_TURN_OFF_MOVEMENT_IN_HIGH),
+            vec![vec![PROCESS_LISTS]]
+        );
+        // Bad arguments.
+        parse_gives(&mut e, false, &[]);
+        assert!(!e.call(0x005b_bf70, &args![script(actor)]).bool());
+    }
+
+    #[test]
+    fn combat_ai_and_high_process_toggles() {
+        let mut e = engine_d();
+        accept(
+            &mut e,
+            &[CONSOLE_PRINT, PROCESS_LISTS_TURN_OFF_MOVEMENT_IN_HIGH],
+        );
+        start_log(&mut e);
+        // The flip returns the new value.
+        assert!(e.call(0x005b_c130, &args![]).bool());
+        assert!(!e.call(0x005b_c130, &args![]).bool());
+        assert!(e.call(0x005b_c130, &args![]).bool());
+        assert_eq!(e.global::<u8>(COMBAT_AI_FLAG), 1);
+        // 005bc0d0 prints the new state only when echoing.
+        assert!(e.call(0x005b_c0d0, &args![]).bool());
+        assert_eq!(e.global::<u8>(COMBAT_AI_FLAG), 0);
+        assert!(printed(&e).is_empty());
+        set_echo(&mut e, true);
+        assert!(e.call(0x005b_c0d0, &args![]).bool());
+        assert_eq!(
+            printed(&e),
+            vec![vec![MSG_ALL_COMBAT_AI_PROCESSING_IS, TEXT_ON_CAPITAL]]
+        );
+        // High process: the movement is turned off when the byte became zero.
+        assert!(e.call(0x005b_c3b0, &args![]).bool());
+        assert_eq!(e.global::<u8>(HIGH_PROCESS_FLAG), 1);
+        assert_eq!(
+            printed(&e)[1],
+            vec![MSG_HIGH_AI_PROCESSING_IS, TEXT_ON_CAPITAL]
+        );
+        assert!(calls(&e, PROCESS_LISTS_TURN_OFF_MOVEMENT_IN_HIGH).is_empty());
+        assert!(e.call(0x005b_c3b0, &args![]).bool());
+        assert_eq!(e.global::<u8>(HIGH_PROCESS_FLAG), 0);
+        assert_eq!(
+            printed(&e)[2],
+            vec![MSG_HIGH_AI_PROCESSING_IS, TEXT_OFF_CAPITAL]
+        );
+        assert_eq!(
+            calls(&e, PROCESS_LISTS_TURN_OFF_MOVEMENT_IN_HIGH),
+            vec![vec![PROCESS_LISTS]]
+        );
+    }
+
+    #[test]
+    fn int_flag_commands_parse_one_int() {
+        let mut e = engine_d();
+        // 005bc150 only reports whether the arguments parse.
+        parse_gives(&mut e, true, &[7]);
+        assert!(e.call(0x005b_c150, &args![script(0)]).bool());
+        parse_gives(&mut e, false, &[]);
+        assert!(!e.call(0x005b_c150, &args![script(0)]).bool());
+        // 005bc1a0 and 005bc200 store whether the int is non-zero.
+        for (addr, flag) in [
+            (0x005b_c1a0u32, FLAG_011DF678),
+            (0x005b_c200, FLAG_012682F8),
+        ] {
+            parse_gives(&mut e, true, &[5]);
+            assert!(e.call(addr, &args![script(0)]).bool());
+            assert_eq!(e.global::<u8>(flag), 1);
+            parse_gives(&mut e, true, &[0]);
+            assert!(e.call(addr, &args![script(0)]).bool());
+            assert_eq!(e.global::<u8>(flag), 0);
+            e.set_global(flag, 1u8);
+            parse_gives(&mut e, false, &[]);
+            assert!(!e.call(addr, &args![script(0)]).bool());
+            assert_eq!(e.global::<u8>(flag), 1);
+        }
+    }
+
+    #[test]
+    fn mode_command_asks_the_player_for_the_modes_that_use_it() {
+        let mut e = engine_d();
+        e.set_global(PLAYER, 0x7000u32);
+        accept(&mut e, &[FN_00BA8B60]);
+        // (mode, expected question, answer, expected flag)
+        for (mode, question, answer, flag) in [
+            (4i32, None, 1u8, 0u32),
+            (1, Some(1u32), 1, 1),
+            (2, Some(1), 1, 1),
+            (3, Some(0), 1, 1),
+            (5, Some(1), 0, 0),
+            (0, Some(0), 1, 0),
+            (-3, Some(0), 1, 0),
+            (6, Some(0), 0, 0),
+        ] {
+            e.register_double(FN_00961E30, move |_, _| answer.into_ret());
+            parse_gives(&mut e, true, &[mode as u32]);
+            start_log(&mut e);
+            assert!(e.call(0x005b_c260, &args![script(0)]).bool());
+            let asked = calls(&e, FN_00961E30);
+            match question {
+                None => assert!(asked.is_empty(), "mode {mode}"),
+                Some(q) => assert_eq!(asked, vec![vec![0x7000, q]], "mode {mode}"),
+            }
+            assert_eq!(calls(&e, FN_00BA8B60), vec![vec![flag]], "mode {mode}");
+        }
+        parse_gives(&mut e, false, &[]);
+        start_log(&mut e);
+        assert!(!e.call(0x005b_c260, &args![script(0)]).bool());
+        assert!(calls(&e, FN_00BA8B60).is_empty());
+    }
+
+    #[test]
+    fn head_track_target_is_reported_for_actors() {
+        let mut e = engine_d();
+        actor_cast_double(&mut e);
+        accept(&mut e, &[CONSOLE_PRINT]);
+        let actor = reference(&mut e, &[], true);
+        let other = reference(&mut e, &[], false);
+        // The extra data list is `actor + 0x44` (the engine() double).
+        e.register_double(HEAD_TRACK_TARGET_EXTRA, move |_, a| {
+            assert_eq!(a[0], actor + 0x44);
+            0u32.into_ret()
+        });
+        // No echo: the lookup happens, nothing is printed.
+        start_log(&mut e);
+        assert!(e.call(0x005b_c310, &args![script(actor)]).bool());
+        assert_eq!(calls(&e, HEAD_TRACK_TARGET_EXTRA).len(), 1);
+        assert!(printed(&e).is_empty());
+        set_echo(&mut e, true);
+        assert!(e.call(0x005b_c310, &args![script(actor)]).bool());
+        assert_eq!(
+            printed(&e),
+            vec![vec![MSG_NOT_LOOKING_AT_ANYONE, actor + 0x1000]]
+        );
+        // With a target: both names, the actor's first.
+        e.register_double(HEAD_TRACK_TARGET_EXTRA, move |_, _| other.into_ret());
+        assert!(e.call(0x005b_c310, &args![script(actor)]).bool());
+        assert_eq!(
+            printed(&e)[1],
+            vec![MSG_LOOKING_AT, actor + 0x1000, other + 0x1000]
+        );
+        // Not an actor, or no reference: nothing is looked up.
+        start_log(&mut e);
+        assert!(e.call(0x005b_c310, &args![script(other)]).bool());
+        assert!(e.call(0x005b_c310, &args![script(0)]).bool());
+        assert!(calls(&e, HEAD_TRACK_TARGET_EXTRA).is_empty());
     }
 }

@@ -5,8 +5,21 @@
 //! and its two subclasses) and the `Animation` object every animated
 //! reference owns. Session 1 (b0010) covers `0048ee70` to `00491090`, the
 //! first 40 functions: the sequence containers, `Animation`'s constructor
-//! and destructor, and `AddAnimation` with the functions that feed it. The
-//! next session continues at `004910d0` (`Animation::FindSkinnedNode`).
+//! and destructor, and `AddAnimation` with the functions that feed it.
+//! Session 2 (b0010) covers `004910d0` to `00495da0`, the next 40:
+//! `FindSkinnedNode`, `Update` (the frame step, split into private helpers
+//! for its parts) with the flag helpers, the movement and scene graph
+//! updates, `InitGroupSpeed`, the group functions (`AddGroup`,
+//! `GroupLoaded`, `PlayGroup`, `StartGroup`, `StartGroup_ov2`,
+//! `ForceSection`, `PickBestAnimation`, `SyncSequences`) and the small
+//! getters between them. The next session continues at `00495e40`.
+//!
+//! The 8 slots of `Animation` (`group`, `action`, `loopCount`, `nextGroup`,
+//! `nextLoops`, `pCurrentSequence` are arrays of 8) are indexed by the slot
+//! a group plays in; `0x14` and `0x15` stand for slots 1 and 4 in the
+//! functions that take a slot. The type table (`SEQUENCE_TYPE_TABLE`, stride
+//! 0x24) maps a group type to its slot and its category; the category picks
+//! how `Update` steps the stages (`action`) of the slot's sequence.
 //!
 //! Conventions this file uses, so the next session finds them:
 //!
@@ -17,8 +30,8 @@
 //!   `NiTList::GetHeadPos`, `KFModel` and `NiTMapBase` field readers): it
 //!   returns the word at the address in `ECX`.
 //! - Functions of this unit that are translated here are called directly;
-//!   the ones further on (`00498910`, `0049c170`, `0049c250`, `0049c390`,
-//!   `004946a0`, ...) by address until a later session translates them.
+//!   the ones further on (`00498910`, `00496080`, `004994f0`, `00498670`,
+//!   `0049bca0`, ...) by address until a later session translates them.
 //! - The compiler's exception-unwinding frames and security cookies are
 //!   not translated. A local the game keeps on its stack and passes by
 //!   address is [`Engine::with_stack`].
@@ -223,21 +236,21 @@ const RTTI_CONTROLLER_FIRST: u32 = 0x011f_36bc;
 const RTTI_CONTROLLER_SECOND: u32 = 0x011f_36e4;
 /// `NiNode` helpers used by `AddAnimation` and the initializer:
 /// `SetFlag(flag, 2)` (`0043b370`), `FindObject(root, name, 1)`
-/// (`__cdecl`), `NiAVObject::SetTranslate(&point)` (`00a59c60`),
-/// the `NiPoint3`-style constructor `(float, byte, byte)` (`0043d410`), and
+/// (`__cdecl`), the node update `00a59c60(node, &updateData)` (it runs the
+/// node's virtual function at +0xa4 with the record and 0, then a virtual
+/// function at +0xfc of the object at +0x18), the update-data constructor
+/// `NiUpdateData(time, updateControllers, parallelUpdate)` (`0043d410`, Xbox PDB layout), and
 /// `NiControllerSequence::Activate(priority, flag, weight, easeIn, ...)`.
 const NODE_SET_FLAG: u32 = 0x0043_b370;
 const NODE_FIND_OBJECT: u32 = 0x00c4_b310;
-const NODE_SET_TRANSLATE: u32 = 0x00a5_9c60;
-const TRANSLATION_CONSTRUCT: u32 = 0x0043_d410;
+const NODE_UPDATE: u32 = 0x00a5_9c60;
+const UPDATE_DATA_CONSTRUCT: u32 = 0x0043_d410;
 const SEQUENCE_ACTIVATE: u32 = 0x00a3_4f20;
 
 /// Functions of this unit past the first 40, called by address:
-/// `Animation::SpecialIdleFree(bool, bool)`, `AnimIdleFree(&idle)`,
-/// `AddGroup(group)`.
+/// `Animation::SpecialIdleFree(bool, bool)` and `AnimIdleFree(&idle)`.
 const SPECIAL_IDLE_FREE: u32 = 0x0049_8910;
 const ANIM_IDLE_FREE: u32 = 0x0049_8670;
-const ADD_GROUP: u32 = 0x0049_46a0;
 
 /// `Interface::IsMenuIDVisible(id, 0)` and `Interface::IsInMenuMode`.
 const IS_MENU_ID_VISIBLE: u32 = 0x0070_2680;
@@ -249,6 +262,243 @@ const LOG: u32 = 0x005b_5e40;
 const DISABLE_WARNINGS: u32 = 0x0043_b2b0;
 /// Random number source (`MersenneTwister` wrapper) used for random picks.
 const RANDOM: u32 = 0x0048_7f50;
+
+// ---- Callees and data of the second session (`004910d0` onward) ---------------------
+//
+// Several of these small getters are bodies the linker folded, so the engine
+// map's name for them is often another class's: each constant says what the
+// body does and on which object it is called (`ECX`, the first argument in
+// the uniform form).
+
+/// The global time-scale object (an object at a fixed address, not a pointer
+/// to one) and its getter: `ECX` = the object, the `float` at +0xc in ST0.
+const TIME_SCALE_OBJECT: u32 = 0x011f_6394;
+const TIME_SCALE_GET: u32 = 0x0084_d030;
+/// Flag helpers of `Animation`: `00493830(animation)` is true while
+/// `kfModelList` (+0x104) holds models; `00493880(animation, value, mask)`
+/// sets (`value` != 0) or clears the bits of `mask` in the flag byte at +0.
+const MODEL_QUEUE_NOT_EMPTY: u32 = 0x0049_3830;
+const FLAG_SET: u32 = 0x0049_3880;
+/// Flag bit 1: the movement was updated (`UpdateMovementNoWorldUpdate` set it
+/// and `Update` clears it); bit 2: the scene graph update was postponed.
+const FLAG_MOVEMENT_UPDATED: u32 = 1;
+const FLAG_SCENE_GRAPH_PENDING: u32 = 2;
+/// Number of queued models `Update` has added so far (the setting at
+/// `SETTING_CLONING` bounds it).
+const QUEUED_MODEL_COUNTER: u32 = 0x011c_56e8;
+/// `BSSimpleList::remove`: removes the item whose address is in the cell
+/// (`list.remove(&item)`), `RET 4`.
+const SIMPLE_LIST_REMOVE_ITEM: u32 = 0x0090_5330;
+/// `_ftol2_sse`: truncates the float in ST0 to an integer in EAX. The
+/// uniform form has no ST0 argument, so the value is a leading `f64`.
+const FTOL: u32 = 0x00ec_62c0;
+
+/// Settings read through `SETTING_VALUE_ADDRESS` (`ECX` = the setting object,
+/// the result is the address of its value): the limit
+/// `UpdateSceneGraphNoController` compares with. `00403e20(setting)` is the
+/// same for float settings: the address of the value (the object + 4), or of
+/// a static zero for a null object.
+const SETTING_SCENE_GRAPH_LIMIT: u32 = 0x011c_3ea4;
+const SETTING_FLOAT_ADDRESS: u32 = 0x0040_3e20;
+/// Float settings: the movement scale (`Update` multiplies the group's
+/// movement by it, `StartGroup_ov2` divides the blend time by it), the blend
+/// time `StartGroup_ov2` starts from and the one it uses in menus.
+const SETTING_MOVEMENT_SCALE: u32 = 0x011c_5724;
+const SETTING_BLEND_TIME: u32 = 0x011c_56fc;
+const SETTING_BLEND_TIME_MENU: u32 = 0x011c_5740;
+/// A global byte that makes `UpdateSceneGraphNoController` always update, a
+/// global byte `Update` tests before it steps a sequence of category 9, and
+/// the `VATS` object (its `0044ddc0` word and `009c71c0` current action).
+const SCENE_GRAPH_ALWAYS_UPDATE: u32 = 0x011e_07a8;
+const SEQUENCE_STEP_FLAG: u32 = 0x011e_0783;
+const VATS_OBJECT: u32 = 0x011f_2250;
+const VATS_CURRENT_ACTION: u32 = 0x009c_71c0;
+/// The word at +8 of an object (`0044ddc0`), the word at +0xc (`0084e3a0`:
+/// the object count of a sequence, the form ID of a reference).
+const WORD_AT_8: u32 = 0x0044_ddc0;
+const WORD_AT_C: u32 = 0x0084_e3a0;
+/// `StartGroup_ov2` asks `0047c850(object)` (a constant `false` in this
+/// build) of the object whose pointer is at `011de45c`; `00705a00` is
+/// `Interface::IsInPipboyMenu`.
+const PIPBOY_QUERY_OBJECT: u32 = 0x011d_e45c;
+const PIPBOY_QUERY: u32 = 0x0047_c850;
+const IS_IN_PIPBOY_MENU: u32 = 0x0070_5a00;
+/// Two flag checks `Update` makes before it plays the notes of a step:
+/// `00456610(node)` and `00709cb0()`.
+const NODE_FLAG_CHECK: u32 = 0x0045_6610;
+const SOUND_FLAG_CHECK: u32 = 0x0070_9cb0;
+
+/// `Actor` accessors (`ECX` = the actor): the process object (`+0x68`),
+/// `IsWeaponDrawn`, `GetAnimAction`, `SetAnimAction(action, sequence)`,
+/// `SetHavokWeapon`, `GetAnimGroup(wanted, 0, 0, 0)`, the 16 flag bits
+/// `008846e0` reads through the process, its "any of the low 4 bits"
+/// test (`004938e0`), the process byte at +0x384 (`004938c0`), the word at
+/// +0x108 (`004f8960`), `TESObjectREFR::GetScale` (ST0) and the flag-word
+/// setter `008b0140(actor, value, mask)` (+0x11c).
+const ACTOR_PROCESS: u32 = 0x008d_8520;
+const ACTOR_IS_WEAPON_DRAWN: u32 = 0x008a_16d0;
+const ACTOR_GET_ANIM_ACTION: u32 = 0x008a_7570;
+const ACTOR_SET_ANIM_ACTION: u32 = 0x008a_73e0;
+const ACTOR_SET_HAVOK_WEAPON: u32 = 0x008a_5eb0;
+const ACTOR_GET_ANIM_GROUP: u32 = 0x0089_7910;
+const ACTOR_FLAGS_WORD: u32 = 0x0088_46e0;
+const ACTOR_FLAGS_ANY: u32 = 0x0049_38e0;
+const PROCESS_FLAG_BYTE: u32 = 0x0049_38c0;
+const ACTOR_WORD_108: u32 = 0x004f_8960;
+const REFERENCE_SCALE: u32 = 0x0056_7400;
+const ACTOR_FLAG_SET: u32 = 0x008b_0140;
+/// `PlayerCharacter::GetAnimation(first)`.
+const PLAYER_GET_ANIMATION: u32 = 0x0095_0a60;
+
+/// `BSAnimGroupSequence` accessors (`ECX` = the sequence): the elapsed time
+/// `00493770` (ST0, a stored `float`), `SetPhase(phase, flag)`,
+/// `GetScaledTime(time)`, the state word at +0x44 (`008041a0`; the map calls
+/// it `LowProcess::GetGenericLocation`), `GetPriority(boneName, 0)`.
+const SEQUENCE_ELAPSED: u32 = 0x0049_3770;
+const SEQUENCE_SET_PHASE: u32 = 0x00a3_28b0;
+const SEQUENCE_SCALED_TIME: u32 = 0x004e_ec60;
+const SEQUENCE_STATE: u32 = 0x0080_41a0;
+const SEQUENCE_PRIORITY: u32 = 0x004e_f9a0;
+/// `00493800(animation, sequence)`: the sequence's float at +0x48 plus the
+/// animation's `time`, a `float` in ST0 (the engine map names the body
+/// `TESAnimGroup::IsJumpingLoopAnim`, a folded name).
+const SEQUENCE_TIME_ON_ANIMATION: u32 = 0x0049_3800;
+/// `004937a0(sequence, index)`: the pointer in the 16-byte entry `index` of
+/// the array at +0x14 of the sequence.
+const SEQUENCE_INTERPOLATOR_AT: u32 = 0x0049_37a0;
+/// `00a30c80(from, to)`: whether the two sequences can be morphed.
+const SEQUENCE_MORPH_COMPATIBLE: u32 = 0x00a3_0c80;
+/// The sequence manager's entry points (`ECX` = the manager, which the
+/// first one ignores): `0047aab0(sequence, priority, flag, weight, ease,
+/// 0)` is `NiControllerSequence::Activate` (`SEQUENCE_ACTIVATE`) with a
+/// trailing 0; `00a2e1b0`, `00a2e280` and `00a2f800` are the morph,
+/// cross-fade and blend-in transitions `StartGroup_ov2` chooses from.
+const MANAGER_ACTIVATE: u32 = 0x0047_aab0;
+const MANAGER_MORPH_FADE: u32 = 0x00a2_e1b0;
+const MANAGER_CROSS_FADE: u32 = 0x00a2_e280;
+const MANAGER_BLEND_IN: u32 = 0x00a2_f800;
+
+/// `TESAnimGroup` functions that take the 16-bit group id on the stack
+/// (`__cdecl`): `GetType` (the low byte), `GetWeapon` (bits 8..11),
+/// `IsAimAction`, `IsAttackAction`, `IsIronSightsAction`.
+const GROUP_ID_TYPE: u32 = 0x005f_2440;
+const GROUP_ID_WEAPON: u32 = 0x005f_2400;
+const GROUP_ID_IS_AIM: u32 = 0x005f_2630;
+const GROUP_ID_IS_ATTACK: u32 = 0x005f_2540;
+const GROUP_ID_IS_IRON_SIGHTS: u32 = 0x005f_2720;
+/// `TESAnimGroup` methods (`ECX` = the group): `GetTime(index)` (ST0),
+/// the move type and the weapon type of its own id, the movement vector
+/// getter `005f4c90(out)` and setter `005f4c40(in)`, the speed `005f4c70`
+/// (ST0), the "type is 0xe4 or 0xec..0xef" test `005f4d60`, the notes step
+/// `005f2b60(actor, from, to, sequence)` and the sound-priority byte
+/// `00508d90(bone index)`.
+const GROUP_TIME: u32 = 0x005f_3780;
+const GROUP_MOVE_TYPE: u32 = 0x005f_23a0;
+const GROUP_WEAPON_TYPE: u32 = 0x005f_23e0;
+const GROUP_MOVEMENT_VECTOR: u32 = 0x005f_4c90;
+const GROUP_SET_MOVEMENT_VECTOR: u32 = 0x005f_4c40;
+const GROUP_SPEED: u32 = 0x005f_4c70;
+const GROUP_IS_SPECIAL_TYPE: u32 = 0x005f_4d60;
+const GROUP_PLAY_NOTES: u32 = 0x005f_2b60;
+const GROUP_BONE_PRIORITY: u32 = 0x0050_8d90;
+/// Columns of the type table the group type indexes (stride 0x24, base
+/// `SEQUENCE_TYPE_TABLE`): +4 the slot the group plays in, +8 its
+/// category; the entry's name pointer is at -4. The weapon and move name
+/// tables.
+const SEQUENCE_TYPE_SLOT: u32 = 0x0119_77e0;
+const SEQUENCE_TYPE_CATEGORY: u32 = 0x0119_77e4;
+const SEQUENCE_TYPE_NAME: u32 = 0x0119_77d8;
+const WEAPON_NAME_TABLE: u32 = 0x0119_77a4;
+const MOVE_NAME_TABLE: u32 = 0x0119_7794;
+
+/// Vector helpers (`ECX` = the vector, both return `out`): `out = this *
+/// scale` (`0045bb20(out, scale)`) and `out = this - other`
+/// (`00439ef0(out, other)`); `006815c0` returns its `ECX` (the address of the
+/// first three floats of a transform record).
+const VECTOR_SCALE: u32 = 0x0045_bb20;
+const VECTOR_SUBTRACT: u32 = 0x0043_9ef0;
+const RECORD_ADDRESS: u32 = 0x0068_15c0;
+/// `NiMatrix3::TransformVertices(matrix, translate, count, in, out)`
+/// (`__cdecl`).
+const MATRIX_TRANSFORM_VERTICES: u32 = 0x00a5_82f0;
+/// The world rotation matrix of a node (`006a9540` returns node + 0x34).
+const NODE_ROTATION: u32 = 0x006a_9540;
+/// Dynamic cast `00653270(rtti, object)` (`__cdecl`, 0 for a null object) and
+/// the `NiRTTI` `Update` casts to; the controller `NiRTTI` it asks the
+/// accumulation root for; the controller-list setter `00a5c000(object, list)`
+/// and getter `0043b230` (the word at +0xc).
+const DYNAMIC_CAST: u32 = 0x0065_3270;
+const RTTI_CAST_TARGET: u32 = 0x011f_36fc;
+const RTTI_ACCUM_CONTROLLER: u32 = 0x011f_36ec;
+const OBJECT_SET_CONTROLLERS: u32 = 0x00a5_c000;
+const OBJECT_CONTROLLERS: u32 = 0x0043_b230;
+/// The skin getter `0043fad0(node)` (the word at +0xbc), the child count
+/// `0043b480` and the child accessor `0043b4a0(index)` of a node.
+const NODE_SKIN: u32 = 0x0043_fad0;
+const NODE_CHILD_COUNT: u32 = 0x0043_b480;
+const NODE_CHILD_AT: u32 = 0x0043_b4a0;
+/// The world translation of a node (`0043c490` returns node + 0x58), the
+/// biped update `004f0040(root, time)` and `UpdateBipOnly(time, &out,
+/// flag)` of `Animation` (`0049bca0`).
+const NODE_WORLD_TRANSLATION: u32 = 0x0043_c490;
+const BIP_UPDATE_ALL_BUT_BIP: u32 = 0x004f_0040;
+const UPDATE_BIP_ONLY: u32 = 0x0049_bca0;
+/// The shader accumulator (`00b4f5c0`) and its test
+/// `00b63680(accumulator, id, 0)`.
+const SHADER_ACCUMULATOR: u32 = 0x00b4_f5c0;
+const SHADER_ACCUMULATOR_TEST: u32 = 0x00b6_3680;
+/// Functions of this unit after the second session's range, called by
+/// address: `ClearGroup(slot, blend)`, `BlendOut(slot, flag)`,
+/// `SpecialIdleWorking(sequence)`, the idle state step `00497040(idle,
+/// animation)` and the controller step `00496280`.
+const CLEAR_GROUP: u32 = 0x0049_6080;
+const BLEND_OUT: u32 = 0x0049_94f0;
+const SPECIAL_IDLE_WORKING: u32 = 0x0049_8ea0;
+const IDLE_STATE_STEP: u32 = 0x0049_7040;
+const RESET_CONTROLLERS: u32 = 0x0049_6280;
+/// `00403550(idle, value)` stores a word at +8; `00c75b40(object)` and
+/// `00974d90(group)` (the signed byte at +0x28) belong to the checks
+/// `StartGroup_ov2` makes, as does `0045cd60(process)` (the word at +0x28).
+const IDLE_SET_WORD_8: u32 = 0x0040_3550;
+const RAGDOLL_REFRESH: u32 = 0x00c7_5b40;
+const GROUP_BYTE_28: u32 = 0x0097_4d90;
+const PROCESS_WORD_28: u32 = 0x0045_cd60;
+/// Format strings of the log messages (`.rdata`).
+const LOG_IDLE_FREE_ANIMATING: u32 = 0x0101_da98;
+const LOG_NO_ACCUM_ROOT: u32 = 0x0101_db48;
+const LOG_ANIMATE_IN_PLACE: u32 = 0x0101_daf0;
+const LOG_MORPH_TAGS: u32 = 0x0101_dc58;
+const LOG_MORPH_CONTROLLERS: u32 = 0x0101_dbe8;
+const LOG_MORPH_SELF: u32 = 0x0101_db90;
+/// Float constants read from memory: the doubles `0.0`, `-1.0`, `30.0`,
+/// `4.0`, `0.5`, `0.01` and `1e-5`; the floats `0.5` and `FLT_MAX`.
+const DOUBLE_ZERO: u32 = 0x0101_2060;
+const DOUBLE_MINUS_ONE: u32 = 0x0101_a6b0;
+const DOUBLE_THIRTY: u32 = 0x0101_db88;
+const DOUBLE_FOUR: u32 = 0x0101_db80;
+const DOUBLE_HALF: u32 = 0x0101_1588;
+const DOUBLE_HUNDREDTH: u32 = 0x0101_6408;
+const DOUBLE_MICRO: u32 = 0x0101_dae8;
+const FLOAT_HALF: u32 = 0x0101_6248;
+const FLOAT_MAX: u32 = 0x0101_d890;
+/// The words `fn_00494260` copies into a transform record: three from
+/// `011a8400`, four from `011f3704` and the `float` at `01096b8c`.
+const RECORD_DEFAULT_TRANSLATE: u32 = 0x011a_8400;
+const RECORD_DEFAULT_ROTATE: u32 = 0x011f_3704;
+const RECORD_DEFAULT_SCALE: u32 = 0x0109_6b8c;
+/// `00408d60(object)` on the setting object at `01267c30`: the address of
+/// its byte value.
+const SETTING_BYTE_OBJECT: u32 = 0x0126_7c30;
+const SETTING_BYTE_ADDRESS: u32 = 0x0040_8d60;
+/// `004937c0(group)` and `004937e0(group)`: `IsAimAction` and
+/// `IsAttackAction` of the group's own id (the word at +0x10).
+const GROUP_IS_AIM_OF: u32 = 0x0049_37c0;
+const GROUP_IS_ATTACK_OF: u32 = 0x0049_37e0;
+/// `006d2c40(movement)`: the `float` at +0xb4 of an actor's movement object
+/// (ST0).
+const MOVEMENT_SPEED: u32 = 0x006d_2c40;
+/// The virtual slot of an actor that says whether it has a process.
+const SLOT_HAS_PROCESS: u32 = 0x100;
 
 // ---- Data used by the functions ----------------------------------------------
 
@@ -419,6 +669,66 @@ fn with_scope_guard<R>(e: &mut Engine, line: u32, body: impl FnOnce(&mut Engine)
 /// Address of entry `i` of an array field of `Animation`.
 fn animation_entry<T>(this: Ptr<Animation>, field: Field<Animation, T>, i: u32, size: u32) -> u32 {
     this.addr().wrapping_add(field.off).wrapping_add(i * size)
+}
+
+/// Address of `action[slot]`, `group[slot]`, `loopCount[slot]`,
+/// `nextGroup[slot]`, `nextLoops[slot]` and `pCurrentSequence[slot]` (the
+/// slot is not range checked, as in the game).
+fn action_at(this: Ptr<Animation>, slot: u32) -> u32 {
+    animation_entry(this, Animation::action, slot, 4)
+}
+fn group_at(this: Ptr<Animation>, slot: u32) -> u32 {
+    animation_entry(this, Animation::group, slot, 2)
+}
+fn loop_count_at(this: Ptr<Animation>, slot: u32) -> u32 {
+    animation_entry(this, Animation::loopCount, slot, 4)
+}
+fn next_group_at(this: Ptr<Animation>, slot: u32) -> u32 {
+    animation_entry(this, Animation::nextGroup, slot, 2)
+}
+fn next_loops_at(this: Ptr<Animation>, slot: u32) -> u32 {
+    animation_entry(this, Animation::nextLoops, slot, 4)
+}
+fn current_sequence_at(this: Ptr<Animation>, slot: u32) -> u32 {
+    animation_entry(this, Animation::pCurrentSequence, slot, 4)
+}
+
+/// `pAnimSequenceMap->GetAt(key, &entry)`: the `AnimSequenceBase*` stored
+/// for animation group `key`, or `None` when the map has no such key.
+fn sequence_map_get(e: &mut Engine, this: Ptr<Animation>, key: u16) -> Option<u32> {
+    let map = e.get(this, Animation::pAnimSequenceMap).addr();
+    e.with_stack(4, |e, cell| {
+        e.mem.set_u32(cell.addr(), 0);
+        if e.call(MAP_GET_AT, &args![map, key, cell]).bool() {
+            Some(e.mem.u32(cell.addr()))
+        } else {
+            None
+        }
+    })
+}
+
+/// The `float` at the address a setting-value getter returns for the
+/// setting object `setting` (`SETTING_FLOAT_ADDRESS`).
+fn float_setting(e: &mut Engine, setting: u32) -> f32 {
+    let address = e.call(SETTING_FLOAT_ADDRESS, &args![setting]).u32();
+    e.mem.f32(address)
+}
+
+/// `TESAnimGroup::GetType(group)`: the low byte of the group id.
+fn group_type(e: &mut Engine, group: u16) -> u32 {
+    e.call(GROUP_ID_TYPE, &args![group]).u32()
+}
+
+/// A `double` constant the code loads from `.rdata`.
+fn double_constant(e: &Engine, address: u32) -> f64 {
+    e.global::<f64>(address)
+}
+
+/// The type-table column `column` (`SEQUENCE_TYPE_SLOT`,
+/// `SEQUENCE_TYPE_CATEGORY`) of the animation group type `group_type`.
+fn type_column(e: &Engine, column: u32, group_type: u32) -> i32 {
+    e.mem
+        .i32(column.wrapping_add(group_type.wrapping_mul(0x24)))
 }
 
 // ---- AnimSequenceBase, AnimSequenceSingle, AnimSequenceMultiple ------------------------------
@@ -1166,11 +1476,11 @@ pub fn fn_0048ffd0(
                     );
                     e.with_stack(12, |e, translation| {
                         e.call(
-                            TRANSLATION_CONSTRUCT,
+                            UPDATE_DATA_CONSTRUCT,
                             &args![translation, 0.0f32, 1u32, 0u32],
                         );
                         let anim_root = ni_pointer_get(e, a + 8);
-                        e.call(NODE_SET_TRANSLATE, &args![anim_root, translation]);
+                        e.call(NODE_UPDATE, &args![anim_root, translation]);
                     });
                     e.vcall(sequence, 0x8c, &args![0.0f32, 0u32]);
                 }
@@ -1487,7 +1797,7 @@ fn add_animation_body(
             e.set(this, Animation::pAccumRoot, accum_root);
         }
         let group = e.call(KF_MODEL_ANIM_GROUP, &args![kf]).u32();
-        e.call(ADD_GROUP, &args![this, group]);
+        animation_add_group(e, this, Ptr::new(group));
         return true;
     }
 
@@ -1685,6 +1995,2402 @@ pub fn fn_00491090(e: &mut Engine, sequence: Ptr) -> f32 {
     (end as f64 - begin as f64) as f32
 }
 
+// ---- Animation::FindSkinnedNode, Animation::Update --------------------------------
+
+// Translated from 004910d0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::FindSkinnedNode` (Xbox PDB), `__cdecl(node)`: true when
+/// `node` or one of its descendants has a skin. The virtual function at +0x18
+/// gives the object whose word at +0xbc `NODE_SKIN` reads; the one at +0xc
+/// gives the node whose children are searched.
+pub fn animation_find_skinned_node(e: &mut Engine, node: Ptr) -> bool {
+    if node.is_null() {
+        return false;
+    }
+    let skin_owner = e.vcall(node.addr(), 0x18, &args![]).u32();
+    if skin_owner != 0 && e.call(NODE_SKIN, &args![skin_owner]).u32() != 0 {
+        return true;
+    }
+    let children = e.vcall(node.addr(), 0xc, &args![]).u32();
+    if children != 0 {
+        let mut index = 0u32;
+        while index < e.call(NODE_CHILD_COUNT, &args![children]).u32() {
+            let child = e.call(NODE_CHILD_AT, &args![children, index]).u32();
+            if child != 0 && animation_find_skinned_node(e, Ptr::new(child)) {
+                return true;
+            }
+            index += 1;
+        }
+    }
+    false
+}
+
+/// The stage values `Update` writes into `action[slot]` and the phase it
+/// sets are `float`s computed in extended precision and stored as `float`;
+/// this sets the phase of `sequence` (`SetPhase(phase, 0)`).
+fn set_phase(e: &mut Engine, sequence: u32, phase: f32) {
+    e.call(SEQUENCE_SET_PHASE, &args![sequence, phase, 0u32]);
+}
+
+/// The elapsed time of a sequence (`00493770`, a stored `float`).
+fn sequence_elapsed(e: &mut Engine, sequence: u32) -> f64 {
+    e.call(SEQUENCE_ELAPSED, &args![sequence]).f64()
+}
+
+/// `section < elapsed` where an unordered pair (a NaN) counts as "not
+/// before", as the `FCOMP` tests in `Update` do.
+fn section_is_before(section: f64, elapsed: f64) -> bool {
+    section < elapsed
+}
+
+/// `GetTime(group of sequence, index)` and the time `00493800` gives for
+/// the sequence: the pair `Update` compares (the section time against the
+/// time the animation is at).
+fn section_and_elapsed(
+    e: &mut Engine,
+    this: Ptr<Animation>,
+    sequence: u32,
+    index: i32,
+) -> (f64, f64) {
+    let elapsed = e
+        .call(SEQUENCE_TIME_ON_ANIMATION, &args![this, sequence])
+        .f64();
+    let group = fn_0048f7f0(e, Ptr::new(sequence));
+    let section = e.call(GROUP_TIME, &args![group, index]).f64();
+    (section, elapsed)
+}
+
+/// `loopCount[slot] = nextLoops[slot]; StartGroup(nextGroup[slot], -1);
+/// nextGroup[slot] = 0xff`: the next queued group takes over the slot.
+fn start_next_group(e: &mut Engine, this: Ptr<Animation>, slot: u32) {
+    let loops = e.mem.u32(next_loops_at(this, slot));
+    e.mem.set_u32(loop_count_at(this, slot), loops);
+    let group = e.mem.u16(next_group_at(this, slot));
+    animation_start_group(e, this, group, -1);
+    e.mem.set_u16(next_group_at(this, slot), 0xff);
+}
+
+/// `BlendOut(slot, 0)`.
+fn blend_out(e: &mut Engine, this: Ptr<Animation>, slot: u32) {
+    e.call(BLEND_OUT, &args![this, slot, 0u32]);
+}
+
+/// `((group movement * scaledTime) * movement scale setting) * m_fMoveSpeed`,
+/// computed through the `NiPoint3` helpers into temporaries; the three
+/// result words.
+fn scaled_group_movement(
+    e: &mut Engine,
+    this: Ptr<Animation>,
+    group: Ptr,
+    scaled_time: f32,
+) -> [u32; 3] {
+    e.with_stack(48, |e, buffers| {
+        let first = buffers.addr();
+        let (second, third, fourth) = (first + 12, first + 24, first + 36);
+        let move_speed = e.get(this, Animation::m_fMoveSpeed);
+        let setting = float_setting(e, SETTING_MOVEMENT_SCALE);
+        e.call(GROUP_MOVEMENT_VECTOR, &args![group, first]);
+        e.call(VECTOR_SCALE, &args![first, second, scaled_time]);
+        e.call(VECTOR_SCALE, &args![second, third, setting]);
+        e.call(VECTOR_SCALE, &args![third, fourth, move_speed]);
+        [
+            e.mem.u32(fourth),
+            e.mem.u32(fourth + 4),
+            e.mem.u32(fourth + 8),
+        ]
+    })
+}
+
+/// `Update`'s handling of `sQueuedReloadGroup` while no models are queued:
+/// plays the queued group when the actor's weapon is drawn and tells the
+/// player object and the actor. Returns early (leaving the queued group
+/// set) when the weapon of slot 4 is in an attack.
+fn update_queued_reload(e: &mut Engine, this: Ptr<Animation>, actor: Ptr) {
+    let a = this.addr();
+    let saved = e.mem.u32(current_sequence_at(this, 4));
+    let action = e.mem.i32(action_at(this, 4));
+    let mut play = false;
+    if action > 0 && action <= 3 {
+        if action <= 2 && saved != 0 {
+            let group = fn_0048f7f0(e, Ptr::new(saved));
+            // The aim test comes first; a held attack ends the block.
+            if !e.call(GROUP_IS_AIM_OF, &args![group]).bool()
+                && e.call(GROUP_IS_ATTACK_OF, &args![group]).bool()
+            {
+                return;
+            }
+        }
+        play = true;
+    }
+    if play {
+        let reference = e.get(this, Animation::pActorRef).addr();
+        if e.call(ACTOR_IS_WEAPON_DRAWN, &args![reference]).bool() {
+            let queued = e.mem.u16(a + Animation::sQueuedReloadGroup.off);
+            animation_play_group(e, this, queued, 1, -1, -1);
+            let player: u32 = e.global(PLAYER_SINGLETON);
+            if actor.addr() == player {
+                let queued = e.mem.u16(a + Animation::sQueuedReloadGroup.off);
+                e.vcall(player, 0x4b0, &args![queued, 1u32]);
+            }
+            let mut has_item = false;
+            if e.call(ACTOR_PROCESS, &args![actor]).u32() != 0 {
+                let process = e.call(ACTOR_PROCESS, &args![actor]).u32();
+                let equipped = e.vcall(process, 0x148, &args![]).u32();
+                let owner = if equipped != 0 {
+                    let process = e.call(ACTOR_PROCESS, &args![actor]).u32();
+                    let equipped = e.vcall(process, 0x148, &args![]).u32();
+                    e.call(WORD_AT_8, &args![equipped]).u32()
+                } else {
+                    // The game calls `004938c0` with null here too.
+                    0
+                };
+                if e.call(PROCESS_FLAG_BYTE, &args![owner]).bool() {
+                    has_item = true;
+                }
+            }
+            let sequence = e.mem.u32(current_sequence_at(this, 4));
+            let action = if has_item { 0x11u32 } else { 9u32 };
+            e.call(ACTOR_SET_ANIM_ACTION, &args![actor, action, sequence]);
+        }
+    }
+    e.mem.set_u16(a + Animation::sQueuedReloadGroup.off, 0xff);
+}
+
+/// The countdown of `replayDelayList`: every delay loses `delta_time`, and
+/// the ones that reach zero are removed and freed.
+fn update_replay_delays(e: &mut Engine, this: Ptr<Animation>, delta_time: f32) {
+    let list = this.addr() + Animation::replayDelayList.off;
+    if e.call(SIMPLE_LIST_IS_EMPTY, &args![list]).bool() {
+        return;
+    }
+    let mut node = list;
+    while node != 0 {
+        let cell = e.call(SIMPLE_LIST_ITEM, &args![node]).u32();
+        let delay = e.mem.u32(cell);
+        let remaining = (e.mem.f32(delay + 4) as f64 - delta_time as f64) as f32;
+        e.mem.set_f32(delay + 4, remaining);
+        if remaining <= 0.0 {
+            node = if node == list {
+                0
+            } else {
+                e.call(SIMPLE_LIST_NEXT, &args![node]).u32()
+            };
+            let item = e.with_stack(4, |e, item| {
+                e.mem.set_u32(item.addr(), delay);
+                e.call(SIMPLE_LIST_REMOVE_ITEM, &args![list, item]);
+                e.mem.u32(item.addr())
+            });
+            e.call(OPERATOR_DELETE, &args![item]);
+            if node == 0 && !e.call(SIMPLE_LIST_IS_EMPTY, &args![list]).bool() {
+                node = list;
+            }
+        } else {
+            node = e.call(SIMPLE_LIST_NEXT, &args![node]).u32();
+        }
+    }
+}
+
+/// The two `spAnimIdleFreeWhenInactiveA` idles: frees one whose sequence is
+/// gone, and complains about (and drops) one that is still animating.
+fn update_free_idles(e: &mut Engine, this: Ptr<Animation>) {
+    let a = this.addr();
+    for slot in 0..2u32 {
+        let field = a + Animation::spAnimIdleFreeWhenInactiveA.off + slot * 4;
+        if ni_pointer_get(e, field) == 0 {
+            continue;
+        }
+        let idle = ni_pointer_get(e, field);
+        let sequence = fn_00490e40(e, Ptr::new(idle));
+        if sequence.is_null() {
+            let idle = ni_pointer_get(e, field);
+            if e.call(WORD_AT_8, &args![idle]).u32() != 0 {
+                e.call(ANIM_IDLE_FREE, &args![this, field]);
+            }
+            continue;
+        }
+        let idle = ni_pointer_get(e, field);
+        let sequence = fn_00490e40(e, Ptr::new(idle));
+        if e.call(SEQUENCE_STATE, &args![sequence]).i32() == 1 {
+            let idle = ni_pointer_get(e, field);
+            let owner = e.call(MANAGER_TARGET, &args![idle]).u32();
+            let idle = ni_pointer_get(e, field);
+            let sequence = fn_00490e40(e, Ptr::new(idle));
+            let name = object_name(e, sequence.addr());
+            // Both virtual functions at +0x130 take no argument: `name` and
+            // the first result stay on the stack as the log's arguments.
+            let owner_text = e.vcall(owner, 0x130, &args![]).u32();
+            let reference = e.get(this, Animation::pActorRef).addr();
+            let reference_text = e.vcall(reference, 0x130, &args![]).u32();
+            e.call(
+                LOG,
+                &args![LOG_IDLE_FREE_ANIMATING, reference_text, owner_text, name],
+            );
+            e.call(NI_POINTER_SET, &args![field, 0u32]);
+        } else {
+            let idle = ni_pointer_get(e, field);
+            let sequence = fn_00490e40(e, Ptr::new(idle));
+            if e.call(SEQUENCE_STATE, &args![sequence]).i32() == 0 {
+                e.call(ANIM_IDLE_FREE, &args![this, field]);
+            }
+        }
+    }
+}
+
+/// An `NiUpdateData` (Xbox PDB: `fTime`, `bUpdateControllers`,
+/// `bParallelUpdate`, ...; `0043d410` fills `fTime` and the first two flags)
+/// for `time`, applied to the animation root with `NODE_UPDATE`.
+fn update_root_with_time(e: &mut Engine, this: Ptr<Animation>, time: f32, first_flag: u32) {
+    e.with_stack(12, |e, data| {
+        e.call(UPDATE_DATA_CONSTRUCT, &args![data, time, first_flag, 0u32]);
+        let root = ni_pointer_get(e, this.addr() + Animation::pAnimRoot.off);
+        e.call(NODE_UPDATE, &args![root, data]);
+    });
+}
+
+// Translated from 00491180 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::Update` (Xbox PDB): one frame of the animation. In order:
+/// adds the queued KF models (up to the setting `SETTING_CLONING` allows);
+/// otherwise plays a queued reload group; counts down the replay delays;
+/// frees the idles that are done; then, with an animation root, either sets
+/// the time and updates the root (when `time_override` is not -1, or when
+/// `cSkipUpdate` is 0x14) or advances `time` by `delta_time` scaled by the
+/// global time multiplier. For every slot of the eight it applies the
+/// per-type speed modifiers to the sequence's phase and steps the slot's
+/// action (the stage of the animation: intro, loop, outro) according to the
+/// category of the group's type, starting the next group or blending out
+/// when a stage ends. Then the accumulation root's translation gives the
+/// movement of the frame (`movementDelta`, scaled by the reference's scale;
+/// a special override when the actor's flags ask for one), the notes of the
+/// groups are played for the slots whose scaled time moved, and the idle
+/// state step runs. `cSkipUpdate` returns to 0xff.
+///
+/// `actor` is the reference being animated (its virtual function at +0x100
+/// says whether it has a process), `delta_time` the frame time.
+/// The compiler's exception-unwinding frame is not translated.
+pub fn animation_update(
+    e: &mut Engine,
+    this: Ptr<Animation>,
+    actor: Ptr,
+    delta_time: f32,
+    time_override: f32,
+) {
+    let a = this.addr();
+    let time_scale = e.call(TIME_SCALE_GET, &args![TIME_SCALE_OBJECT]).f64();
+    let multiplier = e.get(this, Animation::m_fGlobalTimeMultiplier);
+    let scaled_time = (time_scale * multiplier as f64) as f32;
+
+    if e.call(MODEL_QUEUE_NOT_EMPTY, &args![this]).bool() {
+        loop {
+            let limit_address = e.call(SETTING_VALUE_ADDRESS, &args![SETTING_CLONING]).u32();
+            let limit = e.mem.u32(limit_address);
+            let counter: u32 = e.global(QUEUED_MODEL_COUNTER);
+            if counter >= limit {
+                break;
+            }
+            let queue = a + Animation::kfModelList.off;
+            let cell = e.call(SIMPLE_LIST_ITEM, &args![queue]).u32();
+            let model = e.mem.u32(cell);
+            animation_add_animation(e, this, model, false);
+            e.call(KF_MODEL_RELEASE, &args![model]);
+            e.call(SIMPLE_LIST_POP_FRONT, &args![queue]);
+            if !e.call(MODEL_QUEUE_NOT_EMPTY, &args![this]).bool() {
+                break;
+            }
+            let counter: u32 = e.global(QUEUED_MODEL_COUNTER);
+            e.set_global(QUEUED_MODEL_COUNTER, counter.wrapping_add(1));
+        }
+    } else if e.mem.u16(a + Animation::sQueuedReloadGroup.off) != 0xff {
+        update_queued_reload(e, this, actor);
+    }
+
+    update_replay_delays(e, this, delta_time);
+
+    // The actor counts as "with a process" when its virtual function at
+    // +0x100 says so.
+    let mut process_actor = 0u32;
+    if !actor.is_null() && e.vcall(actor.addr(), SLOT_HAS_PROCESS, &args![]).bool() {
+        process_actor = actor.addr();
+    }
+    update_free_idles(e, this);
+
+    if ni_pointer_get(e, a + Animation::pAnimRoot.off) == 0 {
+        return;
+    }
+    fn_00493860(e, this, 0);
+    e.mem.set_f32(a + 0x10, 0.0);
+    e.mem.set_f32(a + 0x14, 0.0);
+
+    let skip_update = e.mem.i8(a + Animation::cSkipUpdate.off);
+    let minus_one = double_constant(e, DOUBLE_MINUS_ONE);
+    if skip_update == 0x14 {
+        let time = if time_override as f64 == minus_one {
+            e.get(this, Animation::time)
+        } else {
+            time_override
+        };
+        update_root_with_time(e, this, time, 0);
+        return;
+    }
+
+    // The sequences and scaled times the slots had before this frame.
+    let phase_time = delta_time;
+    let mut sequences_before = [0u32; 8];
+    let mut scaled_before = [0f32; 8];
+    for slot in 0..8u32 {
+        let group = e.mem.u16(group_at(this, slot));
+        let mut current_type = group_type(e, group);
+        let next_group = e.mem.u16(next_group_at(this, slot));
+        let next_type = group_type(e, next_group);
+        if current_type == 0xff && next_type != 0xff {
+            start_next_group(e, this, slot);
+            let group = e.mem.u16(group_at(this, slot));
+            current_type = group_type(e, group);
+        }
+        let sequence = fn_00491040(e, this, slot).addr();
+        sequences_before[slot as usize] = sequence;
+        scaled_before[slot as usize] = 0.0;
+        if current_type != 0xff && sequence != 0 {
+            let time = e.get(this, Animation::time);
+            scaled_before[slot as usize] =
+                e.call(SEQUENCE_SCALED_TIME, &args![sequence, time]).f32();
+        }
+    }
+
+    if time_override as f64 != minus_one {
+        e.set(this, Animation::time, time_override);
+        let time = e.get(this, Animation::time);
+        update_root_with_time(e, this, time, 1);
+        return;
+    }
+
+    let multiplier = e.get(this, Animation::m_fGlobalTimeMultiplier);
+    let phase_time = (phase_time as f64 * multiplier as f64) as f32;
+    let time = e.get(this, Animation::time);
+    e.set(
+        this,
+        Animation::time,
+        (time as f64 + phase_time as f64) as f32,
+    );
+
+    let player: u32 = e.global(PLAYER_SINGLETON);
+    for slot in 0..8u32 {
+        let sequence = fn_00491040(e, this, slot).addr();
+        let mut apply_modifiers = true;
+        let group = e.mem.u16(group_at(this, slot));
+        let current_type = group_type(e, group);
+        let next_group = e.mem.u16(next_group_at(this, slot));
+        let next_type = group_type(e, next_group);
+        if current_type == 0xff || sequence == 0 {
+            continue;
+        }
+        if slot == 3 {
+            apply_modifiers = false;
+        }
+        let hold = match e.mem.i8(a + Animation::cSkipUpdate.off) as i32 {
+            4 => (4..=6).contains(&slot),
+            0x14 => true,
+            0x15 => (2..=6).contains(&slot),
+            0x17 => slot != 7 && slot != 0,
+            other => slot as i32 == other,
+        };
+        if hold {
+            apply_modifiers = false;
+        }
+
+        if !apply_modifiers {
+            let phase = (sequence_elapsed(e, sequence) - phase_time as f64) as f32;
+            set_phase(e, sequence, phase);
+        } else if e.call(SEQUENCE_STATE, &args![sequence]).i32() == 1 {
+            // The speed modifier of the group's type, as an offset in `Animation`.
+            let modifier = if (3..=0x10).contains(&current_type) {
+                Some(Animation::m_fMoveSpeed.off)
+            } else if current_type == 0x18 || current_type == 0x19 {
+                Some(Animation::m_fEquipModifier.off)
+            } else if (0x18..=0xa8).contains(&current_type) {
+                Some(Animation::m_fAttackSpeed.off)
+            } else if (0xb1..=0xc7).contains(&current_type) {
+                Some(Animation::m_fReloadModifier.off)
+            } else {
+                None
+            };
+            if let Some(offset) = modifier {
+                let elapsed = sequence_elapsed(e, sequence);
+                let factor = e.mem.f32(a + offset);
+                let phase =
+                    (elapsed + (phase_time as f64 * factor as f64 - phase_time as f64)) as f32;
+                set_phase(e, sequence, phase);
+            }
+        }
+
+        if !(apply_modifiers && e.call(SEQUENCE_STATE, &args![sequence]).i32() == 1) {
+            continue;
+        }
+        let category = type_column(e, SEQUENCE_TYPE_CATEGORY, current_type) as u32;
+        if category > 10 {
+            continue;
+        }
+        update_slot_stage(
+            e,
+            this,
+            slot,
+            sequence,
+            current_type,
+            next_type,
+            process_actor,
+            player,
+            &mut scaled_before[slot as usize],
+            category,
+        );
+    }
+
+    update_movement_and_notes(
+        e,
+        this,
+        actor,
+        process_actor,
+        scaled_time,
+        &sequences_before,
+        &scaled_before,
+    );
+}
+
+/// The per-category stage stepping of `Update` for one slot (the jump
+/// table on the category in the type table). `scaled_before` is the slot's
+/// scaled time of the start of the frame, which some categories adjust.
+#[allow(clippy::too_many_arguments)]
+fn update_slot_stage(
+    e: &mut Engine,
+    this: Ptr<Animation>,
+    slot: u32,
+    sequence: u32,
+    current_type: u32,
+    next_type: u32,
+    process_actor: u32,
+    player: u32,
+    scaled_before: &mut f32,
+    category: u32,
+) {
+    let a = this.addr();
+    match category {
+        0 | 1 => {
+            if e.call(SEQUENCE_CYCLE_TYPE, &args![sequence]).u32() == 0 {
+                loop {
+                    let action = e.mem.i32(action_at(this, slot));
+                    if action >= 1 {
+                        break;
+                    }
+                    let (section, elapsed) = section_and_elapsed(e, this, sequence, action);
+                    if !section_is_before(section, elapsed) {
+                        break;
+                    }
+                    let action = e.mem.i32(action_at(this, slot));
+                    if action == 0 || action == 1 {
+                        e.mem.set_i32(action_at(this, slot), 1);
+                    }
+                }
+                if next_type != 0xff {
+                    let (section, elapsed) = section_and_elapsed(e, this, sequence, 1);
+                    if section <= elapsed {
+                        start_next_group(e, this, slot);
+                    }
+                } else {
+                    let (section, elapsed) = section_and_elapsed(e, this, sequence, 1);
+                    if section <= elapsed && e.mem.i32(loop_count_at(this, slot)) != 0 {
+                        e.mem.set_i32(action_at(this, slot), 0);
+                        let end = e.call(SEQUENCE_END_TIME, &args![sequence]).f64();
+                        let begin = e.call(SEQUENCE_BEGIN_TIME, &args![sequence]).f64();
+                        let length = (end - begin) as f32;
+                        let phase = (sequence_elapsed(e, sequence) - length as f64) as f32;
+                        set_phase(e, sequence, phase);
+                        let loops = e.mem.i32(loop_count_at(this, slot));
+                        if loops != -1 {
+                            e.mem.set_i32(loop_count_at(this, slot), loops - 1);
+                        }
+                    } else {
+                        let (section, elapsed) = section_and_elapsed(e, this, sequence, 1);
+                        if section <= elapsed {
+                            blend_out(e, this, slot);
+                        }
+                    }
+                }
+            } else {
+                if e.mem.i32(action_at(this, slot)) == 0 {
+                    let action = e.mem.i32(action_at(this, slot));
+                    let (section, elapsed) = section_and_elapsed(e, this, sequence, action);
+                    if section < elapsed {
+                        e.mem.set_i32(action_at(this, slot), 1);
+                    }
+                }
+                if next_type != 0xff {
+                    let (section, elapsed) = section_and_elapsed(e, this, sequence, 1);
+                    if section <= elapsed {
+                        let hands_free = slot == 1
+                            && e.call(ACTOR_FLAGS_WORD, &args![process_actor]).u32() & 0xf == 0;
+                        if hands_free {
+                            blend_out(e, this, slot);
+                        } else {
+                            let loops = e.mem.u32(next_loops_at(this, slot));
+                            e.mem.set_u32(loop_count_at(this, slot), loops);
+                            let group = e.mem.u16(next_group_at(this, slot));
+                            animation_start_group(e, this, group, -1);
+                        }
+                        e.mem.set_u16(next_group_at(this, slot), 0xff);
+                    }
+                } else {
+                    let (section, elapsed) = section_and_elapsed(e, this, sequence, 1);
+                    if section <= elapsed {
+                        blend_out(e, this, slot);
+                    }
+                }
+            }
+        }
+        2 => {
+            loop {
+                let action = e.mem.i32(action_at(this, slot));
+                if action >= 3 {
+                    break;
+                }
+                let (section, elapsed) = section_and_elapsed(e, this, sequence, action);
+                if !section_is_before(section, elapsed) {
+                    break;
+                }
+                let next = match e.mem.i32(action_at(this, slot)) {
+                    0 => Some(1),
+                    1 => Some(2),
+                    2 => Some(3),
+                    _ => None,
+                };
+                if let Some(next) = next {
+                    e.mem.set_i32(action_at(this, slot), next);
+                }
+            }
+            if next_type != 0xff {
+                let (section, elapsed) = section_and_elapsed(e, this, sequence, 3);
+                if section <= elapsed {
+                    start_next_group(e, this, slot);
+                }
+            } else {
+                let (section, elapsed) = section_and_elapsed(e, this, sequence, 2);
+                if section <= elapsed && e.mem.i32(loop_count_at(this, slot)) != 0 {
+                    e.call(RESET_CONTROLLERS, &args![this]);
+                    e.mem.set_i32(action_at(this, slot), 1);
+                    let group = fn_0048f7f0(e, Ptr::new(sequence));
+                    let second = e.call(GROUP_TIME, &args![group, 2i32]).f64();
+                    let group = fn_0048f7f0(e, Ptr::new(sequence));
+                    let first = e.call(GROUP_TIME, &args![group, 1i32]).f64();
+                    let length = (second - first) as f32;
+                    let phase = (sequence_elapsed(e, sequence) - length as f64) as f32;
+                    set_phase(e, sequence, phase);
+                    *scaled_before = (*scaled_before as f64 - length as f64) as f32;
+                    let loops = e.mem.i32(loop_count_at(this, slot));
+                    if loops != -1 && loops < 0xff {
+                        e.mem.set_i32(loop_count_at(this, slot), loops - 1);
+                    }
+                } else {
+                    let (section, elapsed) = section_and_elapsed(e, this, sequence, 3);
+                    if section <= elapsed {
+                        let idle = ni_pointer_get(e, a + Animation::spAnimIdle.off);
+                        if e.call(WORD_AT_C, &args![idle]).u32() == 1 {
+                            let idle = ni_pointer_get(e, a + Animation::spAnimIdle.off);
+                            e.call(IDLE_SET_WORD_8, &args![idle, 3u32]);
+                        } else {
+                            blend_out(e, this, slot);
+                        }
+                    }
+                }
+            }
+        }
+        3 | 4 | 6 | 10 => {
+            advance_action(e, this, slot, sequence, 2);
+            if e.mem.i32(action_at(this, slot)) == 2 {
+                let (section, elapsed) = section_and_elapsed(e, this, sequence, 2);
+                if section <= elapsed {
+                    if next_type == 0xff {
+                        blend_out(e, this, slot);
+                        if process_actor != 0 {
+                            let kind = type_column(e, SEQUENCE_TYPE_CATEGORY, current_type);
+                            if kind == 3 || kind == 4 {
+                                let process = e.call(ACTOR_PROCESS, &args![process_actor]).u32();
+                                if process != 0 {
+                                    if process_actor == player {
+                                        e.call(ACTOR_SET_HAVOK_WEAPON, &args![process_actor]);
+                                    } else {
+                                        e.vcall(process, 0x614, &args![0x4000u32]);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        start_next_group(e, this, slot);
+                    }
+                }
+            }
+        }
+        5 | 7 => finish_last_stage(e, this, slot, sequence, next_type, 4),
+        8 => finish_last_stage(e, this, slot, sequence, next_type, 3),
+        _ => {
+            // Category 9.
+            advance_action(e, this, slot, sequence, 3);
+            if e.mem.i32(action_at(this, slot)) == 2 && process_actor != 0 {
+                let process = e.call(ACTOR_PROCESS, &args![process_actor]).u32();
+                if process != 0 {
+                    let process = e.call(ACTOR_PROCESS, &args![process_actor]).u32();
+                    let aiming = e.vcall(process, 0x6dc, &args![]).bool()
+                        && e.call(ACTOR_GET_ANIM_ACTION, &args![process_actor]).i32() == 2;
+                    let reference = e.get(this, Animation::pActorRef).addr();
+                    let aiming = aiming
+                        || (reference == player
+                            && e.call(WORD_AT_8, &args![VATS_OBJECT]).u32() == 4
+                            && e.call(VATS_CURRENT_ACTION, &args![VATS_OBJECT]).u32() != 0);
+                    if aiming {
+                        let group = fn_0048f7f0(e, Ptr::new(sequence));
+                        let second = e.call(GROUP_TIME, &args![group, 2i32]).f64();
+                        if *scaled_before as f64 <= second {
+                            let group = fn_0048f7f0(e, Ptr::new(sequence));
+                            let second = e.call(GROUP_TIME, &args![group, 2i32]).f64();
+                            let group = fn_0048f7f0(e, Ptr::new(sequence));
+                            let first = e.call(GROUP_TIME, &args![group, 1i32]).f64();
+                            let length = (second - first) as f32;
+                            loop {
+                                let action = e.mem.i32(action_at(this, slot));
+                                let (section, elapsed) =
+                                    section_and_elapsed(e, this, sequence, action);
+                                if !section_is_before(section, elapsed) {
+                                    break;
+                                }
+                                let phase = (sequence_elapsed(e, sequence) - length as f64) as f32;
+                                set_phase(e, sequence, phase);
+                                *scaled_before = (*scaled_before as f64 - length as f64) as f32;
+                            }
+                            let action = e.mem.i32(action_at(this, slot));
+                            e.mem.set_i32(action_at(this, slot), action - 1);
+                        }
+                    }
+                }
+            }
+            let flag: u8 = e.global(SEQUENCE_STEP_FLAG);
+            if flag != 0 && e.mem.i32(action_at(this, slot)) == 1 {
+                let group = fn_0048f7f0(e, Ptr::new(sequence));
+                let second = e.call(GROUP_TIME, &args![group, 2i32]).f64();
+                if *scaled_before as f64 <= second {
+                    let group = fn_0048f7f0(e, Ptr::new(sequence));
+                    let second = e.call(GROUP_TIME, &args![group, 2i32]).f64();
+                    let group = fn_0048f7f0(e, Ptr::new(sequence));
+                    let first = e.call(GROUP_TIME, &args![group, 1i32]).f64();
+                    let length = (second - first) as f32;
+                    let phase = (sequence_elapsed(e, sequence) + length as f64) as f32;
+                    set_phase(e, sequence, phase);
+                    *scaled_before = (*scaled_before as f64 + length as f64) as f32;
+                    let action = e.mem.i32(action_at(this, slot));
+                    e.mem.set_i32(action_at(this, slot), action + 1);
+                }
+            }
+            if e.mem.i32(action_at(this, slot)) == 3 {
+                let (section, elapsed) = section_and_elapsed(e, this, sequence, 3);
+                if section <= elapsed {
+                    if next_type == 0xff {
+                        blend_out(e, this, slot);
+                    } else {
+                        start_next_group(e, this, slot);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// While `action[slot]` is below `last`, moves it up one when the section
+/// after it has passed (`GetTime(action + 1) < elapsed`).
+fn advance_action(e: &mut Engine, this: Ptr<Animation>, slot: u32, sequence: u32, last: i32) {
+    if e.mem.i32(action_at(this, slot)) < last {
+        let action = e.mem.i32(action_at(this, slot));
+        let (section, elapsed) = section_and_elapsed(e, this, sequence, action + 1);
+        if section < elapsed {
+            let action = e.mem.i32(action_at(this, slot));
+            e.mem.set_i32(action_at(this, slot), action + 1);
+        }
+    }
+}
+
+/// The ending shared by categories 5, 7 and 8: after `advance_action` has
+/// brought the stage to `last`, the slot blends out or hands over to the
+/// next group when that section has passed.
+fn finish_last_stage(
+    e: &mut Engine,
+    this: Ptr<Animation>,
+    slot: u32,
+    sequence: u32,
+    next_type: u32,
+    last: i32,
+) {
+    advance_action(e, this, slot, sequence, last);
+    if e.mem.i32(action_at(this, slot)) == last {
+        let (section, elapsed) = section_and_elapsed(e, this, sequence, last);
+        if section <= elapsed {
+            if next_type == 0xff {
+                blend_out(e, this, slot);
+            } else {
+                start_next_group(e, this, slot);
+            }
+        }
+    }
+}
+
+/// The end of `Update`: the movement of the frame (`movementDelta`) from the
+/// accumulation root's translation, the notes of the slots whose scaled time
+/// moved, the idle state step and the reset of the one-frame flags.
+fn update_movement_and_notes(
+    e: &mut Engine,
+    this: Ptr<Animation>,
+    actor: Ptr,
+    process_actor: u32,
+    scaled_time: f32,
+    sequences_before: &[u32; 8],
+    scaled_before: &[f32; 8],
+) {
+    let a = this.addr();
+    let player: u32 = e.global(PLAYER_SINGLETON);
+    let accum_root = e.get(this, Animation::pAccumRoot).addr();
+    if accum_root != 0 {
+        let translate = a + Animation::AccumRootTranslate.off;
+        let old_translate = [
+            e.mem.f32(translate),
+            e.mem.f32(translate + 4),
+            e.mem.f32(translate + 8),
+        ];
+        let mut use_override = false;
+        let mut override_vector = [
+            e.mem.f32(ZERO_VECTOR),
+            e.mem.f32(ZERO_VECTOR + 4),
+            e.mem.f32(ZERO_VECTOR + 8),
+        ];
+        if e.call(ACTOR_FLAGS_ANY, &args![process_actor]).bool() {
+            let mask = e.call(ACTOR_FLAGS_WORD, &args![process_actor]).u16();
+            let first = e.mem.u32(current_sequence_at(this, 1));
+            if first != 0 && mask & 0xf != 0 {
+                let group = fn_0048f7f0(e, Ptr::new(first));
+                if e.call(GROUP_IS_SPECIAL_TYPE, &args![group]).bool() {
+                    use_override = true;
+                }
+                let first = e.mem.u32(current_sequence_at(this, 1));
+                let group = fn_0048f7f0(e, Ptr::new(first));
+                let kind = e.call(ANIM_GROUP_SEQUENCE_TYPE, &args![group]).i32();
+                if kind == 0xe3 {
+                    use_override = true;
+                } else {
+                    let first = e.mem.u32(current_sequence_at(this, 1));
+                    let state = e.call(SEQUENCE_STATE, &args![first]).i32();
+                    if state == 2 || state == 5 {
+                        use_override = true;
+                    }
+                }
+                let controller = e
+                    .call(GET_CONTROLLER, &args![accum_root, RTTI_ACCUM_CONTROLLER])
+                    .u32();
+                // The interpolator that the accumulation root's controller
+                // blends for this frame; its priority (the signed byte at
+                // +0x10) beats the sequence's for the root bone.
+                let blend = e.vcall(controller, 0xc4, &args![0u32]).u32();
+                if blend != 0 {
+                    let priority = fn_00493750(e, Ptr::new(blend));
+                    let first = e.mem.u32(current_sequence_at(this, 1));
+                    let target = e.call(SEQUENCE_INTERPOLATOR_AT, &args![first, 0u32]).u32();
+                    // The cast's result is stored in a local that is never read.
+                    e.call(DYNAMIC_CAST, &args![RTTI_CAST_TARGET, target]);
+                    let root_name = object_name(e, accum_root);
+                    let first = e.mem.u32(current_sequence_at(this, 1));
+                    let sequence_priority = e
+                        .call(SEQUENCE_PRIORITY, &args![first, root_name, 0u32])
+                        .u8() as i32;
+                    if sequence_priority < priority {
+                        use_override = false;
+                    }
+                }
+                if use_override {
+                    let mut wanted = 0u32;
+                    if mask & 0x200 != 0 {
+                        wanted = if mask & 1 != 0 {
+                            7
+                        } else if mask & 2 != 0 {
+                            8
+                        } else if mask & 4 != 0 {
+                            9
+                        } else if mask & 8 != 0 {
+                            10
+                        } else {
+                            0
+                        };
+                    } else if mask & 0xff00 != 0 {
+                        wanted = if mask & 1 != 0 {
+                            3
+                        } else if mask & 2 != 0 {
+                            4
+                        } else if mask & 4 != 0 {
+                            5
+                        } else if mask & 8 != 0 {
+                            6
+                        } else {
+                            0
+                        };
+                    }
+                    let first = e.mem.u32(current_sequence_at(this, 1));
+                    let group = fn_0048f7f0(e, Ptr::new(first));
+                    let kind = e.call(ANIM_GROUP_SEQUENCE_TYPE, &args![group]).u32();
+                    if wanted == kind {
+                        let words = scaled_group_movement(e, this, group, scaled_time);
+                        override_vector = words.map(f32::from_bits);
+                    } else {
+                        let found_group = e
+                            .call(
+                                ACTOR_GET_ANIM_GROUP,
+                                &args![process_actor, wanted, 0u32, 0u32, 0u32],
+                            )
+                            .u16();
+                        let found_type = group_type(e, found_group);
+                        if found_type != 0 {
+                            if let Some(entry) = sequence_map_get(e, this, found_group) {
+                                let sequence = e.vcall(entry, 0x10, &args![0xffff_ffffu32]).u32();
+                                if sequence != 0 {
+                                    let group = fn_0048f7f0(e, Ptr::new(sequence));
+                                    let words = scaled_group_movement(e, this, group, scaled_time);
+                                    override_vector = words.map(f32::from_bits);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let time = e.get(this, Animation::time);
+        e.call(UPDATE_BIP_ONLY, &args![this, time, translate, 1u32]);
+        if use_override {
+            e.mem.set_f32(a + 0x10, override_vector[0]);
+            e.mem.set_f32(a + 0x14, override_vector[1]);
+        } else {
+            e.with_stack(24, |e, buffers| {
+                let (out, old) = (buffers.addr(), buffers.addr() + 12);
+                for (i, value) in old_translate.iter().enumerate() {
+                    e.mem.set_f32(old + 4 * i as u32, *value);
+                }
+                e.call(VECTOR_SUBTRACT, &args![translate, out, old]);
+                let (x, y) = (e.mem.f32(out), e.mem.f32(out + 4));
+                e.mem.set_f32(a + 0x10, x);
+                e.mem.set_f32(a + 0x14, y);
+            });
+        }
+        let scale = e.call(REFERENCE_SCALE, &args![actor]).f64();
+        let x = e.mem.f32(a + 0x10);
+        e.mem.set_f32(a + 0x10, (scale * x as f64) as f32);
+        let scale = e.call(REFERENCE_SCALE, &args![actor]).f64();
+        let y = e.mem.f32(a + 0x14);
+        e.mem.set_f32(a + 0x14, (scale * y as f64) as f32);
+        let last_address = a + Animation::pLastMovementSequence.off;
+        if !use_override
+            && e.mem.u32(current_sequence_at(this, 1)) == 0
+            && e.mem.u32(last_address) != 0
+        {
+            let last = e.mem.u32(last_address);
+            if e.call(SEQUENCE_STATE, &args![last]).u32() != 0 {
+                e.mem.set_f32(a + 0x14, 0.0);
+                e.mem.set_f32(a + 0x10, 0.0);
+            }
+        }
+        if e.mem.u32(last_address) != 0 {
+            let last = e.mem.u32(last_address);
+            if e.call(SEQUENCE_STATE, &args![last]).u32() == 0 {
+                e.mem.set_u32(last_address, 0);
+            }
+        }
+    }
+
+    let mut notes_blocked = false;
+    if process_actor != 0 && e.call(ACTOR_PROCESS, &args![process_actor]).u32() != 0 {
+        let process = e.call(ACTOR_PROCESS, &args![process_actor]).u32();
+        notes_blocked = e.vcall(process, 0x2d8, &args![]).bool();
+    }
+    if !notes_blocked {
+        let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+        let mut play_notes = !e.call(NODE_FLAG_CHECK, &args![root]).bool();
+        if !play_notes {
+            let player_animation = e.call(PLAYER_GET_ANIMATION, &args![player, 1u32]).u32();
+            play_notes =
+                this.addr() == player_animation && e.call(SOUND_FLAG_CHECK, &args![]).bool();
+        }
+        if play_notes {
+            for slot in 0..8u32 {
+                let skip = e.mem.u8(a + Animation::cSkipUpdate.off);
+                let step = match skip {
+                    0x14 => false,
+                    0x15 => !(2..=4).contains(&slot),
+                    0x17 => slot == 7 || slot == 0,
+                    _ => slot as i32 != e.mem.i8(a + Animation::cSkipUpdate.off) as i32,
+                };
+                if step {
+                    play_slot_notes(
+                        e,
+                        this,
+                        actor,
+                        slot,
+                        sequences_before[slot as usize],
+                        scaled_before[slot as usize],
+                    );
+                }
+            }
+        }
+    }
+
+    let idle = ni_pointer_get(e, a + Animation::spAnimIdle.off);
+    if idle != 0 {
+        let idle = ni_pointer_get(e, a + Animation::spAnimIdle.off);
+        e.call(IDLE_STATE_STEP, &args![idle, this]);
+    }
+    if e.mem.i8(a + Animation::cSkipNextBlend.off) != 0 {
+        e.mem.set_u8(a + Animation::cSkipNextBlend.off, 0);
+    }
+    e.mem.set_u8(a + Animation::cSkipUpdate.off, 0xff);
+}
+
+/// One slot of the notes pass at the end of `Update`: when the slot still
+/// plays the sequence it played before the frame (in a state that animates),
+/// no other sequence outranks it for the slot's sound bone, and its scaled
+/// time moved, the group's notes between the two times are played
+/// (`005f2b60(actor, from, to, sequence)`).
+fn play_slot_notes(
+    e: &mut Engine,
+    this: Ptr<Animation>,
+    actor: Ptr,
+    slot: u32,
+    sequence_before: u32,
+    scaled_before: f32,
+) {
+    let sequence = fn_00491040(e, this, slot).addr();
+    if sequence == 0 || sequence_before != sequence {
+        return;
+    }
+    let animating = e.call(SEQUENCE_STATE, &args![sequence]).i32() == 1
+        || e.call(SEQUENCE_STATE, &args![sequence]).i32() == 2
+        || e.call(SEQUENCE_STATE, &args![sequence]).i32() == 5;
+    if !animating {
+        return;
+    }
+    let mut owns_bone = true;
+    let bone_name = e.mem.u32(SOUND_PRIORITY_BONE_NAMES + slot * 4);
+    let bone_at = animation_entry(this, Animation::pSoundPriorityBone, slot, 4);
+    if bone_name == 0 {
+        owns_bone = false;
+    } else if e.mem.u32(bone_at) != 0 {
+        let mut best = 0u32;
+        let mut best_priority = 0u8;
+        for other in 0..8u32 {
+            if e.mem.u32(current_sequence_at(this, other)) != 0 && e.mem.u32(bone_at) != 0 {
+                let bone = e.mem.u32(bone_at);
+                let name = object_name(e, bone);
+                if name != 0 {
+                    let candidate = e.mem.u32(current_sequence_at(this, other));
+                    let group = fn_0048f7f0(e, Ptr::new(candidate));
+                    let priority = e.call(GROUP_BONE_PRIORITY, &args![group, slot]).u8();
+                    if priority > best_priority {
+                        best = candidate;
+                        best_priority = priority;
+                    }
+                }
+            }
+        }
+        if best == 0 || best != sequence {
+            owns_bone = false;
+        }
+    }
+    if !owns_bone {
+        return;
+    }
+    let time = e.get(this, Animation::time);
+    let current = e.call(SEQUENCE_SCALED_TIME, &args![sequence, time]).f32();
+    let lowest = -(e.global::<f32>(FLOAT_MAX) as f64);
+    if current as f64 != lowest && scaled_before as f64 != lowest && scaled_before != current {
+        let group = fn_0048f7f0(e, Ptr::new(sequence));
+        e.call(
+            GROUP_PLAY_NOTES,
+            &args![group, actor, scaled_before, current, sequence],
+        );
+    }
+}
+
+// ---- Flags, movement and scene graph updates -------------------------------------
+
+// Translated from 00493750 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The signed byte at +0x10 of the object (`Update` calls it on the object
+/// the accumulation root's controller blends and compares the result with a
+/// sequence's `GetPriority`); the map has no name for it.
+pub fn fn_00493750(e: &mut Engine, this: Ptr) -> i32 {
+    e.mem.i8(this.addr() + 0x10) as i32
+}
+
+// Translated from 00493860 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Sets (`value` != 0) or clears the "movement updated" bit (1) of the
+/// animation's flag byte; the map has no name for it.
+pub fn fn_00493860(e: &mut Engine, this: Ptr<Animation>, value: u8) {
+    e.call(FLAG_SET, &args![this, value, FLAG_MOVEMENT_UPDATED]);
+}
+
+// Translated from 00493900 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::UpdateMovement` (Xbox PDB): `UpdateMovementNoWorldUpdate`
+/// for `actor`, then `UpdateSceneGraphNoController`.
+pub fn animation_update_movement(e: &mut Engine, this: Ptr<Animation>, actor: Ptr) {
+    animation_update_movement_no_world_update(e, this, actor);
+    animation_update_scene_graph_no_controller(e, this);
+}
+
+// Translated from 00493930 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::UpdateQueuedScenegraph` (Xbox PDB): when the scene graph
+/// update was postponed (flag bit 2), does it now and clears the bit.
+/// Returns whether it did.
+pub fn animation_update_queued_scenegraph(e: &mut Engine, this: Ptr<Animation>) -> bool {
+    if !fn_00493970(e, this) {
+        return false;
+    }
+    animation_update_scene_graph_no_controller(e, this);
+    fn_004939b0(e, this, 0);
+    true
+}
+
+// Translated from 00493970 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether flag bit 2 (the scene graph update was postponed) is set; the
+/// map has no name for it.
+pub fn fn_00493970(e: &mut Engine, this: Ptr<Animation>) -> bool {
+    fn_00493990(e, this, FLAG_SCENE_GRAPH_PENDING as u8)
+}
+
+// Translated from 00493990 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether any bit of `mask` is set in the flag byte at +0.
+pub fn fn_00493990(e: &mut Engine, this: Ptr<Animation>, mask: u8) -> bool {
+    e.mem.u8(this.addr()) & mask != 0
+}
+
+// Translated from 004939b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Sets (`value` != 0) or clears flag bit 2 (the scene graph update is
+/// postponed); the map has no name for it.
+pub fn fn_004939b0(e: &mut Engine, this: Ptr<Animation>, value: u8) {
+    e.call(FLAG_SET, &args![this, value, FLAG_SCENE_GRAPH_PENDING]);
+}
+
+// Translated from 004939d0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::UpdateMovementNoWorldUpdate` (Xbox PDB): with an animation
+/// root, an accumulation root and the "movement updated" bit clear, sets the
+/// actor's flag bits (1 always, 2 from the shader accumulator test of the
+/// actor's form ID, 4 from the speed of its movement object) and updates the
+/// biped under the animation root for `time`; `movementDelta.z` becomes the
+/// change of the accumulation root's first child's world height. Finally
+/// sets the "movement updated" bit.
+pub fn animation_update_movement_no_world_update(e: &mut Engine, this: Ptr<Animation>, actor: Ptr) {
+    let a = this.addr();
+    if ni_pointer_get(e, a + Animation::pAnimRoot.off) == 0 {
+        return;
+    }
+    if e.get(this, Animation::pAccumRoot).is_null() {
+        return;
+    }
+    if fn_00493b90(e, this) {
+        return;
+    }
+    let player: u32 = e.global(PLAYER_SINGLETON);
+    // The actor's process gives a movement object (virtual functions at
+    // +0x1d0 of the actor and +0x10 of the process).
+    let process = e.vcall(actor.addr(), 0x1d0, &args![]).u32();
+    let movement = if process != 0 {
+        e.vcall(process, 0x10, &args![]).u32()
+    } else {
+        0
+    };
+    let check_speed = actor.addr() == player
+        || (e.call(ACTOR_WORD_108, &args![actor]).i32() != 1 && fn_00493bb0(e, actor) == 0);
+    if check_speed && movement != 0 {
+        // The game compares the speed with 0.0 and keeps the answer in a
+        // local it never reads again.
+        e.call(MOVEMENT_SPEED, &args![movement]);
+    }
+    e.call(ACTOR_FLAG_SET, &args![actor, 1u32, 1u32]);
+    let accumulator = e.call(SHADER_ACCUMULATOR, &args![]).u32();
+    let mut accumulator_accepts = false;
+    if accumulator != 0 {
+        let form_id = e.call(WORD_AT_C, &args![actor]).u32();
+        accumulator_accepts = e
+            .call(SHADER_ACCUMULATOR_TEST, &args![accumulator, form_id, 0u32])
+            .bool();
+    }
+    e.call(
+        ACTOR_FLAG_SET,
+        &args![actor, !accumulator_accepts as u32, 2u32],
+    );
+    let slow = movement != 0 && {
+        let speed = e.call(MOVEMENT_SPEED, &args![movement]).f64();
+        speed < double_constant(e, DOUBLE_MICRO)
+    };
+    e.call(ACTOR_FLAG_SET, &args![actor, !slow as u32, 4u32]);
+
+    let accum_root = e.get(this, Animation::pAccumRoot).addr();
+    let child = e.call(NODE_CHILD_AT, &args![accum_root, 0u32]).u32();
+    let translation = e.call(NODE_WORLD_TRANSLATION, &args![child]).u32();
+    let height_before = e.mem.f32(translation + 8);
+    let time: f32 = e.get(this, Animation::time);
+    let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+    e.call(BIP_UPDATE_ALL_BUT_BIP, &args![root, time]);
+    let accum_root = e.get(this, Animation::pAccumRoot).addr();
+    let child = e.call(NODE_CHILD_AT, &args![accum_root, 0u32]).u32();
+    let translation = e.call(NODE_WORLD_TRANSLATION, &args![child]).u32();
+    let height_after = e.mem.f32(translation + 8);
+    e.mem.set_f32(
+        a + 0x18,
+        (height_after as f64 - height_before as f64) as f32,
+    );
+    fn_00493860(e, this, 1);
+}
+
+// Translated from 00493b90 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether flag bit 1 (the movement was updated) is set; the map has no
+/// name for it.
+pub fn fn_00493b90(e: &mut Engine, this: Ptr<Animation>) -> bool {
+    fn_00493990(e, this, FLAG_MOVEMENT_UPDATED as u8)
+}
+
+// Translated from 00493bb0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The byte at +0x104 of the object (of an actor, in the callers); the map
+/// has no name for it.
+pub fn fn_00493bb0(e: &mut Engine, this: Ptr) -> u8 {
+    e.mem.u8(this.addr() + 0x104)
+}
+
+// Translated from 00493bd0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::UpdateSceneGraphNoController` (Xbox PDB): with an animation
+/// root and an accumulation root, either postpones the scene graph update
+/// (sets flag bit 2) when the limit setting is above 1 and nothing forces
+/// the update, or updates the animation root's scene graph with the
+/// controllers of the animation root and the accumulation root detached
+/// for the duration and restored afterwards.
+pub fn animation_update_scene_graph_no_controller(e: &mut Engine, this: Ptr<Animation>) {
+    let a = this.addr();
+    if ni_pointer_get(e, a + Animation::pAnimRoot.off) == 0 {
+        return;
+    }
+    if e.get(this, Animation::pAccumRoot).is_null() {
+        return;
+    }
+    let limit_address = e
+        .call(SETTING_VALUE_ADDRESS, &args![SETTING_SCENE_GRAPH_LIMIT])
+        .u32();
+    let limit = e.mem.i32(limit_address);
+    let forced: i8 = e.global(SCENE_GRAPH_ALWAYS_UPDATE);
+    let flag_object: u32 = e.global(FLAG_OBJECT_GLOBAL);
+    if limit > 1
+        && forced == 0
+        && !fn_00493970(e, this)
+        && !e.call(FLAG_OBJECT_CHECK, &args![flag_object]).bool()
+    {
+        fn_004939b0(e, this, 1);
+        return;
+    }
+    let time: f32 = e.get(this, Animation::time);
+    e.with_stack(12, |e, data| {
+        e.call(UPDATE_DATA_CONSTRUCT, &args![data, time, 1u32, 0u32]);
+        let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+        let root_controllers = e.call(OBJECT_CONTROLLERS, &args![root]).u32();
+        e.with_stack(4, |e, saved_root| {
+            e.call(NI_POINTER_INIT, &args![saved_root, root_controllers]);
+            let accum_root = e.get(this, Animation::pAccumRoot).addr();
+            let accum_controllers = e.call(OBJECT_CONTROLLERS, &args![accum_root]).u32();
+            e.with_stack(4, |e, saved_accum| {
+                e.call(NI_POINTER_INIT, &args![saved_accum, accum_controllers]);
+                let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+                e.call(OBJECT_SET_CONTROLLERS, &args![root, 0u32]);
+                let accum_root = e.get(this, Animation::pAccumRoot).addr();
+                e.call(OBJECT_SET_CONTROLLERS, &args![accum_root, 0u32]);
+                let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+                e.vcall(root, 0xa4, &args![data, 0u32]);
+                let controllers = ni_pointer_get(e, saved_root.addr());
+                let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+                e.call(OBJECT_SET_CONTROLLERS, &args![root, controllers]);
+                let controllers = ni_pointer_get(e, saved_accum.addr());
+                let accum_root = e.get(this, Animation::pAccumRoot).addr();
+                e.call(OBJECT_SET_CONTROLLERS, &args![accum_root, controllers]);
+                e.call(NI_POINTER_RELEASE, &args![saved_accum]);
+            });
+            e.call(NI_POINTER_RELEASE, &args![saved_root]);
+        });
+    });
+}
+
+// ---- Group speed and small accessors ---------------------------------------------
+
+// Translated from 00493d50 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::InitGroupSpeed` (Xbox PDB): for animation group `group`,
+/// when the animation has a manager and a sequence for the group (and the
+/// group is neither type 1 nor 2), finds the sequence's interpolator that
+/// targets the accumulation root; for the sequence categories that move, it
+/// samples the interpolator's transform at the sequence's start and end
+/// times and stores `(end - start) / duration` as the group's movement vector
+/// (`005f4c40`). Logs a message when there is no accumulation root, and when
+/// a group of type 3..14 ends up with a zero speed ("exported with Animate
+/// in Place").
+pub fn animation_init_group_speed(e: &mut Engine, this: Ptr<Animation>, group: Ptr) {
+    let a = this.addr();
+    let group_id = e.call(ANIM_GROUP_ID, &args![group]).u16();
+    let kind = e.call(ANIM_GROUP_SEQUENCE_TYPE, &args![group]).i32();
+    if ni_pointer_get(e, a + Animation::spManager.off) == 0 {
+        return;
+    }
+    let Some(entry) = sequence_map_get(e, this, group_id) else {
+        return;
+    };
+    if kind == 1 || kind == 2 {
+        return;
+    }
+    let manager = ni_pointer_get(e, a + Animation::spManager.off);
+    let accum_root = ni_controller_manager_get_accum_root(e, Ptr::new(manager));
+    if accum_root.is_null() {
+        let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+        let name = object_name(e, root);
+        e.call(LOG, &args![LOG_NO_ACCUM_ROOT, name]);
+        return;
+    }
+    // Only an entry that holds a sequence, whose type keeps a single
+    // sequence and whose category moves (0..2, 5..9) is measured. The game
+    // also stores the first and last stage of the category in two locals it
+    // never reads.
+    let measured = e.vcall(entry, 0x10, &args![0xffff_ffffu32]).u32() != 0
+        && e.mem
+            .u8(SEQUENCE_TYPE_TABLE.wrapping_add((kind as u32).wrapping_mul(0x24)))
+            == 0
+        && matches!(
+            type_column(e, SEQUENCE_TYPE_CATEGORY, kind as u32),
+            0..=2 | 5..=9
+        );
+    if measured {
+        let sequence = e.vcall(entry, 0x10, &args![0xffff_ffffu32]).u32();
+        e.with_stack(4, |e, sequence_ref| {
+            e.call(NI_POINTER_INIT, &args![sequence_ref, sequence]);
+            let mut index = 0u32;
+            loop {
+                let sequence = ni_pointer_get(e, sequence_ref.addr());
+                let count = e.call(WORD_AT_C, &args![sequence]).u32();
+                if index >= count {
+                    break;
+                }
+                let sequence = ni_pointer_get(e, sequence_ref.addr());
+                let target = fn_00494210(e, Ptr::new(sequence), index);
+                let sequence = ni_pointer_get(e, sequence_ref.addr());
+                let accum = e.call(ACCUM_ROOT_OF_SEQUENCE, &args![sequence]).u32();
+                if target != accum {
+                    index += 1;
+                    continue;
+                }
+                let sequence = ni_pointer_get(e, sequence_ref.addr());
+                let interpolator = e
+                    .call(SEQUENCE_INTERPOLATOR_AT, &args![sequence, index])
+                    .u32();
+                let sequence = ni_pointer_get(e, sequence_ref.addr());
+                let begin = e.call(SEQUENCE_BEGIN_TIME, &args![sequence]).f32();
+                let sequence = ni_pointer_get(e, sequence_ref.addr());
+                let end = e.call(SEQUENCE_END_TIME, &args![sequence]).f32();
+                e.with_stack(0x80, |e, records| {
+                    let (start, finish, difference) =
+                        (records.addr(), records.addr() + 0x20, records.addr() + 0x40);
+                    fn_00494260(e, Ptr::new(start));
+                    fn_00494260(e, Ptr::new(finish));
+                    e.vcall(interpolator, 0x8c, &args![begin, 0u32, start]);
+                    e.vcall(interpolator, 0x8c, &args![end, 0u32, finish]);
+                    if fn_004942c0(e, Ptr::new(start)) && fn_004942c0(e, Ptr::new(finish)) {
+                        let start_translate = e.call(RECORD_ADDRESS, &args![start]).u32();
+                        let finish_translate = e.call(RECORD_ADDRESS, &args![finish]).u32();
+                        e.call(
+                            VECTOR_SUBTRACT,
+                            &args![finish_translate, difference, start_translate],
+                        );
+                        let duration = (end as f64 - begin as f64) as f32;
+                        fn_004941c0(e, Ptr::new(difference), duration);
+                        e.call(GROUP_SET_MOVEMENT_VECTOR, &args![group, difference]);
+                    }
+                });
+                break;
+            }
+            e.call(NI_POINTER_RELEASE, &args![sequence_ref]);
+        });
+    }
+    let kind = group_type(e, group_id);
+    if (3..=0xe).contains(&kind) {
+        let speed = e.call(GROUP_SPEED, &args![group]).f64();
+        if speed == double_constant(e, DOUBLE_ZERO) {
+            let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+            let name = object_name(e, root);
+            let type_of_group = e.call(ANIM_GROUP_SEQUENCE_TYPE, &args![group]).u32();
+            let type_name = e
+                .mem
+                .u32(SEQUENCE_TYPE_NAME.wrapping_add(type_of_group.wrapping_mul(0x24)));
+            let weapon = e.call(GROUP_WEAPON_TYPE, &args![group]).u32();
+            let weapon_name = e
+                .mem
+                .u32(WEAPON_NAME_TABLE.wrapping_add(weapon.wrapping_mul(4)));
+            let movement = e.call(GROUP_MOVE_TYPE, &args![group]).u32();
+            let movement_name = e
+                .mem
+                .u32(MOVE_NAME_TABLE.wrapping_add(movement.wrapping_mul(4)));
+            e.call(
+                LOG,
+                &args![
+                    LOG_ANIMATE_IN_PLACE,
+                    movement_name,
+                    weapon_name,
+                    type_name,
+                    name
+                ],
+            );
+        }
+    }
+}
+
+// Translated from 004941c0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Multiplies the three floats at `this` by `1.0 / divisor` and returns
+/// `this` (a vector scaled by the inverse of its argument); the map has no
+/// name for it.
+pub fn fn_004941c0(e: &mut Engine, this: Ptr, divisor: f32) -> Ptr {
+    let inverse = (1.0f64 / divisor as f64) as f32;
+    for i in 0..3u32 {
+        let address = this.addr() + 4 * i;
+        let value = e.mem.f32(address);
+        e.mem
+            .set_f32(address, (value as f64 * inverse as f64) as f32);
+    }
+    this
+}
+
+// Translated from 00494210 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The target of the object held in entry `index` of the array at +0x14 of
+/// `this` (a `NiControllerSequence`'s interpolator array): the word at +0x2c
+/// of the pointer in the 16-byte entry's second word, 0 when that is null.
+pub fn fn_00494210(e: &mut Engine, this: Ptr, index: u32) -> u32 {
+    let array = e.mem.u32(this.addr() + 0x14);
+    let entry = array.wrapping_add(index << 4).wrapping_add(4);
+    if ni_pointer_get(e, entry) == 0 {
+        return 0;
+    }
+    let object = ni_pointer_get(e, entry);
+    e.call(MANAGER_TARGET, &args![object]).u32()
+}
+
+// Translated from 00494260 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Initializes the 32-byte record at `this` the way an `NiQuatTransform`
+/// (Xbox PDB layout: `m_kTranslate`, `m_kRotate`, `m_fScale`) starts: three
+/// words from `011a8400` (the invalid translation), four from `011f3704`
+/// (the rotation) and the `float` at `01096b8c` (the scale). The map has no
+/// name for it; returns `this`.
+pub fn fn_00494260(e: &mut Engine, this: Ptr) -> Ptr {
+    for i in 0..3u32 {
+        let word = e.mem.u32(RECORD_DEFAULT_TRANSLATE + 4 * i);
+        e.mem.set_u32(this.addr() + 4 * i, word);
+    }
+    for i in 0..4u32 {
+        let word = e.mem.u32(RECORD_DEFAULT_ROTATE + 4 * i);
+        e.mem.set_u32(this.addr() + 12 + 4 * i, word);
+    }
+    let scale = e.mem.f32(RECORD_DEFAULT_SCALE);
+    e.mem.set_f32(this.addr() + 0x1c, scale);
+    this
+}
+
+// Translated from 004942c0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether the first `float` of the `NiQuatTransform` at `this` (its
+/// translation's x) is not `-FLT_MAX`, the value `fn_00494260` starts it
+/// with (no key was sampled). A NaN counts as filled in; the map has no name
+/// for it.
+pub fn fn_004942c0(e: &mut Engine, this: Ptr) -> bool {
+    let lowest = -(e.global::<f32>(FLOAT_MAX) as f64);
+    e.mem.f32(this.addr()) as f64 != lowest
+}
+
+// Translated from 00494300 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The `float` that `005f4c70` gives for the animation group of the
+/// sequence stored for group `group` (truncated to an integer through
+/// `_ftol2`), 0 when the map has no entry, the entry keeps several
+/// sequences or holds no sequence; the map has no name for it.
+pub fn fn_00494300(e: &mut Engine, this: Ptr<Animation>, group: u16) -> i32 {
+    let Some(entry) = sequence_map_get(e, this, group) else {
+        return 0;
+    };
+    if !e.vcall(entry, 0xc, &args![]).bool() {
+        return 0;
+    }
+    if e.vcall(entry, 0x10, &args![0xffff_ffffu32]).u32() == 0 {
+        return 0;
+    }
+    let sequence = e.vcall(entry, 0x10, &args![0xffff_ffffu32]).u32();
+    let group_object = fn_0048f7f0(e, Ptr::new(sequence));
+    let speed = e.call(GROUP_SPEED, &args![group_object]).f64();
+    e.call(FTOL, &args![speed]).i32()
+}
+
+// Translated from 00494390 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The movement of the frame for `actor`: writes three floats at `out`
+/// (the `movementDelta`, with its components clamped to four times the
+/// speed of the group playing in slot 1 or 4 when that is positive, divided
+/// by the actor's scale for the actor kinds 3, 5, 8 and 10 on x and y, z
+/// zeroed when `flatten` is set, and rotated by the animation root's world
+/// rotation into `out` when `rotate` is set). Returns false without an
+/// animation root; the map has no name for it.
+pub fn fn_00494390(
+    e: &mut Engine,
+    this: Ptr<Animation>,
+    out: Ptr,
+    actor: Ptr,
+    rotate: u8,
+    flatten: u8,
+) -> bool {
+    let a = this.addr();
+    if ni_pointer_get(e, a + Animation::pAnimRoot.off) == 0 {
+        return false;
+    }
+    let time_scale = e.call(TIME_SCALE_GET, &args![TIME_SCALE_OBJECT]).f64();
+    let multiplier = e.get(this, Animation::m_fGlobalTimeMultiplier);
+    let scaled_time = (time_scale * multiplier as f64) as f32;
+    let zero = [
+        e.mem.u32(ZERO_VECTOR),
+        e.mem.u32(ZERO_VECTOR + 4),
+        e.mem.u32(ZERO_VECTOR + 8),
+    ];
+    let mut movement = [
+        e.mem.f32(a + 0x10),
+        e.mem.f32(a + 0x14),
+        e.mem.f32(a + 0x18),
+    ];
+    let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+    let rotation = e.call(NODE_ROTATION, &args![root]).u32();
+    let matrix: Vec<u32> = (0..9u32).map(|i| e.mem.u32(rotation + 4 * i)).collect();
+
+    let actor_flag = e.vcall(actor.addr(), 0x21c, &args![]).bool();
+    let walking = e.mem.u32(current_sequence_at(this, 1));
+    if !actor_flag && e.call(ACTOR_FLAGS_ANY, &args![actor]).bool() && walking != 0 {
+        let group = fn_0048f7f0(e, Ptr::new(walking));
+        let kind = e.call(ANIM_GROUP_SEQUENCE_TYPE, &args![group]).i32();
+        if kind >= 3 {
+            let walking = e.mem.u32(current_sequence_at(this, 1));
+            let group = fn_0048f7f0(e, Ptr::new(walking));
+            let kind = e.call(ANIM_GROUP_SEQUENCE_TYPE, &args![group]).i32();
+            if kind <= 0x10 {
+                let walking = e.mem.u32(current_sequence_at(this, 1));
+                let group = fn_0048f7f0(e, Ptr::new(walking));
+                let speed = e.call(GROUP_SPEED, &args![group]).f64();
+                let move_speed = e.get(this, Animation::m_fMoveSpeed);
+                let reference = e.get(this, Animation::pActorRef).addr();
+                let reference_scale = e.call(REFERENCE_SCALE, &args![reference]).f64();
+                let product = speed * move_speed as f64 * scaled_time as f64;
+                let mut limit = (reference_scale * product) as f32;
+                let attack = e.mem.u32(current_sequence_at(this, 4));
+                if attack != 0 && e.call(SEQUENCE_STATE, &args![attack]).i32() == 1 {
+                    let group = fn_0048f7f0(e, Ptr::new(attack));
+                    let speed = e.call(GROUP_SPEED, &args![group]).f64();
+                    let attack_speed = e.get(this, Animation::m_fAttackSpeed);
+                    let reference = e.get(this, Animation::pActorRef).addr();
+                    let reference_scale = e.call(REFERENCE_SCALE, &args![reference]).f64();
+                    let product = speed * attack_speed as f64 * scaled_time as f64;
+                    let attack_limit = (reference_scale * product) as f32;
+                    if limit < attack_limit {
+                        limit = attack_limit;
+                    }
+                }
+                let ceiling = (limit as f64 * double_constant(e, DOUBLE_FOUR)) as f32;
+                if limit as f64 > double_constant(e, DOUBLE_ZERO) {
+                    for value in movement.iter_mut() {
+                        if ceiling < *value {
+                            *value = limit;
+                        }
+                    }
+                    for value in movement.iter_mut() {
+                        if *value < -ceiling {
+                            *value = -limit;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !actor.is_null() {
+        let kind = e.vcall(actor.addr(), 0x214, &args![]).u32();
+        if matches!(kind, 3 | 5 | 8 | 10) {
+            let scale = e.call(REFERENCE_SCALE, &args![actor]).f32();
+            movement[0] = (movement[0] as f64 / scale as f64) as f32;
+            movement[1] = (movement[1] as f64 / scale as f64) as f32;
+        }
+    }
+    if flatten != 0 {
+        movement[2] = 0.0;
+    }
+    if rotate == 0 {
+        for (i, value) in movement.iter().enumerate() {
+            e.mem.set_f32(out.addr() + 4 * i as u32, *value);
+        }
+    } else {
+        e.with_stack(36 + 12 + 12, |e, block| {
+            let (matrix_at, zero_at, vector_at) =
+                (block.addr(), block.addr() + 36, block.addr() + 48);
+            for (i, word) in matrix.iter().enumerate() {
+                e.mem.set_u32(matrix_at + 4 * i as u32, *word);
+            }
+            for (i, word) in zero.iter().enumerate() {
+                e.mem.set_u32(zero_at + 4 * i as u32, *word);
+            }
+            for (i, value) in movement.iter().enumerate() {
+                e.mem.set_f32(vector_at + 4 * i as u32, *value);
+            }
+            e.call(
+                MATRIX_TRANSFORM_VERTICES,
+                &args![matrix_at, zero_at, 1u32, vector_at, out],
+            );
+        });
+    }
+    true
+}
+
+// ---- Groups: AddGroup, GroupLoaded, PlayGroup, StartGroup -------------------------
+
+// Translated from 004946a0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::AddGroup` (Xbox PDB): registers animation group `group`. When
+/// slot 1 has no group and no group is queued for it, and the group's id has
+/// a zero low byte (type 0), the id is queued as slot 1's next group. Then
+/// the group's speed is initialized. Does nothing for a null group.
+pub fn animation_add_group(e: &mut Engine, this: Ptr<Animation>, group: Ptr) {
+    if group.is_null() {
+        return;
+    }
+    if e.mem.u16(group_at(this, 1)) == 0xff && e.mem.u16(next_group_at(this, 1)) == 0xff {
+        let id = e.call(ANIM_GROUP_ID, &args![group]).u16();
+        if id == 0 {
+            let id = e.call(ANIM_GROUP_ID, &args![group]).u16();
+            e.mem.set_u16(next_group_at(this, 1), id);
+        }
+    }
+    animation_init_group_speed(e, this, group);
+}
+
+// Translated from 00494710 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::GroupLoaded` (Xbox PDB): whether the animation sequence map
+/// has an entry for group `group`.
+pub fn animation_group_loaded(e: &mut Engine, this: Ptr<Animation>, group: u16) -> bool {
+    sequence_map_get(e, this, group).is_some()
+}
+
+// Translated from 00494740 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::PlayGroup` (Xbox PDB): plays group `group` in `slot` (-1 =
+/// the slot of the group's type; 0x14 and 0x15 stand for 1 and 4). For the
+/// categories 0..2, `mode` 0 queues it as the slot's next group with `loops`
+/// loops and `mode` 1 starts it now; for the categories 3..10 it always
+/// starts now. Starting calls `StartGroup` and `UpdateBipOnly`. Returns the
+/// started sequence, 0 when nothing was started.
+pub fn animation_play_group(
+    e: &mut Engine,
+    this: Ptr<Animation>,
+    group: u16,
+    mode: i32,
+    loops: i32,
+    slot: i32,
+) -> u32 {
+    let kind = group_type(e, group);
+    let wanted = if slot == -1 {
+        type_column(e, SEQUENCE_TYPE_SLOT, kind)
+    } else {
+        slot
+    };
+    let mut started = 0u32;
+    let wanted = match wanted {
+        0x14 => 1,
+        0x15 => 4,
+        other => other,
+    };
+    if kind == 0xff {
+        return started;
+    }
+    let category = type_column(e, SEQUENCE_TYPE_CATEGORY, kind) as u32;
+    if category > 10 {
+        return started;
+    }
+    let slot_index = wanted as u32;
+    if category <= 2 {
+        if mode == 0 {
+            e.mem.set_u16(next_group_at(this, slot_index), group);
+            e.mem.set_i32(next_loops_at(this, slot_index), loops);
+        } else if mode == 1 {
+            e.mem.set_u16(next_group_at(this, slot_index), 0xff);
+            e.mem.set_i32(loop_count_at(this, slot_index), loops);
+            started = animation_start_group(e, this, group, slot).addr();
+            let time: f32 = e.get(this, Animation::time);
+            e.call(UPDATE_BIP_ONLY, &args![this, time, 0u32, 1u32]);
+        }
+    } else {
+        started = animation_start_group(e, this, group, slot).addr();
+        let time: f32 = e.get(this, Animation::time);
+        e.call(UPDATE_BIP_ONLY, &args![this, time, 0u32, 1u32]);
+    }
+    started
+}
+
+// Translated from 004948c0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::StartGroup` (Xbox PDB): starts group `group` in `slot` (-1 =
+/// the slot of the group's type). Takes the sequence the map holds for the
+/// group; for slots 5 and 6 of a container that keeps several sequences it
+/// asks `GetCorrespondingSequence` for the one matching slot 4's current
+/// sequence. Returns what `StartGroup_ov2` returns, 0 for group 0xff or one
+/// the map does not know.
+pub fn animation_start_group(e: &mut Engine, this: Ptr<Animation>, group: u16, slot: i32) -> Ptr {
+    if group == 0xff {
+        return Ptr::NULL;
+    }
+    let Some(entry) = sequence_map_get(e, this, group) else {
+        return Ptr::NULL;
+    };
+    let wanted = if slot == -1 {
+        let kind = group_type(e, group);
+        type_column(e, SEQUENCE_TYPE_SLOT, kind)
+    } else {
+        slot
+    };
+    let sequence = if (5..=6).contains(&wanted) && !e.vcall(entry, 0xc, &args![]).bool() {
+        let current = e.mem.u32(current_sequence_at(this, 4));
+        anim_sequence_multiple_get_corresponding_sequence(
+            e,
+            Ptr::new(entry),
+            Ptr::new(current),
+            wanted,
+        )
+    } else {
+        e.vcall(entry, 0x10, &args![0xffff_ffffu32]).ptr()
+    };
+    animation_start_group_ov2(e, this, sequence, group, slot)
+}
+
+// Translated from 004949a0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::StartGroup_ov2` (Xbox PDB): puts `sequence` (the sequence of
+/// group `group`) into slot `slot_arg` (-1 = the slot of the group's type;
+/// 0x14 and 0x15 stand for 1 and 4), replacing the slot's current sequence.
+/// Returns `sequence`, or 0 when it is null, the group is 0xff, a special
+/// idle is already working on it, or a non-player's first slot is asked to
+/// replace an animating sequence.
+///
+/// In order: sets the sequence weight for the weapon slots (4..6); resolves
+/// what happens to the slot's current sequence (cleared, kept for a
+/// cross-fade, or cleared together with slots 5 and 6); stores the group and
+/// sequence in the slot; checks whether the two sequences can be morphed
+/// (same controller count and morph tags, logging when not); picks the blend
+/// time (the setting, or the longer of the groups' blend frames over 30, or
+/// the menu setting; zero when the previous group was an attack of the
+/// player's, when `cSkipNextBlend` is set, or when the slot is replaced
+/// right away), divided by the movement scale setting; and activates the
+/// sequence through the manager (a morph fade, a cross-fade, an immediate
+/// activation or a blend-in). A replaced sequence that is animating is
+/// deactivated. `action[slot]` returns to 0.
+/// The compiler's exception-unwinding frame is not translated.
+pub fn animation_start_group_ov2(
+    e: &mut Engine,
+    this: Ptr<Animation>,
+    sequence: Ptr,
+    group: u16,
+    slot_arg: i32,
+) -> Ptr {
+    let a = this.addr();
+    let sequence = sequence.addr();
+    if e.call(SPECIAL_IDLE_WORKING, &args![this, sequence]).bool() {
+        return Ptr::NULL;
+    }
+    let kind = group_type(e, group);
+    let reference = e.get(this, Animation::pActorRef).addr();
+    let mut slot = slot_arg;
+    if slot == -1 {
+        slot = type_column(e, SEQUENCE_TYPE_SLOT, kind);
+    }
+    let requested = slot;
+    if slot == 0x14 {
+        slot = 1;
+    } else if slot == 0x15 {
+        slot = 4;
+    }
+    let slot_index = slot as u32;
+    let mut current = e.mem.u32(current_sequence_at(this, slot_index));
+    let previous_group = e.mem.u16(group_at(this, slot_index));
+    let previous_type = group_type(e, previous_group);
+    let mut morph = false;
+    let mut current_state = 0;
+    if current != 0 {
+        current_state = e.call(SEQUENCE_STATE, &args![current]).i32();
+    }
+    if sequence == 0 || group == 0xff {
+        return Ptr::NULL;
+    }
+
+    let player: u32 = e.global(PLAYER_SINGLETON);
+    if slot == 4 || slot == 5 || slot == 6 {
+        if reference == player
+            && this.addr() == e.call(PLAYER_GET_ANIMATION, &args![player, 1u32]).u32()
+        {
+            let weight = if slot == 4 { 1.0 } else { 0.0 };
+            fn_00495480(e, Ptr::new(sequence), weight);
+        } else {
+            let process = e.call(ACTOR_PROCESS, &args![reference]).u32();
+            let mut weight_unset = true;
+            let aims = e.call(GROUP_ID_IS_AIM, &args![kind as u16]).bool();
+            if (aims || e.call(GROUP_ID_IS_ATTACK, &args![kind as u16]).bool())
+                && process != 0
+                && e.call(PROCESS_WORD_28, &args![process]).i32() <= 1
+            {
+                let held = fn_00495560(e, Ptr::new(process), slot - 4);
+                if held != 0 {
+                    let weight = fn_00495460(e, Ptr::new(held));
+                    fn_00495480(e, Ptr::new(sequence), weight);
+                    weight_unset = false;
+                }
+            }
+            if weight_unset && (slot == 5 || slot == 6) {
+                fn_00495480(e, Ptr::new(sequence), 0.0);
+            }
+        }
+    }
+    if e.call(SEQUENCE_STATE, &args![sequence]).i32() == 3 {
+        e.vcall(sequence, 0x8c, &args![0.0f32, 0u32]);
+    }
+
+    let state = e.call(SEQUENCE_STATE, &args![sequence]).i32();
+    let replaced_in_place = (state != 0
+        && e.call(SEQUENCE_CYCLE_TYPE, &args![sequence]).u32() == 0)
+        || (e.call(SEQUENCE_STATE, &args![sequence]).i32() == 1 && sequence == current);
+    if replaced_in_place
+        && (!e.call(IS_IN_MENU_MODE, &args![]).bool()
+            || e.call(SEQUENCE_STATE, &args![sequence]).i32() == 1)
+    {
+        e.mem.set_i32(action_at(this, slot_index), 0);
+        fn_004954c0(e, Ptr::new(sequence));
+        return Ptr::new(sequence);
+    }
+
+    let in_menu = e.call(IS_IN_MENU_MODE, &args![]).bool();
+    let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+    let first_node = e.call(PLAYER_NODE, &args![player, 0u32]).u32();
+    let pipboy_object: u32 = e.global(PIPBOY_QUERY_OBJECT);
+    let skip_clearing = in_menu
+        && root == first_node
+        && !e.call(PIPBOY_QUERY, &args![pipboy_object]).bool()
+        && e.call(WORD_AT_8, &args![VATS_OBJECT]).u32() == 0;
+    if !skip_clearing {
+        let mut handled = false;
+        if e.call(IS_IN_PIPBOY_MENU, &args![]).bool() {
+            let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+            let second_node = e.call(PLAYER_NODE, &args![player, 1u32]).u32();
+            if root == second_node && kind == 1 && slot_arg == 0 && current != 0 {
+                e.call(CLEAR_GROUP, &args![this, requested, 0.0f32]);
+                current = 0;
+                e.mem.set_u8(a + Animation::cSkipNextBlend.off, 1);
+                handled = true;
+            }
+        }
+        if !handled {
+            if current != 0 && slot == 2 {
+                let held_group = fn_0048f7f0(e, Ptr::new(current));
+                let held_type = e.call(ANIM_GROUP_SEQUENCE_TYPE, &args![held_group]).i32();
+                if kind == 0xe2 || (kind == 0xf0 && (0xe6..=0xeb).contains(&held_type)) {
+                    e.call(CLEAR_GROUP, &args![this, requested, 0.0f32]);
+                    current = 0;
+                }
+            } else if current_state != 0 && current != 0 {
+                if current_state == 1 {
+                    if requested != slot
+                        || e.mem.i8(a + Animation::cSkipNextBlend.off) != 0
+                        || e.call(SEQUENCE_STATE, &args![sequence]).i32() != 0
+                    {
+                        e.call(CLEAR_GROUP, &args![this, requested, 0.0f32]);
+                    } else if requested == 4
+                        && (kind as i32 <= 0x19 || kind as i32 > 0xd4)
+                        && !e.call(GROUP_ID_IS_AIM, &args![kind as u16]).bool()
+                    {
+                        e.call(CLEAR_GROUP, &args![this, 5u32, 0.0f32]);
+                        e.call(CLEAR_GROUP, &args![this, 6u32, 0.0f32]);
+                    }
+                } else {
+                    if reference != player && slot == 1 {
+                        return Ptr::NULL;
+                    }
+                    e.call(CLEAR_GROUP, &args![this, requested, 0.0f32]);
+                    current = 0;
+                }
+            }
+        }
+    }
+
+    e.mem.set_u16(group_at(this, slot_index), group);
+    e.mem
+        .set_u32(current_sequence_at(this, slot_index), sequence);
+
+    // Whether the new sequence can be morphed from the old one.
+    let in_menu = e.call(IS_IN_MENU_MODE, &args![]).bool();
+    let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+    let first_node = e.call(PLAYER_NODE, &args![player, 0u32]).u32();
+    if (!in_menu || root != first_node) && sequence != 0 && current != 0 {
+        let new_group = fn_0048f7f0(e, Ptr::new(sequence));
+        let old_group = fn_0048f7f0(e, Ptr::new(current));
+        e.with_stack(4, |e, new_ref| {
+            e.call(NI_POINTER_INIT, &args![new_ref, new_group]);
+            e.with_stack(4, |e, old_ref| {
+                e.call(NI_POINTER_INIT, &args![old_ref, old_group]);
+                let old_group = ni_pointer_get(e, old_ref.addr());
+                if e.call(GROUP_BYTE_28, &args![old_group]).u8() as i8 != 0 {
+                    let old_group = ni_pointer_get(e, old_ref.addr());
+                    let old_value = e.call(GROUP_BYTE_28, &args![old_group]).u8() as i8;
+                    let new_group = ni_pointer_get(e, new_ref.addr());
+                    let new_value = e.call(GROUP_BYTE_28, &args![new_group]).u8() as i8;
+                    if old_value == new_value {
+                        let old_count = e.call(WORD_AT_C, &args![current]).u32();
+                        let new_count = e.call(WORD_AT_C, &args![sequence]).u32();
+                        if old_count == new_count {
+                            if e.call(SEQUENCE_MORPH_COMPATIBLE, &args![sequence, current])
+                                .bool()
+                            {
+                                morph = true;
+                            } else {
+                                let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+                                let root_name = object_name(e, root);
+                                let new_name = object_name(e, sequence);
+                                let old_name = object_name(e, current);
+                                e.call(LOG, &args![LOG_MORPH_TAGS, old_name, new_name, root_name]);
+                            }
+                        } else {
+                            let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+                            let root_name = object_name(e, root);
+                            let new_count = e.call(WORD_AT_C, &args![sequence]).u32();
+                            let new_name = object_name(e, sequence);
+                            let old_count = e.call(WORD_AT_C, &args![current]).u32();
+                            let old_name = object_name(e, current);
+                            e.call(
+                                LOG,
+                                &args![
+                                    LOG_MORPH_CONTROLLERS,
+                                    old_name,
+                                    old_count,
+                                    new_name,
+                                    new_count,
+                                    root_name
+                                ],
+                            );
+                        }
+                    }
+                }
+                if morph && sequence == current {
+                    let root = ni_pointer_get(e, a + Animation::pAnimRoot.off);
+                    let root_name = object_name(e, root);
+                    let name = object_name(e, current);
+                    e.call(LOG, &args![LOG_MORPH_SELF, name, root_name]);
+                    morph = false;
+                }
+                e.call(NI_POINTER_RELEASE, &args![old_ref]);
+            });
+            e.call(NI_POINTER_RELEASE, &args![new_ref]);
+        });
+    }
+
+    // The blend time.
+    let mut blend = float_setting(e, SETTING_BLEND_TIME);
+    let mut frames = 0u8;
+    if current != 0 {
+        let group = fn_0048f7f0(e, Ptr::new(current));
+        frames = fn_00495520(e, group);
+    }
+    let new_group = fn_0048f7f0(e, Ptr::new(sequence));
+    if fn_004954e0(e, new_group) > frames {
+        let new_group = fn_0048f7f0(e, Ptr::new(sequence));
+        frames = fn_004954e0(e, new_group);
+    }
+    if frames != 0 {
+        let thirty = double_constant(e, DOUBLE_THIRTY);
+        blend = (frames as f64 / thirty) as f32;
+    }
+    let mut menu_blend = false;
+    if e.call(IS_IN_MENU_MODE, &args![]).bool() {
+        let object = fn_00490f80(e, Ptr::new(player));
+        menu_blend = e.call(NODE_ACCEPTS_OBJECT, &args![a + 8, object]).bool();
+    }
+    if menu_blend
+        || e.call(IS_MENU_ID_VISIBLE, &args![MENU_ID_PIPBOY_WAIT, 0u32])
+            .bool()
+    {
+        blend = float_setting(e, SETTING_BLEND_TIME_MENU);
+    }
+    if (0xb1..=0xc7).contains(&(kind as i32))
+        && current != 0
+        && reference != player
+        && (blend as f64) < double_constant(e, DOUBLE_HALF)
+    {
+        let new_group = fn_0048f7f0(e, Ptr::new(sequence));
+        let new_move = e.call(GROUP_MOVE_TYPE, &args![new_group]).i32();
+        let old_group = fn_0048f7f0(e, Ptr::new(current));
+        let old_move = e.call(GROUP_MOVE_TYPE, &args![old_group]).i32();
+        if (new_move == 1) != (old_move == 1) {
+            blend = e.global::<f32>(FLOAT_HALF);
+        }
+    }
+    if e.call(GROUP_ID_IS_ATTACK, &args![previous_type as u16])
+        .bool()
+        && (0xad..=0xc7).contains(&(kind as i32))
+        && reference == player
+    {
+        blend = 0.0;
+    }
+    if e.mem.i8(a + Animation::cSkipNextBlend.off) != 0 {
+        blend = 0.0;
+    }
+    let divisor = float_setting(e, SETTING_MOVEMENT_SCALE);
+    blend = (blend as f64 / divisor as f64) as f32;
+    set_phase(e, sequence, 0.0);
+
+    if current == 0 && (slot == 5 || slot == 6) {
+        let manager = ni_pointer_get(e, a + Animation::spManager.off);
+        let weight = fn_00495460(e, Ptr::new(sequence));
+        e.call(
+            MANAGER_ACTIVATE,
+            &args![manager, sequence, 0u32, 1u32, weight, blend, 0u32],
+        );
+    } else if (blend as f64) < double_constant(e, DOUBLE_HUNDREDTH) {
+        let weight = fn_00495460(e, Ptr::new(sequence));
+        let manager = ni_pointer_get(e, a + Animation::spManager.off);
+        e.call(
+            MANAGER_ACTIVATE,
+            &args![manager, sequence, 0u32, 1u32, weight, 0.0f32, 0u32],
+        );
+    } else if morph {
+        let new_weight = fn_00495460(e, Ptr::new(sequence));
+        let old_weight = fn_00495460(e, Ptr::new(current));
+        let manager = ni_pointer_get(e, a + Animation::spManager.off);
+        e.call(
+            MANAGER_MORPH_FADE,
+            &args![manager, current, sequence, blend, 0u32, old_weight, new_weight],
+        );
+    } else {
+        let mut crossed = false;
+        if current != 0 && e.call(SEQUENCE_STATE, &args![current]).i32() != 0 {
+            let weight = fn_00495460(e, Ptr::new(sequence));
+            let manager = ni_pointer_get(e, a + Animation::spManager.off);
+            crossed = e
+                .call(
+                    MANAGER_CROSS_FADE,
+                    &args![manager, current, sequence, blend, 0u32, 1u32, weight, 0u32],
+                )
+                .bool();
+        }
+        if !crossed {
+            let tes: u32 = e.global(TES_GLOBAL);
+            if e.call(TES_CHECK, &args![tes]).bool() {
+                let manager = ni_pointer_get(e, a + Animation::spManager.off);
+                e.call(
+                    MANAGER_ACTIVATE,
+                    &args![manager, sequence, 0u32, 1u32, 1.0f32, 0.0f32, 0u32],
+                );
+            } else {
+                let reference_object = e.get(this, Animation::pActorRef).addr();
+                if reference_object != 0
+                    && e.vcall(reference_object, 0x100, &args![]).bool()
+                    && fn_00495580(e) != 0
+                    && e.mem.u32(reference_object + 0xac) != 0
+                {
+                    let ragdoll = e.mem.u32(reference_object + 0xac);
+                    if fn_004955a0(e, Ptr::new(ragdoll)) != 0 {
+                        let ragdoll = e.mem.u32(reference_object + 0xac);
+                        e.call(RAGDOLL_REFRESH, &args![ragdoll]);
+                    }
+                }
+                let manager = ni_pointer_get(e, a + Animation::spManager.off);
+                e.call(
+                    MANAGER_BLEND_IN,
+                    &args![manager, sequence, 0.0f32, blend, 0u32, 0u32],
+                );
+            }
+        }
+    }
+
+    if current != 0 && current != sequence {
+        let state = e.call(SEQUENCE_STATE, &args![current]).i32();
+        if state > 0 && (state <= 2 || state == 5) {
+            let manager = ni_pointer_get(e, a + Animation::spManager.off);
+            e.call(MANAGER_DEACTIVATE, &args![manager, current, 0.0f32]);
+        }
+    }
+    e.mem.set_u32(action_at(this, slot_index), 0);
+    Ptr::new(sequence)
+}
+
+// ---- Small accessors of the sequence and the group -------------------------------
+
+// Translated from 00495460 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The `float` at +0x1c of `this` (the weight of a `NiControllerSequence`);
+/// the map has no name for it.
+pub fn fn_00495460(e: &mut Engine, this: Ptr) -> f32 {
+    e.mem.f32(this.addr() + 0x1c)
+}
+
+// Translated from 00495480 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Stores `value` in the `float` at +0x1c of `this` (the sequence weight),
+/// raised to 0 when negative; the map has no name for it.
+pub fn fn_00495480(e: &mut Engine, this: Ptr, value: f32) {
+    e.mem.set_f32(this.addr() + 0x1c, value);
+    if (e.mem.f32(this.addr() + 0x1c) as f64) < double_constant(e, DOUBLE_ZERO) {
+        e.mem.set_f32(this.addr() + 0x1c, 0.0);
+    }
+}
+
+// Translated from 004954c0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Sets the `float` at +0x48 of `this` (the last scaled time of a
+/// `NiControllerSequence`) to `-FLT_MAX`, the "no time yet" marker
+/// `GetScaledTime` users compare with; the map has no name for it.
+pub fn fn_004954c0(e: &mut Engine, this: Ptr) {
+    let lowest = -e.global::<f32>(FLOAT_MAX);
+    e.mem.set_f32(this.addr() + 0x48, lowest);
+}
+
+// Translated from 004954e0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The larger of the bytes at +0x29 and +0x2a of the animation group (two
+/// blend times in frames); the map has no name for it.
+pub fn fn_004954e0(e: &mut Engine, this: Ptr) -> u8 {
+    let first = e.mem.u8(this.addr() + 0x29);
+    let second = e.mem.u8(this.addr() + 0x2a);
+    if second > first {
+        second
+    } else {
+        first
+    }
+}
+
+// Translated from 00495520 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The larger of the bytes at +0x29 and +0x2b of the animation group; the
+/// map has no name for it.
+pub fn fn_00495520(e: &mut Engine, this: Ptr) -> u8 {
+    let first = e.mem.u8(this.addr() + 0x29);
+    let second = e.mem.u8(this.addr() + 0x2b);
+    if second > first {
+        second
+    } else {
+        first
+    }
+}
+
+// Translated from 00495560 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The word at `this + 0x1c4 + index * 4` (an array in the actor's process
+/// object); the map has no name for it.
+pub fn fn_00495560(e: &mut Engine, this: Ptr, index: i32) -> u32 {
+    e.mem.u32(
+        this.addr()
+            .wrapping_add(0x1c4)
+            .wrapping_add((index as u32).wrapping_mul(4)),
+    )
+}
+
+// Translated from 00495580 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The byte value of the setting object at `01267c30`; the map has no name
+/// for it.
+pub fn fn_00495580(e: &mut Engine) -> u8 {
+    let address = e
+        .call(SETTING_BYTE_ADDRESS, &args![SETTING_BYTE_OBJECT])
+        .u32();
+    e.mem.u8(address)
+}
+
+// Translated from 004955a0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The byte at +0x222 of `this` (a ragdoll controller, in the caller); the
+/// map has no name for it.
+pub fn fn_004955a0(e: &mut Engine, this: Ptr) -> u8 {
+    e.mem.u8(this.addr() + 0x222)
+}
+
+// ---- ForceSection, PickBestAnimation, ShouldBeMoving and the rest -----------------
+
+// Translated from 004955c0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::ForceSection` (Xbox PDB): forces slot `slot` (0x14 and 0x15
+/// stand for 1 and 4) to group `group`. With `action` -1 it clears the slot
+/// (`ClearGroup(slot, 0.0)`) and, for a group the map knows, takes the entry's
+/// sequence (selected by `selector`) as the slot's current sequence and
+/// activates it at once; otherwise, for a loaded group, starts the entry's
+/// sequence through `StartGroup_ov2` and stores `action` as the slot's
+/// action. Then stores the group in the slot and `time` in `time`.
+pub fn animation_force_section(
+    e: &mut Engine,
+    this: Ptr<Animation>,
+    slot: i32,
+    group: u16,
+    action: i32,
+    time: f32,
+    selector: u8,
+) {
+    let a = this.addr();
+    let index = match slot {
+        0x14 => 1,
+        0x15 => 4,
+        other => other,
+    } as u32;
+    if action == -1 {
+        e.call(CLEAR_GROUP, &args![this, slot, 0.0f32]);
+        if group != 0xff {
+            if let Some(entry) = sequence_map_get(e, this, group) {
+                if e.vcall(entry, 0x10, &args![selector]).u32() != 0 {
+                    let sequence = e.vcall(entry, 0x10, &args![selector]).u32();
+                    e.mem.set_u32(current_sequence_at(this, index), sequence);
+                    let manager = ni_pointer_get(e, a + Animation::spManager.off);
+                    let sequence = e.mem.u32(current_sequence_at(this, index));
+                    e.call(
+                        MANAGER_ACTIVATE,
+                        &args![manager, sequence, 0u32, 0u32, 1.0f32, 0.0f32, 0u32],
+                    );
+                }
+            }
+        }
+    } else if animation_group_loaded(e, this, group) {
+        if let Some(entry) = sequence_map_get(e, this, group) {
+            let sequence = e.vcall(entry, 0x10, &args![selector]).u32();
+            animation_start_group_ov2(e, this, Ptr::new(sequence), group, slot);
+        }
+        e.mem.set_i32(action_at(this, index), action);
+    }
+    e.mem.set_u16(group_at(this, index), group);
+    e.set(this, Animation::time, time);
+}
+
+// Translated from 00495740 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::PickBestAnimation` (Xbox PDB): the animation group id the
+/// animation can actually play in place of `group`. `group` itself when the
+/// map has a sequence for it; otherwise the first of these that has one:
+/// the group with the 0x8000 bit cleared (when set), the same for the
+/// player's own animation with the 0x7000 bits cleared, the group three
+/// lower for an iron-sights action, the weapon variants of the group
+/// (weapon 3 maps to 2, the others except 2 and 4 to 4) and the base group
+/// (low byte and bits 12..14 only), the groups of the slot-5/6 types, the
+/// movement-type substitutes (types 7..10 map to 3..6), and finally the
+/// group with its low byte cleared (unless `flag` is set); 0 when there is
+/// none.
+pub fn animation_pick_best_animation(
+    e: &mut Engine,
+    this: Ptr<Animation>,
+    group: u16,
+    flag: u8,
+) -> u16 {
+    // Whether the map holds a sequence for `candidate`.
+    fn playable(e: &mut Engine, this: Ptr<Animation>, candidate: u16) -> bool {
+        match sequence_map_get(e, this, candidate) {
+            Some(entry) => e.vcall(entry, 0x10, &args![0xffff_ffffu32]).u32() != 0,
+            None => false,
+        }
+    }
+    // The answer of a nested pick counts when its low byte is the group's.
+    fn same_type(answer: u16, group: u16) -> bool {
+        answer & 0xff == group & 0xff
+    }
+
+    if playable(e, this, group) {
+        return group;
+    }
+    if group & 0x8000 != 0 {
+        let answer = animation_pick_best_animation(e, this, group & 0x7fff, 1);
+        if same_type(answer, group) {
+            return answer;
+        }
+        if e.call(GROUP_ID_IS_IRON_SIGHTS, &args![group]).bool()
+            && same_type(answer, group.wrapping_sub(3))
+        {
+            return answer;
+        }
+    }
+    let player: u32 = e.global(PLAYER_SINGLETON);
+    if e.get(this, Animation::pActorRef).addr() == player
+        && this.addr() == e.call(PLAYER_GET_ANIMATION, &args![player, 1u32]).u32()
+        && group & 0x7000 != 0
+    {
+        let slot_type = e
+            .mem
+            .i32(SEQUENCE_TYPE_SLOT.wrapping_add((group as u32 & 0xff).wrapping_mul(0x24)));
+        if (4..=6).contains(&slot_type) {
+            let answer = animation_pick_best_animation(e, this, group & 0xfff, 1);
+            if same_type(answer, group) {
+                return answer;
+            }
+            if e.call(GROUP_ID_IS_IRON_SIGHTS, &args![group]).bool()
+                && same_type(answer, group.wrapping_sub(3))
+            {
+                return answer;
+            }
+        }
+    }
+    if e.call(GROUP_ID_IS_IRON_SIGHTS, &args![group]).bool() {
+        return animation_pick_best_animation(e, this, group.wrapping_sub(3), 1);
+    }
+    let kind = group_type(e, group);
+    let slot_type = type_column(e, SEQUENCE_TYPE_SLOT, kind);
+    if (5..=6).contains(&slot_type) {
+        return 0;
+    }
+    if group & 0xf00 != 0 {
+        let weapon = e.call(GROUP_ID_WEAPON, &args![group]).i32();
+        if weapon != 2 {
+            if weapon == 3 {
+                let candidate = group & 0xf0ff | 0x200;
+                if playable(e, this, candidate) {
+                    return candidate;
+                }
+            } else if weapon != 4 {
+                let candidate = group & 0xf0ff | 0x400;
+                if playable(e, this, candidate) {
+                    return candidate;
+                }
+            }
+        }
+        let candidate = group & 0xf0ff;
+        if playable(e, this, candidate) {
+            return candidate;
+        }
+    }
+    if group & 0x8000 != 0 {
+        let answer = animation_pick_best_animation(e, this, group & 0x7fff, 1);
+        if same_type(answer, group) {
+            return answer;
+        }
+    }
+    if group != 0 {
+        let kind = group_type(e, group);
+        let substitute = match kind {
+            7 => Some(group & 0x7f00 | 3),
+            8 => Some(group & 0x7f00 | 4),
+            9 => Some(group & 0x7f00 | 5),
+            10 => Some(group & 0x7f00 | 6),
+            _ => None,
+        };
+        if let Some(substitute) = substitute {
+            let answer = animation_pick_best_animation(e, this, substitute, 1);
+            if same_type(answer, substitute) {
+                return answer;
+            }
+        }
+    }
+    if flag != 0 {
+        return 0;
+    }
+    if group & 0x7000 != 0 {
+        let answer = animation_pick_best_animation(e, this, group & 0xfff, 1);
+        if same_type(answer, group) {
+            return answer;
+        }
+    }
+    if group & 0xff != 0 {
+        return animation_pick_best_animation(e, this, group & 0x7f00, 0);
+    }
+    0
+}
+
+// Translated from 00495be0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::ShouldBeMoving` (Xbox PDB): whether the sequence in slot 1 is
+/// the one that wins the sound-priority bone of slot 1 (the highest
+/// `GetPriority` among the eight current sequences, ties going to slot 1)
+/// while slot 1's group is of a type from 3 to 14. False without a slot 1
+/// sequence or a sound-priority bone.
+pub fn animation_should_be_moving(e: &mut Engine, this: Ptr<Animation>) -> bool {
+    let first = e.mem.u32(current_sequence_at(this, 1));
+    if first == 0 {
+        return false;
+    }
+    let bone_at = animation_entry(this, Animation::pSoundPriorityBone, 1, 4);
+    let bone = e.mem.u32(bone_at);
+    if bone == 0 {
+        return false;
+    }
+    let bone_name = object_name(e, bone);
+    let group = e.mem.u16(group_at(this, 1));
+    let kind = group_type(e, group) as i32;
+    if !(3..=0xe).contains(&kind) {
+        return false;
+    }
+    let mut best = 0u32;
+    let mut best_priority = 0u8;
+    for slot in 0..8u32 {
+        let sequence = e.mem.u32(current_sequence_at(this, slot));
+        if sequence == 0 {
+            continue;
+        }
+        let priority = e
+            .call(SEQUENCE_PRIORITY, &args![sequence, bone_name, 0u32])
+            .u8();
+        if priority > best_priority {
+            best = e.mem.u32(current_sequence_at(this, slot));
+            best_priority = priority;
+        } else if priority == best_priority && slot == 1 {
+            best = e.mem.u32(current_sequence_at(this, 1));
+            best_priority = priority;
+        }
+    }
+    best == e.mem.u32(current_sequence_at(this, 1))
+}
+
+// Translated from 00495d00 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The number of entries of the sequence array at +0x34 of an
+/// `NiControllerManager`; the map has no name for it.
+pub fn fn_00495d00(e: &mut Engine, this: Ptr<NiControllerManager>) -> u32 {
+    let array = this.addr() + NiControllerManager::m_kSequenceArray.off;
+    e.call(SEQUENCE_ARRAY_COUNT, &args![array]).u32()
+}
+
+// Translated from 00495d20 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `NiControllerManager::GetSequenceAt` (Xbox PDB): the sequence at `index`
+/// of the sequence array.
+pub fn ni_controller_manager_get_sequence_at(
+    e: &mut Engine,
+    this: Ptr<NiControllerManager>,
+    index: u32,
+) -> Ptr {
+    let array = this.addr() + NiControllerManager::m_kSequenceArray.off;
+    let element = e.call(SEQUENCE_ARRAY_ELEMENT, &args![array, index]).u32();
+    e.call(READ_WORD, &args![element]).ptr()
+}
+
+// Translated from 00495d50 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `NiBlendInterpolator::GetInterpolator` (Xbox PDB): the interpolator of
+/// entry `index`: the single interpolator at +0x18 when the blend holds
+/// exactly one (byte +0xe is 1) and its index (byte +0xf) is `index`,
+/// otherwise the pointer in the 0x18-byte entry `index` of the array at
+/// +0x14.
+pub fn ni_blend_interpolator_get_interpolator(e: &mut Engine, this: Ptr, index: u8) -> Ptr {
+    let a = this.addr();
+    if e.mem.u8(a + 0xe) == 1 && index == e.mem.u8(a + 0xf) {
+        return Ptr::new(e.mem.u32(a + 0x18));
+    }
+    let entry = (index as u32 * 0x18).wrapping_add(e.mem.u32(a + 0x14));
+    e.call(READ_WORD, &args![entry]).ptr()
+}
+
+// Translated from 00495da0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Animation::SyncSequences` (Xbox PDB): starts the sequence of group
+/// `group` that corresponds to `sequence` (`GetCorrespondingSequence`, for
+/// an entry that keeps several sequences) in the slot of the group's type.
+/// Returns 0 for group 0xff, an unknown group, an entry that holds a single
+/// sequence, or no corresponding sequence.
+pub fn animation_sync_sequences(
+    e: &mut Engine,
+    this: Ptr<Animation>,
+    sequence: Ptr,
+    group: u16,
+) -> Ptr {
+    if group == 0xff {
+        return Ptr::NULL;
+    }
+    let Some(entry) = sequence_map_get(e, this, group) else {
+        return Ptr::NULL;
+    };
+    let mut multiple = 0u32;
+    if !e.vcall(entry, 0xc, &args![]).bool() {
+        multiple = entry;
+    }
+    if multiple == 0 {
+        return Ptr::NULL;
+    }
+    let corresponding =
+        anim_sequence_multiple_get_corresponding_sequence(e, Ptr::new(multiple), sequence, -1);
+    if corresponding.is_null() {
+        return Ptr::NULL;
+    }
+    animation_start_group_ov2(e, this, corresponding, group, -1)
+}
+
 /// This unit's translated functions, by exe address.
 pub fn funcs() -> Vec<(u32, AbiFn)> {
     vec![
@@ -1805,6 +4511,88 @@ pub fn funcs() -> Vec<(u32, AbiFn)> {
         entry!(0x00490fa0, fn_00490fa0(Ptr<Animation>, u32)),
         entry!(0x00491040, fn_00491040(Ptr<Animation>, u32) -> Ptr),
         entry!(0x00491090, fn_00491090(Ptr) -> f32),
+        entry!(0x004910d0, animation_find_skinned_node(Ptr) -> bool),
+        entry!(0x00491180, animation_update(Ptr<Animation>, Ptr, f32, f32)),
+        entry!(0x00493750, fn_00493750(Ptr) -> i32),
+        entry!(0x00493860, fn_00493860(Ptr<Animation>, u8)),
+        entry!(0x00493900, animation_update_movement(Ptr<Animation>, Ptr)),
+        entry!(
+            0x00493930,
+            animation_update_queued_scenegraph(Ptr<Animation>) -> bool
+        ),
+        entry!(0x00493970, fn_00493970(Ptr<Animation>) -> bool),
+        entry!(0x00493990, fn_00493990(Ptr<Animation>, u8) -> bool),
+        entry!(0x004939b0, fn_004939b0(Ptr<Animation>, u8)),
+        entry!(
+            0x004939d0,
+            animation_update_movement_no_world_update(Ptr<Animation>, Ptr)
+        ),
+        entry!(0x00493b90, fn_00493b90(Ptr<Animation>) -> bool),
+        entry!(0x00493bb0, fn_00493bb0(Ptr) -> u8),
+        entry!(
+            0x00493bd0,
+            animation_update_scene_graph_no_controller(Ptr<Animation>)
+        ),
+        entry!(0x00493d50, animation_init_group_speed(Ptr<Animation>, Ptr)),
+        entry!(0x004941c0, fn_004941c0(Ptr, f32) -> Ptr),
+        entry!(0x00494210, fn_00494210(Ptr, u32) -> u32),
+        entry!(0x00494260, fn_00494260(Ptr) -> Ptr),
+        entry!(0x004942c0, fn_004942c0(Ptr) -> bool),
+        entry!(0x00494300, fn_00494300(Ptr<Animation>, u16) -> i32),
+        entry!(
+            0x00494390,
+            fn_00494390(Ptr<Animation>, Ptr, Ptr, u8, u8) -> bool
+        ),
+        entry!(0x004946a0, animation_add_group(Ptr<Animation>, Ptr)),
+        entry!(
+            0x00494710,
+            animation_group_loaded(Ptr<Animation>, u16) -> bool
+        ),
+        entry!(
+            0x00494740,
+            animation_play_group(Ptr<Animation>, u16, i32, i32, i32) -> u32
+        ),
+        entry!(
+            0x004948c0,
+            animation_start_group(Ptr<Animation>, u16, i32) -> Ptr
+        ),
+        entry!(
+            0x004949a0,
+            animation_start_group_ov2(Ptr<Animation>, Ptr, u16, i32) -> Ptr
+        ),
+        entry!(0x00495460, fn_00495460(Ptr) -> f32),
+        entry!(0x00495480, fn_00495480(Ptr, f32)),
+        entry!(0x004954c0, fn_004954c0(Ptr)),
+        entry!(0x004954e0, fn_004954e0(Ptr) -> u8),
+        entry!(0x00495520, fn_00495520(Ptr) -> u8),
+        entry!(0x00495560, fn_00495560(Ptr, i32) -> u32),
+        entry!(0x00495580, fn_00495580() -> u8),
+        entry!(0x004955a0, fn_004955a0(Ptr) -> u8),
+        entry!(
+            0x004955c0,
+            animation_force_section(Ptr<Animation>, i32, u16, i32, f32, u8)
+        ),
+        entry!(
+            0x00495740,
+            animation_pick_best_animation(Ptr<Animation>, u16, u8) -> u16
+        ),
+        entry!(
+            0x00495be0,
+            animation_should_be_moving(Ptr<Animation>) -> bool
+        ),
+        entry!(0x00495d00, fn_00495d00(Ptr<NiControllerManager>) -> u32),
+        entry!(
+            0x00495d20,
+            ni_controller_manager_get_sequence_at(Ptr<NiControllerManager>, u32) -> Ptr
+        ),
+        entry!(
+            0x00495d50,
+            ni_blend_interpolator_get_interpolator(Ptr, u8) -> Ptr
+        ),
+        entry!(
+            0x00495da0,
+            animation_sync_sequences(Ptr<Animation>, Ptr, u16) -> Ptr
+        ),
     ]
 }
 
@@ -1899,7 +4687,7 @@ mod tests {
 
     /// An object with a vtable whose `(offset, target)` slots are given.
     fn object_with_vtable(e: &mut Engine, size: u32, slots: &[(u32, u32)]) -> u32 {
-        let vtable = e.mem.alloc(0x100);
+        let vtable = e.mem.alloc(0x800);
         for (offset, target) in slots {
             e.mem.set_u32(vtable + offset, *target);
         }
@@ -2824,8 +5612,8 @@ mod tests {
         let entry = object_with_vtable(&mut e, 8, &[(0x10, 0x00f0_0010)]);
         e.register_double(0x00f0_0010, move |_, _| ret(sequence));
         e.register(SEQUENCE_ACTIVATE, |_, _| Ret::default());
-        e.register(TRANSLATION_CONSTRUCT, |_, _| Ret::default());
-        e.register(NODE_SET_TRANSLATE, |_, _| Ret::default());
+        e.register(UPDATE_DATA_CONSTRUCT, |_, _| Ret::default());
+        e.register(NODE_UPDATE, |_, _| Ret::default());
         e.register(0x00f0_008c, |_, _| Ret::default());
         // Loading removes nothing from the map; the pop-front double has
         // emptied the list by then and we install the entry now.
@@ -2877,10 +5665,10 @@ mod tests {
             [[sequence, 0x64, 1, 1.0f32.to_bits(), 0.0f32.to_bits(), 0, 0]]
         );
         assert_eq!(
-            arguments_of(&log, TRANSLATION_CONSTRUCT)[0][1..],
+            arguments_of(&log, UPDATE_DATA_CONSTRUCT)[0][1..],
             [0.0f32.to_bits(), 1, 0]
         );
-        assert_eq!(arguments_of(&log, NODE_SET_TRANSLATE)[0][0], root);
+        assert_eq!(arguments_of(&log, NODE_UPDATE)[0][0], root);
         assert_eq!(
             arguments_of(&log, 0x00f0_008c),
             [[sequence, 0.0f32.to_bits(), 0]]
@@ -3059,11 +5847,14 @@ mod tests {
         e.register(ANIM_GROUP_ID, |e, a| ret(e.mem.u32(a[0] + 0x10) & 0xffff));
         e.register(IS_MENU_ID_VISIBLE, |_, _| ret(0));
         e.register(IS_KIND_OF, |_, _| ret(1));
+        e.register(GROUP_ID_TYPE, |_, a| ret(a[0] & 0xff));
+        e.register(GROUP_SPEED, |_, _| 1.0f32.into_ret());
+        // The constants `AddGroup` compares with (a zero double).
+        e.map(0x0101_2000, 0x1000);
         e.register(MODEL_LOADER_REMOVE, |_, _| Ret::default());
         e.register(SEQUENCE_CYCLE_TYPE, |_, _| ret(0));
         e.register(MANAGER_ADD_SEQUENCE, |_, _| ret(1));
         e.register(MANAGER_REMOVE_SEQUENCE, |_, _| Ret::default());
-        e.register(ADD_GROUP, |_, _| Ret::default());
         e.register(KF_MODEL_ADD_REF, |_, _| Ret::default());
         e.register(SIMPLE_LIST_PUSH_BACK, |_, _| Ret::default());
         e.register(LOG, |_, _| Ret::default());
@@ -3205,7 +5996,17 @@ mod tests {
             arguments_of(&log, MANAGER_ADD_SEQUENCE),
             [[f.manager, f.sequence, ACCUM_ROOT_NAME, 1]]
         );
-        assert_eq!(arguments_of(&log, ADD_GROUP), [[f.this.addr(), f.group]]);
+        // `AddGroup` (translated in this file) runs for the sequence's group:
+        // it asks for the group id, and the non-cumulative manager has no
+        // accumulation root to find.
+        assert_eq!(
+            arguments_of(&log, ANIM_GROUP_ID).last(),
+            Some(&vec![f.group])
+        );
+        assert_eq!(
+            arguments_of(&log, LOG),
+            [[LOG_NO_ACCUM_ROOT, f.e.mem.u32(f.root + 8)]]
+        );
         assert_eq!(f.e.get(f.this, Animation::pAccumRoot).addr(), 0x5151);
 
         // A sequence with other references is wrapped in a new
@@ -3576,5 +6377,2145 @@ mod tests {
         e.register(SEQUENCE_END_TIME, |_, _| 4.0f32.into_ret());
         assert_eq!(e.call(0x0049_1090, &args![0x1000u32]).f32(), 2.5);
         assert_eq!(e.call(0x0049_1090, &args![0u32]).f32(), 0.0);
+    }
+
+    // ---- Second session: `004910d0` onward ---------------------------------------------
+
+    /// The player object and a reference used as the animated actor.
+    const PLAYER: u32 = 0x3000_0000;
+    const ACTOR: u32 = 0x3000_1000;
+
+    /// `engine()` plus the pages and values of the constants the functions of
+    /// the second session load, and doubles for the small getters most of them
+    /// go through (flags, sequence state, group id and type).
+    fn engine_two() -> Engine {
+        let mut e = engine();
+        for page in [
+            0x0101_1000,
+            0x0101_2000,
+            0x0101_6000,
+            0x0101_a000,
+            0x0109_6000,
+            0x011a_8000,
+            0x011e_0000,
+            0x011f_3000,
+        ] {
+            e.map(page, 0x1000);
+        }
+        e.set_global(DOUBLE_ZERO, 0.0f64);
+        e.set_global(DOUBLE_MINUS_ONE, -1.0f64);
+        e.set_global(DOUBLE_THIRTY, 30.0f64);
+        e.set_global(DOUBLE_FOUR, 4.0f64);
+        e.set_global(DOUBLE_HALF, 0.5f64);
+        e.set_global(DOUBLE_HUNDREDTH, 0.01f64);
+        e.set_global(DOUBLE_MICRO, 9.999_999_747_378_752e-6f64);
+        e.set_global(FLOAT_HALF, 0.5f32);
+        e.set_global(FLOAT_MAX, f32::MAX);
+        for i in 0..3 {
+            e.set_global(RECORD_DEFAULT_TRANSLATE + 4 * i, -f32::MAX);
+        }
+        e.set_global(RECORD_DEFAULT_SCALE, -f32::MAX);
+        e.set_global(PLAYER_SINGLETON, PLAYER);
+        e.map(PLAYER, 0x700);
+        e.map(ACTOR, 0x400);
+        // Both objects have a vtable whose slot 0x100 ("has a process") says no.
+        e.register(0x00f4_0100, |_, _| ret(0));
+        for object in [PLAYER, ACTOR] {
+            let vtable = e.mem.alloc(0x800);
+            e.mem.set_u32(object, vtable);
+            e.mem.set_u32(vtable + 0x100, 0x00f4_0100);
+        }
+        e.register(GROUP_ID_TYPE, |_, a| ret(a[0] & 0xff));
+        e.register(ANIM_GROUP_ID, |e, a| ret(e.mem.u16(a[0] + 0x10) as u32));
+        e.register(ANIM_GROUP_SEQUENCE_TYPE, |e, a| {
+            ret(e.mem.u16(a[0] + 0x10) as u32 & 0xff)
+        });
+        e.register(SEQUENCE_STATE, |e, a| ret(e.mem.u32(a[0] + 0x44)));
+        e.register(SEQUENCE_CYCLE_TYPE, |e, a| ret(e.mem.u32(a[0] + 0x24)));
+        e.register(FLAG_SET, |e, a| {
+            let flags = e.mem.u8(a[0]);
+            let mask = a[2] as u8;
+            e.mem.set_u8(
+                a[0],
+                if a[1] as u8 != 0 {
+                    flags | mask
+                } else {
+                    flags & !mask
+                },
+            );
+            Ret::default()
+        });
+        e.register(WORD_AT_8, |e, a| ret(e.mem.u32(a[0] + 8)));
+        e.register(WORD_AT_C, |e, a| ret(e.mem.u32(a[0] + 0xc)));
+        e.register(ACTOR_PROCESS, |e, a| ret(e.mem.u32(a[0] + 0x68)));
+        e.register(MANAGER_TARGET, |e, a| ret(e.mem.u32(a[0] + 0x2c)));
+        e.register(SEQUENCE_BEGIN_TIME, |e, a| {
+            e.mem.f32(a[0] + 0x2c).into_ret()
+        });
+        e.register(SEQUENCE_END_TIME, |e, a| e.mem.f32(a[0] + 0x30).into_ret());
+        e
+    }
+
+    /// Writes `slot` and `category` of animation group type `kind` into the
+    /// type table.
+    fn set_type(e: &mut Engine, kind: u32, slot: i32, category: i32) {
+        e.mem.set_i32(SEQUENCE_TYPE_SLOT + kind * 0x24, slot);
+        e.mem
+            .set_i32(SEQUENCE_TYPE_CATEGORY + kind * 0x24, category);
+    }
+
+    /// An animation group object: the id at +0x10.
+    fn group_with_id(e: &mut Engine, id: u16) -> u32 {
+        let group = e.mem.alloc(0x80);
+        e.mem.set_u16(group + 0x10, id);
+        group
+    }
+
+    /// A sequence with the given state (+0x44) and group (+0x74).
+    fn sequence_with_group(e: &mut Engine, state: u32, group: u32) -> u32 {
+        let sequence = e.mem.alloc(0x80);
+        e.mem.set_u32(sequence + 0x44, state);
+        e.mem.set_u32(sequence + 0x74, group);
+        sequence
+    }
+
+    /// A sequence-map entry (`AnimSequenceBase`): slot 0xc says whether it
+    /// holds a single sequence, slot 0x10 gives the stored sequence (+4).
+    fn map_entry(e: &mut Engine, sequence: u32, single: bool) -> u32 {
+        e.register(0x00f1_000c, |e, a| ret(e.mem.u32(a[0] + 8)));
+        e.register(0x00f1_0010, |e, a| ret(e.mem.u32(a[0] + 4)));
+        let entry = object_with_vtable(e, 0x10, &[(0xc, 0x00f1_000c), (0x10, 0x00f1_0010)]);
+        e.mem.set_u32(entry + 4, sequence);
+        e.mem.set_u32(entry + 8, single as u32);
+        entry
+    }
+
+    /// An animation whose sequence map is the block returned: `count` at +0 and
+    /// `(key, entry)` pairs behind it, with a `GetAt` double that searches it.
+    fn map_for(e: &mut Engine, this: Ptr<Animation>) -> u32 {
+        let map = e.mem.alloc(0x100);
+        e.set(this, Animation::pAnimSequenceMap, Ptr::new(map));
+        e.register(MAP_GET_AT, |e, a| {
+            let count = e.mem.u32(a[0]);
+            for i in 0..count {
+                if e.mem.u32(a[0] + 4 + 8 * i) == a[1] {
+                    let entry = e.mem.u32(a[0] + 8 + 8 * i);
+                    e.mem.set_u32(a[2], entry);
+                    return ret(1);
+                }
+            }
+            ret(0)
+        });
+        map
+    }
+
+    /// Adds `(key, entry)` to a map made by `map_for`.
+    fn map_add(e: &mut Engine, map: u32, key: u32, entry: u32) {
+        let count = e.mem.u32(map);
+        e.mem.set_u32(map + 4 + 8 * count, key);
+        e.mem.set_u32(map + 8 + 8 * count, entry);
+        e.mem.set_u32(map, count + 1);
+    }
+
+    // ---- FindSkinnedNode -------------------------------------------------------------
+
+    /// Nodes for `FindSkinnedNode`: +0x10 the object slot 0x18 returns, +0x14 the
+    /// node slot 0xc returns (the children holder), +0xbc the skin of an object,
+    /// +0x9c the child count and +0xa0.. the children of a children holder.
+    fn skin_nodes(e: &mut Engine) {
+        e.register(0x00f1_0018, |e, a| ret(e.mem.u32(a[0] + 0x10)));
+        e.register(0x00f1_000c, |e, a| ret(e.mem.u32(a[0] + 0x14)));
+        e.register(NODE_SKIN, |e, a| ret(e.mem.u32(a[0] + 0xbc)));
+        e.register(NODE_CHILD_COUNT, |e, a| ret(e.mem.u32(a[0] + 0x9c)));
+        e.register(NODE_CHILD_AT, |e, a| ret(e.mem.u32(a[0] + 0xa0 + 4 * a[1])));
+    }
+
+    fn skin_node(e: &mut Engine) -> u32 {
+        object_with_vtable(e, 0x100, &[(0x18, 0x00f1_0018), (0xc, 0x00f1_000c)])
+    }
+
+    #[test]
+    fn find_skinned_node_looks_at_the_node_and_then_its_children() {
+        let mut e = engine_two();
+        skin_nodes(&mut e);
+        assert!(!e.call(0x0049_10d0, &args![0u32]).bool());
+        // A node whose slot-0x18 object has a skin.
+        let node = skin_node(&mut e);
+        let owner = e.mem.alloc(0x100);
+        e.mem.set_u32(owner + 0xbc, 0x1234);
+        e.mem.set_u32(node + 0x10, owner);
+        start_log(&mut e);
+        assert!(e.call(0x0049_10d0, &args![node]).bool());
+        assert_eq!(called(&mut e), [0x00f1_0018, NODE_SKIN]);
+        // A node without an owner, whose second child has a skinned child.
+        let root = skin_node(&mut e);
+        let holder = e.mem.alloc(0x100);
+        let (plain, skinned_parent) = (skin_node(&mut e), skin_node(&mut e));
+        let (parent_holder, leaf) = (e.mem.alloc(0x100), skin_node(&mut e));
+        e.mem.set_u32(leaf + 0x10, owner);
+        e.mem.set_u32(parent_holder + 0x9c, 1);
+        e.mem.set_u32(parent_holder + 0xa0, leaf);
+        e.mem.set_u32(skinned_parent + 0x14, parent_holder);
+        e.mem.set_u32(root + 0x14, holder);
+        e.mem.set_u32(holder + 0x9c, 3);
+        e.mem.set_u32(holder + 0xa0, plain);
+        e.mem.set_u32(holder + 0xa4, 0);
+        e.mem.set_u32(holder + 0xa8, skinned_parent);
+        assert!(e.call(0x0049_10d0, &args![root]).bool());
+        // Nothing skinned anywhere.
+        e.mem.set_u32(leaf + 0x10, 0);
+        assert!(!e.call(0x0049_10d0, &args![root]).bool());
+    }
+
+    // ---- Flags -------------------------------------------------------------------------
+
+    #[test]
+    fn flag_functions_test_and_set_the_bits_of_the_flag_byte() {
+        let mut e = engine_two();
+        let this: Ptr<Animation> = e.new_object();
+        assert!(!e.call(0x0049_3970, &args![this]).bool());
+        assert!(!e.call(0x0049_3b90, &args![this]).bool());
+        e.call(0x0049_39b0, &args![this, 1u32]);
+        assert_eq!(e.mem.u8(this.addr()), 2);
+        assert!(e.call(0x0049_3970, &args![this]).bool());
+        assert!(e.call(0x0049_3990, &args![this, 3u32]).bool());
+        assert!(!e.call(0x0049_3990, &args![this, 4u32]).bool());
+        e.call(0x0049_3860, &args![this, 1u32]);
+        assert_eq!(e.mem.u8(this.addr()), 3);
+        assert!(e.call(0x0049_3b90, &args![this]).bool());
+        e.call(0x0049_39b0, &args![this, 0u32]);
+        e.call(0x0049_3860, &args![this, 0u32]);
+        assert_eq!(e.mem.u8(this.addr()), 0);
+        // The setters pass the mask 1 and 2 to the flag function.
+        start_log(&mut e);
+        e.call(0x0049_3860, &args![this, 1u32]);
+        e.call(0x0049_39b0, &args![this, 0u32]);
+        let log = end_log(&mut e);
+        assert_eq!(
+            arguments_of(&log, FLAG_SET),
+            [[this.addr(), 1, 1], [this.addr(), 0, 2]]
+        );
+    }
+
+    #[test]
+    fn small_byte_getters_read_their_offsets() {
+        let mut e = engine_two();
+        let object = e.mem.alloc(0x300);
+        e.mem.set_u8(object + 0x10, 0xf0);
+        e.mem.set_u8(object + 0x104, 0x7a);
+        e.mem.set_u8(object + 0x222, 0x33);
+        // Sign extended into the result.
+        assert_eq!(e.call(0x0049_3750, &args![object]).i32(), -16);
+        assert_eq!(e.call(0x0049_3bb0, &args![object]).u8(), 0x7a);
+        assert_eq!(e.call(0x0049_55a0, &args![object]).u8(), 0x33);
+    }
+
+    #[test]
+    fn the_group_blend_bytes_give_the_larger_of_two() {
+        let mut e = engine_two();
+        let group = e.mem.alloc(0x40);
+        e.mem.set_u8(group + 0x29, 5);
+        e.mem.set_u8(group + 0x2a, 9);
+        e.mem.set_u8(group + 0x2b, 2);
+        assert_eq!(e.call(0x0049_54e0, &args![group]).u8(), 9);
+        assert_eq!(e.call(0x0049_5520, &args![group]).u8(), 5);
+        e.mem.set_u8(group + 0x2b, 200);
+        assert_eq!(e.call(0x0049_5520, &args![group]).u8(), 200);
+    }
+
+    // ---- Sequence weight, last time and records ------------------------------------------
+
+    #[test]
+    fn sequence_weight_is_stored_and_never_negative() {
+        let mut e = engine_two();
+        let sequence = e.mem.alloc(0x80);
+        e.call(0x0049_5480, &args![sequence, 0.75f32]);
+        assert_eq!(e.call(0x0049_5460, &args![sequence]).f32(), 0.75);
+        e.call(0x0049_5480, &args![sequence, -2.0f32]);
+        assert_eq!(e.call(0x0049_5460, &args![sequence]).f32(), 0.0);
+        // The last scaled time is reset to -FLT_MAX.
+        e.call(0x0049_54c0, &args![sequence]);
+        assert_eq!(e.mem.f32(sequence + 0x48), -f32::MAX);
+    }
+
+    #[test]
+    fn transform_records_start_invalid_and_are_checked_by_their_first_float() {
+        let mut e = engine_two();
+        for i in 0..4 {
+            e.set_global(RECORD_DEFAULT_ROTATE + 4 * i, 0.25f32 * i as f32);
+        }
+        let record = e.mem.alloc(0x20);
+        assert_eq!(e.call(0x0049_4260, &args![record]).u32(), record);
+        assert_eq!(e.mem.f32(record), -f32::MAX);
+        assert_eq!(e.mem.f32(record + 8), -f32::MAX);
+        assert_eq!(e.mem.f32(record + 12 + 8), 0.5);
+        assert_eq!(e.mem.f32(record + 0x1c), -f32::MAX);
+        assert!(!e.call(0x0049_42c0, &args![record]).bool());
+        e.mem.set_f32(record, 1.0);
+        assert!(e.call(0x0049_42c0, &args![record]).bool());
+        e.mem.set_f32(record, f32::NAN);
+        assert!(e.call(0x0049_42c0, &args![record]).bool());
+    }
+
+    #[test]
+    fn vector_is_scaled_by_the_inverse_of_the_divisor() {
+        let mut e = engine_two();
+        let vector = e.mem.alloc(12);
+        for (i, v) in [2.0f32, -4.0, 8.0].iter().enumerate() {
+            e.mem.set_f32(vector + 4 * i as u32, *v);
+        }
+        assert_eq!(e.call(0x0049_41c0, &args![vector, 4.0f32]).u32(), vector);
+        assert_eq!(
+            [
+                e.mem.f32(vector),
+                e.mem.f32(vector + 4),
+                e.mem.f32(vector + 8)
+            ],
+            [0.5, -1.0, 2.0]
+        );
+    }
+
+    #[test]
+    fn interpolator_target_is_read_from_the_sixteen_byte_entry() {
+        let mut e = engine_two();
+        let object = e.mem.alloc(0x40);
+        let table = e.mem.alloc(0x40);
+        e.mem.set_u32(object + 0x14, table);
+        let target = e.mem.alloc(0x40);
+        e.mem.set_u32(target + 0x2c, 0xabcd);
+        e.mem.set_u32(table + 0x10 + 4, target);
+        assert_eq!(e.call(0x0049_4210, &args![object, 1u32]).u32(), 0xabcd);
+        // An empty entry has no target.
+        assert_eq!(e.call(0x0049_4210, &args![object, 0u32]).u32(), 0);
+    }
+
+    // ---- Process object, setting byte -----------------------------------------------------
+
+    #[test]
+    fn process_array_and_setting_byte_getters() {
+        let mut e = engine_two();
+        let process = e.mem.alloc(0x200);
+        e.mem.set_u32(process + 0x1c4 + 8, 0x777);
+        assert_eq!(e.call(0x0049_5560, &args![process, 2i32]).u32(), 0x777);
+        e.register(SETTING_BYTE_ADDRESS, |e, a| {
+            assert_eq!(a[0], SETTING_BYTE_OBJECT);
+            ret(e.mem.alloc(4))
+        });
+        // The byte at the returned address is read (a fresh block is zero).
+        assert_eq!(e.call(0x0049_5580, &args![]).u8(), 0);
+    }
+
+    // ---- Controller manager and blend interpolator ------------------------------------------
+
+    #[test]
+    fn manager_sequence_count_and_element_use_the_array_at_0x34() {
+        let mut e = engine_two();
+        e.register(SEQUENCE_ARRAY_COUNT, |e, a| {
+            ret(e.mem.u16(a[0] + 0xa) as u32)
+        });
+        e.register(SEQUENCE_ARRAY_ELEMENT, |e, a| {
+            ret(e.mem.u32(a[0] + 4) + 4 * a[1])
+        });
+        let manager = e.mem.alloc(0x80);
+        e.mem.set_u16(manager + 0x34 + 0xa, 3);
+        let elements = e.mem.alloc(0x20);
+        e.mem.set_u32(manager + 0x34 + 4, elements);
+        e.mem.set_u32(elements + 8, 0x4242);
+        assert_eq!(e.call(0x0049_5d00, &args![manager]).u32(), 3);
+        start_log(&mut e);
+        assert_eq!(e.call(0x0049_5d20, &args![manager, 2u32]).u32(), 0x4242);
+        let log = end_log(&mut e);
+        assert_eq!(
+            arguments_of(&log, SEQUENCE_ARRAY_ELEMENT),
+            [[manager + 0x34, 2]]
+        );
+    }
+
+    #[test]
+    fn blend_interpolator_returns_the_single_interpolator_for_its_index() {
+        let mut e = engine_two();
+        let blend = e.mem.alloc(0x40);
+        let entries = e.mem.alloc(0x80);
+        e.mem.set_u32(blend + 0x14, entries);
+        e.mem.set_u32(blend + 0x18, 0x5050);
+        e.mem.set_u32(entries + 0x18 * 2, 0x6060);
+        // Not a single blend: the entry of the array.
+        assert_eq!(e.call(0x0049_5d50, &args![blend, 2u32]).u32(), 0x6060);
+        e.mem.set_u8(blend + 0xe, 1);
+        e.mem.set_u8(blend + 0xf, 2);
+        assert_eq!(e.call(0x0049_5d50, &args![blend, 2u32]).u32(), 0x5050);
+        // A different index still reads the array.
+        e.mem.set_u32(entries + 0x18, 0x7070);
+        assert_eq!(e.call(0x0049_5d50, &args![blend, 1u32]).u32(), 0x7070);
+    }
+
+    // ---- UpdateMovementNoWorldUpdate, UpdateMovement, scene graph -----------------------
+
+    /// An animation with an animation root, an accumulation root whose first
+    /// child is `child`, and an actor with a process whose movement object is
+    /// `movement`. Doubles for the movement/flag getters it calls.
+    struct MovementFixture {
+        e: Engine,
+        this: Ptr<Animation>,
+        actor: u32,
+        child: u32,
+    }
+
+    fn movement_fixture(speed: f32, accumulator_accepts: bool) -> MovementFixture {
+        let mut e = engine_two();
+        e.register(0x00f2_01d0, |e, a| ret(e.mem.u32(a[0] + 0x70)));
+        e.register(0x00f2_0010, |e, a| ret(e.mem.u32(a[0] + 0x20)));
+        let actor = object_with_vtable(&mut e, 0x200, &[(0x1d0, 0x00f2_01d0)]);
+        let process = object_with_vtable(&mut e, 0x40, &[(0x10, 0x00f2_0010)]);
+        let movement = e.mem.alloc(0xc0);
+        e.mem.set_f32(movement + 0xb4, speed);
+        e.mem.set_u32(process + 0x20, movement);
+        e.mem.set_u32(actor + 0x70, process);
+        e.mem.set_u32(actor + 0xc, 0x00ab_cdef);
+        e.register(ACTOR_WORD_108, |e, a| ret(e.mem.u32(a[0] + 0x108)));
+        e.register(MOVEMENT_SPEED, |e, a| (e.mem.f32(a[0] + 0xb4)).into_ret());
+        e.register(ACTOR_FLAG_SET, |e, a| {
+            let flags = e.mem.u32(a[0] + 0x11c);
+            let flags = if a[1] != 0 {
+                flags | a[2]
+            } else {
+                flags & !a[2]
+            };
+            e.mem.set_u32(a[0] + 0x11c, flags);
+            Ret::default()
+        });
+        e.register(SHADER_ACCUMULATOR, |_, _| ret(0x6600));
+        e.register_double(SHADER_ACCUMULATOR_TEST, move |_, a| {
+            assert_eq!(a[1], 0x00ab_cdef);
+            ret(accumulator_accepts as u32)
+        });
+        e.register(NODE_CHILD_AT, |e, a| ret(e.mem.u32(a[0] + 0x40)));
+        e.register(NODE_WORLD_TRANSLATION, |_, a| ret(a[0] + 0x58));
+        let this: Ptr<Animation> = e.new_object();
+        let root = e.mem.alloc(0x80);
+        let accum = e.mem.alloc(0x80);
+        let child = e.mem.alloc(0x80);
+        e.mem.set_u32(accum + 0x40, child);
+        e.mem.set_f32(child + 0x58 + 8, 5.0);
+        e.mem.set_u32(this.addr() + 8, root);
+        e.set(this, Animation::pAccumRoot, Ptr::new(accum));
+        e.set(this, Animation::time, 0.5f32);
+        e.register_double(BIP_UPDATE_ALL_BUT_BIP, move |e, a| {
+            // The biped update lifts the first child by 2.5.
+            assert_eq!(a[1], 0.5f32.to_bits());
+            let z = e.mem.f32(child + 0x58 + 8);
+            e.mem.set_f32(child + 0x58 + 8, z + 2.5);
+            Ret::default()
+        });
+        MovementFixture {
+            e,
+            this,
+            actor,
+            child,
+        }
+    }
+
+    #[test]
+    fn movement_update_sets_the_actor_flags_and_the_height_change() {
+        let mut f = movement_fixture(0.5, false);
+        start_log(&mut f.e);
+        f.e.call(0x0049_39d0, &args![f.this, f.actor]);
+        let log = end_log(&mut f.e);
+        let flags = f.e.mem.u32(f.actor + 0x11c);
+        // Bit 1 always; bit 2 (accumulator test false); bit 4 (speed 0.5 is
+        // above the threshold).
+        assert_eq!(flags, 7);
+        assert_eq!(
+            arguments_of(&log, ACTOR_FLAG_SET),
+            [[f.actor, 1, 1], [f.actor, 1, 2], [f.actor, 1, 4],]
+        );
+        assert_eq!(f.e.mem.f32(f.this.addr() + 0x18), 2.5);
+        assert_eq!(f.e.mem.u8(f.this.addr()), 1);
+        // The biped update gets the animation root and the time.
+        let root = f.e.mem.u32(f.this.addr() + 8);
+        assert_eq!(
+            arguments_of(&log, BIP_UPDATE_ALL_BUT_BIP),
+            [[root, 0.5f32.to_bits()]]
+        );
+        let _ = f.child;
+    }
+
+    #[test]
+    fn movement_update_clears_flags_two_and_four_for_a_slow_actor() {
+        let mut f = movement_fixture(0.0, true);
+        f.e.call(0x0049_39d0, &args![f.this, f.actor]);
+        // Bit 2 cleared by the accepting accumulator, bit 4 by the zero speed.
+        assert_eq!(f.e.mem.u32(f.actor + 0x11c), 1);
+        // An actor with a 1 at +0x108 skips the speed check but still sets the flags.
+        let mut f = movement_fixture(0.5, false);
+        f.e.mem.set_u32(f.actor + 0x108, 1);
+        start_log(&mut f.e);
+        f.e.call(0x0049_39d0, &args![f.this, f.actor]);
+        let log = end_log(&mut f.e);
+        // The speed is read once (for bit 4), not twice.
+        assert_eq!(arguments_of(&log, MOVEMENT_SPEED).len(), 1);
+    }
+
+    #[test]
+    fn movement_update_stops_early_without_roots_or_with_the_updated_bit() {
+        let mut f = movement_fixture(0.5, false);
+        f.e.mem.set_u8(f.this.addr(), 1);
+        start_log(&mut f.e);
+        f.e.call(0x0049_39d0, &args![f.this, f.actor]);
+        assert!(!called(&mut f.e).contains(&ACTOR_FLAG_SET));
+        f.e.mem.set_u8(f.this.addr(), 0);
+        f.e.set(f.this, Animation::pAccumRoot, Ptr::NULL);
+        start_log(&mut f.e);
+        f.e.call(0x0049_39d0, &args![f.this, f.actor]);
+        assert!(!called(&mut f.e).contains(&ACTOR_FLAG_SET));
+        f.e.mem.set_u32(f.this.addr() + 8, 0);
+        start_log(&mut f.e);
+        f.e.call(0x0049_39d0, &args![f.this, f.actor]);
+        assert_eq!(called(&mut f.e), [READ_WORD]);
+    }
+
+    /// Doubles for the setting and flag object `UpdateSceneGraphNoController`
+    /// reads; `limit` is the value of the limit setting.
+    fn scene_graph_settings(e: &mut Engine, limit: i32, forced: i8) {
+        let value = e.mem.alloc(4);
+        e.mem.set_i32(value, limit);
+        e.register_double(SETTING_VALUE_ADDRESS, move |_, a| {
+            assert_eq!(a[0], SETTING_SCENE_GRAPH_LIMIT);
+            ret(value)
+        });
+        e.set_global(SCENE_GRAPH_ALWAYS_UPDATE, forced);
+        e.set_global(FLAG_OBJECT_GLOBAL, 0x7000u32);
+        e.register(FLAG_OBJECT_CHECK, |_, _| ret(0));
+    }
+
+    #[test]
+    fn scene_graph_update_is_postponed_above_the_limit() {
+        let mut f = movement_fixture(0.5, false);
+        scene_graph_settings(&mut f.e, 2, 0);
+        start_log(&mut f.e);
+        f.e.call(0x0049_3bd0, &args![f.this]);
+        let log = end_log(&mut f.e);
+        assert_eq!(arguments_of(&log, FLAG_SET), [[f.this.addr(), 1, 2]]);
+        assert_eq!(f.e.mem.u8(f.this.addr()), 2);
+        assert!(arguments_of(&log, OBJECT_SET_CONTROLLERS).is_empty());
+        // Already postponed once: the next call updates.
+        scene_graph_settings(&mut f.e, 2, 0);
+        f.e.register(OBJECT_CONTROLLERS, |e, a| ret(e.mem.u32(a[0] + 0xc)));
+        f.e.register(OBJECT_SET_CONTROLLERS, |e, a| {
+            e.mem.set_u32(a[0] + 0xc, a[1]);
+            Ret::default()
+        });
+        f.e.register(UPDATE_DATA_CONSTRUCT, |_, _| Ret::default());
+        f.e.register(0x00f2_00a4, |_, _| Ret::default());
+        let root = f.e.mem.u32(f.this.addr() + 8);
+        let vtable = f.e.mem.alloc(0x100);
+        f.e.mem.set_u32(vtable + 0xa4, 0x00f2_00a4);
+        f.e.mem.set_u32(root, vtable);
+        start_log(&mut f.e);
+        f.e.call(0x0049_3bd0, &args![f.this]);
+        assert!(called(&mut f.e).contains(&OBJECT_SET_CONTROLLERS));
+        // Also forced by the global byte.
+        let mut f = movement_fixture(0.5, false);
+        scene_graph_settings(&mut f.e, 2, 1);
+        f.e.register(OBJECT_CONTROLLERS, |e, a| ret(e.mem.u32(a[0] + 0xc)));
+        f.e.register(OBJECT_SET_CONTROLLERS, |_, _| Ret::default());
+        f.e.register(UPDATE_DATA_CONSTRUCT, |_, _| Ret::default());
+        f.e.register(0x00f2_00a4, |_, _| Ret::default());
+        let root = f.e.mem.u32(f.this.addr() + 8);
+        let vtable = f.e.mem.alloc(0x100);
+        f.e.mem.set_u32(vtable + 0xa4, 0x00f2_00a4);
+        f.e.mem.set_u32(root, vtable);
+        start_log(&mut f.e);
+        f.e.call(0x0049_3bd0, &args![f.this]);
+        assert!(called(&mut f.e).contains(&OBJECT_SET_CONTROLLERS));
+    }
+
+    #[test]
+    fn scene_graph_update_detaches_the_controllers_while_it_runs() {
+        let mut f = movement_fixture(0.5, false);
+        scene_graph_settings(&mut f.e, 1, 0);
+        let root = f.e.mem.u32(f.this.addr() + 8);
+        let accum = f.e.get(f.this, Animation::pAccumRoot).addr();
+        f.e.mem.set_u32(root + 0xc, 0x1111);
+        f.e.mem.set_u32(accum + 0xc, 0x2222);
+        f.e.register(OBJECT_CONTROLLERS, |e, a| ret(e.mem.u32(a[0] + 0xc)));
+        f.e.register(OBJECT_SET_CONTROLLERS, |e, a| {
+            e.mem.set_u32(a[0] + 0xc, a[1]);
+            Ret::default()
+        });
+        f.e.register(UPDATE_DATA_CONSTRUCT, |e, a| {
+            e.mem.set_u32(a[0], a[1]);
+            Ret::default()
+        });
+        // The node's update (slot 0xa4) runs with both controller lists detached.
+        f.e.register_double(0x00f2_00a4, move |e, a| {
+            assert_eq!(e.mem.u32(root + 0xc), 0);
+            assert_eq!(e.mem.u32(accum + 0xc), 0);
+            assert_eq!(e.mem.u32(a[1]), 0.5f32.to_bits());
+            assert_eq!(a[2], 0);
+            Ret::default()
+        });
+        let vtable = f.e.mem.alloc(0x100);
+        f.e.mem.set_u32(vtable + 0xa4, 0x00f2_00a4);
+        f.e.mem.set_u32(root, vtable);
+        f.e.call(0x0049_3bd0, &args![f.this]);
+        assert_eq!(f.e.mem.u32(root + 0xc), 0x1111);
+        assert_eq!(f.e.mem.u32(accum + 0xc), 0x2222);
+    }
+
+    #[test]
+    fn queued_scene_graph_update_runs_once_and_clears_the_bit() {
+        let mut f = movement_fixture(0.5, false);
+        scene_graph_settings(&mut f.e, 2, 0);
+        start_log(&mut f.e);
+        assert!(!f.e.call(0x0049_3930, &args![f.this]).bool());
+        assert!(arguments_of(&end_log(&mut f.e), FLAG_SET).is_empty());
+        // With the bit set (and the limit low) it updates and clears it.
+        scene_graph_settings(&mut f.e, 1, 0);
+        f.e.mem.set_u8(f.this.addr(), 2);
+        f.e.register(OBJECT_CONTROLLERS, |_, _| ret(0));
+        f.e.register(OBJECT_SET_CONTROLLERS, |_, _| Ret::default());
+        f.e.register(UPDATE_DATA_CONSTRUCT, |_, _| Ret::default());
+        f.e.register(0x00f2_00a4, |_, _| Ret::default());
+        let root = f.e.mem.u32(f.this.addr() + 8);
+        let vtable = f.e.mem.alloc(0x100);
+        f.e.mem.set_u32(vtable + 0xa4, 0x00f2_00a4);
+        f.e.mem.set_u32(root, vtable);
+        assert!(f.e.call(0x0049_3930, &args![f.this]).bool());
+        assert_eq!(f.e.mem.u8(f.this.addr()), 0);
+    }
+
+    #[test]
+    fn update_movement_runs_the_movement_and_then_the_scene_graph() {
+        let mut f = movement_fixture(0.5, false);
+        scene_graph_settings(&mut f.e, 2, 0);
+        start_log(&mut f.e);
+        f.e.call(0x0049_3900, &args![f.this, f.actor]);
+        let log = end_log(&mut f.e);
+        let position = |address: u32| log.iter().position(|(a, _)| *a == address).unwrap();
+        // The biped update comes first, the postponement last.
+        assert!(position(BIP_UPDATE_ALL_BUT_BIP) < position(SETTING_VALUE_ADDRESS));
+        assert_eq!(f.e.mem.u8(f.this.addr()), 3);
+        assert_eq!(f.e.mem.f32(f.this.addr() + 0x18), 2.5);
+    }
+
+    // ---- InitGroupSpeed ----------------------------------------------------------------------
+
+    /// An animation group with a given id and movement vector words.
+    struct SpeedFixture {
+        e: Engine,
+        this: Ptr<Animation>,
+        group: u32,
+    }
+
+    fn speed_fixture(category: i32) -> SpeedFixture {
+        let mut e = engine_two();
+        let this: Ptr<Animation> = e.new_object();
+        // Group id 0x0105: type 5.
+        let group = group_with_id(&mut e, 0x0105);
+        set_type(&mut e, 5, 1, category);
+        e.mem.set_u32(SEQUENCE_TYPE_NAME + 5 * 0x24, 0);
+        let manager = e.mem.alloc(0x80);
+        e.mem.set_u8(manager + 0x68, 1);
+        e.mem.set_u32(this.addr() + 0xd8, manager);
+        e.register(SEQUENCE_ARRAY_COUNT, |_, _| ret(1));
+        e.register(SEQUENCE_ARRAY_ELEMENT, |e, a| {
+            ret(e.mem.u32(a[0] + 4) + 4 * a[1])
+        });
+        let first_sequence = e.mem.alloc(0x80);
+        let array = e.mem.alloc(8);
+        e.mem.set_u32(array, first_sequence);
+        e.mem.set_u32(manager + 0x34 + 4, array);
+        // The accumulation root of the first sequence is the target of the
+        // interpolator entry 0 of the entry's sequence.
+        let accum_root = e.mem.alloc(0x40);
+        e.register_double(ACCUM_ROOT_OF_SEQUENCE, move |_, _| ret(accum_root));
+        let target = e.mem.alloc(0x40);
+        e.mem.set_u32(target + 0x2c, accum_root);
+        let sequence = e.mem.alloc(0x80);
+        let entries = e.mem.alloc(0x20);
+        e.mem.set_u32(entries + 4, target);
+        e.mem.set_u32(sequence + 0x14, entries);
+        e.mem.set_u32(sequence + 0xc, 1);
+        e.mem.set_f32(sequence + 0x2c, 0.0);
+        e.mem.set_f32(sequence + 0x30, 2.0);
+        // The interpolator's transform at time t: translation (3t, 0, t).
+        e.register(0x00f2_008c, |e, a| {
+            let time = f32::from_bits(a[1]);
+            e.mem.set_f32(a[3], 3.0 * time);
+            e.mem.set_f32(a[3] + 4, 0.0);
+            e.mem.set_f32(a[3] + 8, time);
+            Ret::default()
+        });
+        let interpolator = object_with_vtable(&mut e, 0x20, &[(0x8c, 0x00f2_008c)]);
+        e.register_double(SEQUENCE_INTERPOLATOR_AT, move |_, _| ret(interpolator));
+        e.register(RECORD_ADDRESS, |_, a| ret(a[0]));
+        e.register(VECTOR_SUBTRACT, |e, a| {
+            for i in 0..3 {
+                let value = e.mem.f32(a[0] + 4 * i) - e.mem.f32(a[2] + 4 * i);
+                e.mem.set_f32(a[1] + 4 * i, value);
+            }
+            ret(a[1])
+        });
+        e.register(GROUP_SET_MOVEMENT_VECTOR, |e, a| {
+            for i in 0..3 {
+                let value = e.mem.f32(a[1] + 4 * i);
+                e.mem.set_f32(a[0] + 0x1c + 4 * i, value);
+            }
+            Ret::default()
+        });
+        e.register(GROUP_SPEED, |e, a| e.mem.f32(a[0] + 0x1c).into_ret());
+        let map = map_for(&mut e, this);
+        let entry = map_entry(&mut e, sequence, true);
+        map_add(&mut e, map, 0x0105, entry);
+        e.register(LOG, |_, _| Ret::default());
+        SpeedFixture { e, this, group }
+    }
+
+    #[test]
+    fn group_speed_is_the_translation_per_second_between_start_and_end() {
+        let mut f = speed_fixture(0);
+        start_log(&mut f.e);
+        f.e.call(0x0049_3d50, &args![f.this, f.group]);
+        let log = end_log(&mut f.e);
+        // (6, 0, 2) over 2 seconds.
+        assert_eq!(f.e.mem.f32(f.group + 0x1c), 3.0);
+        assert_eq!(f.e.mem.f32(f.group + 0x20), 0.0);
+        assert_eq!(f.e.mem.f32(f.group + 0x24), 1.0);
+        assert_eq!(arguments_of(&log, GROUP_SET_MOVEMENT_VECTOR).len(), 1);
+        assert!(arguments_of(&log, LOG).is_empty());
+    }
+
+    #[test]
+    fn group_speed_complains_about_a_group_exported_in_place() {
+        // A category that does not move: the vector stays zero.
+        let mut f = speed_fixture(3);
+        let name = cstring(&mut f.e, "Idle");
+        f.e.mem.set_u32(SEQUENCE_TYPE_NAME + 5 * 0x24, name);
+        f.e.register(GROUP_WEAPON_TYPE, |_, _| ret(1));
+        f.e.register(GROUP_MOVE_TYPE, |_, _| ret(2));
+        let weapon = cstring(&mut f.e, "2h");
+        let movement = cstring(&mut f.e, "Fast");
+        f.e.mem.set_u32(WEAPON_NAME_TABLE + 4, weapon);
+        f.e.mem.set_u32(MOVE_NAME_TABLE + 8, movement);
+        let root = f.e.mem.alloc(0x80);
+        let root_name = cstring(&mut f.e, "Root");
+        f.e.mem.set_u32(root + 8, root_name);
+        f.e.mem.set_u32(f.this.addr() + 8, root);
+        start_log(&mut f.e);
+        f.e.call(0x0049_3d50, &args![f.this, f.group]);
+        let log = end_log(&mut f.e);
+        assert_eq!(
+            arguments_of(&log, LOG),
+            [[LOG_ANIMATE_IN_PLACE, movement, weapon, name, root_name]]
+        );
+        assert!(arguments_of(&log, GROUP_SET_MOVEMENT_VECTOR).is_empty());
+    }
+
+    #[test]
+    fn group_speed_logs_a_missing_accumulation_root_and_skips_other_cases() {
+        let mut f = speed_fixture(0);
+        let manager = f.e.mem.u32(f.this.addr() + 0xd8);
+        f.e.mem.set_u8(manager + 0x68, 0);
+        let root = f.e.mem.alloc(0x80);
+        let root_name = cstring(&mut f.e, "Root");
+        f.e.mem.set_u32(root + 8, root_name);
+        f.e.mem.set_u32(f.this.addr() + 8, root);
+        start_log(&mut f.e);
+        f.e.call(0x0049_3d50, &args![f.this, f.group]);
+        let log = end_log(&mut f.e);
+        assert_eq!(arguments_of(&log, LOG), [[LOG_NO_ACCUM_ROOT, root_name]]);
+        // No manager: nothing at all.
+        f.e.mem.set_u32(f.this.addr() + 0xd8, 0);
+        start_log(&mut f.e);
+        f.e.call(0x0049_3d50, &args![f.this, f.group]);
+        assert!(arguments_of(&end_log(&mut f.e), LOG).is_empty());
+        // Group types 1 and 2 are skipped.
+        let mut f = speed_fixture(0);
+        let group = group_with_id(&mut f.e, 0x0101);
+        let entry = f.e.mem.u32(f.e.mem.u32(f.this.addr() + 0xdc) + 8);
+        let map = f.e.mem.u32(f.this.addr() + 0xdc);
+        map_add(&mut f.e, map, 0x0101, entry);
+        start_log(&mut f.e);
+        f.e.call(0x0049_3d50, &args![f.this, group]);
+        assert!(arguments_of(&end_log(&mut f.e), GROUP_SET_MOVEMENT_VECTOR).is_empty());
+    }
+
+    #[test]
+    fn adding_a_group_queues_it_for_an_empty_first_slot() {
+        let mut e = engine_two();
+        let this: Ptr<Animation> = e.new_object();
+        let group = group_with_id(&mut e, 0);
+        // Null group: nothing happens.
+        start_log(&mut e);
+        e.call(0x0049_46a0, &args![this, 0u32]);
+        assert!(called(&mut e).is_empty());
+        // Slot 1 and its next group are empty (0xff) and the id is 0.
+        e.mem.set_u16(this.addr() + 0x4e, 0xff);
+        e.mem.set_u16(this.addr() + 0x9e, 0xff);
+        e.call(0x0049_46a0, &args![this, group]);
+        assert_eq!(e.mem.u16(this.addr() + 0x9e), 0);
+        // A nonzero id leaves it alone, so does a group in the slot.
+        e.mem.set_u16(this.addr() + 0x9e, 0xff);
+        e.mem.set_u16(group + 0x10, 0x0102);
+        e.call(0x0049_46a0, &args![this, group]);
+        assert_eq!(e.mem.u16(this.addr() + 0x9e), 0xff);
+        e.mem.set_u16(group + 0x10, 0);
+        e.mem.set_u16(this.addr() + 0x4e, 3);
+        e.call(0x0049_46a0, &args![this, group]);
+        assert_eq!(e.mem.u16(this.addr() + 0x9e), 0xff);
+    }
+
+    #[test]
+    fn group_loaded_asks_the_sequence_map() {
+        let mut e = engine_two();
+        let this: Ptr<Animation> = e.new_object();
+        let map = map_for(&mut e, this);
+        let entry = map_entry(&mut e, 0, true);
+        map_add(&mut e, map, 0x0204, entry);
+        assert!(e.call(0x0049_4710, &args![this, 0x0204u32]).bool());
+        assert!(!e.call(0x0049_4710, &args![this, 0x0205u32]).bool());
+    }
+
+    #[test]
+    fn group_movement_is_the_truncated_speed_of_the_groups_sequence() {
+        let mut e = engine_two();
+        let this: Ptr<Animation> = e.new_object();
+        let map = map_for(&mut e, this);
+        let group = group_with_id(&mut e, 0x0105);
+        let sequence = sequence_with_group(&mut e, 0, group);
+        e.register(GROUP_SPEED, |_, _| 7.9f32.into_ret());
+        e.register(FTOL, |_, a| {
+            let value = f64::from_bits(a[0] as u64 | (a[1] as u64) << 32);
+            ret(value as i32 as u32)
+        });
+        // Unknown group.
+        assert_eq!(e.call(0x0049_4300, &args![this, 0x0105u32]).i32(), 0);
+        let entry = map_entry(&mut e, sequence, true);
+        map_add(&mut e, map, 0x0105, entry);
+        assert_eq!(e.call(0x0049_4300, &args![this, 0x0105u32]).i32(), 7);
+        // An entry that keeps several sequences, and an empty one.
+        let several = map_entry(&mut e, sequence, false);
+        map_add(&mut e, map, 0x0106, several);
+        assert_eq!(e.call(0x0049_4300, &args![this, 0x0106u32]).i32(), 0);
+        let empty = map_entry(&mut e, 0, true);
+        map_add(&mut e, map, 0x0107, empty);
+        assert_eq!(e.call(0x0049_4300, &args![this, 0x0107u32]).i32(), 0);
+    }
+
+    // ---- GetMovement (00494390) ----------------------------------------------------------------
+
+    /// An animation with a root, slot 1 playing a group of type 5 with the given
+    /// speed, and an actor of the given kind.
+    fn movement_vector_fixture(kind: u32) -> (Engine, Ptr<Animation>, u32) {
+        let mut e = engine_two();
+        e.register(0x00f3_021c, |_, _| ret(0));
+        e.register(0x00f3_0214, |e, a| ret(e.mem.u32(a[0] + 0x10)));
+        let actor = object_with_vtable(&mut e, 0x40, &[(0x21c, 0x00f3_021c), (0x214, 0x00f3_0214)]);
+        e.mem.set_u32(actor + 0x10, kind);
+        let this: Ptr<Animation> = e.new_object();
+        let root = e.mem.alloc(0x80);
+        e.mem.set_u32(this.addr() + 8, root);
+        e.register(TIME_SCALE_GET, |_, _| 1.0f32.into_ret());
+        e.set(this, Animation::m_fGlobalTimeMultiplier, 1.0f32);
+        e.set(this, Animation::m_fMoveSpeed, 1.0f32);
+        e.set(this, Animation::pActorRef, Ptr::new(actor));
+        for (i, v) in [100.0f32, -100.0, 5.0].iter().enumerate() {
+            e.mem.set_f32(this.addr() + 0x10 + 4 * i as u32, *v);
+        }
+        let rotation = e.mem.alloc(0x40);
+        for i in 0..9 {
+            e.mem.set_u32(rotation + 4 * i, 0x100 + i);
+        }
+        e.register_double(NODE_ROTATION, move |_, _| ret(rotation));
+        let group = group_with_id(&mut e, 0x0105);
+        let sequence = sequence_with_group(&mut e, 1, group);
+        e.mem.set_u32(this.addr() + 0xe4, sequence);
+        e.register(GROUP_SPEED, |_, _| 2.0f32.into_ret());
+        e.register(REFERENCE_SCALE, |_, _| 2.0f32.into_ret());
+        e.register(ACTOR_FLAGS_ANY, |_, _| ret(1));
+        (e, this, actor)
+    }
+
+    #[test]
+    fn frame_movement_is_clamped_scaled_and_flattened() {
+        let (mut e, this, actor) = movement_vector_fixture(3);
+        let out = e.mem.alloc(12);
+        assert!(e
+            .call(0x0049_4390, &args![this, out, actor, 0u32, 0u32])
+            .bool());
+        // limit = scale 2 * (speed 2 * 1 * 1) = 4: x and y clamp to +-4, and the
+        // actor kind 3 divides x and y by the scale 2.
+        assert_eq!(
+            [e.mem.f32(out), e.mem.f32(out + 4), e.mem.f32(out + 8)],
+            [2.0, -2.0, 5.0]
+        );
+        // Flattened.
+        assert!(e
+            .call(0x0049_4390, &args![this, out, actor, 0u32, 1u32])
+            .bool());
+        assert_eq!(e.mem.f32(out + 8), 0.0);
+        // Another actor kind is not divided.
+        let (mut e, this, actor) = movement_vector_fixture(4);
+        let out = e.mem.alloc(12);
+        e.call(0x0049_4390, &args![this, out, actor, 0u32, 0u32]);
+        assert_eq!(e.mem.f32(out), 4.0);
+        assert_eq!(e.mem.f32(out + 4), -4.0);
+        // Without an animation root nothing is written.
+        e.mem.set_u32(this.addr() + 8, 0);
+        e.mem.set_f32(out, 9.0);
+        assert!(!e
+            .call(0x0049_4390, &args![this, out, actor, 0u32, 0u32])
+            .bool());
+        assert_eq!(e.mem.f32(out), 9.0);
+    }
+
+    #[test]
+    fn frame_movement_can_be_rotated_into_the_output() {
+        let (mut e, this, actor) = movement_vector_fixture(4);
+        let out = e.mem.alloc(12);
+        e.register(MATRIX_TRANSFORM_VERTICES, |e, a| {
+            // matrix, translate, count, in, out
+            assert_eq!(e.mem.u32(a[0] + 8), 0x102);
+            assert_eq!(e.mem.f32(a[1]), 0.0);
+            assert_eq!(a[2], 1);
+            for i in 0..3 {
+                let value = e.mem.f32(a[3] + 4 * i) + 1.0;
+                e.mem.set_f32(a[4] + 4 * i, value);
+            }
+            Ret::default()
+        });
+        assert!(e
+            .call(0x0049_4390, &args![this, out, actor, 1u32, 0u32])
+            .bool());
+        assert_eq!(
+            [e.mem.f32(out), e.mem.f32(out + 4), e.mem.f32(out + 8)],
+            [5.0, -3.0, 6.0]
+        );
+    }
+
+    // ---- PlayGroup, StartGroup ------------------------------------------------------------------
+
+    #[test]
+    fn play_group_queues_it_or_starts_it_by_the_category_of_its_type() {
+        let mut e = engine_two();
+        let this: Ptr<Animation> = e.new_object();
+        map_for(&mut e, this);
+        e.register(UPDATE_BIP_ONLY, |_, _| Ret::default());
+        e.set(this, Animation::time, 1.25f32);
+        // Type 5 plays in slot 2 and has category 1: queued by mode 0.
+        set_type(&mut e, 5, 2, 1);
+        start_log(&mut e);
+        let started = e
+            .call(0x0049_4740, &args![this, 5u32, 0i32, 7i32, -1i32])
+            .u32();
+        assert_eq!(started, 0);
+        assert_eq!(e.mem.u16(this.addr() + 0x9c + 4), 5);
+        assert_eq!(e.mem.i32(this.addr() + 0xac + 8), 7);
+        assert!(!called(&mut e).contains(&UPDATE_BIP_ONLY));
+        // Mode 1 starts it: no next group, the loop count is set and the biped
+        // is refreshed with the animation time.
+        start_log(&mut e);
+        e.call(0x0049_4740, &args![this, 5u32, 1i32, 3i32, -1i32]);
+        let log = end_log(&mut e);
+        assert_eq!(e.mem.u16(this.addr() + 0x9c + 4), 0xff);
+        assert_eq!(e.mem.i32(this.addr() + 0x7c + 8), 3);
+        assert_eq!(
+            arguments_of(&log, UPDATE_BIP_ONLY),
+            [[this.addr(), 1.25f32.to_bits(), 0, 1]]
+        );
+        // Any other mode does nothing for these categories.
+        start_log(&mut e);
+        e.call(0x0049_4740, &args![this, 5u32, 2i32, 3i32, -1i32]);
+        assert!(!called(&mut e).contains(&UPDATE_BIP_ONLY));
+    }
+
+    #[test]
+    fn play_group_always_starts_the_groups_of_the_higher_categories() {
+        let mut e = engine_two();
+        let this: Ptr<Animation> = e.new_object();
+        let map = map_for(&mut e, this);
+        e.register(UPDATE_BIP_ONLY, |_, _| Ret::default());
+        e.register(SPECIAL_IDLE_WORKING, |_, _| ret(0));
+        e.register(IS_IN_MENU_MODE, |_, _| ret(0));
+        // Type 6: slot 3, category 4. The slot already plays the sequence, so
+        // StartGroup_ov2 returns it right away.
+        set_type(&mut e, 6, 3, 4);
+        let group = group_with_id(&mut e, 0x0006);
+        let sequence = sequence_with_group(&mut e, 1, group);
+        let entry = map_entry(&mut e, sequence, true);
+        map_add(&mut e, map, 6, entry);
+        e.mem.set_u32(this.addr() + 0xe0 + 12, sequence);
+        start_log(&mut e);
+        let started = e
+            .call(0x0049_4740, &args![this, 6u32, 0i32, 3i32, -1i32])
+            .u32();
+        let log = end_log(&mut e);
+        assert_eq!(started, sequence);
+        assert_eq!(arguments_of(&log, UPDATE_BIP_ONLY).len(), 1);
+        // The group 0xff (type 0xff) does nothing and returns 0.
+        start_log(&mut e);
+        assert_eq!(
+            e.call(0x0049_4740, &args![this, 0xffu32, 1i32, 3i32, -1i32])
+                .u32(),
+            0
+        );
+        assert_eq!(called(&mut e), [GROUP_ID_TYPE]);
+        // The slot numbers 0x14 and 0x15 index the arrays as slots 1 and 4.
+        set_type(&mut e, 5, 2, 1);
+        e.call(0x0049_4740, &args![this, 5u32, 0i32, 9i32, 0x14i32]);
+        e.call(0x0049_4740, &args![this, 5u32, 0i32, 8i32, 0x15i32]);
+        assert_eq!(e.mem.u16(this.addr() + 0x9c + 2), 5);
+        assert_eq!(e.mem.i32(this.addr() + 0xac + 4), 9);
+        assert_eq!(e.mem.i32(this.addr() + 0xac + 16), 8);
+    }
+
+    #[test]
+    fn start_group_takes_the_sequence_of_the_entry() {
+        let mut e = engine_two();
+        let this: Ptr<Animation> = e.new_object();
+        let map = map_for(&mut e, this);
+        e.register(SPECIAL_IDLE_WORKING, |_, _| ret(1));
+        set_type(&mut e, 5, 2, 1);
+        let sequence = sequence_with_group(&mut e, 0, 0);
+        let entry = map_entry(&mut e, sequence, true);
+        map_add(&mut e, map, 5, entry);
+        // Unknown and 0xff groups stop before anything is asked of the entry.
+        start_log(&mut e);
+        assert_eq!(e.call(0x0049_48c0, &args![this, 0xffu32, -1i32]).u32(), 0);
+        assert_eq!(e.call(0x0049_48c0, &args![this, 9u32, -1i32]).u32(), 0);
+        assert!(!called(&mut e).contains(&SPECIAL_IDLE_WORKING));
+        // The known group hands its sequence on with the group and the slot.
+        start_log(&mut e);
+        e.call(0x0049_48c0, &args![this, 5u32, 4i32]);
+        let log = end_log(&mut e);
+        assert_eq!(
+            arguments_of(&log, SPECIAL_IDLE_WORKING),
+            [[this.addr(), sequence]]
+        );
+    }
+
+    #[test]
+    fn start_group_asks_the_corresponding_sequence_for_slots_five_and_six() {
+        let mut e = engine_two();
+        register_string_functions(&mut e);
+        let this: Ptr<Animation> = e.new_object();
+        let map = map_for(&mut e, this);
+        e.register(SPECIAL_IDLE_WORKING, |_, _| ret(1));
+        // The multiple entry holds a list with "dir\\same.kf"; slot 4 plays a
+        // sequence of that name.
+        let wanted = named_object(&mut e, "dir\\same.kf");
+        let other = named_object(&mut e, "dir\\other.kf");
+        let list = make_list(&mut e, &[other, wanted]);
+        e.register(LIST_HEAD, |e, a| ret(e.mem.u32(a[0])));
+        let playing = named_object(&mut e, "dir\\same.kf");
+        e.mem.set_u32(this.addr() + 0xe0 + 16, playing);
+        e.register(0x00f1_000c, |e, a| ret(e.mem.u32(a[0] + 8)));
+        let entry = object_with_vtable(&mut e, 0x10, &[(0xc, 0x00f1_000c)]);
+        e.mem.set_u32(entry + 4, list);
+        map_add(&mut e, map, 5, entry);
+        start_log(&mut e);
+        e.call(0x0049_48c0, &args![this, 5u32, 5i32]);
+        let log = end_log(&mut e);
+        assert_eq!(
+            arguments_of(&log, SPECIAL_IDLE_WORKING),
+            [[this.addr(), wanted]]
+        );
+    }
+
+    // ---- StartGroup_ov2 --------------------------------------------------------------------------
+
+    /// Everything `StartGroup_ov2` touches with plain doubles: a group of type 1
+    /// (slot 1, category 0), the sequence to start, an animation with a manager,
+    /// and the float settings.
+    struct StartFixture {
+        e: Engine,
+        this: Ptr<Animation>,
+        manager: u32,
+        sequence: u32,
+        group: u32,
+    }
+
+    fn start_fixture() -> StartFixture {
+        let mut e = engine_two();
+        e.register(SPECIAL_IDLE_WORKING, |_, _| ret(0));
+        e.register(IS_IN_MENU_MODE, |_, _| ret(0));
+        e.register(IS_IN_PIPBOY_MENU, |_, _| ret(0));
+        e.register(IS_MENU_ID_VISIBLE, |_, _| ret(0));
+        e.register(PLAYER_NODE, |_, _| ret(0x4400));
+        e.register(PLAYER_GET_ANIMATION, |_, _| ret(0));
+        e.register(PIPBOY_QUERY, |_, _| ret(0));
+        e.register(CLEAR_GROUP, |_, _| Ret::default());
+        e.register(TES_CHECK, |_, _| ret(0));
+        e.register(MANAGER_ACTIVATE, |_, _| ret(1));
+        e.register(MANAGER_BLEND_IN, |_, _| ret(1));
+        e.register(MANAGER_CROSS_FADE, |_, _| ret(1));
+        e.register(MANAGER_MORPH_FADE, |_, _| Ret::default());
+        e.register(MANAGER_DEACTIVATE, |_, _| Ret::default());
+        e.register(SEQUENCE_SET_PHASE, |_, _| Ret::default());
+        e.register(GROUP_BYTE_28, |e, a| ret(e.mem.u8(a[0] + 0x28) as u32));
+        e.register(SEQUENCE_MORPH_COMPATIBLE, |_, _| ret(1));
+        e.register(LOG, |_, _| Ret::default());
+        e.register(GROUP_ID_IS_AIM, |_, _| ret(0));
+        e.register(GROUP_ID_IS_ATTACK, |_, _| ret(0));
+        e.register(GROUP_MOVE_TYPE, |e, a| ret(e.mem.u32(a[0] + 0x60)));
+        let settings = e.mem.alloc(16);
+        e.mem.set_f32(settings, 0.25);
+        e.mem.set_f32(settings + 4, 0.75);
+        e.mem.set_f32(settings + 8, 1.0);
+        e.register_double(SETTING_FLOAT_ADDRESS, move |_, a| {
+            ret(match a[0] {
+                SETTING_BLEND_TIME => settings,
+                SETTING_BLEND_TIME_MENU => settings + 4,
+                SETTING_MOVEMENT_SCALE => settings + 8,
+                other => panic!("setting {other:08x}"),
+            })
+        });
+        set_type(&mut e, 1, 1, 0);
+        let this: Ptr<Animation> = e.new_object();
+        let manager = e.mem.alloc(0x80);
+        e.mem.set_u32(this.addr() + 0xd8, manager);
+        let root = e.mem.alloc(0x80);
+        e.mem.set_u32(this.addr() + 8, root);
+        let group = group_with_id(&mut e, 1);
+        let sequence = sequence_with_group(&mut e, 0, group);
+        e.mem.set_u32(sequence + 0xc, 3);
+        e.mem.set_f32(sequence + 0x1c, 1.0);
+        StartFixture {
+            e,
+            this,
+            manager,
+            sequence,
+            group,
+        }
+    }
+
+    impl StartFixture {
+        fn start(&mut self) -> u32 {
+            let (this, sequence) = (self.this, self.sequence);
+            self.e
+                .call(0x0049_49a0, &args![this, sequence, 1u32, -1i32])
+                .u32()
+        }
+    }
+
+    #[test]
+    fn starting_a_group_blends_in_the_sequence_when_the_slot_is_empty() {
+        let mut f = start_fixture();
+        start_log(&mut f.e);
+        let result = f.start();
+        let log = end_log(&mut f.e);
+        assert_eq!(result, f.sequence);
+        assert_eq!(f.e.mem.u16(f.this.addr() + 0x4c + 2), 1);
+        assert_eq!(f.e.mem.u32(f.this.addr() + 0xe0 + 4), f.sequence);
+        assert_eq!(f.e.mem.i32(f.this.addr() + 0x5c + 4), 0);
+        assert_eq!(
+            arguments_of(&log, SEQUENCE_SET_PHASE),
+            [[f.sequence, 0.0f32.to_bits(), 0]]
+        );
+        // The blend time is the setting, divided by the movement scale.
+        assert_eq!(
+            arguments_of(&log, MANAGER_BLEND_IN),
+            [[
+                f.manager,
+                f.sequence,
+                0.0f32.to_bits(),
+                0.25f32.to_bits(),
+                0,
+                0
+            ]]
+        );
+        assert!(arguments_of(&log, MANAGER_ACTIVATE).is_empty());
+    }
+
+    #[test]
+    fn starting_a_group_gives_up_for_a_working_special_idle_or_a_null_sequence() {
+        let mut f = start_fixture();
+        f.e.register(SPECIAL_IDLE_WORKING, |_, _| ret(1));
+        start_log(&mut f.e);
+        assert_eq!(f.start(), 0);
+        assert_eq!(called(&mut f.e), [SPECIAL_IDLE_WORKING]);
+        f.e.register(SPECIAL_IDLE_WORKING, |_, _| ret(0));
+        let this = f.this;
+        assert_eq!(
+            f.e.call(0x0049_49a0, &args![this, 0u32, 1u32, -1i32]).u32(),
+            0
+        );
+        assert_eq!(
+            f.e.call(0x0049_49a0, &args![this, f.sequence, 0xffu32, -1i32])
+                .u32(),
+            0
+        );
+        assert_eq!(f.e.mem.u32(f.this.addr() + 0xe0 + 4), 0);
+    }
+
+    #[test]
+    fn restarting_the_playing_sequence_only_resets_the_action() {
+        let mut f = start_fixture();
+        f.e.mem.set_u32(f.sequence + 0x44, 1);
+        f.e.mem.set_u32(f.this.addr() + 0xe0 + 4, f.sequence);
+        f.e.mem.set_i32(f.this.addr() + 0x5c + 4, 2);
+        start_log(&mut f.e);
+        assert_eq!(f.start(), f.sequence);
+        let log = end_log(&mut f.e);
+        assert_eq!(f.e.mem.i32(f.this.addr() + 0x5c + 4), 0);
+        assert_eq!(f.e.mem.f32(f.sequence + 0x48), -f32::MAX);
+        assert!(arguments_of(&log, MANAGER_BLEND_IN).is_empty());
+        assert!(arguments_of(&log, MANAGER_ACTIVATE).is_empty());
+    }
+
+    #[test]
+    fn starting_a_group_cross_fades_from_the_animating_sequence_and_deactivates_it() {
+        let mut f = start_fixture();
+        let old_group = group_with_id(&mut f.e, 1);
+        let old = sequence_with_group(&mut f.e, 1, old_group);
+        f.e.mem.set_u32(f.this.addr() + 0xe0 + 4, old);
+        f.e.mem.set_u16(f.this.addr() + 0x4c + 2, 1);
+        // The old group has 9 blend frames: 9 / 30 = 0.3 seconds.
+        f.e.mem.set_u8(old_group + 0x29, 9);
+        start_log(&mut f.e);
+        assert_eq!(f.start(), f.sequence);
+        let log = end_log(&mut f.e);
+        assert_eq!(
+            arguments_of(&log, MANAGER_CROSS_FADE),
+            [[
+                f.manager,
+                old,
+                f.sequence,
+                0.3f32.to_bits(),
+                0,
+                1,
+                1.0f32.to_bits(),
+                0
+            ]]
+        );
+        assert_eq!(
+            arguments_of(&log, MANAGER_DEACTIVATE),
+            [[f.manager, old, 0.0f32.to_bits()]]
+        );
+        assert!(arguments_of(&log, MANAGER_BLEND_IN).is_empty());
+    }
+
+    #[test]
+    fn starting_a_group_clears_a_slot_whose_sequence_is_not_the_one_asked_for() {
+        // The old sequence is animating but the slot asked for is not the slot
+        // used (group 0x14 stands for slot 1): the requested slot is cleared.
+        let mut f = start_fixture();
+        let old_group = group_with_id(&mut f.e, 1);
+        let old = sequence_with_group(&mut f.e, 1, old_group);
+        f.e.mem.set_u32(f.this.addr() + 0xe0 + 4, old);
+        let this = f.this;
+        start_log(&mut f.e);
+        f.e.call(0x0049_49a0, &args![this, f.sequence, 1u32, 0x14i32]);
+        let log = end_log(&mut f.e);
+        assert_eq!(
+            arguments_of(&log, CLEAR_GROUP),
+            [[this.addr(), 0x14, 0.0f32.to_bits()]]
+        );
+        // A non-player's first slot is not replaced while the old sequence is
+        // in any other state than 0 or 1.
+        let mut f = start_fixture();
+        let old_group = group_with_id(&mut f.e, 1);
+        let old = sequence_with_group(&mut f.e, 2, old_group);
+        f.e.mem.set_u32(f.this.addr() + 0xe0 + 4, old);
+        f.e.mem.set_u32(f.this.addr() + 4, ACTOR);
+        assert_eq!(f.start(), 0);
+        assert_eq!(f.e.mem.u32(f.this.addr() + 0xe0 + 4), old);
+    }
+
+    #[test]
+    fn starting_a_group_morphs_between_sequences_with_equal_tags() {
+        let mut f = start_fixture();
+        let old_group = group_with_id(&mut f.e, 1);
+        let old = sequence_with_group(&mut f.e, 1, old_group);
+        f.e.mem.set_u32(f.this.addr() + 0xe0 + 4, old);
+        f.e.mem.set_u8(old_group + 0x28, 7);
+        f.e.mem.set_u8(f.group + 0x28, 7);
+        f.e.mem.set_u32(old + 0xc, 3);
+        f.e.mem.set_f32(old + 0x1c, 0.5);
+        f.e.mem.set_u8(old_group + 0x29, 9);
+        start_log(&mut f.e);
+        assert_eq!(f.start(), f.sequence);
+        let log = end_log(&mut f.e);
+        assert_eq!(
+            arguments_of(&log, MANAGER_MORPH_FADE),
+            [[
+                f.manager,
+                old,
+                f.sequence,
+                0.3f32.to_bits(),
+                0,
+                0.5f32.to_bits(),
+                1.0f32.to_bits()
+            ]]
+        );
+        assert!(arguments_of(&log, MANAGER_CROSS_FADE).is_empty());
+    }
+
+    #[test]
+    fn starting_a_group_reports_why_a_morph_is_refused() {
+        // Different controller counts.
+        let mut f = start_fixture();
+        let old_group = group_with_id(&mut f.e, 1);
+        let old = sequence_with_group(&mut f.e, 1, old_group);
+        f.e.mem.set_u32(f.this.addr() + 0xe0 + 4, old);
+        f.e.mem.set_u8(old_group + 0x28, 7);
+        f.e.mem.set_u8(f.group + 0x28, 7);
+        f.e.mem.set_u32(old + 0xc, 2);
+        let root = f.e.mem.u32(f.this.addr() + 8);
+        for (object, name) in [(root, "Root"), (old, "old.kf"), (f.sequence, "new.kf")] {
+            let text = cstring(&mut f.e, name);
+            f.e.mem.set_u32(object + 8, text);
+        }
+        let (root_name, old_name, new_name) = (
+            f.e.mem.u32(root + 8),
+            f.e.mem.u32(old + 8),
+            f.e.mem.u32(f.sequence + 8),
+        );
+        start_log(&mut f.e);
+        f.start();
+        let log = end_log(&mut f.e);
+        assert_eq!(
+            arguments_of(&log, LOG),
+            [[LOG_MORPH_CONTROLLERS, old_name, 2, new_name, 3, root_name]]
+        );
+        // Equal counts but different tags.
+        let mut f = start_fixture();
+        let old_group = group_with_id(&mut f.e, 1);
+        let old = sequence_with_group(&mut f.e, 1, old_group);
+        f.e.mem.set_u32(f.this.addr() + 0xe0 + 4, old);
+        f.e.mem.set_u8(old_group + 0x28, 7);
+        f.e.mem.set_u8(f.group + 0x28, 7);
+        f.e.mem.set_u32(old + 0xc, 3);
+        f.e.register(SEQUENCE_MORPH_COMPATIBLE, |_, _| ret(0));
+        let root = f.e.mem.u32(f.this.addr() + 8);
+        for (object, name) in [(root, "Root"), (old, "old.kf"), (f.sequence, "new.kf")] {
+            let text = cstring(&mut f.e, name);
+            f.e.mem.set_u32(object + 8, text);
+        }
+        let (root_name, old_name, new_name) = (
+            f.e.mem.u32(root + 8),
+            f.e.mem.u32(old + 8),
+            f.e.mem.u32(f.sequence + 8),
+        );
+        start_log(&mut f.e);
+        f.start();
+        let log = end_log(&mut f.e);
+        assert_eq!(
+            arguments_of(&log, LOG),
+            [[LOG_MORPH_TAGS, old_name, new_name, root_name]]
+        );
+        assert!(arguments_of(&log, MANAGER_MORPH_FADE).is_empty());
+    }
+
+    #[test]
+    fn starting_a_weapon_slot_group_sets_the_sequence_weight() {
+        // Type 2 plays in slot 5: the weight of an unheld sequence is 0, and
+        // a new sequence in an empty slot 5 activates through the manager.
+        let mut f = start_fixture();
+        set_type(&mut f.e, 2, 5, 0);
+        f.e.mem.set_u32(f.this.addr() + 4, ACTOR);
+        let this = f.this;
+        start_log(&mut f.e);
+        f.e.call(0x0049_49a0, &args![this, f.sequence, 2u32, -1i32]);
+        let log = end_log(&mut f.e);
+        assert_eq!(f.e.mem.f32(f.sequence + 0x1c), 0.0);
+        assert_eq!(
+            arguments_of(&log, MANAGER_ACTIVATE),
+            [[
+                f.manager,
+                f.sequence,
+                0,
+                1,
+                0.0f32.to_bits(),
+                0.25f32.to_bits(),
+                0
+            ]]
+        );
+        // The player's own animation gives slot 4 weight 1 and slot 5 weight 0.
+        let mut f = start_fixture();
+        set_type(&mut f.e, 2, 4, 0);
+        f.e.mem.set_u32(f.this.addr() + 4, PLAYER);
+        let this = f.this;
+        f.e.register_double(PLAYER_GET_ANIMATION, move |_, _| ret(this.addr()));
+        f.e.mem.set_f32(f.sequence + 0x1c, 0.5);
+        f.e.call(0x0049_49a0, &args![this, f.sequence, 2u32, -1i32]);
+        assert_eq!(f.e.mem.f32(f.sequence + 0x1c), 1.0);
+    }
+
+    // ---- ForceSection, SyncSequences ---------------------------------------------------------------
+
+    #[test]
+    fn force_section_with_no_action_clears_the_slot_and_activates_the_sequence() {
+        let mut e = engine_two();
+        let this: Ptr<Animation> = e.new_object();
+        let map = map_for(&mut e, this);
+        let manager = e.mem.alloc(0x80);
+        e.mem.set_u32(this.addr() + 0xd8, manager);
+        e.register(CLEAR_GROUP, |_, _| Ret::default());
+        e.register(MANAGER_ACTIVATE, |_, _| ret(1));
+        // The entry hands the sequence for selector 3 out of its +4.
+        let sequence = e.mem.alloc(0x80);
+        let entry = map_entry(&mut e, sequence, true);
+        map_add(&mut e, map, 0x0105, entry);
+        start_log(&mut e);
+        e.call(
+            0x0049_55c0,
+            &args![this, 0x15i32, 0x0105u32, -1i32, 0.75f32, 3u32],
+        );
+        let log = end_log(&mut e);
+        // Slot 0x15 is slot 4 of the arrays, ClearGroup keeps the original.
+        assert_eq!(e.mem.u32(this.addr() + 0xe0 + 16), sequence);
+        assert_eq!(e.mem.u16(this.addr() + 0x4c + 8), 0x0105);
+        assert_eq!(e.mem.f32(this.addr() + 0xd0), 0.75);
+        assert_eq!(
+            arguments_of(&log, CLEAR_GROUP),
+            [[this.addr(), 0x15, 0.0f32.to_bits()]]
+        );
+        assert_eq!(
+            arguments_of(&log, MANAGER_ACTIVATE),
+            [[
+                manager,
+                sequence,
+                0,
+                0,
+                1.0f32.to_bits(),
+                0.0f32.to_bits(),
+                0
+            ]]
+        );
+        // The group 0xff and unknown groups stop after clearing.
+        start_log(&mut e);
+        e.call(
+            0x0049_55c0,
+            &args![this, 2i32, 0xffu32, -1i32, 0.5f32, 0u32],
+        );
+        let log = end_log(&mut e);
+        assert!(arguments_of(&log, MANAGER_ACTIVATE).is_empty());
+        assert_eq!(e.mem.u16(this.addr() + 0x4c + 4), 0xff);
+    }
+
+    #[test]
+    fn force_section_with_an_action_starts_a_loaded_group() {
+        let mut e = engine_two();
+        let this: Ptr<Animation> = e.new_object();
+        let map = map_for(&mut e, this);
+        e.register(SPECIAL_IDLE_WORKING, |_, _| ret(1));
+        let sequence = e.mem.alloc(0x80);
+        let entry = map_entry(&mut e, sequence, true);
+        map_add(&mut e, map, 0x0105, entry);
+        start_log(&mut e);
+        e.call(
+            0x0049_55c0,
+            &args![this, 0x14i32, 0x0105u32, 2i32, 1.5f32, 0u32],
+        );
+        let log = end_log(&mut e);
+        // StartGroup_ov2 got the entry's sequence, the group and the slot.
+        assert_eq!(
+            arguments_of(&log, SPECIAL_IDLE_WORKING),
+            [[this.addr(), sequence]]
+        );
+        assert_eq!(e.mem.i32(this.addr() + 0x5c + 4), 2);
+        assert_eq!(e.mem.u16(this.addr() + 0x4c + 2), 0x0105);
+        // A group that is not loaded only stores the group and the time.
+        start_log(&mut e);
+        e.call(
+            0x0049_55c0,
+            &args![this, 0x15i32, 0x0777u32, 5i32, 3.0f32, 0u32],
+        );
+        assert!(!called(&mut e).contains(&SPECIAL_IDLE_WORKING));
+        assert_eq!(e.mem.i32(this.addr() + 0x5c + 16), 0);
+        assert_eq!(e.mem.u16(this.addr() + 0x4c + 8), 0x0777);
+        assert_eq!(e.mem.f32(this.addr() + 0xd0), 3.0);
+    }
+
+    #[test]
+    fn sync_sequences_starts_the_corresponding_sequence() {
+        let mut e = engine_two();
+        register_string_functions(&mut e);
+        let this: Ptr<Animation> = e.new_object();
+        let map = map_for(&mut e, this);
+        e.register(SPECIAL_IDLE_WORKING, |_, _| ret(1));
+        let wanted = named_object(&mut e, "dir\\same.kf");
+        let list = make_list(&mut e, &[wanted]);
+        e.register(LIST_HEAD, |e, a| ret(e.mem.u32(a[0])));
+        let given = named_object(&mut e, "dir\\same.kf");
+        e.register(0x00f1_000c, |e, a| ret(e.mem.u32(a[0] + 8)));
+        let several = object_with_vtable(&mut e, 0x10, &[(0xc, 0x00f1_000c)]);
+        e.mem.set_u32(several + 4, list);
+        map_add(&mut e, map, 0x0105, several);
+        let single = map_entry(&mut e, 0, true);
+        map_add(&mut e, map, 0x0106, single);
+        start_log(&mut e);
+        e.call(0x0049_5da0, &args![this, given, 0x0105u32]);
+        let log = end_log(&mut e);
+        assert_eq!(
+            arguments_of(&log, SPECIAL_IDLE_WORKING),
+            [[this.addr(), wanted]]
+        );
+        // 0xff, unknown groups and single-sequence entries give nothing.
+        for group in [0xffu32, 0x0999, 0x0106] {
+            assert_eq!(e.call(0x0049_5da0, &args![this, given, group]).u32(), 0);
+        }
+        // A name without a match gives nothing either.
+        let stranger = named_object(&mut e, "dir\\elsewhere.kf");
+        assert_eq!(
+            e.call(0x0049_5da0, &args![this, stranger, 0x0105u32]).u32(),
+            0
+        );
+    }
+
+    // ---- PickBestAnimation -----------------------------------------------------------------------------
+
+    /// An animation whose map has playable entries for `keys`; the weapon and
+    /// iron-sights group tests are doubles.
+    fn pick_fixture(keys: &[u32]) -> (Engine, Ptr<Animation>) {
+        let mut e = engine_two();
+        let this: Ptr<Animation> = e.new_object();
+        let map = map_for(&mut e, this);
+        for key in keys {
+            let sequence = e.mem.alloc(0x10);
+            let entry = map_entry(&mut e, sequence, true);
+            map_add(&mut e, map, *key, entry);
+        }
+        e.register(GROUP_ID_WEAPON, |_, a| ret((a[0] & 0xf00) >> 8));
+        e.register(GROUP_ID_IS_IRON_SIGHTS, |_, a| {
+            ret((a[0] & 0xf000 == 0xa000) as u32)
+        });
+        (e, this)
+    }
+
+    fn pick(e: &mut Engine, this: Ptr<Animation>, group: u32, flag: u32) -> u32 {
+        e.call(0x0049_5740, &args![this, group, flag]).u32() & 0xffff
+    }
+
+    #[test]
+    fn a_group_in_the_map_is_its_own_best_animation() {
+        let (mut e, this) = pick_fixture(&[0x0105]);
+        assert_eq!(pick(&mut e, this, 0x0105, 0), 0x0105);
+        // An entry without a sequence does not count.
+        let (mut e, this) = pick_fixture(&[]);
+        let map = e.mem.u32(this.addr() + 0xdc);
+        let empty = map_entry(&mut e, 0, true);
+        map_add(&mut e, map, 0x0105, empty);
+        assert_eq!(pick(&mut e, this, 0x0105, 0), 0);
+    }
+
+    #[test]
+    fn the_weapon_variants_of_a_group_are_tried_in_order() {
+        // Weapon 3 asks for the variant with weapon 2 first, then the base.
+        let (mut e, this) = pick_fixture(&[0x0205]);
+        assert_eq!(pick(&mut e, this, 0x0305, 0), 0x0205);
+        let (mut e, this) = pick_fixture(&[0x0005]);
+        assert_eq!(pick(&mut e, this, 0x0305, 0), 0x0005);
+        // Weapon 1 asks for the variant with weapon 4.
+        let (mut e, this) = pick_fixture(&[0x0405, 0x0005]);
+        assert_eq!(pick(&mut e, this, 0x0105, 0), 0x0405);
+        // Weapons 2 and 4 go straight to the base.
+        let (mut e, this) = pick_fixture(&[0x0005, 0x0205]);
+        assert_eq!(pick(&mut e, this, 0x0405, 0), 0x0005);
+        let (mut e, this) = pick_fixture(&[0x0005, 0x0405]);
+        assert_eq!(pick(&mut e, this, 0x0205, 0), 0x0005);
+    }
+
+    #[test]
+    fn the_high_bit_group_falls_back_to_the_group_without_it() {
+        let (mut e, this) = pick_fixture(&[0x0105]);
+        assert_eq!(pick(&mut e, this, 0x8105, 0), 0x0105);
+        // Another low byte answer is not taken.
+        let (mut e, this) = pick_fixture(&[0x0106]);
+        assert_eq!(pick(&mut e, this, 0x8105, 0), 0);
+    }
+
+    #[test]
+    fn an_iron_sights_group_falls_back_to_the_group_three_lower() {
+        let (mut e, this) = pick_fixture(&[0xa105]);
+        // 0xa108 is an iron-sights action (double); 0xa105 is playable.
+        assert_eq!(pick(&mut e, this, 0xa108, 1), 0xa105);
+    }
+
+    #[test]
+    fn substitute_groups_for_the_movement_types() {
+        // Type 7 stands for type 3 (with the same high bits).
+        let (mut e, this) = pick_fixture(&[0x0003]);
+        assert_eq!(pick(&mut e, this, 0x0007, 0), 0x0003);
+        let (mut e, this) = pick_fixture(&[0x0204]);
+        assert_eq!(pick(&mut e, this, 0x0208, 0), 0x0204);
+    }
+
+    #[test]
+    fn the_last_resorts_depend_on_the_flag() {
+        // With the flag set there is nothing after the substitutes.
+        let (mut e, this) = pick_fixture(&[0x0100]);
+        assert_eq!(pick(&mut e, this, 0x0105, 1), 0);
+        // Without it the group with only its high byte is tried.
+        assert_eq!(pick(&mut e, this, 0x0105, 0), 0x0100);
+        // A zero low byte gives up.
+        let (mut e, this) = pick_fixture(&[]);
+        assert_eq!(pick(&mut e, this, 0x0100, 0), 0);
+        assert_eq!(pick(&mut e, this, 0, 0), 0);
+        // Slot-5/6 types give 0 as soon as the map misses.
+        let (mut e, this) = pick_fixture(&[0x0100]);
+        set_type(&mut e, 5, 5, 0);
+        assert_eq!(pick(&mut e, this, 0x0105, 0), 0);
+    }
+
+    #[test]
+    fn the_players_animation_tries_the_group_without_the_upper_bits() {
+        let (mut e, this) = pick_fixture(&[0x0105]);
+        set_type(&mut e, 5, 4, 0);
+        e.mem.set_u32(this.addr() + 4, PLAYER);
+        e.register_double(PLAYER_GET_ANIMATION, move |_, _| ret(this.addr()));
+        assert_eq!(pick(&mut e, this, 0x1105, 1), 0x0105);
+    }
+
+    // ---- ShouldBeMoving -----------------------------------------------------------------------------------
+
+    #[test]
+    fn the_sequence_in_slot_one_is_moving_when_it_wins_the_priority() {
+        let mut e = engine_two();
+        e.register(SEQUENCE_PRIORITY, |e, a| ret(e.mem.u8(a[0] + 0x70) as u32));
+        let this: Ptr<Animation> = e.new_object();
+        let bone = named_object(&mut e, "Bip01 Spine");
+        let first = e.mem.alloc(0x80);
+        let second = e.mem.alloc(0x80);
+        e.mem.set_u32(this.addr() + 0xe0 + 4, first);
+        e.mem.set_u32(this.addr() + 0xe0, second);
+        e.mem.set_u32(this.addr() + 0x28 + 4, bone);
+        e.mem.set_u16(this.addr() + 0x4e, 0x0005);
+        e.mem.set_u8(first + 0x70, 40);
+        e.mem.set_u8(second + 0x70, 40);
+        // A tie goes to slot 1.
+        assert!(e.call(0x0049_5be0, &args![this]).bool());
+        e.mem.set_u8(second + 0x70, 50);
+        assert!(!e.call(0x0049_5be0, &args![this]).bool());
+        // Types outside 3..14 never move.
+        e.mem.set_u8(second + 0x70, 10);
+        e.mem.set_u16(this.addr() + 0x4e, 0x0002);
+        assert!(!e.call(0x0049_5be0, &args![this]).bool());
+        e.mem.set_u16(this.addr() + 0x4e, 0x000f);
+        assert!(!e.call(0x0049_5be0, &args![this]).bool());
+        // No bone or no sequence in slot 1.
+        e.mem.set_u16(this.addr() + 0x4e, 0x0005);
+        e.mem.set_u32(this.addr() + 0x28 + 4, 0);
+        assert!(!e.call(0x0049_5be0, &args![this]).bool());
+        e.mem.set_u32(this.addr() + 0x28 + 4, bone);
+        e.mem.set_u32(this.addr() + 0xe0 + 4, 0);
+        assert!(!e.call(0x0049_5be0, &args![this]).bool());
+    }
+
+    // ---- Update ---------------------------------------------------------------------------------------
+
+    /// An animation ready for `Update`: no queued models, empty slots (group
+    /// 0xff, no sequences), no pending reload, and doubles for the list pieces.
+    fn update_fixture() -> (Engine, Ptr<Animation>) {
+        let mut e = engine_two();
+        e.register(TIME_SCALE_GET, |_, _| 1.0f32.into_ret());
+        e.register(MODEL_QUEUE_NOT_EMPTY, |e, a| {
+            ret(!(e.mem.u32(a[0] + 0x104) == 0 && e.mem.u32(a[0] + 0x108) == 0) as u32)
+        });
+        e.register(ACTOR_FLAGS_ANY, |_, _| ret(0));
+        e.register(NODE_FLAG_CHECK, |_, _| ret(0));
+        // The first list pieces; the removal double works on the embedded head.
+        make_simple_list(&mut e, &[]);
+        e.register(SIMPLE_LIST_REMOVE_ITEM, |e, a| {
+            let item = e.mem.u32(a[1]);
+            let head = a[0];
+            if e.mem.u32(head) == item {
+                let next = e.mem.u32(head + 4);
+                if next == 0 {
+                    e.mem.set_u32(head, 0);
+                } else {
+                    let (next_item, after) = (e.mem.u32(next), e.mem.u32(next + 4));
+                    e.mem.set_u32(head, next_item);
+                    e.mem.set_u32(head + 4, after);
+                }
+            } else {
+                let mut previous = head;
+                loop {
+                    let node = e.mem.u32(previous + 4);
+                    if node == 0 {
+                        break;
+                    }
+                    if e.mem.u32(node) == item {
+                        let after = e.mem.u32(node + 4);
+                        e.mem.set_u32(previous + 4, after);
+                        break;
+                    }
+                    previous = node;
+                }
+            }
+            Ret::default()
+        });
+        let this: Ptr<Animation> = e.new_object();
+        e.set(this, Animation::m_fGlobalTimeMultiplier, 1.0f32);
+        e.mem
+            .set_u16(this.addr() + Animation::sQueuedReloadGroup.off, 0xff);
+        e.mem.set_u8(this.addr() + Animation::cSkipUpdate.off, 0xff);
+        for slot in 0..8 {
+            e.mem.set_u16(this.addr() + 0x4c + 2 * slot, 0xff);
+            e.mem.set_u16(this.addr() + 0x9c + 2 * slot, 0xff);
+        }
+        (e, this)
+    }
+
+    /// Fills the `BSSimpleList` whose head node is at `head` with `items`.
+    fn fill_list(e: &mut Engine, head: u32, items: &[u32]) {
+        let mut node = head;
+        for (i, item) in items.iter().enumerate() {
+            e.mem.set_u32(node, *item);
+            if i + 1 < items.len() {
+                let next = e.mem.alloc(8);
+                e.mem.set_u32(node + 4, next);
+                node = next;
+            }
+        }
+    }
+
+    fn update(e: &mut Engine, this: Ptr<Animation>, actor: u32, delta: f32, time_override: f32) {
+        e.call(0x0049_1180, &args![this, actor, delta, time_override]);
+    }
+
+    #[test]
+    fn update_adds_the_queued_models_up_to_the_setting_limit() {
+        let (mut e, this) = update_fixture();
+        let models = [e.mem.alloc(0x20), e.mem.alloc(0x20), e.mem.alloc(0x20)];
+        fill_list(&mut e, this.addr() + 0x104, &models);
+        let limit = e.mem.alloc(4);
+        e.mem.set_u32(limit, 2);
+        e.register_double(SETTING_VALUE_ADDRESS, move |_, a| {
+            assert_eq!(a[0], SETTING_CLONING);
+            ret(limit)
+        });
+        // The models have no animation group, so adding one does nothing.
+        e.register(KF_MODEL_ANIM_GROUP, |_, _| ret(0));
+        e.register(KF_MODEL_RELEASE, |_, _| Ret::default());
+        start_log(&mut e);
+        update(&mut e, this, 0, 0.1, -1.0);
+        let log = end_log(&mut e);
+        assert_eq!(
+            arguments_of(&log, KF_MODEL_RELEASE),
+            [[models[0]], [models[1]]]
+        );
+        assert_eq!(e.global::<u32>(QUEUED_MODEL_COUNTER), 2);
+        // The third model is still queued, and nothing else happened.
+        assert_eq!(e.mem.u32(this.addr() + 0x104), models[2]);
+        assert_eq!(e.mem.u32(this.addr() + 0x108), 0);
+    }
+
+    #[test]
+    fn update_plays_the_queued_reload_group_when_the_weapon_is_drawn() {
+        let (mut e, this) = update_fixture();
+        let vtable = e.mem.u32(PLAYER);
+        e.register(0x00f4_04b0, |_, _| Ret::default());
+        e.mem.set_u32(vtable + 0x4b0, 0x00f4_04b0);
+        e.mem.set_u16(this.addr() + 0x122, 0x01ff);
+        e.mem.set_i32(this.addr() + 0x6c, 1);
+        e.set(this, Animation::pActorRef, Ptr::new(ACTOR));
+        e.register(ACTOR_IS_WEAPON_DRAWN, |_, _| ret(1));
+        e.register(ACTOR_SET_ANIM_ACTION, |_, _| Ret::default());
+        start_log(&mut e);
+        update(&mut e, this, PLAYER, 0.1, -1.0);
+        let log = end_log(&mut e);
+        assert_eq!(arguments_of(&log, ACTOR_IS_WEAPON_DRAWN), [[ACTOR]]);
+        // The player is told about the group, and the actor gets action 9 (no
+        // item in its process) with the sequence of slot 4 (none).
+        assert_eq!(arguments_of(&log, 0x00f4_04b0), [[PLAYER, 0x01ff, 1]]);
+        assert_eq!(arguments_of(&log, ACTOR_SET_ANIM_ACTION), [[PLAYER, 9, 0]]);
+        assert_eq!(e.mem.u16(this.addr() + 0x122), 0xff);
+    }
+
+    #[test]
+    fn update_keeps_the_queued_reload_group_during_an_attack_and_drops_it_for_other_actions() {
+        let (mut e, this) = update_fixture();
+        e.mem.set_u16(this.addr() + 0x122, 0x01ff);
+        e.mem.set_i32(this.addr() + 0x6c, 2);
+        let group = group_with_id(&mut e, 0x0005);
+        let sequence = sequence_with_group(&mut e, 1, group);
+        e.mem.set_u32(this.addr() + 0xe0 + 16, sequence);
+        e.register(GROUP_IS_AIM_OF, |_, _| ret(0));
+        e.register(GROUP_IS_ATTACK_OF, |_, _| ret(1));
+        e.register(ACTOR_IS_WEAPON_DRAWN, |_, _| {
+            panic!("not asked during an attack")
+        });
+        update(&mut e, this, 0, 0.1, -1.0);
+        assert_eq!(e.mem.u16(this.addr() + 0x122), 0x01ff);
+        // An aim action does not hold it back; a later stage of action 4 drops it.
+        e.register(GROUP_IS_AIM_OF, |_, _| ret(1));
+        e.register(ACTOR_IS_WEAPON_DRAWN, |_, _| ret(0));
+        update(&mut e, this, 0, 0.1, -1.0);
+        assert_eq!(e.mem.u16(this.addr() + 0x122), 0xff);
+        e.mem.set_u16(this.addr() + 0x122, 0x01ff);
+        e.mem.set_i32(this.addr() + 0x6c, 5);
+        update(&mut e, this, 0, 0.1, -1.0);
+        assert_eq!(e.mem.u16(this.addr() + 0x122), 0xff);
+    }
+
+    #[test]
+    fn update_counts_down_the_replay_delays_and_frees_the_expired_ones() {
+        let (mut e, this) = update_fixture();
+        let (first, second) = (e.mem.alloc(0x10), e.mem.alloc(0x10));
+        e.mem.set_f32(first + 4, 0.5);
+        e.mem.set_f32(second + 4, 2.0);
+        fill_list(&mut e, this.addr() + 0x134, &[first, second]);
+        start_log(&mut e);
+        update(&mut e, this, 0, 1.0, -1.0);
+        let log = end_log(&mut e);
+        assert_eq!(arguments_of(&log, OPERATOR_DELETE), [[first]]);
+        assert_eq!(e.mem.u32(this.addr() + 0x134), second);
+        assert_eq!(e.mem.u32(this.addr() + 0x138), 0);
+        assert_eq!(e.mem.f32(second + 4), 1.0);
+        // The last delay going away empties the list.
+        update(&mut e, this, 0, 5.0, -1.0);
+        assert_eq!(e.mem.u32(this.addr() + 0x134), 0);
+    }
+
+    #[test]
+    fn update_frees_idles_that_are_done_and_reports_animating_ones() {
+        let (mut e, this) = update_fixture();
+        e.register(ANIM_IDLE_FREE, |_, _| Ret::default());
+        e.register(LOG, |_, _| Ret::default());
+        // Slot 0: an idle without sequence that has the word at +8.
+        let done = e.mem.alloc(0x40);
+        e.mem.set_u32(done + 8, 1);
+        e.mem.set_u32(this.addr() + 0x12c, done);
+        // Slot 1: an idle whose sequence is animating (state 1).
+        let busy = e.mem.alloc(0x40);
+        let sequence = named_object(&mut e, "walk.kf");
+        e.mem.set_u32(sequence + 0x44, 1);
+        e.mem.set_u32(busy + 0x18, sequence);
+        let owner = object_with_vtable(&mut e, 0x40, &[(0x130, 0x00f5_0130)]);
+        e.register(0x00f5_0130, |e, a| ret(e.mem.u32(a[0] + 0x10)));
+        e.mem.set_u32(owner + 0x10, 0x1111);
+        e.mem.set_u32(busy + 0x2c, owner);
+        e.mem.set_u32(this.addr() + 0x130, busy);
+        let reference_vtable = e.mem.u32(ACTOR);
+        e.mem.set_u32(reference_vtable + 0x130, 0x00f5_0130);
+        e.mem.set_u32(ACTOR + 0x10, 0x2222);
+        e.set(this, Animation::pActorRef, Ptr::new(ACTOR));
+        start_log(&mut e);
+        update(&mut e, this, 0, 0.1, -1.0);
+        let log = end_log(&mut e);
+        assert_eq!(
+            arguments_of(&log, ANIM_IDLE_FREE),
+            [[this.addr(), this.addr() + 0x12c]]
+        );
+        let name = e.mem.u32(sequence + 8);
+        assert_eq!(
+            arguments_of(&log, LOG),
+            [[LOG_IDLE_FREE_ANIMATING, 0x2222, 0x1111, name]]
+        );
+        // The animating idle is released.
+        assert_eq!(
+            arguments_of(&log, NI_POINTER_SET),
+            [[this.addr() + 0x130, 0]]
+        );
+        // An idle whose sequence is idle (state 0) is freed, state 2 is kept.
+        e.mem.set_u32(busy + 0x18, sequence);
+        e.mem.set_u32(sequence + 0x44, 0);
+        e.mem.set_u32(this.addr() + 0x130, busy);
+        start_log(&mut e);
+        update(&mut e, this, 0, 0.1, -1.0);
+        assert!(arguments_of(&end_log(&mut e), ANIM_IDLE_FREE)
+            .contains(&vec![this.addr(), this.addr() + 0x130]));
+        e.mem.set_u32(sequence + 0x44, 2);
+        start_log(&mut e);
+        update(&mut e, this, 0, 0.1, -1.0);
+        assert!(!arguments_of(&end_log(&mut e), ANIM_IDLE_FREE)
+            .contains(&vec![this.addr(), this.addr() + 0x130]));
+    }
+
+    #[test]
+    fn update_with_cskipupdate_0x14_only_updates_the_root_for_the_time() {
+        let (mut e, this) = update_fixture();
+        let root = e.mem.alloc(0x40);
+        e.mem.set_u32(this.addr() + 8, root);
+        e.set(this, Animation::time, 2.5f32);
+        e.mem.set_u8(this.addr() + 0xcc, 0x14);
+        e.mem.set_u8(this.addr(), 1);
+        e.register(UPDATE_DATA_CONSTRUCT, |_, _| Ret::default());
+        e.register(NODE_UPDATE, |_, _| Ret::default());
+        start_log(&mut e);
+        update(&mut e, this, 0, 0.1, -1.0);
+        let log = end_log(&mut e);
+        // The time is the animation's own; the flag bit is cleared and the
+        // skip value stays (the function returns early).
+        assert_eq!(
+            arguments_of(&log, UPDATE_DATA_CONSTRUCT)[0][1..],
+            [2.5f32.to_bits(), 0, 0]
+        );
+        assert_eq!(arguments_of(&log, NODE_UPDATE)[0][0], root);
+        assert_eq!(e.mem.u8(this.addr()), 0);
+        assert_eq!(e.mem.u8(this.addr() + 0xcc), 0x14);
+        assert_eq!(e.mem.f32(this.addr() + 0x10), 0.0);
+        // A given time replaces the animation's.
+        start_log(&mut e);
+        update(&mut e, this, 0, 0.1, 7.0);
+        let log = end_log(&mut e);
+        assert_eq!(
+            arguments_of(&log, UPDATE_DATA_CONSTRUCT)[0][1..],
+            [7.0f32.to_bits(), 0, 0]
+        );
+        assert_eq!(e.mem.f32(this.addr() + 0xd0), 2.5);
+    }
+
+    #[test]
+    fn update_with_a_given_time_sets_it_and_updates_the_root_once() {
+        let (mut e, this) = update_fixture();
+        let root = e.mem.alloc(0x40);
+        e.mem.set_u32(this.addr() + 8, root);
+        e.set(this, Animation::time, 2.5f32);
+        e.register(UPDATE_DATA_CONSTRUCT, |_, _| Ret::default());
+        e.register(NODE_UPDATE, |_, _| Ret::default());
+        start_log(&mut e);
+        update(&mut e, this, 0, 0.1, 7.0);
+        let log = end_log(&mut e);
+        assert_eq!(e.mem.f32(this.addr() + 0xd0), 7.0);
+        assert_eq!(
+            arguments_of(&log, UPDATE_DATA_CONSTRUCT)[0][1..],
+            [7.0f32.to_bits(), 1, 0]
+        );
+        assert_eq!(arguments_of(&log, NODE_UPDATE)[0][0], root);
+        // Without an animation root nothing happens at all.
+        e.mem.set_u32(this.addr() + 8, 0);
+        start_log(&mut e);
+        update(&mut e, this, 0, 0.1, 9.0);
+        assert!(arguments_of(&end_log(&mut e), UPDATE_DATA_CONSTRUCT).is_empty());
+        assert_eq!(e.mem.f32(this.addr() + 0xd0), 7.0);
+    }
+
+    #[test]
+    fn update_a_next_group_takes_over_an_empty_slot_before_the_frame() {
+        let (mut e, this) = update_fixture();
+        let root = e.mem.alloc(0x40);
+        e.mem.set_u32(this.addr() + 8, root);
+        map_for(&mut e, this);
+        e.register(UPDATE_DATA_CONSTRUCT, |_, _| Ret::default());
+        e.register(NODE_UPDATE, |_, _| Ret::default());
+        // Slot 2 has no group but a queued next group (unknown to the map).
+        e.mem.set_u16(this.addr() + 0x9c + 4, 0x0105);
+        e.mem.set_i32(this.addr() + 0xac + 8, 6);
+        update(&mut e, this, 0, 0.1, 5.0);
+        assert_eq!(e.mem.i32(this.addr() + 0x7c + 8), 6);
+        assert_eq!(e.mem.u16(this.addr() + 0x9c + 4), 0xff);
+    }
+
+    #[test]
+    fn update_derives_the_frame_movement_from_the_accumulation_root() {
+        let (mut e, this) = update_fixture();
+        let (root, accum) = (e.mem.alloc(0x80), e.mem.alloc(0x80));
+        e.mem.set_u32(this.addr() + 8, root);
+        e.set(this, Animation::pAccumRoot, Ptr::new(accum));
+        e.set(this, Animation::time, 1.0f32);
+        for i in 0..3 {
+            e.mem.set_f32(this.addr() + 0x1c + 4 * i, 1.0);
+        }
+        e.register(UPDATE_BIP_ONLY, |e, a| {
+            // The biped update moves the accumulation root's translation.
+            for (i, v) in [3.0f32, 4.0, 5.0].iter().enumerate() {
+                e.mem.set_f32(a[2] + 4 * i as u32, *v);
+            }
+            Ret::default()
+        });
+        e.register(VECTOR_SUBTRACT, |e, a| {
+            for i in 0..3 {
+                let value = e.mem.f32(a[0] + 4 * i) - e.mem.f32(a[2] + 4 * i);
+                e.mem.set_f32(a[1] + 4 * i, value);
+            }
+            ret(a[1])
+        });
+        e.register(REFERENCE_SCALE, |_, _| 2.0f32.into_ret());
+        e.mem.set_u8(this.addr(), 1);
+        start_log(&mut e);
+        update(&mut e, this, ACTOR, 0.5, -1.0);
+        let log = end_log(&mut e);
+        assert_eq!(e.mem.f32(this.addr() + 0xd0), 1.5);
+        assert_eq!(
+            arguments_of(&log, UPDATE_BIP_ONLY),
+            [[this.addr(), 1.5f32.to_bits(), this.addr() + 0x1c, 1]]
+        );
+        // (3 - 1, 4 - 1) scaled by the reference's scale 2.
+        assert_eq!(e.mem.f32(this.addr() + 0x10), 4.0);
+        assert_eq!(e.mem.f32(this.addr() + 0x14), 6.0);
+        // The movement flag is cleared and the one-frame values are reset.
+        assert_eq!(e.mem.u8(this.addr()), 0);
+        assert_eq!(e.mem.u8(this.addr() + 0xcc), 0xff);
+    }
+
+    #[test]
+    fn update_uses_the_override_movement_when_the_actors_flags_ask_for_it() {
+        let (mut e, this) = update_fixture();
+        let (root, accum) = (e.mem.alloc(0x80), e.mem.alloc(0x80));
+        e.mem.set_u32(this.addr() + 8, root);
+        e.set(this, Animation::pAccumRoot, Ptr::new(accum));
+        e.set(this, Animation::time, 1.0f32);
+        e.set(this, Animation::m_fMoveSpeed, 1.0f32);
+        // The actor has a process (virtual function at +0x100).
+        let vtable = e.mem.u32(ACTOR);
+        e.register(0x00f6_0100, |_, _| ret(1));
+        e.mem.set_u32(vtable + 0x100, 0x00f6_0100);
+        e.register(ACTOR_FLAGS_ANY, |_, _| ret(1));
+        e.register(ACTOR_FLAGS_WORD, |_, _| ret(0x0001));
+        // Slot 1 plays a group of type 0xe3, which asks for the override.
+        let group = group_with_id(&mut e, 0x00e3);
+        let sequence = sequence_with_group(&mut e, 1, group);
+        e.mem.set_u32(this.addr() + 0xe0 + 4, sequence);
+        e.register(GROUP_IS_SPECIAL_TYPE, |_, _| ret(0));
+        let controller = object_with_vtable(&mut e, 0x100, &[(0xc4, 0x00f6_00c4)]);
+        e.register(0x00f6_00c4, |_, _| ret(0));
+        e.register_double(GET_CONTROLLER, move |_, a| {
+            assert_eq!(a[1], RTTI_ACCUM_CONTROLLER);
+            ret(controller)
+        });
+        // No wanted type is found in the process: type 5 comes back.
+        e.register(ACTOR_GET_ANIM_GROUP, |_, a| {
+            assert_eq!(a[1..], [0, 0, 0, 0]);
+            ret(0x0005)
+        });
+        let map = map_for(&mut e, this);
+        let moving_group = group_with_id(&mut e, 0x0005);
+        let moving = sequence_with_group(&mut e, 1, moving_group);
+        let entry = map_entry(&mut e, moving, true);
+        map_add(&mut e, map, 0x0005, entry);
+        // The group's movement is (1, 2, 3); time and settings scale it.
+        e.register(GROUP_MOVEMENT_VECTOR, |e, a| {
+            for (i, v) in [1.0f32, 2.0, 3.0].iter().enumerate() {
+                e.mem.set_f32(a[1] + 4 * i as u32, *v);
+            }
+            ret(a[1])
+        });
+        e.register(VECTOR_SCALE, |e, a| {
+            for i in 0..3 {
+                let value = e.mem.f32(a[0] + 4 * i) * f32::from_bits(a[2]);
+                e.mem.set_f32(a[1] + 4 * i, value);
+            }
+            ret(a[1])
+        });
+        let settings = e.mem.alloc(4);
+        e.mem.set_f32(settings, 1.0);
+        e.register_double(SETTING_FLOAT_ADDRESS, move |_, _| ret(settings));
+        e.register(UPDATE_BIP_ONLY, |_, _| Ret::default());
+        e.register(REFERENCE_SCALE, |_, _| 2.0f32.into_ret());
+        e.register(SEQUENCE_STATE, |_, _| ret(0));
+        update(&mut e, this, ACTOR, 0.5, -1.0);
+        // (1, 2) at time scale 1, then the reference's scale 2.
+        assert_eq!(e.mem.f32(this.addr() + 0x10), 2.0);
+        assert_eq!(e.mem.f32(this.addr() + 0x14), 4.0);
+    }
+
+    /// An animation with a root and one sequence in slot 1 (group type 5, state
+    /// 1, cycle type 0, category `category`), `GetTime(i)` = 0.1, 0.4, ... from the
+    /// group, `elapsed` the time `00493800` gives.
+    fn slot_fixture(category: i32, elapsed: f32) -> (Engine, Ptr<Animation>, u32) {
+        let (mut e, this) = update_fixture();
+        let root = e.mem.alloc(0x40);
+        e.mem.set_u32(this.addr() + 8, root);
+        set_type(&mut e, 5, 1, category);
+        let group = group_with_id(&mut e, 0x0005);
+        let sequence = sequence_with_group(&mut e, 1, group);
+        e.mem.set_u32(this.addr() + 0xe0 + 4, sequence);
+        e.mem.set_u16(this.addr() + 0x4c + 2, 5);
+        e.set(this, Animation::m_fMoveSpeed, 2.0f32);
+        e.mem.set_f32(sequence + 0x2c, 1.0);
+        e.mem.set_f32(sequence + 0x30, 3.0);
+        e.register(SEQUENCE_SCALED_TIME, |_, _| 0.0f32.into_ret());
+        e.register(SEQUENCE_ELAPSED, |_, _| 0.0f32.into_ret());
+        e.register(SEQUENCE_SET_PHASE, |_, _| Ret::default());
+        e.register_double(SEQUENCE_TIME_ON_ANIMATION, move |_, _| elapsed.into_ret());
+        e.register(GROUP_TIME, |e, a| {
+            e.mem.f32(a[0] + 0x100 + 4 * a[1]).into_ret()
+        });
+        e.register(BLEND_OUT, |_, _| Ret::default());
+        e.register(SEQUENCE_OBJECT_COUNT, |_, _| ret(0));
+        (e, this, sequence)
+    }
+
+    #[test]
+    fn update_steps_a_looping_sequence_and_blends_it_out_at_its_end() {
+        let (mut e, this, sequence) = slot_fixture(0, 0.5);
+        let group = e.mem.u32(sequence + 0x74);
+        e.mem.set_f32(group + 0x100, 0.1);
+        e.mem.set_f32(group + 0x104, 0.4);
+        start_log(&mut e);
+        update(&mut e, this, 0, 0.1, -1.0);
+        let log = end_log(&mut e);
+        // The speed modifier of the type (move speed 2) moves the phase by the
+        // frame time; the intro (0.1 < 0.5) is over, and the end section (0.4
+        // <= 0.5) with no loop left blends the slot out.
+        assert_eq!(
+            arguments_of(&log, SEQUENCE_SET_PHASE),
+            [[sequence, 0.1f32.to_bits(), 0]]
+        );
+        assert_eq!(e.mem.i32(this.addr() + 0x5c + 4), 1);
+        assert_eq!(arguments_of(&log, BLEND_OUT), [[this.addr(), 1, 0]]);
+        assert_eq!(e.mem.f32(this.addr() + 0xd0), 0.1);
+        assert_eq!(e.mem.u8(this.addr() + 0xcc), 0xff);
+    }
+
+    #[test]
+    fn update_restarts_a_looping_sequence_that_has_loops_left() {
+        let (mut e, this, sequence) = slot_fixture(0, 0.5);
+        let group = e.mem.u32(sequence + 0x74);
+        e.mem.set_f32(group + 0x100, 0.1);
+        e.mem.set_f32(group + 0x104, 0.4);
+        e.mem.set_i32(this.addr() + 0x7c + 4, 2);
+        e.mem.set_i32(this.addr() + 0x5c + 4, 1);
+        start_log(&mut e);
+        update(&mut e, this, 0, 0.1, -1.0);
+        let log = end_log(&mut e);
+        // The stage restarts, one loop is used and the phase goes back by the
+        // sequence's length (3 - 1 seconds).
+        assert_eq!(e.mem.i32(this.addr() + 0x5c + 4), 0);
+        assert_eq!(e.mem.i32(this.addr() + 0x7c + 4), 1);
+        assert_eq!(
+            arguments_of(&log, SEQUENCE_SET_PHASE),
+            [
+                [sequence, 0.1f32.to_bits(), 0],
+                [sequence, (-2.0f32).to_bits(), 0]
+            ]
+        );
+        assert!(arguments_of(&log, BLEND_OUT).is_empty());
+    }
+
+    #[test]
+    fn update_hands_the_slot_to_the_next_group_at_the_end_of_a_last_stage() {
+        let (mut e, this, sequence) = slot_fixture(5, 0.5);
+        let group = e.mem.u32(sequence + 0x74);
+        e.mem.set_f32(group + 0x100 + 16, 0.2);
+        e.mem.set_i32(this.addr() + 0x5c + 4, 4);
+        e.mem.set_u16(this.addr() + 0x9c + 2, 0x0106);
+        e.mem.set_i32(this.addr() + 0xac + 4, 7);
+        map_for(&mut e, this);
+        update(&mut e, this, 0, 0.1, -1.0);
+        assert_eq!(e.mem.i32(this.addr() + 0x7c + 4), 7);
+        assert_eq!(e.mem.u16(this.addr() + 0x9c + 2), 0xff);
+        // Without a next group it blends out.
+        let (mut e, this, sequence) = slot_fixture(5, 0.5);
+        let group = e.mem.u32(sequence + 0x74);
+        e.mem.set_f32(group + 0x100 + 16, 0.2);
+        e.mem.set_i32(this.addr() + 0x5c + 4, 4);
+        start_log(&mut e);
+        update(&mut e, this, 0, 0.1, -1.0);
+        assert_eq!(
+            arguments_of(&end_log(&mut e), BLEND_OUT),
+            [[this.addr(), 1, 0]]
+        );
+    }
+
+    #[test]
+    fn update_keeps_the_slots_named_by_cskipupdate_at_their_phase() {
+        let (mut e, this, sequence) = slot_fixture(0, 0.5);
+        // The skip value 1 is the slot of the sequence: its phase goes back by
+        // the frame time and none of the stage logic runs.
+        e.mem.set_u8(this.addr() + 0xcc, 1);
+        start_log(&mut e);
+        update(&mut e, this, 0, 0.1, -1.0);
+        let log = end_log(&mut e);
+        assert_eq!(
+            arguments_of(&log, SEQUENCE_SET_PHASE),
+            [[sequence, (-0.1f32).to_bits(), 0]]
+        );
+        assert!(arguments_of(&log, BLEND_OUT).is_empty());
+        assert_eq!(e.mem.u8(this.addr() + 0xcc), 0xff);
     }
 }

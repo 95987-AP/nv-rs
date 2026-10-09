@@ -3,14 +3,15 @@
 //! (docs/ENGINE_CRATE.md). The unit's shared layouts and helpers are in
 //! [`super::tesscriptfunctions`]; anything public there may be used here.
 //!
-//! Progress: the first 40 queue entries of the range (`005d7d30` to
-//! `005d90a0`) are translated. The next session continues at `005d9160`.
+//! Progress: the first 80 queue entries of the range (`005d7d30` to
+//! `005da630`) are translated. The next session continues at `005da690`.
 //!
 //! The bodies follow the conventions of the main file: `cdecl`, the eight
 //! stack words as [`ScriptArgs`], `AL` as the result; a body that never reads
-//! a word takes no parameters here. Objects of other classes (quests,
-//! objectives, the player, topics, ...) are read at the PC offsets with a
-//! comment instead of through a `layout!`.
+//! a word takes no parameters here (the commands of the second batch, from
+//! `005d9160`, keep the eight words as an unused `ScriptArgs`). Objects of
+//! other classes (quests, objectives, the player, topics, ...) are read at
+//! the PC offsets with a comment instead of through a `layout!`.
 //!
 //! Notes on the exe's code that the translations rely on:
 //! - Several bodies read the out-parameters of `Script::ParseParameters`
@@ -20,8 +21,15 @@
 //! - `005d8a90` is slot 0 of the vtable at `0103cf54`, the one
 //!   [`fn_005d8af0`] installs in a small functor that `005d8930` hands to the
 //!   process lists (`0096bbc0`).
-//! - The compiler's exception-unwinding frames (`005d8bf0`, `005d8e80`) are
-//!   not translated, nor are the stack-cookie checks.
+//! - The compiler's exception-unwinding frames (`005d8bf0`, `005d8e80`,
+//!   `005d9810`, `005d9bc0`) are not translated, nor are the stack-cookie
+//!   checks.
+//! - `005d9b20` and `005da570` call `004537b0` (the task queue getter, no
+//!   argument) between pushing words and calling on: the pushed words belong
+//!   to the later call (`0087a8b0`, five words; `0087aa40`, two), not to the
+//!   getter. `005d9bc0` is the same on a larger scale: its calls to the
+//!   face-gen routines (`00652af0`, `00652470`) reuse one stack slot for a
+//!   float, and the float result of `00652440` comes in `ST0`.
 
 #[allow(unused_imports)]
 use super::tesscriptfunctions::*;
@@ -309,6 +317,240 @@ const MSG_VATS_LIGHTING_ON: u32 = 0x0103_cf3c;
 /// `"SCRIPTS: AddItem in script '%s' failed to generate an item."`
 const MSG_ADD_ITEM_FAILED: u32 = 0x0103_9358;
 
+// ---- Callees, globals and texts of the functions from 005d9160 --------------
+
+/// `Interface::EmergencyCloseAllMenusAndBreakStuff` (Xbox PDB), `cdecl`.
+const EMERGENCY_CLOSE_ALL_MENUS: u32 = 0x0070_37e0;
+/// `MenuConsole::Instance` (Xbox PDB), `cdecl` (`create` byte): the console
+/// menu.
+const MENU_CONSOLE_INSTANCE: u32 = 0x0071_b160;
+/// `thiscall` on the console menu (`text` or 0): copies the text (size
+/// `0x104`) into the buffer at `this + 0x810`, or empties that buffer for 0.
+const CONSOLE_SET_OUTPUT_FILE: u32 = 0x0071_dd50;
+/// `Interface::CreateRaceSexMenu` (Xbox PDB), `cdecl` (`0`).
+const CREATE_RACE_SEX_MENU: u32 = 0x0070_5870;
+/// `Interface::QueueMenuCreate` (Xbox PDB), `cdecl` (`menu, reference, 0, 0,
+/// flag, 0`).
+const QUEUE_MENU_CREATE: u32 = 0x0070_9470;
+/// `TutorialMenu::Create` (Xbox PDB), `cdecl` (`value, 0`).
+const TUTORIAL_MENU_CREATE: u32 = 0x007e_8890;
+/// `cdecl`, no arguments: always 1 (`tesscriptfunctions.cpp`).
+const ALWAYS_TRUE: u32 = 0x005d_4a40;
+
+/// `Script::GetFactionRelationConditionFunction` (Xbox PDB), condition
+/// function shape (`thisObj, argument, 0, double* result`).
+const GET_FACTION_RELATION_CONDITION: u32 = 0x005a_46d0;
+/// `Script::IsLastPlayedIdleConditionFunction` (Xbox PDB), same shape.
+const IS_LAST_PLAYED_IDLE_CONDITION: u32 = 0x005a_4780;
+/// `Script::GetPlayerTeammateConditionFunction` (Xbox PDB), same shape.
+const GET_PLAYER_TEAMMATE_CONDITION: u32 = 0x005a_4820;
+/// `Script::GetPlayerTeammateCountConditionFunction` (Xbox PDB), same shape.
+const GET_PLAYER_TEAMMATE_COUNT_CONDITION: u32 = 0x005a_48a0;
+/// `Script::GetActorCrimePlayerEnemyConditionFunction` (Xbox PDB), same
+/// shape.
+const GET_ACTOR_CRIME_PLAYER_ENEMY_CONDITION: u32 = 0x005a_4930;
+/// `Script::GetActorFactionPlayerEnemyConditionFunction` (Xbox PDB), same
+/// shape.
+const GET_ACTOR_FACTION_PLAYER_ENEMY_CONDITION: u32 = 0x005a_49f0;
+/// `Script::GetMinorCrimeCountConditionFunction` (Xbox PDB), same shape.
+const GET_MINOR_CRIME_COUNT_CONDITION: u32 = 0x005a_4aa0;
+/// `Script::GetMajorCrimeCountConditionFunction` (Xbox PDB), same shape.
+const GET_MAJOR_CRIME_COUNT_CONDITION: u32 = 0x005a_4b60;
+/// A condition function of `tesconditionfunctions.cpp`, same shape.
+const CONDITION_FN_005A4C20: u32 = 0x005a_4c20;
+/// `Script::GetDestructionStageConditionFunction` (Xbox PDB), same shape.
+const GET_DESTRUCTION_STAGE_CONDITION: u32 = 0x005a_4c60;
+/// `Script::GetThreatRatioConditionFunction` (Xbox PDB), same shape.
+const GET_THREAT_RATIO_CONDITION: u32 = 0x005a_4cd0;
+/// `Script::GetIsAlignmentConditionFunction` (Xbox PDB), same shape.
+const GET_IS_ALIGNMENT_CONDITION: u32 = 0x005a_4dd0;
+/// `Script::GetIsUsedItemEquipTypeConditionFunction` (Xbox PDB), same shape.
+const GET_IS_USED_ITEM_EQUIP_TYPE_CONDITION: u32 = 0x005a_4ea0;
+/// `Script::GetAggroRadiusViolatedConditionFunction` (Xbox PDB), same shape.
+const GET_AGGRO_RADIUS_VIOLATED_CONDITION: u32 = 0x005a_4f30;
+
+/// `Actor::SetPlayerTeammate` (Xbox PDB), `thiscall` (`flag`).
+const ACTOR_SET_PLAYER_TEAMMATE: u32 = 0x008b_ca90;
+/// `thiscall` on an actor: the byte at `this + 0x18d` (`GetForceNextUpdate`
+/// of `MiddleHighProcess` in the map).
+const ACTOR_FORCE_NEXT_UPDATE: u32 = 0x0056_6950;
+/// `thiscall` on the parsed value of `005d9500` (`flag` byte): calls
+/// `005fc970(this, 0x10, flag)` (`tesactorbasedata.cpp`).
+const FLAG_SETTER_0047EB90: u32 = 0x0047_eb90;
+/// `thiscall` on an actor (`actor.cpp`), the target of `005d9550`.
+const ACTOR_FN_008BCB40: u32 = 0x008b_cb40;
+
+/// `cdecl` (`value`): true when `0x20 <= value < 0x2e` (`tesaiform.cpp`).
+const VALUE_IN_RANGE_20_TO_2D: u32 = 0x0047_f060;
+/// `Actor::GetClass` (Xbox PDB), `thiscall` on the player.
+const ACTOR_GET_CLASS: u32 = 0x0088_4350;
+/// `TESClass::SetTagSkill` (Xbox PDB), `thiscall` (`index, skill`).
+const CLASS_SET_TAG_SKILL: u32 = 0x005f_6e80;
+/// `thiscall` on a class (`skill`): true when the value equals one of the four
+/// words at `this + 0x44` to `this + 0x50` (`tesconditionfunctions.cpp`).
+const CLASS_IS_TAG_SKILL: u32 = 0x005a_5f40;
+/// `thiscall` on the player: the word at `this + 0x638`, the grabbed
+/// reference.
+const PLAYER_GRABBED_REF: u32 = 0x0089_f4e0;
+/// `PlayerCharacter::SetActiveQuest` (Xbox PDB), `thiscall` (`quest`).
+const PLAYER_SET_ACTIVE_QUEST: u32 = 0x0095_29d0;
+
+/// Operator `new` (`size`).
+const OPERATOR_NEW: u32 = 0x0040_1000;
+/// Operator `delete` (`block`).
+const OPERATOR_DELETE: u32 = 0x0040_1030;
+/// `Character::Character` (Xbox PDB), `thiscall` on the new block.
+const CHARACTER_CONSTRUCT: u32 = 0x008d_1d30;
+/// `Creature::Creature` (Xbox PDB), `thiscall` on the new block.
+const CREATURE_CONSTRUCT: u32 = 0x008d_43a0;
+/// `TESObjectREFR::SetEncounterZone` (Xbox PDB), `thiscall` (`zone`).
+const REFERENCE_SET_ENCOUNTER_ZONE: u32 = 0x0056_7dd0;
+/// `thiscall` on an extra data list (`count`): sets the count extra
+/// (type `0x1e`), `extradatalist.cpp`.
+const EXTRA_LIST_SET_COUNT: u32 = 0x0042_1540;
+/// `thiscall` on a reference: `*(this + 0x40)`, its parent cell (the same
+/// body as [`PLAYER_GET_PARENT_CELL`]).
+const REFERENCE_PARENT_CELL: u32 = 0x008d_6f30;
+/// `TESObjectREFR::SetObjectReference` (Xbox PDB), `thiscall` (`base form`).
+const REFERENCE_SET_OBJECT_REFERENCE: u32 = 0x0057_5690;
+/// `thiscall` on `form + 0x30` (`tesactorbasedata.cpp`): a test returning
+/// `AL`.
+const ACTOR_BASE_DATA_TEST: u32 = 0x0047_cdb0;
+/// `thiscall` on `form + 0x30` (`reference`), `tesactorbasedata.cpp`.
+const ACTOR_BASE_DATA_APPLY: u32 = 0x0047_ce10;
+/// `thiscall` on a cell: bit 0 of the byte at `this + 0x24`.
+const CELL_FLAG_BIT_0: u32 = 0x0042_5fd0;
+/// `TESObjectREFR::GetWorldSpace` (Xbox PDB), `thiscall`.
+const REFERENCE_GET_WORLD_SPACE: u32 = 0x0057_5d70;
+/// `thiscall` on a reference: `this + 0x24`, the address of a field
+/// (`extradataobjects.cpp`).
+const REFERENCE_FIELD_24_ADDRESS: u32 = 0x0043_0830;
+/// `thiscall`: the word at `this + 0x20` (named `BGSSaveFormBuffer::GetForm`
+/// in the map; the body is shared by folding).
+const WORD_AT_20: u32 = 0x007a_f430;
+/// `thiscall` on the data handler at [`LIST_OWNER`] (`tesdatahandler.cpp`):
+/// eight words (`word, word, word, cell, world space, new reference, 0, 0`).
+const DATA_HANDLER_FN_004698A0: u32 = 0x0046_98a0;
+/// `thiscall` (`flag`) on the new reference, `tesdatahandler.cpp`.
+const DATA_HANDLER_FN_0046A010: u32 = 0x0046_a010;
+
+/// `thiscall` on the object at [`GAME_MODE_OBJECT`] (`modelloader.cpp`): its
+/// `this + 4` address.
+const FN_0043D4D0: u32 = 0x0043_d4d0;
+/// The object [`FN_0043D4D0`] is called on.
+const GAME_MODE_OBJECT: u32 = 0x011c_3ea4;
+/// The task queue interface getter (loads global `011df1a8`); no argument.
+const TASK_QUEUE_INTERFACE: u32 = 0x0045_37b0;
+/// `cdecl` (`queue, message, three words`), `fallout/misc`: sends a message
+/// to the task queue.
+const TASK_QUEUE_SEND: u32 = 0x0087_a8b0;
+/// The message `005d9b20` sends instead of running `005d9bc0` directly.
+const TASK_MESSAGE_11DF: u32 = 0x11df;
+/// `TaskQueueInterface::QueueWeaponFire` (Xbox PDB), `thiscall` (`weapon,
+/// reference`).
+const QUEUE_WEAPON_FIRE: u32 = 0x0087_aa40;
+/// `cdecl`, no arguments: `AL` (`fallout/ai`).
+const FN_008C7AA0: u32 = 0x008c_7aa0;
+/// `thiscall` on a weapon form (`reference`), `tesobjectweap.cpp`.
+const WEAPON_FN_00523150: u32 = 0x0052_3150;
+
+/// `Actor::AttackAlarm` (Xbox PDB), `thiscall` (`player, 0, 1`).
+const ACTOR_ATTACK_ALARM: u32 = 0x008c_0460;
+/// `thiscall` on the process lists (`fallout/ai/processlists.cpp`): the
+/// actor reference for an id (`id, flag, 1`).
+const PROCESS_LISTS_FIND: u32 = 0x0097_0b30;
+/// `ProcessLists::GetActorRefInHigh` (Xbox PDB), `thiscall` (`reference,
+/// 0`).
+const PROCESS_LISTS_GET_ACTOR_REF_IN_HIGH: u32 = 0x0097_0a20;
+/// `TESObjectREFR::GetOwner` (Xbox PDB), `thiscall`.
+const REFERENCE_GET_OWNER: u32 = 0x0056_7790;
+/// Virtual slot `0x21c` of a reference: a test returning `AL`.
+const REFERENCE_SLOT_21C: u32 = 0x21c;
+/// Virtual slot `0x33c` of the process, 13 words (`MiddleHighProcess::
+/// EnterCombat` at this offset in the Xbox PDB).
+const PROCESS_SLOT_33C: u32 = 0x33c;
+
+/// Virtual slot `0xf8` of a form (`IsActorBase` in the Xbox PDB).
+const FORM_IS_ACTOR_BASE_SLOT: u32 = 0xf8;
+/// Virtual slot `0x48` of a form (`AddChange` in the Xbox PDB): a flag word.
+const FORM_SLOT_48: u32 = 0x48;
+/// Virtual slot `0x1d0` of a reference: returns a word, tested for non-zero.
+const REFERENCE_SLOT_1D0: u32 = 0x1d0;
+/// Virtual slot `0x1f4` of a reference: returns a word.
+const REFERENCE_SLOT_1F4: u32 = 0x1f4;
+/// Virtual slot `0x228` of a new actor (`cell`).
+const ACTOR_SLOT_228: u32 = 0x228;
+
+/// `thiscall` on an object (`float`), `modelloader.cpp`: the target of
+/// `005da1e0`.
+const FN_00444020: u32 = 0x0044_4020;
+/// `thiscall` on a form, `fallout shared`: the target of `005da180`.
+const FN_0060D720: u32 = 0x0060_d720;
+/// `cdecl` (`reference`), `bgsdestructibleobjectform.cpp`: the target of
+/// `005da260`.
+const FN_00477D10: u32 = 0x0047_7d10;
+
+/// `__eh_vector_constructor_iterator__` (`array, size, count, constructor,
+/// destructor`), the callee removes its arguments (`RET 0x14`).
+const VECTOR_CONSTRUCTOR_ITERATOR: u32 = 0x00ec_782f;
+/// `__eh_vector_destructor_iterator__` (`array, size, count, destructor`),
+/// the callee removes its arguments (`RET 0x10`).
+const VECTOR_DESTRUCTOR_ITERATOR: u32 = 0x00ec_5fce;
+/// Constructor of one 0x20-byte face-gen coordinate block (`modelloader.cpp`).
+const COORD_BLOCK_CONSTRUCT: u32 = 0x0044_9610;
+/// Destructor of one 0x20-byte face-gen coordinate block.
+const COORD_BLOCK_DESTRUCT: u32 = 0x0044_9680;
+/// Constructor of the 0x14-byte list `005d9bc0` fills
+/// (`tesscriptfunctions.cpp`, another part of the unit).
+const COORD_LIST_CONSTRUCT: u32 = 0x005e_0560;
+/// Destructor of that list.
+const COORD_LIST_DESTRUCT: u32 = 0x005e_0590;
+/// `TESActorBase::GetSex` (Xbox PDB), `thiscall`.
+const ACTOR_BASE_GET_SEX: u32 = 0x005f_0cc0;
+/// `thiscall` on an actor base (`bipedanim.cpp`): a value computed from
+/// `this + 0x10c` (the race).
+const ACTOR_BASE_RACE: u32 = 0x004a_c110;
+/// `cdecl` (`race, sex, list`), `tesnpc.cpp`: fills the list with the NPCs of
+/// that race and sex.
+const COLLECT_MATCHING_NPCS: u32 = 0x0060_3280;
+/// `thiscall` on an NPC: its face-gen coordinate set, the word at `+0x1b4`
+/// when set, else `this + 0x134`.
+const NPC_COORDS: u32 = 0x0060_1800;
+/// `cdecl` (`first, second, destination, 0`), `bsfacegenmanager.cpp`.
+const FACEGEN_FN_00652E00: u32 = 0x0065_2e00;
+/// `cdecl` (`coords, 0, 0`), `bsfacegenmanager.cpp`: returns a float in `ST0`.
+const FACEGEN_FN_00652440: u32 = 0x0065_2440;
+/// `BSFaceGenManager::InitFaceGenCoord` (Xbox PDB), `cdecl` (`coords`).
+const INIT_FACEGEN_COORD: u32 = 0x0065_21f0;
+/// `cdecl` (`float, coords, 1`), `bsfacegenmanager.cpp`.
+const FACEGEN_FN_00653000: u32 = 0x0065_3000;
+/// `cdecl` (`coords, coords, coords, 1, float`), `bsfacegenmanager.cpp`.
+const FACEGEN_FN_00652AF0: u32 = 0x0065_2af0;
+/// `cdecl` (`coords, 0, 0, float`), `bsfacegenmanager.cpp`.
+const FACEGEN_FN_00652470: u32 = 0x0065_2470;
+/// `BSFaceGenManager::CopyFaceGenCoord` (Xbox PDB), `cdecl` (`source,
+/// destination, 0, 1`).
+const COPY_FACEGEN_COORD: u32 = 0x0065_29a0;
+/// `Character::Reset3D` (Xbox PDB), `thiscall`.
+const CHARACTER_RESET_3D: u32 = 0x008d_3fa0;
+/// RTTI type descriptor of `TESBoundObject` (`.?AVTESBoundObject@@`).
+const RTTI_TES_BOUND_OBJECT: u32 = 0x0118_3108;
+/// RTTI type descriptor of `TESNPC` (`.?AVTESNPC@@`).
+const RTTI_TES_NPC: u32 = 0x0118_3a1c;
+/// The `double` 100.0 `005d9bc0` divides the percentage by.
+const HUNDRED: u32 = 0x0101_7a40;
+
+/// `"SetConsoleOutputFilename >> OUTPUT_DISABLED"`
+const MSG_CONSOLE_OUTPUT_DISABLED: u32 = 0x0103_cf84;
+/// `"SetConsoleOutputFilename >> '%s'"`
+const MSG_CONSOLE_OUTPUT_FILE: u32 = 0x0103_cf60;
+/// `"IsPlayerTagSkill >> %.0f"`
+const MSG_IS_PLAYER_TAG_SKILL: u32 = 0x0103_6498;
+/// `"GetPlayerGrabbedRef >> (%08x)"`
+const MSG_GET_PLAYER_GRABBED_REF: u32 = 0x0103_cfb0;
+/// `"SCRIPTS: FireWeapon in script '%s' called with non-weapon parameter."`
+const MSG_FIRE_WEAPON_NON_WEAPON: u32 = 0x0103_cfd0;
+
 // ---- Small helpers -------------------------------------------------------------
 
 /// `Script::ParseParameters` with the given output addresses after the seven
@@ -376,6 +618,24 @@ fn call_condition(e: &mut Engine, function: u32, a: ScriptArgs, argument: u32) -
 /// The player singleton (`[0x011dea3c]`).
 fn player(e: &mut Engine) -> u32 {
     e.global::<u32>(PLAYER)
+}
+
+/// [`parse_params`] for a command that ignores the parse result: the values
+/// left in the locals, whether or not the parameters parsed.
+fn parse_values<const N: usize>(e: &mut Engine, a: ScriptArgs, init: [u32; N]) -> [u32; N] {
+    let block = e.mem.alloc(4 * N as u32);
+    let mut outs = [0u32; N];
+    for (i, value) in init.iter().enumerate() {
+        outs[i] = block + 4 * i as u32;
+        e.mem.set_u32(outs[i], *value);
+    }
+    parse(e, a, &outs);
+    let mut values = init;
+    for (i, value) in values.iter_mut().enumerate() {
+        *value = e.mem.u32(outs[i]);
+    }
+    e.mem.free(block);
+    values
 }
 
 // ---- Translated functions --------------------------------------------------------
@@ -1095,6 +1355,785 @@ pub fn fn_005d90a0(e: &mut Engine, a: ScriptArgs) -> bool {
     true
 }
 
+// Translated from 005d9160 (decompiled, FalloutNV.exe 1.4.0.525)
+/// A command that closes every menu through
+/// `Interface::EmergencyCloseAllMenusAndBreakStuff` (Xbox PDB) and succeeds.
+/// None of the eight words is read.
+pub fn fn_005d9160(e: &mut Engine, _unused_args: ScriptArgs) -> bool {
+    e.call(EMERGENCY_CLOSE_ALL_MENUS, &args![]);
+    true
+}
+
+// Translated from 005d9170 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::SetConsoleOutputFileFunction` (Xbox PDB): parses a text (a
+/// 264-byte local). A text that is empty or starts with `'0'` clears the
+/// console's output file name (echoed as `"SetConsoleOutputFilename >>
+/// OUTPUT_DISABLED"` before it is cleared); any other text becomes the file
+/// name (echoed as `"... >> '%s'"` afterwards). Returns the parse result.
+pub fn script_set_console_output_file_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    let text = e.mem.alloc(0x108);
+    let ok = parse(e, a, &[text]);
+    if ok {
+        let first = e.mem.i8(text);
+        if first == 0 || first == b'0' as i8 {
+            if echo_enabled(e) {
+                console_print(e, &args![MSG_CONSOLE_OUTPUT_DISABLED]);
+            }
+            let console = e.call(MENU_CONSOLE_INSTANCE, &args![1u32]).u32();
+            e.call(CONSOLE_SET_OUTPUT_FILE, &args![console, 0u32]);
+        } else {
+            let console = e.call(MENU_CONSOLE_INSTANCE, &args![1u32]).u32();
+            e.call(CONSOLE_SET_OUTPUT_FILE, &args![console, text]);
+            if echo_enabled(e) {
+                console_print(e, &args![MSG_CONSOLE_OUTPUT_FILE, text]);
+            }
+        }
+    }
+    e.mem.free(text);
+    ok
+}
+
+/// The commands that parse one word and, with a `thisObj` and a non-zero
+/// word, return a condition function's answer for it (otherwise they
+/// succeed): `005d9270` and `005d92e0`.
+fn parsed_condition_with_reference(e: &mut Engine, a: ScriptArgs, function: u32) -> bool {
+    let Some([argument]) = parse_params(e, a, [0]) else {
+        return false;
+    };
+    if a.this_obj.is_null() || argument == 0 {
+        return true;
+    }
+    call_condition(e, function, a, argument)
+}
+
+// Translated from 005d9270 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::GetFactionRelationFunction` (Xbox PDB): parses a form; without a
+/// `thisObj` or with a null form the command succeeds, otherwise it returns
+/// the `AL` of `GetFactionRelationConditionFunction(thisObj, form, 0,
+/// result)`.
+pub fn script_get_faction_relation_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    parsed_condition_with_reference(e, a, GET_FACTION_RELATION_CONDITION)
+}
+
+// Translated from 005d92e0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::IsLastPlayedIdleFunction` (Xbox PDB): like
+/// [`script_get_faction_relation_function`] with
+/// `IsLastPlayedIdleConditionFunction`.
+pub fn script_is_last_played_idle_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    parsed_condition_with_reference(e, a, IS_LAST_PLAYED_IDLE_CONDITION)
+}
+
+// Translated from 005d9350 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Calls `Interface::CreateRaceSexMenu(0)` (Xbox PDB) and succeeds. None of
+/// the eight words is read.
+pub fn fn_005d9350(e: &mut Engine, _unused_args: ScriptArgs) -> bool {
+    e.call(CREATE_RACE_SEX_MENU, &args![0u32]);
+    true
+}
+
+// Translated from 005d9370 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::SetPlayerTeammateFunction` (Xbox PDB): parses an integer. When
+/// `thisObj` exists and its virtual test (slot `0x100`) holds, calls
+/// `Actor::SetPlayerTeammate(thisObj, integer != 0)`. Succeeds once the
+/// parameters parse.
+pub fn script_set_player_teammate_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([flag]) = parse_params(e, a, [0]) else {
+        return false;
+    };
+    if !a.this_obj.is_null()
+        && e.vcall(a.this_obj.addr(), REFERENCE_TEST_SLOT, &args![])
+            .bool()
+    {
+        e.call(
+            ACTOR_SET_PLAYER_TEAMMATE,
+            &args![a.this_obj, (flag != 0) as u32],
+        );
+    }
+    true
+}
+
+/// A command that is a condition function with no argument: returns the
+/// `AL` of `function(thisObj, 0, 0, result)`.
+fn condition_without_argument(e: &mut Engine, a: ScriptArgs, function: u32) -> bool {
+    call_condition(e, function, a, 0)
+}
+
+// Translated from 005d93f0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Returns the `AL` of `GetPlayerTeammateConditionFunction(thisObj, 0, 0,
+/// result)`.
+pub fn fn_005d93f0(e: &mut Engine, a: ScriptArgs) -> bool {
+    condition_without_argument(e, a, GET_PLAYER_TEAMMATE_CONDITION)
+}
+
+// Translated from 005d9410 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Returns the `AL` of `GetPlayerTeammateCountConditionFunction(thisObj, 0,
+/// 0, result)`.
+pub fn fn_005d9410(e: &mut Engine, a: ScriptArgs) -> bool {
+    condition_without_argument(e, a, GET_PLAYER_TEAMMATE_COUNT_CONDITION)
+}
+
+// Translated from 005d9430 (decompiled, FalloutNV.exe 1.4.0.525)
+/// With a `thisObj` that passes the virtual test (slot `0x100`): parses an
+/// integer (the parse result is ignored; the local keeps its 0 when the
+/// parse fails) and, when the byte `ACTOR_FORCE_NEXT_UPDATE` reads is set or
+/// the integer is non-zero, queues the menu creation
+/// `QueueMenuCreate(1, thisObj, 0, 0, 3, 0)`. Always succeeds.
+pub fn fn_005d9430(e: &mut Engine, a: ScriptArgs) -> bool {
+    if !a.this_obj.is_null()
+        && e.vcall(a.this_obj.addr(), REFERENCE_TEST_SLOT, &args![])
+            .bool()
+    {
+        let [flag] = parse_values(e, a, [0]);
+        if e.call(ACTOR_FORCE_NEXT_UPDATE, &args![a.this_obj]).bool() || flag != 0 {
+            e.call(
+                QUEUE_MENU_CREATE,
+                &args![1u32, a.this_obj, 0u32, 0u32, 3u32, 0u32],
+            );
+        }
+    }
+    true
+}
+
+// Translated from 005d94c0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Returns the `AL` of `GetMinorCrimeCountConditionFunction(thisObj, 0, 0,
+/// result)`.
+pub fn fn_005d94c0(e: &mut Engine, a: ScriptArgs) -> bool {
+    condition_without_argument(e, a, GET_MINOR_CRIME_COUNT_CONDITION)
+}
+
+// Translated from 005d94e0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Returns the `AL` of `GetMajorCrimeCountConditionFunction(thisObj, 0, 0,
+/// result)`.
+pub fn fn_005d94e0(e: &mut Engine, a: ScriptArgs) -> bool {
+    condition_without_argument(e, a, GET_MAJOR_CRIME_COUNT_CONDITION)
+}
+
+// Translated from 005d9500 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses a value and calls `0047eb90(value, 0)` on it (a `thiscall` whose
+/// `this` is the parsed word). Returns the parse result.
+pub fn fn_005d9500(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([value]) = parse_params(e, a, [0]) else {
+        return false;
+    };
+    e.call(FLAG_SETTER_0047EB90, &args![value, 0u32]);
+    true
+}
+
+// Translated from 005d9550 (decompiled, FalloutNV.exe 1.4.0.525)
+/// With a `thisObj` that passes the virtual test (slot `0x100`), calls
+/// `008bcb40(thisObj)`. Always succeeds; none of the other words is read.
+pub fn fn_005d9550(e: &mut Engine, a: ScriptArgs) -> bool {
+    if !a.this_obj.is_null()
+        && e.vcall(a.this_obj.addr(), REFERENCE_TEST_SLOT, &args![])
+            .bool()
+    {
+        e.call(ACTOR_FN_008BCB40, &args![a.this_obj]);
+    }
+    true
+}
+
+// Translated from 005d9590 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Returns the `AL` of `GetActorCrimePlayerEnemyConditionFunction(thisObj,
+/// 0, 0, result)`.
+pub fn fn_005d9590(e: &mut Engine, a: ScriptArgs) -> bool {
+    condition_without_argument(e, a, GET_ACTOR_CRIME_PLAYER_ENEMY_CONDITION)
+}
+
+// Translated from 005d95b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Returns the `AL` of `GetActorFactionPlayerEnemyConditionFunction(thisObj,
+/// 0, 0, result)`.
+pub fn fn_005d95b0(e: &mut Engine, a: ScriptArgs) -> bool {
+    condition_without_argument(e, a, GET_ACTOR_FACTION_PLAYER_ENEMY_CONDITION)
+}
+
+// Translated from 005d95d0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::SetPlayerTagSkillFunction` (Xbox PDB): parses a skill value
+/// (default -1) and an index (default 0). When `0047f060(skill)` holds
+/// (`0x20 <= skill < 0x2e`) and `0 <= index < 4` (`005d9660`, signed), sets
+/// the tag skill `index` of the player's class to the skill
+/// (`TESClass::SetTagSkill`). Succeeds once the parameters parse.
+pub fn script_set_player_tag_skill_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([skill, index]) = parse_params(e, a, [u32::MAX, 0]) else {
+        return false;
+    };
+    if e.call(VALUE_IN_RANGE_20_TO_2D, &args![skill]).bool()
+        && (index as i32) >= 0
+        && (index as i32) < fn_005d9660(e) as i32
+    {
+        let player = player(e);
+        let class = e.call(ACTOR_GET_CLASS, &args![player]).u32();
+        e.call(CLASS_SET_TAG_SKILL, &args![class, index, skill]);
+    }
+    true
+}
+
+// Translated from 005d9660 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Returns 4 (the number of tag skills; `cdecl`, no arguments).
+pub fn fn_005d9660(_e: &mut Engine) -> u32 {
+    4
+}
+
+// Translated from 005d9670 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::IsPlayerTagSkillFunction` (Xbox PDB): parses a skill value
+/// (default -1). The result double is 0.0, or 1.0 when `0047f060(skill)`
+/// holds and the player's class (`Actor::GetClass`) answers true to
+/// `005a5f40(skill)`; echoed as `"IsPlayerTagSkill >> %.0f"`. Succeeds once
+/// the parameters parse (a failed parse leaves the result untouched).
+pub fn script_is_player_tag_skill_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([skill]) = parse_params(e, a, [u32::MAX]) else {
+        return false;
+    };
+    e.mem.set_f64(a.result.addr(), 0.0);
+    if e.call(VALUE_IN_RANGE_20_TO_2D, &args![skill]).bool() {
+        let player = player(e);
+        let class = e.call(ACTOR_GET_CLASS, &args![player]).u32();
+        if e.call(CLASS_IS_TAG_SKILL, &args![class, skill]).bool() {
+            e.mem.set_f64(a.result.addr(), 1.0);
+        }
+    }
+    if echo_enabled(e) {
+        let shown = e.mem.f64(a.result.addr());
+        console_print(e, &args![MSG_IS_PLAYER_TAG_SKILL, shown]);
+    }
+    true
+}
+
+// Translated from 005d9730 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::GetPlayerGrabbedRefFunction` (Xbox PDB): the result double is
+/// 0.0, or the numeric form id of the player's grabbed reference
+/// (`PutNumericIDInDouble`) when there is one; echoed as
+/// `"GetPlayerGrabbedRef >> (%08x)"` with the form id (0 without one).
+/// Always succeeds.
+pub fn script_get_player_grabbed_ref_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    e.mem.set_f64(a.result.addr(), 0.0);
+    let mut id = 0;
+    let player_object = player(e);
+    if e.call(PLAYER_GRABBED_REF, &args![player_object]).u32() != 0 {
+        let player_object = player(e);
+        let grabbed = e.call(PLAYER_GRABBED_REF, &args![player_object]).u32();
+        id = e.call(GET_FORM_ID, &args![grabbed]).u32();
+        e.with_stack(4, |e, cell| {
+            e.mem.set_u32(cell.addr(), id);
+            e.call(PUT_NUMERIC_ID_IN_DOUBLE, &args![cell, a.result]);
+        });
+    }
+    if echo_enabled(e) {
+        console_print(e, &args![MSG_GET_PLAYER_GRABBED_REF, id]);
+    }
+    true
+}
+
+// Translated from 005d97b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses a value (default 0) and returns the `AL` of
+/// `005a4c20(thisObj, value, 0, result)`, a condition function.
+pub fn fn_005d97b0(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([value]) = parse_params(e, a, [0]) else {
+        return false;
+    };
+    call_condition(e, CONDITION_FN_005A4C20, a, value)
+}
+
+// Translated from 005d9810 (decompiled, FalloutNV.exe 1.4.0.525)
+/// A function command that makes a new actor from an actor base form
+/// (parameters: base form, count default 4, encounter zone). The result
+/// double starts at 0.0. With a base form that passes the virtual test `0xf8`
+/// and a `thisObj`, a form of type `0x2a` is built as a `Character`
+/// (`0x1c8` bytes) and one of type `0x2b` as a `Creature` (`0x1c0` bytes);
+/// any other type makes nothing. The new reference gets the encounter zone
+/// (when given), the count in its extra data list, the flags `0x40000000`
+/// (virtual slot `0x48`), the parent cell of `thisObj` (slot `0x228`) and the
+/// base form (`SetObjectReference`); the actor base data of `form + 0x30` is
+/// applied when its test holds. It is then placed through the data handler
+/// (`004698a0`) using `thisObj`'s parent cell (dropped when bit 0 of its flag
+/// byte is clear), world space and virtual slot `0x1f4`, and its numeric form
+/// id goes to the result double. Returns the parse result. The
+/// exception-unwinding frame is not translated.
+pub fn fn_005d9810(e: &mut Engine, a: ScriptArgs) -> bool {
+    e.mem.set_f64(a.result.addr(), 0.0);
+    let Some([form, count, zone]) = parse_params(e, a, [0, 4, 0]) else {
+        return false;
+    };
+    if form == 0 || !e.vcall(form, FORM_IS_ACTOR_BASE_SLOT, &args![]).bool() || a.this_obj.is_null()
+    {
+        return true;
+    }
+    let this_obj = a.this_obj.addr();
+    let form_type = e.call(FORM_TYPE, &args![form]).u32();
+    let (size, construct) = match form_type {
+        0x2a => (0x1c8u32, CHARACTER_CONSTRUCT),
+        0x2b => (0x1c0u32, CREATURE_CONSTRUCT),
+        _ => return true,
+    };
+    let block = e.call(OPERATOR_NEW, &args![size]).u32();
+    let made = if block == 0 {
+        0
+    } else {
+        e.call(construct, &args![block]).u32()
+    };
+    if made == 0 {
+        return true;
+    }
+    if zone != 0 {
+        e.call(REFERENCE_SET_ENCOUNTER_ZONE, &args![made, zone]);
+    }
+    let list = e.call(EXTRA_DATA_LIST, &args![made]).u32();
+    e.call(EXTRA_LIST_SET_COUNT, &args![list, count]);
+    e.vcall(made, FORM_SLOT_48, &args![0x4000_0000u32]);
+    let parent_cell = e.call(REFERENCE_PARENT_CELL, &args![this_obj]).u32();
+    e.vcall(made, ACTOR_SLOT_228, &args![parent_cell]);
+    e.call(REFERENCE_SET_OBJECT_REFERENCE, &args![made, form]);
+    if e.call(ACTOR_BASE_DATA_TEST, &args![form + 0x30]).bool() {
+        e.call(ACTOR_BASE_DATA_APPLY, &args![form + 0x30, made]);
+    }
+    let mut cell = e.call(REFERENCE_PARENT_CELL, &args![this_obj]).u32();
+    if cell != 0 && !e.call(CELL_FLAG_BIT_0, &args![cell]).bool() {
+        cell = 0;
+    }
+    let world_space = e.call(REFERENCE_GET_WORLD_SPACE, &args![this_obj]).u32();
+    let field = e.call(REFERENCE_FIELD_24_ADDRESS, &args![this_obj]).u32();
+    let word = e.vcall(this_obj, REFERENCE_SLOT_1F4, &args![]).u32();
+    let saved = e.call(WORD_AT_20, &args![made]).u32();
+    let data_handler = e.global::<u32>(LIST_OWNER);
+    e.call(
+        DATA_HANDLER_FN_004698A0,
+        &args![
+            data_handler,
+            saved,
+            word,
+            field,
+            cell,
+            world_space,
+            made,
+            0u32,
+            0u32
+        ],
+    );
+    e.call(DATA_HANDLER_FN_0046A010, &args![made, 0u32]);
+    let id = e.call(GET_FORM_ID, &args![made]).u32();
+    e.with_stack(4, |e, cell| {
+        e.mem.set_u32(cell.addr(), id);
+        e.call(PUT_NUMERIC_ID_IN_DOUBLE, &args![cell, a.result]);
+    });
+    true
+}
+
+// Translated from 005d9aa0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Returns the `AL` of `GetDestructionStageConditionFunction(thisObj, 0, 0,
+/// result)`.
+pub fn fn_005d9aa0(e: &mut Engine, a: ScriptArgs) -> bool {
+    condition_without_argument(e, a, GET_DESTRUCTION_STAGE_CONDITION)
+}
+
+// Translated from 005d9ac0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::ForceActiveQuestFunction` (Xbox PDB): parses a quest and, when
+/// it is not null, makes it the player's active quest
+/// (`PlayerCharacter::SetActiveQuest`). Returns the parse result.
+pub fn script_force_active_quest_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([quest]) = parse_params(e, a, [0]) else {
+        return false;
+    };
+    if quest != 0 {
+        let player = player(e);
+        e.call(PLAYER_SET_ACTIVE_QUEST, &args![player, quest]);
+    }
+    true
+}
+
+// Translated from 005d9b20 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses two integers. When the signed word that `0043d4d0` returns the
+/// address of for the object at `011c3ea4` is above 1, sends the task queue
+/// the message `0x11df` with `thisObj` and the two integers; otherwise runs
+/// [`fn_005d9bc0`] with them directly. Returns the parse result.
+pub fn fn_005d9b20(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([first, second]) = parse_params(e, a, [0, 0]) else {
+        return false;
+    };
+    let mode = e.call(FN_0043D4D0, &args![GAME_MODE_OBJECT]).u32();
+    if (e.mem.u32(mode) as i32) > 1 {
+        let queue = e.call(TASK_QUEUE_INTERFACE, &args![]).u32();
+        e.call(
+            TASK_QUEUE_SEND,
+            &args![queue, TASK_MESSAGE_11DF, a.this_obj, first, second],
+        );
+    } else {
+        fn_005d9bc0(e, a.this_obj, Ptr::new(first), second as i32);
+    }
+    true
+}
+
+/// `__RTDynamicCast` of the object `object + 0x20` holds a pointer to (the
+/// `TESBoundObject` of a form) to `TESNPC`.
+fn cast_to_npc(e: &mut Engine, object: Ptr) -> Ptr {
+    let bound = e.call(WORD_AT_20, &args![object]).u32();
+    e.call(
+        DYNAMIC_CAST,
+        &args![bound, 0u32, RTTI_TES_BOUND_OBJECT, RTTI_TES_NPC, 0u32],
+    )
+    .ptr()
+}
+
+// Translated from 005d9bc0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Blends the face-gen coordinates of the NPC behind `source` into those of
+/// the NPC behind `actor` by `percent / 100` (`cdecl`). Nothing happens when
+/// either is null. The steps, in the game's order: both are cast to `TESNPC`
+/// through the word at `+0x20`; two coordinate arrays (4 blocks of `0x20`
+/// bytes) and a list are built on the stack; the list is filled with the NPCs
+/// of the target's race and sex (`00603280`) and the first one is taken; an
+/// array already set on the target NPC (`+0x1b4`) is destroyed and cleared;
+/// the coordinate sets of the target, of the source and of the chosen NPC
+/// feed the face-gen routines (`00652e00`, `00652440`, `00653000`,
+/// `00652af0`, `00652470`); a fresh counted array of 4 blocks (`0x84` bytes,
+/// count 4 first) receives the result (`00652e00`, `CopyFaceGenCoord`) and
+/// is stored on the target NPC; the NPC's virtual slot `0x48` gets `0x800`
+/// and the actor, when its slot `0x1d0` answers non-zero, has its 3D reset.
+/// The list and the arrays are then destroyed. The exception-unwinding frame
+/// is not translated.
+pub fn fn_005d9bc0(e: &mut Engine, actor: Ptr, source: Ptr, percent: i32) {
+    if actor.is_null() || source.is_null() {
+        return;
+    }
+    let fraction = (percent as f64 / e.global::<f64>(HUNDRED)) as f32;
+    let source_npc = cast_to_npc(e, source);
+    let actor_npc = cast_to_npc(e, actor);
+    let blocks_a = e.mem.alloc(0x80);
+    let blocks_b = e.mem.alloc(0x80);
+    let list = e.mem.alloc(0x14);
+    for blocks in [blocks_a, blocks_b] {
+        e.call(
+            VECTOR_CONSTRUCTOR_ITERATOR,
+            &args![
+                blocks,
+                0x20u32,
+                4u32,
+                COORD_BLOCK_CONSTRUCT,
+                COORD_BLOCK_DESTRUCT
+            ],
+        );
+    }
+    e.call(COORD_LIST_CONSTRUCT, &args![list]);
+    let sex = e.call(ACTOR_BASE_GET_SEX, &args![source_npc]).u32();
+    let race = e.call(ACTOR_BASE_RACE, &args![source_npc]).u32();
+    e.call(COLLECT_MATCHING_NPCS, &args![race, sex, list]);
+    let mut chosen = 0;
+    let first = e.call(ARRAY_ELEMENT_ADDRESS, &args![list, 0u32]).u32();
+    if e.mem.u32(first) != 0 {
+        let first = e.call(ARRAY_ELEMENT_ADDRESS, &args![list, 0u32]).u32();
+        chosen = e.mem.u32(first);
+    }
+    let old = fn_005d9f90(e, actor_npc);
+    if old != 0 {
+        fn_005d9ff0(e, Ptr::new(old), 3);
+        fn_005d9f70(e, actor_npc, 0);
+    }
+    let actor_coords = e.call(NPC_COORDS, &args![actor_npc]).u32();
+    let source_coords = e.call(NPC_COORDS, &args![source_npc]).u32();
+    let chosen_coords = e.call(NPC_COORDS, &args![chosen]).u32();
+    e.call(
+        FACEGEN_FN_00652E00,
+        &args![chosen_coords, source_coords, blocks_b, 0u32],
+    );
+    let scale = e
+        .call(FACEGEN_FN_00652440, &args![actor_coords, 0u32, 0u32])
+        .f32();
+    e.call(INIT_FACEGEN_COORD, &args![blocks_a]);
+    e.call(FACEGEN_FN_00653000, &args![fraction, blocks_b, 1u32]);
+    e.call(
+        FACEGEN_FN_00652AF0,
+        &args![actor_coords, blocks_b, blocks_a, 1u32, 0.0f32],
+    );
+    e.call(FACEGEN_FN_00652470, &args![blocks_a, 0u32, 0u32, scale]);
+    let raw = e.call(OPERATOR_NEW, &args![0x84u32]).u32();
+    let copy = if raw == 0 {
+        0
+    } else {
+        e.mem.set_u32(raw, 4);
+        e.call(
+            VECTOR_CONSTRUCTOR_ITERATOR,
+            &args![
+                raw + 4,
+                0x20u32,
+                4u32,
+                COORD_BLOCK_CONSTRUCT,
+                COORD_BLOCK_DESTRUCT
+            ],
+        );
+        raw + 4
+    };
+    e.call(INIT_FACEGEN_COORD, &args![copy]);
+    let race_data = e.call(ACTOR_BASE_RACE, &args![actor_npc]).u32();
+    let destination = fn_005d9fb0(e, Ptr::new(race_data), 0);
+    e.call(
+        FACEGEN_FN_00652E00,
+        &args![destination, blocks_a, copy, 0u32],
+    );
+    e.call(COPY_FACEGEN_COORD, &args![actor_coords, copy, 0u32, 1u32]);
+    fn_005d9f70(e, actor_npc, copy);
+    e.vcall(actor_npc.addr(), FORM_SLOT_48, &args![0x800u32]);
+    if e.vcall(actor.addr(), REFERENCE_SLOT_1D0, &args![]).u32() != 0 {
+        e.call(CHARACTER_RESET_3D, &args![actor]);
+    }
+    e.call(COORD_LIST_DESTRUCT, &args![list]);
+    for blocks in [blocks_b, blocks_a] {
+        e.call(
+            VECTOR_DESTRUCTOR_ITERATOR,
+            &args![blocks, 0x20u32, 4u32, COORD_BLOCK_DESTRUCT],
+        );
+    }
+    e.mem.free(list);
+    e.mem.free(blocks_b);
+    e.mem.free(blocks_a);
+}
+
+// Translated from 005d9f70 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Stores `value` in the word at `this + 0x1b4` of an NPC: the pointer to
+/// its own counted array of face-gen coordinate blocks (0 for none).
+pub fn fn_005d9f70(e: &mut Engine, this: Ptr, value: u32) {
+    e.mem.set_u32(this.addr() + 0x1b4, value);
+}
+
+// Translated from 005d9f90 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The word at `this + 0x1b4` of an NPC (see [`fn_005d9f70`]).
+pub fn fn_005d9f90(e: &mut Engine, this: Ptr) -> u32 {
+    e.mem.u32(this.addr() + 0x1b4)
+}
+
+// Translated from 005d9fb0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The address of one of two sub-objects of `this`: `this + 0x478` when
+/// `flag` is 0, else `this + 0x3f8`.
+pub fn fn_005d9fb0(_e: &mut Engine, this: Ptr, flag: u32) -> u32 {
+    if flag == 0 {
+        this.addr() + 0x478
+    } else {
+        this.addr() + 0x3f8
+    }
+}
+
+// Translated from 005d9ff0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `logic_error::`vector deleting destructor'` (the library name Ghidra gives
+/// it), here the one for an array of `0x20`-byte coordinate blocks: with bit 1
+/// of `flags`, `this` is the first element of a counted array (the count
+/// sits at `this - 4`): every element is destroyed
+/// (`__eh_vector_destructor_iterator__`), the block `this - 4` is freed when
+/// bit 0 is set, and `this - 4` is returned. Without bit 1 the single object
+/// is destroyed (`00449680`), freed when bit 0 is set, and `this` is
+/// returned.
+pub fn fn_005d9ff0(e: &mut Engine, this: Ptr, flags: u32) -> Ptr {
+    if flags & 2 != 0 {
+        let count = e.mem.u32(this.addr() - 4);
+        e.call(
+            VECTOR_DESTRUCTOR_ITERATOR,
+            &args![this, 0x20u32, count, COORD_BLOCK_DESTRUCT],
+        );
+        if flags & 1 != 0 {
+            e.call(OPERATOR_DELETE, &args![this.addr() - 4]);
+        }
+        Ptr::new(this.addr() - 4)
+    } else {
+        e.call(COORD_BLOCK_DESTRUCT, &args![this]);
+        if flags & 1 != 0 {
+            e.call(OPERATOR_DELETE, &args![this]);
+        }
+        this
+    }
+}
+
+// Translated from 005da060 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::GetIsUsedItemEquipTypeFunction` (Xbox PDB): parses an integer
+/// (default -1) and returns the `AL` of
+/// `GetIsUsedItemEquipTypeConditionFunction(thisObj, value, 0, result)`.
+pub fn script_get_is_used_item_equip_type_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([value]) = parse_params(e, a, [u32::MAX]) else {
+        return false;
+    };
+    call_condition(e, GET_IS_USED_ITEM_EQUIP_TYPE_CONDITION, a, value)
+}
+
+// Translated from 005da0c0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::GetThreatRatioFunction` (Xbox PDB): parses a reference (default
+/// 0) and returns the `AL` of `GetThreatRatioConditionFunction(thisObj,
+/// reference, 0, result)`.
+pub fn script_get_threat_ratio_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([reference]) = parse_params(e, a, [0]) else {
+        return false;
+    };
+    call_condition(e, GET_THREAT_RATIO_CONDITION, a, reference)
+}
+
+// Translated from 005da120 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::GetIsAlignmentFunction` (Xbox PDB): parses an integer (default
+/// 1) and returns the `AL` of `GetIsAlignmentConditionFunction(thisObj,
+/// value, 0, result)`.
+pub fn script_get_is_alignment_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([value]) = parse_params(e, a, [1]) else {
+        return false;
+    };
+    call_condition(e, GET_IS_ALIGNMENT_CONDITION, a, value)
+}
+
+// Translated from 005da180 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses a form and, when it is not null, calls `0060d720` on it. Returns
+/// the parse result.
+pub fn fn_005da180(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([form]) = parse_params(e, a, [0]) else {
+        return false;
+    };
+    if form != 0 {
+        e.call(FN_0060D720, &args![form]);
+    }
+    true
+}
+
+// Translated from 005da1e0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Parses an object (default 0) and a float (default 0.0). With an object,
+/// calls `00444020(object, float)` and its virtual slot `0x48` with 4.
+/// Returns the parse result.
+pub fn fn_005da1e0(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([object, amount]) = parse_params(e, a, [0, 0.0f32.to_bits()]) else {
+        return false;
+    };
+    if object != 0 {
+        e.call(FN_00444020, &args![object, amount]);
+        e.vcall(object, FORM_SLOT_48, &args![4u32]);
+    }
+    true
+}
+
+// Translated from 005da260 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Calls `00477d10(thisObj)` and succeeds.
+pub fn fn_005da260(e: &mut Engine, a: ScriptArgs) -> bool {
+    e.call(FN_00477D10, &args![a.this_obj]);
+    true
+}
+
+// Translated from 005da280 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Returns the `AL` of `GetAggroRadiusViolatedConditionFunction(thisObj, 0,
+/// 0, result)`.
+pub fn fn_005da280(e: &mut Engine, a: ScriptArgs) -> bool {
+    condition_without_argument(e, a, GET_AGGRO_RADIUS_VIOLATED_CONDITION)
+}
+
+/// The tail the alarm paths of `005da2a0` share: `Actor::AttackAlarm` on
+/// `alarmed`, then the 13-word virtual call (slot `0x33c`) of the process of
+/// `process_owner` with `target` and the player.
+fn raise_alarm(e: &mut Engine, alarmed: u32, process_owner: u32, target: u32) {
+    let player = player(e);
+    e.call(ACTOR_ATTACK_ALARM, &args![alarmed, player, 0u32, 1u32]);
+    let process = e.call(GET_PROCESS, &args![process_owner]).u32();
+    e.vcall(
+        process,
+        PROCESS_SLOT_33C,
+        &args![target, player, 1u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 1u32, 0u32],
+    );
+}
+
+// Translated from 005da2a0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// A command run on an actor (`thisObj`, virtual test `0x100`; the parse
+/// result is ignored): parses an actor and an id. Without either, `thisObj`
+/// raises the alarm against the player. Otherwise an actor that is not the
+/// player and has a process raises it; failing that, the id is looked up in
+/// the process lists: a found reference that fails the virtual test `0x21c`
+/// raises it, one that passes it hands it to the owner's actor (found by the
+/// owner's form type 8 through the id lookup, else `GetActorRefInHigh`).
+/// Always succeeds.
+pub fn fn_005da2a0(e: &mut Engine, a: ScriptArgs) -> bool {
+    let [target, id] = parse_values(e, a, [0, 0]);
+    let this_obj = a.this_obj.addr();
+    if !e.vcall(this_obj, REFERENCE_TEST_SLOT, &args![]).bool() {
+        return true;
+    }
+    let player = player(e);
+    if target == 0 && id == 0 {
+        raise_alarm(e, this_obj, this_obj, this_obj);
+        return true;
+    }
+    if target != 0 && target != player && e.call(GET_PROCESS, &args![target]).u32() != 0 {
+        raise_alarm(e, target, target, target);
+        return true;
+    }
+    if id != 0 {
+        let found = e
+            .call(PROCESS_LISTS_FIND, &args![PROCESS_LISTS, id, 1u32, 1u32])
+            .u32();
+        if found != 0 {
+            if !e.vcall(found, REFERENCE_SLOT_21C, &args![]).bool() {
+                raise_alarm(e, found, found, found);
+            } else if e.call(REFERENCE_GET_OWNER, &args![found]).u32() != 0 {
+                let owner = e.call(REFERENCE_GET_OWNER, &args![found]).u32();
+                let owner_actor = if e.call(FORM_TYPE, &args![owner]).u32() == 8 {
+                    e.call(PROCESS_LISTS_FIND, &args![PROCESS_LISTS, owner, 0u32, 1u32])
+                        .u32()
+                } else {
+                    e.call(
+                        PROCESS_LISTS_GET_ACTOR_REF_IN_HIGH,
+                        &args![PROCESS_LISTS, owner, 0u32],
+                    )
+                    .u32()
+                };
+                if owner_actor != 0 {
+                    raise_alarm(e, owner_actor, found, found);
+                }
+            }
+        }
+    }
+    true
+}
+
+// Translated from 005da540 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Closes the console (`Interface::CloseConsole`) and queues the creation of
+/// menu 9 for the player: `QueueMenuCreate(9, player, 0, 0, 1, 0)`. Always
+/// succeeds; none of the eight words is read.
+pub fn fn_005da540(e: &mut Engine, _unused_args: ScriptArgs) -> bool {
+    e.call(CLOSE_CONSOLE, &args![]);
+    let player = player(e);
+    e.call(
+        QUEUE_MENU_CREATE,
+        &args![9u32, player, 0u32, 0u32, 1u32, 0u32],
+    );
+    true
+}
+
+// Translated from 005da570 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::FireWeaponFunction` (Xbox PDB): parses a weapon form. With a
+/// `thisObj`: a form of type `0x28` is fired, through the task queue
+/// (`QueueWeaponFire(weapon, thisObj)`) when `008c7aa0` holds, else directly
+/// (`00523150(weapon, thisObj)`); anything else logs the message `"SCRIPTS:
+/// FireWeapon in script '%s' called with non-weapon parameter."` with the
+/// script's name (virtual slot `0x130`). Succeeds once the parameters parse.
+pub fn script_fire_weapon_function(e: &mut Engine, a: ScriptArgs) -> bool {
+    let Some([weapon]) = parse_params(e, a, [0]) else {
+        return false;
+    };
+    if !a.this_obj.is_null() {
+        if weapon != 0 && e.call(FORM_TYPE, &args![weapon]).u32() == 0x28 {
+            if e.call(FN_008C7AA0, &args![]).bool() {
+                let queue = e.call(TASK_QUEUE_INTERFACE, &args![]).u32();
+                e.call(QUEUE_WEAPON_FIRE, &args![queue, weapon, a.this_obj]);
+            } else {
+                e.call(WEAPON_FN_00523150, &args![weapon, a.this_obj]);
+            }
+        } else {
+            let name = e
+                .vcall(a.script_obj.addr(), SCRIPT_NAME_SLOT, &args![])
+                .u32();
+            e.call(LOG_STUB, &args![MSG_FIRE_WEAPON_NON_WEAPON, name]);
+        }
+    }
+    true
+}
+
+// Translated from 005da630 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `Script::ShowTutorialMenu` (Xbox PDB): when `005d4a40` holds (it always
+/// returns 1), parses an integer (the parse result is ignored; the local
+/// keeps 0 when it fails) and creates the tutorial menu for it
+/// (`TutorialMenu::Create(value, 0)`). Always succeeds.
+pub fn script_show_tutorial_menu(e: &mut Engine, a: ScriptArgs) -> bool {
+    if e.call(ALWAYS_TRUE, &args![]).bool() {
+        let [value] = parse_values(e, a, [0]);
+        e.call(TUTORIAL_MENU_CREATE, &args![value, 0u32]);
+    }
+    true
+}
+
 /// This part's translated functions, by exe address.
 pub fn funcs() -> Vec<(u32, AbiFn)> {
     vec![
@@ -1138,6 +2177,46 @@ pub fn funcs() -> Vec<(u32, AbiFn)> {
         entry!(0x005d8e20, fn_005d8e20(ScriptArgs) -> bool),
         entry!(0x005d8e80, fn_005d8e80(ScriptArgs) -> bool),
         entry!(0x005d90a0, fn_005d90a0(ScriptArgs) -> bool),
+        entry!(0x005d9160, fn_005d9160(ScriptArgs) -> bool),
+        entry!(0x005d9170, script_set_console_output_file_function(ScriptArgs) -> bool),
+        entry!(0x005d9270, script_get_faction_relation_function(ScriptArgs) -> bool),
+        entry!(0x005d92e0, script_is_last_played_idle_function(ScriptArgs) -> bool),
+        entry!(0x005d9350, fn_005d9350(ScriptArgs) -> bool),
+        entry!(0x005d9370, script_set_player_teammate_function(ScriptArgs) -> bool),
+        entry!(0x005d93f0, fn_005d93f0(ScriptArgs) -> bool),
+        entry!(0x005d9410, fn_005d9410(ScriptArgs) -> bool),
+        entry!(0x005d9430, fn_005d9430(ScriptArgs) -> bool),
+        entry!(0x005d94c0, fn_005d94c0(ScriptArgs) -> bool),
+        entry!(0x005d94e0, fn_005d94e0(ScriptArgs) -> bool),
+        entry!(0x005d9500, fn_005d9500(ScriptArgs) -> bool),
+        entry!(0x005d9550, fn_005d9550(ScriptArgs) -> bool),
+        entry!(0x005d9590, fn_005d9590(ScriptArgs) -> bool),
+        entry!(0x005d95b0, fn_005d95b0(ScriptArgs) -> bool),
+        entry!(0x005d95d0, script_set_player_tag_skill_function(ScriptArgs) -> bool),
+        entry!(0x005d9660, fn_005d9660() -> u32),
+        entry!(0x005d9670, script_is_player_tag_skill_function(ScriptArgs) -> bool),
+        entry!(0x005d9730, script_get_player_grabbed_ref_function(ScriptArgs) -> bool),
+        entry!(0x005d97b0, fn_005d97b0(ScriptArgs) -> bool),
+        entry!(0x005d9810, fn_005d9810(ScriptArgs) -> bool),
+        entry!(0x005d9aa0, fn_005d9aa0(ScriptArgs) -> bool),
+        entry!(0x005d9ac0, script_force_active_quest_function(ScriptArgs) -> bool),
+        entry!(0x005d9b20, fn_005d9b20(ScriptArgs) -> bool),
+        entry!(0x005d9bc0, fn_005d9bc0(Ptr, Ptr, i32)),
+        entry!(0x005d9f70, fn_005d9f70(Ptr, u32)),
+        entry!(0x005d9f90, fn_005d9f90(Ptr) -> u32),
+        entry!(0x005d9fb0, fn_005d9fb0(Ptr, u32) -> u32),
+        entry!(0x005d9ff0, fn_005d9ff0(Ptr, u32) -> Ptr),
+        entry!(0x005da060, script_get_is_used_item_equip_type_function(ScriptArgs) -> bool),
+        entry!(0x005da0c0, script_get_threat_ratio_function(ScriptArgs) -> bool),
+        entry!(0x005da120, script_get_is_alignment_function(ScriptArgs) -> bool),
+        entry!(0x005da180, fn_005da180(ScriptArgs) -> bool),
+        entry!(0x005da1e0, fn_005da1e0(ScriptArgs) -> bool),
+        entry!(0x005da260, fn_005da260(ScriptArgs) -> bool),
+        entry!(0x005da280, fn_005da280(ScriptArgs) -> bool),
+        entry!(0x005da2a0, fn_005da2a0(ScriptArgs) -> bool),
+        entry!(0x005da540, fn_005da540(ScriptArgs) -> bool),
+        entry!(0x005da570, script_fire_weapon_function(ScriptArgs) -> bool),
+        entry!(0x005da630, script_show_tutorial_menu(ScriptArgs) -> bool),
     ]
 }
 
@@ -2408,5 +3487,1395 @@ mod tests {
         assert!(!run(&mut e, 0x005d_90a0, a));
         assert_eq!(e.mem.f64(a.result.addr()), 0.0);
         assert!(calls(&e, SCRIPT_BODY_005C4B30).is_empty());
+    }
+
+    // ---- The functions from 005d9160 ----
+
+    const V_RECORD: u32 = 0x0900_0010;
+    const V_WORD: u32 = 0x0900_0011;
+
+    fn engine_p7b() -> Engine {
+        let mut e = engine();
+        e.map(0x0101_7000, 0x1000);
+        e.set_global(HUNDRED, 100.0f64);
+        e.register(V_RECORD, |_, _| Ret::default());
+        e.register(V_WORD, |_, _| 0x5151u32.into_ret());
+        e
+    }
+
+    /// The two argument words of a `double` pushed on the stack.
+    fn f64_words(value: f64) -> [u32; 2] {
+        let bits = value.to_bits();
+        [bits as u32, (bits >> 32) as u32]
+    }
+
+    /// A command that is a condition function with no argument: the callee
+    /// gets `(thisObj, 0, 0, result)` and its `AL` is the answer.
+    fn assert_plain_condition(address: u32, callee: u32) {
+        let mut e = engine_p7b();
+        let a = command(&mut e, 0x4444);
+        e.register(callee, |_, _| true.into_ret());
+        start_log(&mut e);
+        assert!(run(&mut e, address, a));
+        assert_eq!(calls(&e, callee), vec![vec![0x4444, 0, 0, a.result.addr()]]);
+        e.register(callee, |_, _| false.into_ret());
+        assert!(!run(&mut e, address, a));
+    }
+
+    /// A command that parses one word (initialised to `default`) and hands it
+    /// to a condition function, whatever `thisObj` is.
+    fn assert_parsed_condition(address: u32, callee: u32, default: u32) {
+        let mut e = engine_p7b();
+        let a = command(&mut e, 0x4444);
+        e.register_double(PARSE_PARAMETERS, move |e, args| {
+            assert_eq!(e.mem.u32(args[7]), default);
+            e.mem.set_u32(args[7], 0x77);
+            true.into_ret()
+        });
+        e.register(callee, |_, _| true.into_ret());
+        start_log(&mut e);
+        assert!(run(&mut e, address, a));
+        assert_parsed(&e, 0x4444);
+        assert_eq!(
+            calls(&e, callee),
+            vec![vec![0x4444, 0x77, 0, a.result.addr()]]
+        );
+        e.register(callee, |_, _| false.into_ret());
+        assert!(!run(&mut e, address, a));
+
+        // Parameters that do not parse: nothing is called.
+        parse_gives(&mut e, false, &[]);
+        start_log(&mut e);
+        assert!(!run(&mut e, address, a));
+        assert!(calls(&e, callee).is_empty());
+    }
+
+    /// `005d9270` and `005d92e0`: a condition function for one parsed word,
+    /// skipped (the command succeeds) without a `thisObj` or with a zero word.
+    fn assert_parsed_condition_with_reference(address: u32, callee: u32) {
+        let mut e = engine_p7b();
+        let a = command(&mut e, 0x4444);
+        e.register(callee, |_, _| false.into_ret());
+        parse_gives(&mut e, true, &[0x77]);
+        start_log(&mut e);
+        // The condition's answer is the command's answer.
+        assert!(!run(&mut e, address, a));
+        assert_parsed(&e, 0x4444);
+        assert_eq!(
+            calls(&e, callee),
+            vec![vec![0x4444, 0x77, 0, a.result.addr()]]
+        );
+        e.register(callee, |_, _| true.into_ret());
+        assert!(run(&mut e, address, a));
+
+        // No thisObj, or a zero word: success without the condition.
+        e.register(callee, |_, _| false.into_ret());
+        let without = command(&mut e, 0);
+        start_log(&mut e);
+        assert!(run(&mut e, address, without));
+        parse_gives(&mut e, true, &[0]);
+        assert!(run(&mut e, address, a));
+        assert!(calls(&e, callee).is_empty());
+
+        // Parameters that do not parse.
+        parse_gives(&mut e, false, &[]);
+        assert!(!run(&mut e, address, a));
+    }
+
+    #[test]
+    fn fn_005d9160_closes_all_menus() {
+        let mut e = engine_p7b();
+        let a = command(&mut e, 0);
+        e.register(EMERGENCY_CLOSE_ALL_MENUS, |_, _| Ret::default());
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9160, a));
+        assert_eq!(
+            calls(&e, EMERGENCY_CLOSE_ALL_MENUS),
+            vec![Vec::<u32>::new()]
+        );
+    }
+
+    #[test]
+    fn script_set_console_output_file_function_sets_or_clears_the_file_name() {
+        let mut e = engine_p7b();
+        let a = command(&mut e, 0);
+        e.register(MENU_CONSOLE_INSTANCE, |_, _| 0xc0de_u32.into_ret());
+        let names = Rc::new(RefCell::new(Vec::<(u32, Option<Vec<u8>>)>::new()));
+        let sink = names.clone();
+        e.register_double(CONSOLE_SET_OUTPUT_FILE, move |e, args| {
+            let text = (args[1] != 0).then(|| e.mem.cstr(args[1]));
+            sink.borrow_mut().push((args[0], text));
+            Ret::default()
+        });
+        let parse_text = |e: &mut Engine, text: &'static str| {
+            e.register_double(PARSE_PARAMETERS, move |e, args| {
+                e.mem.set_cstr(args[7], text.as_bytes());
+                true.into_ret()
+            });
+        };
+
+        // A name: the console gets it, then the echo shows it.
+        parse_text(&mut e, "out.txt");
+        set_echo(&mut e, true);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9170, a));
+        assert_parsed(&e, 0);
+        assert_eq!(calls(&e, MENU_CONSOLE_INSTANCE), vec![vec![1]]);
+        assert_eq!(
+            names.borrow().as_slice(),
+            &[(0xc0de, Some(b"out.txt".to_vec()))]
+        );
+        let printed = calls(&e, CONSOLE_PRINT);
+        assert_eq!(printed.len(), 1);
+        assert_eq!(printed[0][0], MSG_CONSOLE_OUTPUT_FILE);
+
+        // "0" and the empty text disable it (the echo comes first).
+        for text in ["0", ""] {
+            names.borrow_mut().clear();
+            parse_text(&mut e, text);
+            start_log(&mut e);
+            assert!(run(&mut e, 0x005d_9170, a));
+            assert_eq!(names.borrow().as_slice(), &[(0xc0de, None)]);
+            assert_eq!(
+                calls(&e, CONSOLE_PRINT),
+                vec![vec![MSG_CONSOLE_OUTPUT_DISABLED]]
+            );
+        }
+
+        // Without the echo flag nothing is printed.
+        set_echo(&mut e, false);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9170, a));
+        assert!(calls(&e, CONSOLE_PRINT).is_empty());
+
+        // Parameters that do not parse: the console is left alone.
+        parse_gives(&mut e, false, &[]);
+        names.borrow_mut().clear();
+        start_log(&mut e);
+        assert!(!run(&mut e, 0x005d_9170, a));
+        assert!(names.borrow().is_empty());
+        assert!(calls(&e, MENU_CONSOLE_INSTANCE).is_empty());
+    }
+
+    #[test]
+    fn script_get_faction_relation_function_asks_the_condition_for_a_form() {
+        assert_parsed_condition_with_reference(0x005d_9270, GET_FACTION_RELATION_CONDITION);
+    }
+
+    #[test]
+    fn script_is_last_played_idle_function_asks_the_condition_for_a_form() {
+        assert_parsed_condition_with_reference(0x005d_92e0, IS_LAST_PLAYED_IDLE_CONDITION);
+    }
+
+    #[test]
+    fn fn_005d9350_creates_the_race_sex_menu() {
+        let mut e = engine_p7b();
+        let a = command(&mut e, 0);
+        e.register(CREATE_RACE_SEX_MENU, |_, _| Ret::default());
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9350, a));
+        assert_eq!(calls(&e, CREATE_RACE_SEX_MENU), vec![vec![0]]);
+    }
+
+    #[test]
+    fn script_set_player_teammate_function_sets_the_flag_on_actors() {
+        let mut e = engine_p7b();
+        e.register(ACTOR_SET_PLAYER_TEAMMATE, |_, _| Ret::default());
+        let actor = object_with(&mut e, &[(REFERENCE_TEST_SLOT, V_TRUE)]);
+        let a = command(&mut e, actor);
+
+        parse_gives(&mut e, true, &[5]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9370, a));
+        assert_parsed(&e, actor);
+        assert_eq!(calls(&e, ACTOR_SET_PLAYER_TEAMMATE), vec![vec![actor, 1]]);
+
+        parse_gives(&mut e, true, &[0]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9370, a));
+        assert_eq!(calls(&e, ACTOR_SET_PLAYER_TEAMMATE), vec![vec![actor, 0]]);
+
+        // Not an actor, or no thisObj: still a success, nothing set.
+        let thing = object_with(&mut e, &[(REFERENCE_TEST_SLOT, V_FALSE)]);
+        let not_actor = command(&mut e, thing);
+        let none = command(&mut e, 0);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9370, not_actor));
+        assert!(run(&mut e, 0x005d_9370, none));
+        assert!(calls(&e, ACTOR_SET_PLAYER_TEAMMATE).is_empty());
+
+        parse_gives(&mut e, false, &[]);
+        assert!(!run(&mut e, 0x005d_9370, a));
+    }
+
+    #[test]
+    fn fn_005d93f0_asks_the_player_teammate_condition() {
+        assert_plain_condition(0x005d_93f0, GET_PLAYER_TEAMMATE_CONDITION);
+    }
+
+    #[test]
+    fn fn_005d9410_asks_the_player_teammate_count_condition() {
+        assert_plain_condition(0x005d_9410, GET_PLAYER_TEAMMATE_COUNT_CONDITION);
+    }
+
+    #[test]
+    fn fn_005d9430_queues_the_menu_when_forced_or_asked() {
+        let mut e = engine_p7b();
+        e.register(QUEUE_MENU_CREATE, |_, _| Ret::default());
+        let actor = object_with(&mut e, &[(REFERENCE_TEST_SLOT, V_TRUE)]);
+        let a = command(&mut e, actor);
+        let force = Rc::new(Cell::new(false));
+        let forced = force.clone();
+        e.register_double(ACTOR_FORCE_NEXT_UPDATE, move |_, _| forced.get().into_ret());
+
+        // Neither forced nor asked.
+        parse_gives(&mut e, true, &[0]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9430, a));
+        assert_parsed(&e, actor);
+        assert!(calls(&e, QUEUE_MENU_CREATE).is_empty());
+
+        // Asked: even when the parse reports failure the local is used.
+        parse_gives(&mut e, false, &[7]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9430, a));
+        assert_eq!(
+            calls(&e, QUEUE_MENU_CREATE),
+            vec![vec![1, actor, 0, 0, 3, 0]]
+        );
+
+        // Forced.
+        force.set(true);
+        parse_gives(&mut e, true, &[0]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9430, a));
+        assert_eq!(calls(&e, QUEUE_MENU_CREATE).len(), 1);
+
+        // Not an actor / no thisObj: the parse is not even done.
+        let thing = object_with(&mut e, &[(REFERENCE_TEST_SLOT, V_FALSE)]);
+        let not_actor = command(&mut e, thing);
+        let none = command(&mut e, 0);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9430, not_actor));
+        assert!(run(&mut e, 0x005d_9430, none));
+        assert!(calls(&e, PARSE_PARAMETERS).is_empty());
+        assert!(calls(&e, QUEUE_MENU_CREATE).is_empty());
+    }
+
+    #[test]
+    fn fn_005d94c0_asks_the_minor_crime_count_condition() {
+        assert_plain_condition(0x005d_94c0, GET_MINOR_CRIME_COUNT_CONDITION);
+    }
+
+    #[test]
+    fn fn_005d94e0_asks_the_major_crime_count_condition() {
+        assert_plain_condition(0x005d_94e0, GET_MAJOR_CRIME_COUNT_CONDITION);
+    }
+
+    #[test]
+    fn fn_005d9500_passes_the_parsed_value_on_with_zero() {
+        let mut e = engine_p7b();
+        e.register(FLAG_SETTER_0047EB90, |_, _| Ret::default());
+        let a = command(&mut e, 0);
+        parse_gives(&mut e, true, &[0x55]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9500, a));
+        assert_parsed(&e, 0);
+        assert_eq!(calls(&e, FLAG_SETTER_0047EB90), vec![vec![0x55, 0]]);
+
+        parse_gives(&mut e, false, &[]);
+        start_log(&mut e);
+        assert!(!run(&mut e, 0x005d_9500, a));
+        assert!(calls(&e, FLAG_SETTER_0047EB90).is_empty());
+    }
+
+    #[test]
+    fn fn_005d9550_calls_the_actor_function_on_actors_only() {
+        let mut e = engine_p7b();
+        e.register(ACTOR_FN_008BCB40, |_, _| Ret::default());
+        let actor = object_with(&mut e, &[(REFERENCE_TEST_SLOT, V_TRUE)]);
+        let a = command(&mut e, actor);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9550, a));
+        assert_eq!(calls(&e, ACTOR_FN_008BCB40), vec![vec![actor]]);
+
+        let thing = object_with(&mut e, &[(REFERENCE_TEST_SLOT, V_FALSE)]);
+        let not_actor = command(&mut e, thing);
+        let none = command(&mut e, 0);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9550, not_actor));
+        assert!(run(&mut e, 0x005d_9550, none));
+        assert!(calls(&e, ACTOR_FN_008BCB40).is_empty());
+    }
+
+    #[test]
+    fn fn_005d9590_asks_the_actor_crime_player_enemy_condition() {
+        assert_plain_condition(0x005d_9590, GET_ACTOR_CRIME_PLAYER_ENEMY_CONDITION);
+    }
+
+    #[test]
+    fn fn_005d95b0_asks_the_actor_faction_player_enemy_condition() {
+        assert_plain_condition(0x005d_95b0, GET_ACTOR_FACTION_PLAYER_ENEMY_CONDITION);
+    }
+
+    #[test]
+    fn script_set_player_tag_skill_function_sets_a_tag_skill_in_range() {
+        let mut e = engine_p7b();
+        let player = set_player(&mut e);
+        e.register(VALUE_IN_RANGE_20_TO_2D, |_, args| {
+            (0x20..0x2e).contains(&args[0]).into_ret()
+        });
+        e.register(ACTOR_GET_CLASS, |_, _| 0xc1a5_u32.into_ret());
+        e.register(CLASS_SET_TAG_SKILL, |_, _| Ret::default());
+        let a = command(&mut e, 0);
+        // The documented defaults are in the locals before the parse.
+        let parsed = Rc::new(RefCell::new((0x25u32, 2u32)));
+        let values = parsed.clone();
+        e.register_double(PARSE_PARAMETERS, move |e, args| {
+            assert_eq!(e.mem.u32(args[7]), u32::MAX);
+            assert_eq!(e.mem.u32(args[8]), 0);
+            e.mem.set_u32(args[7], values.borrow().0);
+            e.mem.set_u32(args[8], values.borrow().1);
+            true.into_ret()
+        });
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_95d0, a));
+        assert_eq!(calls(&e, ACTOR_GET_CLASS), vec![vec![player]]);
+        assert_eq!(calls(&e, CLASS_SET_TAG_SKILL), vec![vec![0xc1a5, 2, 0x25]]);
+
+        // An index of 4 or more, a negative one, or a skill out of range.
+        for (skill, index) in [(0x25, 4), (0x25, u32::MAX), (0x2e, 1), (0x1f, 1)] {
+            *parsed.borrow_mut() = (skill, index);
+            start_log(&mut e);
+            assert!(run(&mut e, 0x005d_95d0, a));
+            assert!(calls(&e, CLASS_SET_TAG_SKILL).is_empty(), "{skill} {index}");
+        }
+        *parsed.borrow_mut() = (0x20, 3);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_95d0, a));
+        assert_eq!(calls(&e, CLASS_SET_TAG_SKILL), vec![vec![0xc1a5, 3, 0x20]]);
+
+        parse_gives(&mut e, false, &[]);
+        start_log(&mut e);
+        assert!(!run(&mut e, 0x005d_95d0, a));
+        assert!(calls(&e, CLASS_SET_TAG_SKILL).is_empty());
+    }
+
+    #[test]
+    fn fn_005d9660_is_four() {
+        let mut e = engine_p7b();
+        assert_eq!(e.call(0x005d_9660, &args![]).u32(), 4);
+    }
+
+    #[test]
+    fn script_is_player_tag_skill_function_reports_a_tag_skill() {
+        let mut e = engine_p7b();
+        let player = set_player(&mut e);
+        e.register(VALUE_IN_RANGE_20_TO_2D, |_, args| {
+            (0x20..0x2e).contains(&args[0]).into_ret()
+        });
+        e.register(ACTOR_GET_CLASS, |_, _| 0xc1a5_u32.into_ret());
+        e.register(CLASS_IS_TAG_SKILL, |_, args| (args[1] == 0x22).into_ret());
+        let a = command(&mut e, 0);
+        let skill = Rc::new(Cell::new(0x22u32));
+        let wanted = skill.clone();
+        e.register_double(PARSE_PARAMETERS, move |e, args| {
+            assert_eq!(e.mem.u32(args[7]), u32::MAX);
+            e.mem.set_u32(args[7], wanted.get());
+            true.into_ret()
+        });
+        set_echo(&mut e, true);
+
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9670, a));
+        assert_eq!(e.mem.f64(a.result.addr()), 1.0);
+        assert_eq!(calls(&e, ACTOR_GET_CLASS), vec![vec![player]]);
+        assert_eq!(calls(&e, CLASS_IS_TAG_SKILL), vec![vec![0xc1a5, 0x22]]);
+        let [low, high] = f64_words(1.0);
+        assert_eq!(
+            calls(&e, CONSOLE_PRINT),
+            vec![vec![MSG_IS_PLAYER_TAG_SKILL, low, high]]
+        );
+
+        // A skill the class does not tag.
+        skill.set(0x23);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9670, a));
+        assert_eq!(e.mem.f64(a.result.addr()), 0.0);
+
+        // Out of range: the class is not even asked; the echo shows 0.
+        skill.set(0x40);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9670, a));
+        assert_eq!(e.mem.f64(a.result.addr()), 0.0);
+        assert!(calls(&e, ACTOR_GET_CLASS).is_empty());
+        let [low, high] = f64_words(0.0);
+        assert_eq!(
+            calls(&e, CONSOLE_PRINT),
+            vec![vec![MSG_IS_PLAYER_TAG_SKILL, low, high]]
+        );
+
+        // No echo flag, and a failed parse leaves the result alone.
+        set_echo(&mut e, false);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9670, a));
+        assert!(calls(&e, CONSOLE_PRINT).is_empty());
+        e.mem.set_f64(a.result.addr(), 9.0);
+        parse_gives(&mut e, false, &[]);
+        assert!(!run(&mut e, 0x005d_9670, a));
+        assert_eq!(e.mem.f64(a.result.addr()), 9.0);
+    }
+
+    #[test]
+    fn script_get_player_grabbed_ref_function_stores_the_grabbed_form_id() {
+        let mut e = engine_p7b();
+        let player = set_player(&mut e);
+        let grabbed = object(&mut e);
+        e.mem.set_u32(grabbed + 0x0c, 0x1234);
+        let held = Rc::new(Cell::new(grabbed));
+        let current = held.clone();
+        e.register_double(PLAYER_GRABBED_REF, move |_, _| current.get().into_ret());
+        e.register(PUT_NUMERIC_ID_IN_DOUBLE, |e, args| {
+            let id = e.mem.u32(args[0]);
+            e.mem.set_f64(args[1], id as f64);
+            Ret::default()
+        });
+        let a = command(&mut e, 0);
+        set_echo(&mut e, true);
+        e.mem.set_f64(a.result.addr(), 9.0);
+
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9730, a));
+        assert_eq!(e.mem.f64(a.result.addr()), 0x1234 as f64);
+        assert_eq!(
+            calls(&e, PLAYER_GRABBED_REF),
+            vec![vec![player], vec![player]]
+        );
+        assert_eq!(
+            calls(&e, CONSOLE_PRINT),
+            vec![vec![MSG_GET_PLAYER_GRABBED_REF, 0x1234]]
+        );
+
+        // Nothing grabbed: 0.0, asked once, the echo shows 0.
+        held.set(0);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9730, a));
+        assert_eq!(e.mem.f64(a.result.addr()), 0.0);
+        assert_eq!(calls(&e, PLAYER_GRABBED_REF).len(), 1);
+        assert_eq!(
+            calls(&e, CONSOLE_PRINT),
+            vec![vec![MSG_GET_PLAYER_GRABBED_REF, 0]]
+        );
+        set_echo(&mut e, false);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9730, a));
+        assert!(calls(&e, CONSOLE_PRINT).is_empty());
+    }
+
+    #[test]
+    fn fn_005d97b0_asks_a_condition_for_a_parsed_value() {
+        assert_parsed_condition(0x005d_97b0, CONDITION_FN_005A4C20, 0);
+    }
+
+    /// The doubles and objects `005d9810` needs.
+    struct Spawn {
+        this_obj: u32,
+        made: u32,
+        form: u32,
+        handler: u32,
+        form_type: Rc<Cell<u32>>,
+        base_data_test: Rc<Cell<bool>>,
+        cell_flag: Rc<Cell<bool>>,
+    }
+
+    fn spawn_engine() -> (Engine, Spawn) {
+        let mut e = engine_p7b();
+        let this_obj = object_with(&mut e, &[(REFERENCE_SLOT_1F4, V_WORD)]);
+        let made = object_with(
+            &mut e,
+            &[(FORM_SLOT_48, V_RECORD), (ACTOR_SLOT_228, V_RECORD)],
+        );
+        e.mem.set_u32(made + 0x0c, 0x0abc);
+        let form = object_with(&mut e, &[(FORM_IS_ACTOR_BASE_SLOT, V_TRUE)]);
+        let handler = 0x000d_a7a0;
+        e.set_global(LIST_OWNER, handler);
+        let form_type = Rc::new(Cell::new(0x2au32));
+        let base_data_test = Rc::new(Cell::new(true));
+        let cell_flag = Rc::new(Cell::new(true));
+        let current = form_type.clone();
+        e.register_double(FORM_TYPE, move |_, _| current.get().into_ret());
+        e.register(OPERATOR_NEW, |_, _| 0xb10c_u32.into_ret());
+        e.register_double(CHARACTER_CONSTRUCT, move |_, _| made.into_ret());
+        e.register_double(CREATURE_CONSTRUCT, move |_, _| made.into_ret());
+        e.register(REFERENCE_SET_ENCOUNTER_ZONE, |_, _| Ret::default());
+        e.register(EXTRA_DATA_LIST, |_, _| 0x1157_u32.into_ret());
+        e.register(EXTRA_LIST_SET_COUNT, |_, _| Ret::default());
+        e.register(REFERENCE_PARENT_CELL, |_, _| 0xce11_u32.into_ret());
+        e.register(REFERENCE_SET_OBJECT_REFERENCE, |_, _| Ret::default());
+        let test = base_data_test.clone();
+        e.register_double(ACTOR_BASE_DATA_TEST, move |_, _| test.get().into_ret());
+        e.register(ACTOR_BASE_DATA_APPLY, |_, _| Ret::default());
+        let flag = cell_flag.clone();
+        e.register_double(CELL_FLAG_BIT_0, move |_, _| flag.get().into_ret());
+        e.register(REFERENCE_GET_WORLD_SPACE, |_, _| 0x1717_u32.into_ret());
+        e.register(REFERENCE_FIELD_24_ADDRESS, |_, _| 0x2424_u32.into_ret());
+        e.register(WORD_AT_20, |_, _| 0x2020_u32.into_ret());
+        e.register(DATA_HANDLER_FN_004698A0, |_, _| Ret::default());
+        e.register(DATA_HANDLER_FN_0046A010, |_, _| Ret::default());
+        e.register(PUT_NUMERIC_ID_IN_DOUBLE, |e, args| {
+            let id = e.mem.u32(args[0]);
+            e.mem.set_f64(args[1], id as f64);
+            Ret::default()
+        });
+        (
+            e,
+            Spawn {
+                this_obj,
+                made,
+                form,
+                handler,
+                form_type,
+                base_data_test,
+                cell_flag,
+            },
+        )
+    }
+
+    #[test]
+    fn fn_005d9810_builds_a_character_and_places_it() {
+        let (mut e, s) = spawn_engine();
+        let a = command(&mut e, s.this_obj);
+        e.mem.set_f64(a.result.addr(), 9.0);
+        // The documented defaults are in the locals before the parse.
+        let form = s.form;
+        e.register_double(PARSE_PARAMETERS, move |e, args| {
+            assert_eq!(e.mem.u32(args[7]), 0);
+            assert_eq!(e.mem.u32(args[8]), 4);
+            assert_eq!(e.mem.u32(args[9]), 0);
+            e.mem.set_u32(args[7], form);
+            e.mem.set_u32(args[8], 7);
+            e.mem.set_u32(args[9], 0x20ae);
+            true.into_ret()
+        });
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9810, a));
+        assert_parsed(&e, s.this_obj);
+        let made = s.made;
+        assert_eq!(calls(&e, OPERATOR_NEW), vec![vec![0x1c8]]);
+        assert_eq!(calls(&e, CHARACTER_CONSTRUCT), vec![vec![0xb10c]]);
+        assert!(calls(&e, CREATURE_CONSTRUCT).is_empty());
+        assert_eq!(
+            calls(&e, REFERENCE_SET_ENCOUNTER_ZONE),
+            vec![vec![made, 0x20ae]]
+        );
+        assert_eq!(calls(&e, EXTRA_DATA_LIST), vec![vec![made]]);
+        assert_eq!(calls(&e, EXTRA_LIST_SET_COUNT), vec![vec![0x1157, 7]]);
+        assert_eq!(
+            calls(&e, V_RECORD),
+            vec![vec![made, 0x4000_0000], vec![made, 0xce11]]
+        );
+        assert_eq!(
+            calls(&e, REFERENCE_SET_OBJECT_REFERENCE),
+            vec![vec![made, form]]
+        );
+        assert_eq!(calls(&e, ACTOR_BASE_DATA_TEST), vec![vec![form + 0x30]]);
+        assert_eq!(
+            calls(&e, ACTOR_BASE_DATA_APPLY),
+            vec![vec![form + 0x30, made]]
+        );
+        assert_eq!(calls(&e, CELL_FLAG_BIT_0), vec![vec![0xce11]]);
+        assert_eq!(
+            calls(&e, DATA_HANDLER_FN_004698A0),
+            vec![vec![
+                s.handler, 0x2020, 0x5151, 0x2424, 0xce11, 0x1717, made, 0, 0
+            ]]
+        );
+        assert_eq!(calls(&e, DATA_HANDLER_FN_0046A010), vec![vec![made, 0]]);
+        assert_eq!(e.mem.f64(a.result.addr()), 0x0abc as f64);
+    }
+
+    #[test]
+    fn fn_005d9810_builds_a_creature_and_adapts_to_the_flags() {
+        let (mut e, s) = spawn_engine();
+        let a = command(&mut e, s.this_obj);
+        parse_gives(&mut e, true, &[s.form, 3, 0]);
+        s.form_type.set(0x2b);
+        s.base_data_test.set(false);
+        s.cell_flag.set(false);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9810, a));
+        assert_eq!(calls(&e, OPERATOR_NEW), vec![vec![0x1c0]]);
+        assert_eq!(calls(&e, CREATURE_CONSTRUCT), vec![vec![0xb10c]]);
+        assert!(calls(&e, CHARACTER_CONSTRUCT).is_empty());
+        // No zone given, no base data applied, the cell dropped.
+        assert!(calls(&e, REFERENCE_SET_ENCOUNTER_ZONE).is_empty());
+        assert!(calls(&e, ACTOR_BASE_DATA_APPLY).is_empty());
+        assert_eq!(
+            calls(&e, DATA_HANDLER_FN_004698A0)[0][4],
+            0,
+            "the cell word"
+        );
+        // The cell passed to slot 0x228 is the one before the flag test.
+        assert_eq!(calls(&e, V_RECORD)[1], vec![s.made, 0xce11]);
+    }
+
+    #[test]
+    fn fn_005d9810_makes_nothing_for_other_forms_or_without_a_reference() {
+        let (mut e, s) = spawn_engine();
+        let a = command(&mut e, s.this_obj);
+        e.mem.set_f64(a.result.addr(), 9.0);
+
+        // A type that is neither character nor creature.
+        parse_gives(&mut e, true, &[s.form, 3, 0]);
+        s.form_type.set(0x28);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9810, a));
+        assert!(calls(&e, OPERATOR_NEW).is_empty());
+        assert_eq!(e.mem.f64(a.result.addr()), 0.0);
+
+        // A form that is not an actor base, a null form, no thisObj.
+        s.form_type.set(0x2a);
+        let thing = object_with(&mut e, &[(FORM_IS_ACTOR_BASE_SLOT, V_FALSE)]);
+        parse_gives(&mut e, true, &[thing, 3, 0]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9810, a));
+        parse_gives(&mut e, true, &[0, 3, 0]);
+        assert!(run(&mut e, 0x005d_9810, a));
+        parse_gives(&mut e, true, &[s.form, 3, 0]);
+        let none = command(&mut e, 0);
+        assert!(run(&mut e, 0x005d_9810, none));
+        assert!(calls(&e, OPERATOR_NEW).is_empty());
+
+        // The allocation failing: nothing more happens.
+        e.register(OPERATOR_NEW, |_, _| 0u32.into_ret());
+        assert!(run(&mut e, 0x005d_9810, a));
+        assert!(calls(&e, EXTRA_DATA_LIST).is_empty());
+
+        // Parameters that do not parse still clear the result.
+        e.mem.set_f64(a.result.addr(), 9.0);
+        parse_gives(&mut e, false, &[]);
+        assert!(!run(&mut e, 0x005d_9810, a));
+        assert_eq!(e.mem.f64(a.result.addr()), 0.0);
+    }
+
+    #[test]
+    fn fn_005d9aa0_asks_the_destruction_stage_condition() {
+        assert_plain_condition(0x005d_9aa0, GET_DESTRUCTION_STAGE_CONDITION);
+    }
+
+    #[test]
+    fn script_force_active_quest_function_sets_the_players_active_quest() {
+        let mut e = engine_p7b();
+        let player = set_player(&mut e);
+        e.register(PLAYER_SET_ACTIVE_QUEST, |_, _| Ret::default());
+        let a = command(&mut e, 0);
+        parse_gives(&mut e, true, &[0x9999]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9ac0, a));
+        assert_parsed(&e, 0);
+        assert_eq!(
+            calls(&e, PLAYER_SET_ACTIVE_QUEST),
+            vec![vec![player, 0x9999]]
+        );
+
+        parse_gives(&mut e, true, &[0]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9ac0, a));
+        assert!(calls(&e, PLAYER_SET_ACTIVE_QUEST).is_empty());
+
+        parse_gives(&mut e, false, &[]);
+        assert!(!run(&mut e, 0x005d_9ac0, a));
+    }
+
+    /// The doubles `005d9bc0` needs: an actor and a source NPC (form words
+    /// `0xaa00` and `0x5500`), the NPC objects they cast to, a list whose
+    /// first element is `chosen`, and recorders for everything else.
+    struct Blend {
+        actor: u32,
+        source: u32,
+        actor_npc: u32,
+        source_npc: u32,
+        chosen: u32,
+        slot: u32,
+        raw: u32,
+    }
+
+    fn blend_engine() -> (Engine, Blend) {
+        let mut e = engine_p7b();
+        let actor = object_with(&mut e, &[(REFERENCE_SLOT_1D0, V_WORD)]);
+        let source = object(&mut e);
+        let actor_npc = object_with(&mut e, &[(FORM_SLOT_48, V_RECORD)]);
+        let source_npc = object(&mut e);
+        let chosen = object(&mut e);
+        let slot = e.mem.alloc(4);
+        e.mem.set_u32(slot, chosen);
+        let raw = e.mem.alloc(0x84);
+        e.register_double(WORD_AT_20, move |_, args| {
+            if args[0] == actor {
+                0xaa00u32.into_ret()
+            } else {
+                assert_eq!(args[0], source);
+                0x5500u32.into_ret()
+            }
+        });
+        e.register_double(DYNAMIC_CAST, move |_, args| {
+            assert_eq!(args[1..], [0, RTTI_TES_BOUND_OBJECT, RTTI_TES_NPC, 0]);
+            if args[0] == 0xaa00 {
+                actor_npc.into_ret()
+            } else {
+                source_npc.into_ret()
+            }
+        });
+        for function in [
+            VECTOR_CONSTRUCTOR_ITERATOR,
+            VECTOR_DESTRUCTOR_ITERATOR,
+            COORD_LIST_CONSTRUCT,
+            COORD_LIST_DESTRUCT,
+            COLLECT_MATCHING_NPCS,
+            FACEGEN_FN_00652E00,
+            INIT_FACEGEN_COORD,
+            FACEGEN_FN_00653000,
+            FACEGEN_FN_00652AF0,
+            FACEGEN_FN_00652470,
+            COPY_FACEGEN_COORD,
+            CHARACTER_RESET_3D,
+            OPERATOR_DELETE,
+            COORD_BLOCK_DESTRUCT,
+        ] {
+            e.register(function, |_, _| Ret::default());
+        }
+        e.register(ACTOR_BASE_GET_SEX, |_, _| 1u32.into_ret());
+        e.register(ACTOR_BASE_RACE, |_, _| 0x5000u32.into_ret());
+        e.register_double(ARRAY_ELEMENT_ADDRESS, move |_, _| slot.into_ret());
+        e.register_double(NPC_COORDS, move |_, args| {
+            if args[0] == actor_npc {
+                0xc0a0u32.into_ret()
+            } else if args[0] == source_npc {
+                0xc050u32.into_ret()
+            } else {
+                0xc0c0u32.into_ret()
+            }
+        });
+        e.register(FACEGEN_FN_00652440, |_, _| Ret {
+            st0: 1.5,
+            ..Ret::default()
+        });
+        e.register_double(OPERATOR_NEW, move |_, _| raw.into_ret());
+        (
+            e,
+            Blend {
+                actor,
+                source,
+                actor_npc,
+                source_npc,
+                chosen,
+                slot,
+                raw,
+            },
+        )
+    }
+
+    #[test]
+    fn fn_005d9bc0_blends_the_face_of_the_chosen_npc_into_the_actor() {
+        let (mut e, b) = blend_engine();
+        start_log(&mut e);
+        e.call(0x005d_9bc0, &args![b.actor, b.source, 50i32]);
+        let constructed = calls(&e, VECTOR_CONSTRUCTOR_ITERATOR);
+        assert_eq!(constructed.len(), 3);
+        let (blocks_a, blocks_b) = (constructed[0][0], constructed[1][0]);
+        let copy = b.raw + 4;
+        assert_eq!(
+            constructed[0][1..],
+            [0x20, 4, COORD_BLOCK_CONSTRUCT, COORD_BLOCK_DESTRUCT]
+        );
+        assert_eq!(
+            constructed[2],
+            vec![copy, 0x20, 4, COORD_BLOCK_CONSTRUCT, COORD_BLOCK_DESTRUCT]
+        );
+        assert_eq!(e.mem.u32(b.raw), 4, "the count before the first block");
+        let list = calls(&e, COORD_LIST_CONSTRUCT)[0][0];
+
+        // The NPCs of the source's race and sex are collected.
+        assert_eq!(calls(&e, ACTOR_BASE_GET_SEX), vec![vec![b.source_npc]]);
+        assert_eq!(
+            calls(&e, ACTOR_BASE_RACE),
+            vec![vec![b.source_npc], vec![b.actor_npc]]
+        );
+        assert_eq!(
+            calls(&e, COLLECT_MATCHING_NPCS),
+            vec![vec![0x5000, 1, list]]
+        );
+        assert_eq!(
+            calls(&e, NPC_COORDS),
+            vec![vec![b.actor_npc], vec![b.source_npc], vec![b.chosen]]
+        );
+        assert_eq!(
+            calls(&e, FACEGEN_FN_00652E00),
+            vec![
+                vec![0xc0c0, 0xc050, blocks_b, 0],
+                vec![0x5000 + 0x478, blocks_a, copy, 0]
+            ]
+        );
+        assert_eq!(calls(&e, FACEGEN_FN_00652440), vec![vec![0xc0a0, 0, 0]]);
+        assert_eq!(
+            calls(&e, INIT_FACEGEN_COORD),
+            vec![vec![blocks_a], vec![copy]]
+        );
+        assert_eq!(
+            calls(&e, FACEGEN_FN_00653000),
+            vec![vec![0.5f32.to_bits(), blocks_b, 1]]
+        );
+        assert_eq!(
+            calls(&e, FACEGEN_FN_00652AF0),
+            vec![vec![0xc0a0, blocks_b, blocks_a, 1, 0.0f32.to_bits()]]
+        );
+        assert_eq!(
+            calls(&e, FACEGEN_FN_00652470),
+            vec![vec![blocks_a, 0, 0, 1.5f32.to_bits()]]
+        );
+        assert_eq!(
+            calls(&e, COPY_FACEGEN_COORD),
+            vec![vec![0xc0a0, copy, 0, 1]]
+        );
+
+        // The copy is the actor NPC's own array; its slot 0x48 gets 0x800.
+        assert_eq!(e.mem.u32(b.actor_npc + 0x1b4), copy);
+        assert_eq!(calls(&e, V_RECORD), vec![vec![b.actor_npc, 0x800]]);
+        assert_eq!(calls(&e, CHARACTER_RESET_3D), vec![vec![b.actor]]);
+
+        // Everything built on the stack is destroyed.
+        assert_eq!(calls(&e, COORD_LIST_DESTRUCT), vec![vec![list]]);
+        assert_eq!(
+            calls(&e, VECTOR_DESTRUCTOR_ITERATOR),
+            vec![
+                vec![blocks_b, 0x20, 4, COORD_BLOCK_DESTRUCT],
+                vec![blocks_a, 0x20, 4, COORD_BLOCK_DESTRUCT]
+            ]
+        );
+        assert!(calls(&e, OPERATOR_DELETE).is_empty());
+    }
+
+    #[test]
+    fn fn_005d9bc0_replaces_an_existing_array_and_handles_an_empty_list() {
+        let (mut e, b) = blend_engine();
+        // The actor NPC already has an array (count 4 before it).
+        let old_block = e.mem.alloc(0x84);
+        e.mem.set_u32(old_block, 4);
+        e.mem.set_u32(b.actor_npc + 0x1b4, old_block + 4);
+        // Nothing collected: the first slot is empty and the actor does
+        // not answer slot 0x1d0.
+        e.mem.set_u32(b.slot, 0);
+        let still = object_with(&mut e, &[(REFERENCE_SLOT_1D0, V_FALSE)]);
+        e.register_double(WORD_AT_20, move |_, args| {
+            if args[0] == still {
+                0xaa00u32.into_ret()
+            } else {
+                0x5500u32.into_ret()
+            }
+        });
+        start_log(&mut e);
+        e.call(0x005d_9bc0, &args![still, b.source, -25i32]);
+        assert_eq!(
+            calls(&e, VECTOR_DESTRUCTOR_ITERATOR)[0],
+            vec![old_block + 4, 0x20, 4, COORD_BLOCK_DESTRUCT]
+        );
+        assert_eq!(e.mem.u32(b.actor_npc + 0x1b4), b.raw + 4);
+        // The chosen NPC is null: its coordinates are asked for the null.
+        assert_eq!(calls(&e, NPC_COORDS)[2], vec![0]);
+        assert_eq!(calls(&e, FACEGEN_FN_00653000)[0][0], (-0.25f32).to_bits());
+        assert!(calls(&e, CHARACTER_RESET_3D).is_empty());
+    }
+
+    #[test]
+    fn fn_005d9bc0_needs_both_objects() {
+        let (mut e, b) = blend_engine();
+        start_log(&mut e);
+        e.call(0x005d_9bc0, &args![0u32, b.source, 50i32]);
+        e.call(0x005d_9bc0, &args![b.actor, 0u32, 50i32]);
+        assert!(e
+            .call_log
+            .as_ref()
+            .unwrap()
+            .iter()
+            .all(|(a, _)| *a == 0x005d_9bc0));
+    }
+
+    #[test]
+    fn fn_005d9b20_runs_the_blend_or_sends_it_to_the_task_queue() {
+        let (mut e, b) = blend_engine();
+        let this_obj = b.actor;
+        let a = command(&mut e, this_obj);
+        let mode = e.mem.alloc(4);
+        e.register_double(FN_0043D4D0, move |_, _| mode.into_ret());
+        e.register(TASK_QUEUE_INTERFACE, |_, _| 0x9900_u32.into_ret());
+        e.register(TASK_QUEUE_SEND, |_, _| Ret::default());
+        parse_gives(&mut e, true, &[b.source, 50]);
+
+        // Single player (the word is not above 1): the blend runs here.
+        e.mem.set_u32(mode, 1);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9b20, a));
+        assert_parsed(&e, this_obj);
+        assert_eq!(calls(&e, FN_0043D4D0), vec![vec![GAME_MODE_OBJECT]]);
+        assert_eq!(calls(&e, ACTOR_BASE_GET_SEX).len(), 1);
+        assert!(calls(&e, TASK_QUEUE_SEND).is_empty());
+
+        // Above 1: the task queue gets the message and the three words.
+        e.mem.set_u32(mode, 2);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9b20, a));
+        assert_eq!(
+            calls(&e, TASK_QUEUE_SEND),
+            vec![vec![0x9900, 0x11df, this_obj, b.source, 50]]
+        );
+        assert!(calls(&e, ACTOR_BASE_GET_SEX).is_empty());
+
+        // A negative word is not above 1.
+        e.mem.set_u32(mode, u32::MAX);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_9b20, a));
+        assert!(calls(&e, TASK_QUEUE_SEND).is_empty());
+
+        parse_gives(&mut e, false, &[]);
+        assert!(!run(&mut e, 0x005d_9b20, a));
+    }
+
+    #[test]
+    fn fn_005d9f70_and_005d9f90_set_and_get_the_coordinate_array_word() {
+        let mut e = engine_p7b();
+        let npc = object(&mut e);
+        e.call(0x005d_9f70, &args![npc, 0xabcdu32]);
+        assert_eq!(e.mem.u32(npc + 0x1b4), 0xabcd);
+        assert_eq!(e.call(0x005d_9f90, &args![npc]).u32(), 0xabcd);
+        e.call(0x005d_9f70, &args![npc, 0u32]);
+        assert_eq!(e.call(0x005d_9f90, &args![npc]).u32(), 0);
+    }
+
+    #[test]
+    fn fn_005d9fb0_picks_one_of_two_sub_objects() {
+        let mut e = engine_p7b();
+        assert_eq!(e.call(0x005d_9fb0, &args![0x1000u32, 0u32]).u32(), 0x1478);
+        assert_eq!(e.call(0x005d_9fb0, &args![0x1000u32, 1u32]).u32(), 0x13f8);
+        assert_eq!(e.call(0x005d_9fb0, &args![0x1000u32, 7u32]).u32(), 0x13f8);
+    }
+
+    #[test]
+    fn fn_005d9ff0_destroys_an_array_or_a_single_object() {
+        let mut e = engine_p7b();
+        e.register(VECTOR_DESTRUCTOR_ITERATOR, |_, _| Ret::default());
+        e.register(COORD_BLOCK_DESTRUCT, |_, _| Ret::default());
+        e.register(OPERATOR_DELETE, |_, _| Ret::default());
+        let block = e.mem.alloc(0x84);
+        e.mem.set_u32(block, 4);
+        let first = block + 4;
+
+        // Bit 1: an array; bit 0: also free it (the block before the first).
+        start_log(&mut e);
+        assert_eq!(e.call(0x005d_9ff0, &args![first, 3u32]).u32(), block);
+        assert_eq!(
+            calls(&e, VECTOR_DESTRUCTOR_ITERATOR),
+            vec![vec![first, 0x20, 4, COORD_BLOCK_DESTRUCT]]
+        );
+        assert_eq!(calls(&e, OPERATOR_DELETE), vec![vec![block]]);
+        start_log(&mut e);
+        assert_eq!(e.call(0x005d_9ff0, &args![first, 2u32]).u32(), block);
+        assert!(calls(&e, OPERATOR_DELETE).is_empty());
+
+        // Without bit 1: one object.
+        start_log(&mut e);
+        assert_eq!(e.call(0x005d_9ff0, &args![first, 1u32]).u32(), first);
+        assert_eq!(calls(&e, COORD_BLOCK_DESTRUCT), vec![vec![first]]);
+        assert_eq!(calls(&e, OPERATOR_DELETE), vec![vec![first]]);
+        assert!(calls(&e, VECTOR_DESTRUCTOR_ITERATOR).is_empty());
+        start_log(&mut e);
+        assert_eq!(e.call(0x005d_9ff0, &args![first, 0u32]).u32(), first);
+        assert!(calls(&e, OPERATOR_DELETE).is_empty());
+    }
+
+    #[test]
+    fn script_get_is_used_item_equip_type_function_asks_the_condition() {
+        assert_parsed_condition(0x005d_a060, GET_IS_USED_ITEM_EQUIP_TYPE_CONDITION, u32::MAX);
+    }
+
+    #[test]
+    fn script_get_threat_ratio_function_asks_the_condition() {
+        assert_parsed_condition(0x005d_a0c0, GET_THREAT_RATIO_CONDITION, 0);
+    }
+
+    #[test]
+    fn script_get_is_alignment_function_asks_the_condition() {
+        assert_parsed_condition(0x005d_a120, GET_IS_ALIGNMENT_CONDITION, 1);
+    }
+
+    #[test]
+    fn fn_005da180_calls_the_function_for_a_parsed_form() {
+        let mut e = engine_p7b();
+        e.register(FN_0060D720, |_, _| Ret::default());
+        let a = command(&mut e, 0);
+        parse_gives(&mut e, true, &[0x3333]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a180, a));
+        assert_parsed(&e, 0);
+        assert_eq!(calls(&e, FN_0060D720), vec![vec![0x3333]]);
+
+        parse_gives(&mut e, true, &[0]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a180, a));
+        assert!(calls(&e, FN_0060D720).is_empty());
+
+        parse_gives(&mut e, false, &[]);
+        assert!(!run(&mut e, 0x005d_a180, a));
+    }
+
+    #[test]
+    fn fn_005da1e0_applies_a_float_and_a_flag_to_an_object() {
+        let mut e = engine_p7b();
+        e.register(FN_00444020, |_, _| Ret::default());
+        let object = object_with(&mut e, &[(FORM_SLOT_48, V_RECORD)]);
+        let a = command(&mut e, 0);
+        let amount = 2.5f32.to_bits();
+        e.register_double(PARSE_PARAMETERS, move |e, args| {
+            // The float local starts at 0.0.
+            assert_eq!(e.mem.u32(args[7]), 0);
+            assert_eq!(e.mem.u32(args[8]), 0);
+            e.mem.set_u32(args[7], object);
+            e.mem.set_u32(args[8], amount);
+            true.into_ret()
+        });
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a1e0, a));
+        assert_parsed(&e, 0);
+        assert_eq!(calls(&e, FN_00444020), vec![vec![object, amount]]);
+        assert_eq!(calls(&e, V_RECORD), vec![vec![object, 4]]);
+
+        // No object: nothing is called.
+        parse_gives(&mut e, true, &[0, amount]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a1e0, a));
+        assert!(calls(&e, FN_00444020).is_empty());
+
+        parse_gives(&mut e, false, &[]);
+        assert!(!run(&mut e, 0x005d_a1e0, a));
+    }
+
+    #[test]
+    fn fn_005da260_passes_this_obj_on() {
+        let mut e = engine_p7b();
+        e.register(FN_00477D10, |_, _| Ret::default());
+        let a = command(&mut e, 0x4444);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a260, a));
+        assert_eq!(calls(&e, FN_00477D10), vec![vec![0x4444]]);
+    }
+
+    #[test]
+    fn fn_005da280_asks_the_aggro_radius_violated_condition() {
+        assert_plain_condition(0x005d_a280, GET_AGGRO_RADIUS_VIOLATED_CONDITION);
+    }
+
+    /// The doubles `005da2a0` needs: the process of every actor (a process
+    /// object whose slot `0x33c` is a recorder), and the process lists.
+    struct Alarm {
+        player: u32,
+        process: u32,
+        found: u32,
+    }
+
+    fn alarm_engine() -> (Engine, Alarm) {
+        let mut e = engine_p7b();
+        let player = set_player(&mut e);
+        let process = object_with(&mut e, &[(PROCESS_SLOT_33C, V_RECORD)]);
+        let found = object_with(&mut e, &[(REFERENCE_SLOT_21C, V_FALSE)]);
+        e.register(ACTOR_ATTACK_ALARM, |_, _| Ret::default());
+        e.register_double(GET_PROCESS, move |_, _| process.into_ret());
+        e.register_double(PROCESS_LISTS_FIND, move |_, _| found.into_ret());
+        (
+            e,
+            Alarm {
+                player,
+                process,
+                found,
+            },
+        )
+    }
+
+    /// The expected 13 words of the process call for `target`.
+    fn combat_words(process: u32, target: u32, player: u32) -> Vec<u32> {
+        vec![process, target, player, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+    }
+
+    #[test]
+    fn fn_005da2a0_raises_the_alarm_for_the_actor_itself() {
+        let (mut e, s) = alarm_engine();
+        let actor = object_with(&mut e, &[(REFERENCE_TEST_SLOT, V_TRUE)]);
+        let a = command(&mut e, actor);
+        parse_gives(&mut e, true, &[0, 0]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a2a0, a));
+        assert_parsed(&e, actor);
+        assert_eq!(
+            calls(&e, ACTOR_ATTACK_ALARM),
+            vec![vec![actor, s.player, 0, 1]]
+        );
+        assert_eq!(calls(&e, GET_PROCESS), vec![vec![actor]]);
+        assert_eq!(
+            calls(&e, V_RECORD),
+            vec![combat_words(s.process, actor, s.player)]
+        );
+
+        // The parse result is ignored: the locals keep their zeros.
+        parse_gives(&mut e, false, &[]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a2a0, a));
+        assert_eq!(calls(&e, ACTOR_ATTACK_ALARM).len(), 1);
+
+        // Not an actor: nothing at all.
+        let thing = object_with(&mut e, &[(REFERENCE_TEST_SLOT, V_FALSE)]);
+        let not_actor = command(&mut e, thing);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a2a0, not_actor));
+        assert!(calls(&e, ACTOR_ATTACK_ALARM).is_empty());
+    }
+
+    #[test]
+    fn fn_005da2a0_raises_the_alarm_for_another_actor_with_a_process() {
+        let (mut e, s) = alarm_engine();
+        let actor = object_with(&mut e, &[(REFERENCE_TEST_SLOT, V_TRUE)]);
+        let a = command(&mut e, actor);
+        let other = 0x7777u32;
+        parse_gives(&mut e, true, &[other, 0]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a2a0, a));
+        assert_eq!(
+            calls(&e, ACTOR_ATTACK_ALARM),
+            vec![vec![other, s.player, 0, 1]]
+        );
+        assert_eq!(calls(&e, GET_PROCESS), vec![vec![other], vec![other]]);
+        assert_eq!(
+            calls(&e, V_RECORD),
+            vec![combat_words(s.process, other, s.player)]
+        );
+        assert!(calls(&e, PROCESS_LISTS_FIND).is_empty());
+
+        // The player, or an actor without a process, falls through to the
+        // id (here zero): nothing happens.
+        parse_gives(&mut e, true, &[s.player, 0]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a2a0, a));
+        assert!(calls(&e, ACTOR_ATTACK_ALARM).is_empty());
+        e.register(GET_PROCESS, |_, _| 0u32.into_ret());
+        parse_gives(&mut e, true, &[other, 0]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a2a0, a));
+        assert!(calls(&e, ACTOR_ATTACK_ALARM).is_empty());
+    }
+
+    #[test]
+    fn fn_005da2a0_looks_the_id_up_in_the_process_lists() {
+        let (mut e, s) = alarm_engine();
+        let actor = object_with(&mut e, &[(REFERENCE_TEST_SLOT, V_TRUE)]);
+        let a = command(&mut e, actor);
+        e.register(GET_PROCESS, |_, _| 0u32.into_ret());
+        parse_gives(&mut e, true, &[0, 0x4321]);
+
+        // A found reference that fails the test (slot 0x21c) raises it.
+        e.register_double(GET_PROCESS, {
+            let process = s.process;
+            move |_, _| process.into_ret()
+        });
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a2a0, a));
+        assert_eq!(
+            calls(&e, PROCESS_LISTS_FIND),
+            vec![vec![PROCESS_LISTS, 0x4321, 1, 1]]
+        );
+        assert_eq!(
+            calls(&e, ACTOR_ATTACK_ALARM),
+            vec![vec![s.found, s.player, 0, 1]]
+        );
+        assert_eq!(
+            calls(&e, V_RECORD),
+            vec![combat_words(s.process, s.found, s.player)]
+        );
+
+        // Nothing found.
+        e.register(PROCESS_LISTS_FIND, |_, _| 0u32.into_ret());
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a2a0, a));
+        assert!(calls(&e, ACTOR_ATTACK_ALARM).is_empty());
+    }
+
+    #[test]
+    fn fn_005da2a0_hands_a_found_reference_to_its_owners_actor() {
+        let (mut e, s) = alarm_engine();
+        let actor = object_with(&mut e, &[(REFERENCE_TEST_SLOT, V_TRUE)]);
+        let a = command(&mut e, actor);
+        // The found reference passes the test (slot 0x21c).
+        let found = object_with(&mut e, &[(REFERENCE_SLOT_21C, V_TRUE)]);
+        let owner = Rc::new(Cell::new(0u32));
+        let current = owner.clone();
+        e.register_double(PROCESS_LISTS_FIND, move |_, args| {
+            if args[1] == 0x4321 {
+                found.into_ret()
+            } else {
+                // The owner of form type 8 is looked up by its id.
+                0xac70u32.into_ret()
+            }
+        });
+        e.register_double(REFERENCE_GET_OWNER, move |_, _| current.get().into_ret());
+        let owner_type = Rc::new(Cell::new(8u32));
+        let kind = owner_type.clone();
+        e.register_double(FORM_TYPE, move |_, _| kind.get().into_ret());
+        e.register(PROCESS_LISTS_GET_ACTOR_REF_IN_HIGH, |_, _| {
+            0xac71_u32.into_ret()
+        });
+        parse_gives(&mut e, true, &[0, 0x4321]);
+
+        // No owner: nothing.
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a2a0, a));
+        assert!(calls(&e, ACTOR_ATTACK_ALARM).is_empty());
+
+        // An owner of form type 8: its actor comes from the id lookup.
+        owner.set(0x0123);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a2a0, a));
+        assert_eq!(
+            calls(&e, PROCESS_LISTS_FIND)[1],
+            vec![PROCESS_LISTS, 0x0123, 0, 1]
+        );
+        assert_eq!(
+            calls(&e, ACTOR_ATTACK_ALARM),
+            vec![vec![0xac70, s.player, 0, 1]]
+        );
+        // The process call is made for the found reference.
+        assert_eq!(calls(&e, GET_PROCESS), vec![vec![found]]);
+        assert_eq!(
+            calls(&e, V_RECORD),
+            vec![combat_words(s.process, found, s.player)]
+        );
+
+        // Any other form type: the actor comes from GetActorRefInHigh.
+        owner_type.set(0x2a);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a2a0, a));
+        assert_eq!(
+            calls(&e, PROCESS_LISTS_GET_ACTOR_REF_IN_HIGH),
+            vec![vec![PROCESS_LISTS, 0x0123, 0]]
+        );
+        assert_eq!(
+            calls(&e, ACTOR_ATTACK_ALARM),
+            vec![vec![0xac71, s.player, 0, 1]]
+        );
+
+        // No actor for the owner: nothing.
+        e.register(PROCESS_LISTS_GET_ACTOR_REF_IN_HIGH, |_, _| 0u32.into_ret());
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a2a0, a));
+        assert!(calls(&e, ACTOR_ATTACK_ALARM).is_empty());
+    }
+
+    #[test]
+    fn fn_005da540_closes_the_console_and_queues_menu_9() {
+        let mut e = engine_p7b();
+        let player = set_player(&mut e);
+        e.register(CLOSE_CONSOLE, |_, _| Ret::default());
+        e.register(QUEUE_MENU_CREATE, |_, _| Ret::default());
+        let a = command(&mut e, 0);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a540, a));
+        let log = e.call_log.clone().unwrap();
+        let order: Vec<u32> = log.iter().map(|(addr, _)| *addr).collect();
+        assert_eq!(order, vec![0x005d_a540, CLOSE_CONSOLE, QUEUE_MENU_CREATE]);
+        assert_eq!(
+            calls(&e, QUEUE_MENU_CREATE),
+            vec![vec![9, player, 0, 0, 1, 0]]
+        );
+    }
+
+    #[test]
+    fn script_fire_weapon_function_fires_weapons_only() {
+        let mut e = engine_p7b();
+        let script = object_with(&mut e, &[(SCRIPT_NAME_SLOT, V_NAME)]);
+        let mut a = command(&mut e, 0x4444);
+        a.script_obj = Ptr::new(script);
+        let queued = Rc::new(Cell::new(true));
+        let use_queue = queued.clone();
+        e.register_double(FN_008C7AA0, move |_, _| use_queue.get().into_ret());
+        e.register(TASK_QUEUE_INTERFACE, |_, _| 0x9900_u32.into_ret());
+        e.register(QUEUE_WEAPON_FIRE, |_, _| Ret::default());
+        e.register(WEAPON_FN_00523150, |_, _| Ret::default());
+        e.register(FORM_TYPE, |_, _| 0x28u32.into_ret());
+        parse_gives(&mut e, true, &[0x5050]);
+
+        // Through the task queue.
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a570, a));
+        assert_eq!(
+            calls(&e, PARSE_PARAMETERS)[0][..7],
+            [1, 2, 8, 0x4444, 0, script, 6]
+        );
+        assert_eq!(
+            calls(&e, QUEUE_WEAPON_FIRE),
+            vec![vec![0x9900, 0x5050, 0x4444]]
+        );
+        assert!(calls(&e, WEAPON_FN_00523150).is_empty());
+
+        // Directly.
+        queued.set(false);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a570, a));
+        assert_eq!(calls(&e, WEAPON_FN_00523150), vec![vec![0x5050, 0x4444]]);
+        assert!(calls(&e, QUEUE_WEAPON_FIRE).is_empty());
+
+        // A form of another type, or none: the message names the script.
+        e.register(FORM_TYPE, |_, _| 0x29u32.into_ret());
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a570, a));
+        assert_eq!(
+            calls(&e, LOG_STUB),
+            vec![vec![MSG_FIRE_WEAPON_NON_WEAPON, 0xbbbb]]
+        );
+        parse_gives(&mut e, true, &[0]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a570, a));
+        assert_eq!(calls(&e, LOG_STUB).len(), 1);
+        assert!(calls(&e, FORM_TYPE).is_empty());
+
+        // No thisObj: nothing; unparsed parameters: failure.
+        let none = command(&mut e, 0);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a570, none));
+        assert!(calls(&e, LOG_STUB).is_empty());
+        parse_gives(&mut e, false, &[]);
+        assert!(!run(&mut e, 0x005d_a570, a));
+    }
+
+    #[test]
+    fn script_show_tutorial_menu_creates_the_menu_for_the_parsed_value() {
+        let mut e = engine_p7b();
+        e.register(TUTORIAL_MENU_CREATE, |_, _| Ret::default());
+        let allowed = Rc::new(Cell::new(true));
+        let gate = allowed.clone();
+        e.register_double(ALWAYS_TRUE, move |_, _| gate.get().into_ret());
+        let a = command(&mut e, 0);
+        parse_gives(&mut e, true, &[5]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a630, a));
+        assert_parsed(&e, 0);
+        assert_eq!(calls(&e, TUTORIAL_MENU_CREATE), vec![vec![5, 0]]);
+
+        // The parse result is ignored: what the local holds is used.
+        parse_gives(&mut e, false, &[7]);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a630, a));
+        assert_eq!(calls(&e, TUTORIAL_MENU_CREATE), vec![vec![7, 0]]);
+
+        // The gate false: no parse, no menu.
+        allowed.set(false);
+        start_log(&mut e);
+        assert!(run(&mut e, 0x005d_a630, a));
+        assert!(calls(&e, PARSE_PARAMETERS).is_empty());
+        assert!(calls(&e, TUTORIAL_MENU_CREATE).is_empty());
     }
 }

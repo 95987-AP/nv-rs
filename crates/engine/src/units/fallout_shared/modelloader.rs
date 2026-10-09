@@ -3,7 +3,8 @@
 //!
 //! The unit has 517 functions (`ledger queue "fallout shared/modelloader.cpp"`);
 //! it is translated in address order, a session at a time. State of this file:
-//! the first 160 functions, `0043aaf0` to `0043e9b0`. The first 40, to
+//! the first 200 functions, `0043aaf0` to `0043fe40`, which is the whole address
+//! range of this file (the rest of the unit is in the part files). The first 40, to
 //! `0043baa0`, are the `Model` and `KFModel` classes, `Model::InitModel` and
 //! the small helpers the unit's compiler emitted next to them (`BSStream`,
 //! `NiNode` and `NiFixedString` accessors, interlocked-operation wrappers).
@@ -18,7 +19,12 @@
 //! `QueuedMagicItem` (`QueueMe`, `CheckFinished`), the task key packing of
 //! `IOTask::GenerateKey`, and `QueuedKF` with its subclasses `QueuedAnimIdle`
 //! and `QueuedReplacementKF` (up to `PostProcess`).
-//! The next session continues at `0043ea00`.
+//! The fifth 40, from `0043ea00`, finish `QueuedReplacementKF` and its list
+//! (`GetDescription`, the post-processed counter, `Cancel`), and translate
+//! `QueuedHead`, `QueuedHelmet` (with its `NiMatrix3` helpers), the
+//! `AttachDistant3DTask` post-process and `QueuedReference`'s constructor and
+//! destructors. This file has no further functions: the next one, `0043fed0`,
+//! belongs to `modelloader_p2.rs`.
 //!
 //! Layouts and helpers added here live at the top of the file, below.
 //!
@@ -2790,9 +2796,6 @@ const ANIM_IDLE_LOADED: u32 = 0x0049_6cd0;
 /// `Animation` method (`00490fa0`, no name in the engine map),
 /// `__thiscall(KFModel)`: takes the loaded `KFModel` into the animation.
 const ANIMATION_KF_LOADED: u32 = 0x0049_0fa0;
-/// `QueuedReplacementKFList` method (`0043ea30`, in this unit, not translated
-/// yet): counts one post-processed child.
-const REPLACEMENT_KF_LIST_CHILD_POST_PROCESSED: u32 = 0x0043_ea30;
 
 /// The counters `IOTask::GenerateKey` takes its values from (`01202d9c` and
 /// `01202da0`; the Xbox PDB's statics `iStaticCounter` and `iStaticOffset`,
@@ -2875,11 +2878,19 @@ layout! {
         0x3C pOwner: Ptr,
     }
 
-    /// `QueuedReplacementKFList` (Xbox PDB), 0x38 bytes (the same on PC): only
-    /// the counter `QueuedReplacementKF::Finish` bumps is used here.
+    /// `QueuedReplacementKFList` (Xbox PDB), 0x38 bytes (the same on PC): a
+    /// `QueuedFile`, the animation and the two child counters.
     pub struct QueuedReplacementKFList: 0x38 {
-        /// `iPostProcessingChildCount` (Xbox PDB).
+        /// `eContext` (`QueuedFile`, Xbox PDB).
+        0x18 eContext: u32,
+        /// `pAnim` (Xbox PDB): `Animation*`.
+        0x28 pAnim: Ptr,
+        /// `iPostProcessingChildCount` (Xbox PDB): the children that will
+        /// be post-processed (`QueuedReplacementKF::Finish` counts one).
         0x2C iPostProcessingChildCount: u32,
+        /// `iPostProcessedChildCount` (Xbox PDB): the children already
+        /// post-processed (`0043ea30` counts one).
+        0x30 iPostProcessedChildCount: u32,
     }
 }
 
@@ -3681,7 +3692,7 @@ pub fn fn_0043e990(e: &mut Engine, this: Ptr<QueuedReplacementKFList>) {
 /// `QueuedReplacementKF::PostProcess` (Xbox PDB): unless the task's state is
 /// 6, hands the loaded KF model to the animation (`pAnim`, `00490fa0`) and,
 /// when there is an owning list, tells it a child was post-processed
-/// (`0043ea30`, in this unit, not translated yet).
+/// ([`fn_0043ea30`]).
 pub fn queued_replacement_kf_post_process(e: &mut Engine, this: Ptr<QueuedReplacementKF>) {
     if !e.call(TASK_STATE_IS_6, &args![this]).bool() {
         let model_slot = this.byte_add(QueuedReplacementKF::spKFModel.off);
@@ -3690,9 +3701,1267 @@ pub fn queued_replacement_kf_post_process(e: &mut Engine, this: Ptr<QueuedReplac
         e.call(ANIMATION_KF_LOADED, &args![animation, model]);
         let owner = e.get(this, QueuedReplacementKF::pOwner);
         if !owner.is_null() {
-            e.call(REPLACEMENT_KF_LIST_CHILD_POST_PROCESSED, &args![owner]);
+            fn_0043ea30(e, owner.cast());
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The fifth session: the rest of the replacement KFs, `QueuedHead`,
+// `QueuedHelmet`, the distant-3D task and `QueuedReference`, up to
+// `0043fe40`.
+
+/// `"Replacement KF"`: the kind word of `QueuedReplacementKF::GetDescription`.
+const REPLACEMENT_KF_WORD: u32 = 0x0101_6af0;
+/// `QueuedHead`'s (`01016b04`), `QueuedHelmet`'s (`01016b4c`) and
+/// `QueuedReference`'s (`01016ba4`) virtual tables.
+const QUEUED_HEAD_VTABLE: u32 = 0x0101_6b04;
+const QUEUED_HELMET_VTABLE: u32 = 0x0101_6b4c;
+const QUEUED_REFERENCE_VTABLE: u32 = 0x0101_6ba4;
+/// `"Queued head for NPC %s"` and `"Queued helmet for biped anim %08X"`.
+const QUEUED_HEAD_FORMAT: u32 = 0x0101_6b30;
+const QUEUED_HELMET_FORMAT: u32 = 0x0101_6b7c;
+/// The memory contexts and source lines of the scopes of `QueuedHead::Run`
+/// (`0x37`, line `0x5f9`), `0043ed90` (`0x37`, line `0x613`) and
+/// `QueuedHelmet::CheckFinished` (`0x32`, line `0x690`).
+const HEAD_CONTEXT: u32 = 0x37;
+const HEAD_RUN_SOURCE_LINE: u32 = 0x5f9;
+const HEAD_SETUP_SOURCE_LINE: u32 = 0x613;
+const HELMET_CONTEXT: u32 = 0x32;
+const HELMET_CHECK_FINISHED_SOURCE_LINE: u32 = 0x690;
+/// The number of entries in each of the three arrays of `NiPointer`s of a
+/// `QueuedHelmet` (`0x14`, the biped slots), and the pointer size.
+const HELMET_SLOT_COUNT: u32 = 0x14;
+/// Offsets of the three arrays in a `QueuedHelmet` (Xbox PDB:
+/// `spQueuedHelmetModel`, `spHelmetFaceGenModel`, `spClonedHelmetNode`).
+const HELMET_MODELS_OFFSET: u32 = 0x2c;
+const HELMET_FACE_GEN_MODELS_OFFSET: u32 = 0x7c;
+const HELMET_CLONED_NODES_OFFSET: u32 = 0xcc;
+/// `QueuedFile::spParent` (Xbox PDB) in every queued file.
+const QUEUED_FILE_PARENT_OFFSET: u32 = 0x1c;
+
+/// `sprintf_s(buffer, size, format, ...)` through the game's wrapper
+/// (`00406d00`), `__cdecl`.
+const FORMAT_STRING: u32 = 0x0040_6d00;
+/// Returns the string of the name object it is called on (`00408da0`, named
+/// `MapMarkerData::GetLocationName` in the engine map): the string held by
+/// the `NiPointer` at +4, or the empty string at `01011584`.
+const NAME_OBJECT_STRING: u32 = 0x0040_8da0;
+/// Enters (`00652140`) and leaves (`00652190`) a section of the face
+/// generation code: the first calls `004538e0(0)` on the object at
+/// `011d5a9c` and counts `011d59dc` up, the second calls `0082f1f0` on it
+/// and counts down. Neither takes an argument.
+const FACE_GEN_SECTION_ENTER: u32 = 0x0065_2140;
+const FACE_GEN_SECTION_LEAVE: u32 = 0x0065_2190;
+/// `TESNPC::InitHead` (Xbox PDB, `00607370`), `__thiscall(biped node out,
+/// skinned node out)`.
+const NPC_INIT_HEAD: u32 = 0x0060_7370;
+/// `TESNPC` method of `tesnpc.cpp` (`00607420`, no name in the engine map),
+/// `__thiscall(reference, argument, biped node, skinned node)` on the base
+/// form of the reference.
+const NPC_SETUP_HEAD: u32 = 0x0060_7420;
+/// `TESRace::KillEGTData` (Xbox PDB, `00613fd0`).
+const KILL_EGT_DATA: u32 = 0x0061_3fd0;
+/// Returns the dword at +0xC of the object it is called on (`0084e3a0`; for a
+/// form, its form ID).
+const FIELD_AT_C: u32 = 0x0084_e3a0;
+/// A function of `bsfacegenmanager.cpp` (`00657150`, no name in the engine
+/// map), `__cdecl(NPC, priority, task)`.
+const QUEUE_NPC_FACE_GEN: u32 = 0x0065_7150;
+/// `SetReferenceIDOnScenegraph(node, form ID)` (Xbox PDB, `004b6dc0`),
+/// `__cdecl`.
+const SET_REFERENCE_ID_ON_SCENEGRAPH: u32 = 0x004b_6dc0;
+/// The base form of a reference (`007af430`, `this + 0x20`; named
+/// `BGSSaveFormBuffer::GetForm` in the engine map).
+const REFERENCE_BASE_FORM: u32 = 0x007a_f430;
+/// The `PlayerCharacter` singleton pointer and the `TES` singleton pointer.
+const PLAYER_CHARACTER: u32 = 0x011d_ea3c;
+const TES_GLOBAL: u32 = 0x011d_ea10;
+
+/// The `NiPointer` default constructors the vector constructors of
+/// `QueuedHelmet` call: `0043f060` (a task pointer, in this unit) for the
+/// models and `006694e0` (`NiPointer()`) for the face generation models and
+/// the cloned nodes.
+const HELMET_MODEL_POINTER_CONSTRUCT: u32 = 0x0043_f060;
+const NI_POINTER_DEFAULT_CONSTRUCT: u32 = 0x0066_94e0;
+/// `_eh_vector_constructor_iterator_(array, size, count, constructor,
+/// destructor)` and `_eh_vector_destructor_iterator_(array, size, count,
+/// destructor)`.
+const VECTOR_CONSTRUCT: u32 = 0x00ec_782f;
+const VECTOR_DESTRUCT: u32 = 0x00ec_5fce;
+/// The constructor and destructor of the 0x20-byte elements `QueuedHelmet`'s
+/// `CheckFinished` builds four of on its stack (`00449610`, `00449680`).
+const FACE_COORD_CONSTRUCT: u32 = 0x0044_9610;
+const FACE_COORD_DESTRUCT: u32 = 0x0044_9680;
+
+/// `BipedAnim` methods of `bipedanim.cpp`, all `__thiscall` on the
+/// `BipedAnim`: `004ae8a0(index) -> bool` (whether the slot at `+0x30 +
+/// 0x10 * index` holds an object that `004ae8f0` accepts),
+/// `BipedAnim::LoadFaceGenModel(index)` (Xbox PDB), `BipedAnim::CloneHelmet(
+/// face generation model, 3D, index)` (Xbox PDB) and
+/// `BipedAnim::AttachHelmet(face generation model, cloned node, index)`
+/// (Xbox PDB).
+const BIPED_ANIM_SLOT_IN_USE: u32 = 0x004a_e8a0;
+const BIPED_ANIM_LOAD_FACE_GEN_MODEL: u32 = 0x004a_e790;
+const BIPED_ANIM_CLONE_HELMET: u32 = 0x004a_e910;
+const BIPED_ANIM_ATTACH_HELMET: u32 = 0x004a_eb20;
+/// `ModelLoader` queueing methods, `__thiscall` on the loader: `00443dc0(
+/// model data, NiPointer<QueuedModel> slot, priority, parent task, 3, 1, 1,
+/// 1, 0.0)` and `ModelLoader::QueueEGMFile(model data, priority, parent
+/// task, -1)` (Xbox PDB).
+const MODEL_LOADER_QUEUE_HELMET_MODEL: u32 = 0x0044_3dc0;
+const MODEL_LOADER_QUEUE_EGM_FILE: u32 = 0x0044_7bf0;
+/// `QueuedModel` method (`004a8a90`): the `NiPointer<Model>` at +0x30
+/// dereferenced.
+const QUEUED_MODEL_GET_MODEL: u32 = 0x004a_8a90;
+/// A method of `tesobjectcell.cpp` (`005495f0`): the `NiPointer` at +0xB8 of
+/// the object dereferenced.
+const OBJECT_POINTER_AT_B8: u32 = 0x0054_95f0;
+/// `NiObject::CreateDeepCopy` (Xbox PDB, `00a5d510`), `__thiscall(object,
+/// NiPointer out)`.
+const CREATE_DEEP_COPY: u32 = 0x00a5_d510;
+/// `TESNPC::GetFaceCoord` (Xbox PDB, `00603ad0`), `__thiscall(NPC, array of
+/// four 0x20-byte elements)`.
+const NPC_GET_FACE_COORD: u32 = 0x0060_3ad0;
+/// A method of `bsfacegenmodel.cpp` (`0065a970`, no name in the engine map),
+/// `__thiscall(face generation model, coordinates, node, 0) -> bool`.
+const FACE_GEN_MODEL_APPLY_COORDS: u32 = 0x0065_a970;
+/// The object whose byte `0043faf0` reads (`011d5a44`; which setting it is
+/// is not confirmed) and the function that gives the address of that byte
+/// (`00408d60`, `this + 4`, or the zero byte at `01202800` when `this` is
+/// null).
+const HELMET_ROTATION_SETTING: u32 = 0x011d_5a44;
+const SETTING_BYTE_POINTER: u32 = 0x0040_8d60;
+/// `-pi / 2` as a `float` in the exe (`01016b78`): the angle
+/// `QueuedHelmet::CheckFinished` turns a cloned node by.
+const HELMET_ROTATION_ANGLE: u32 = 0x0101_6b78;
+/// A function of `navmeshsearchflee.cpp`'s range (`006a9540`) that returns
+/// `this + 0x34`, the local rotation matrix of an `NiAVObject`.
+const LOCAL_ROTATE_ADDRESS: u32 = 0x006a_9540;
+/// `NiMatrix3` default constructor (`006815c0`): returns `this`.
+const MATRIX_CONSTRUCT: u32 = 0x0068_15c0;
+/// `sin` and `cos` of an angle through the game's helper (`004169a0`),
+/// `__cdecl(angle, sin out, cos out)` (`FSINCOS`).
+const SIN_COS: u32 = 0x0041_69a0;
+/// `TESObjectREFR` methods: `00570f70(node)` gives the reference its 3D,
+/// `008d6f30()` returns its parent cell (`this + 0x40`), `TESActorBase::
+/// SetStartsDead(flag)` (Xbox PDB, `00565210`) sets or clears bit
+/// `0x80000` of its flags.
+const REFERENCE_SET_3D: u32 = 0x0057_0f70;
+const REFERENCE_CELL: u32 = 0x008d_6f30;
+const SET_STARTS_DEAD: u32 = 0x0056_5210;
+/// `TES` method of `tes.cpp` (`00451ef0`, in `tes.rs`): loads one reference
+/// into the scene, `__thiscall(reference, cell, source, flag)`.
+const TES_LOAD_REFERENCE: u32 = 0x0045_1ef0;
+/// The TLS words `0043fcd0` reads (offsets in the thread's TLS block): the
+/// reference being worked on (`0x264`) and the 3D that goes with it
+/// (`0x260`).
+const TLS_REFERENCE: u32 = 0x264;
+const TLS_REFERENCE_3D: u32 = 0x260;
+
+layout! {
+    /// `QueuedHead` (Xbox PDB), 0x38 bytes: a `QueuedFile`, the NPC and the
+    /// two face generation nodes `Run` builds for it.
+    pub struct QueuedHead: 0x38 {
+        /// `eContext` (`QueuedFile`, Xbox PDB).
+        0x18 eContext: u32,
+        /// `pNPC` (Xbox PDB): `TESNPC*`.
+        0x28 pNPC: Ptr,
+        /// `spBipedNode` (Xbox PDB): `NiPointer<BSFaceGenNiNode>`.
+        0x2C spBipedNode: Ptr,
+        /// `spSkinnedNode` (Xbox PDB): `NiPointer<BSFaceGenNiNode>`.
+        0x30 spSkinnedNode: Ptr,
+    }
+
+    /// `QueuedHelmet` (Xbox PDB), 0x128 bytes: a `QueuedFile`, the biped
+    /// animation and three arrays of twenty `NiPointer`s (one per biped
+    /// slot; [`HELMET_MODELS_OFFSET`], [`HELMET_FACE_GEN_MODELS_OFFSET`] and
+    /// [`HELMET_CLONED_NODES_OFFSET`]).
+    pub struct QueuedHelmet: 0x128 {
+        /// `eContext` (`QueuedFile`, Xbox PDB).
+        0x18 eContext: u32,
+        /// `pBipedAnim` (Xbox PDB): `BipedAnim*`.
+        0x28 pBipedAnim: Ptr,
+        /// `pRef` (Xbox PDB): `TESObjectREFR*`.
+        0x11C pRef: Ptr,
+        /// `cFlags` (Xbox PDB). Bit 1 is set by `QueueMe` once the models
+        /// are queued.
+        0x120 cFlags: u8,
+    }
+
+    /// `AttachDistant3DTask` (Xbox PDB), 0x20 bytes: an `IOTask` and the
+    /// reference and node it attaches.
+    pub struct AttachDistant3DTask: 0x20 {
+        /// `pRef` (Xbox PDB): `TESObjectREFR*`.
+        0x18 pRef: Ptr,
+        /// `spNode` (Xbox PDB): `NiPointer<NiNode>`.
+        0x1C spNode: Ptr,
+    }
+
+    /// `QueuedReference` (Xbox PDB), 0x40 bytes: a `QueuedFile`, the
+    /// reference and what is loaded for it.
+    pub struct QueuedReference: 0x40 {
+        /// `eContext` (`QueuedFile`, Xbox PDB).
+        0x18 eContext: u32,
+        /// `pRef` (Xbox PDB): `TESObjectREFR*`.
+        0x28 pRef: Ptr,
+        /// `spQueuedModel` (Xbox PDB): `NiPointer<QueuedModel>`.
+        0x2C spQueuedModel: Ptr,
+        /// `spModel` (Xbox PDB): `NiPointer<Model>`.
+        0x30 spModel: Ptr,
+        /// `spCloned3D` (Xbox PDB): `NiPointer<NiAVObject>`.
+        0x34 spCloned3D: Ptr,
+        /// `spAttachDistant3DTask` (Xbox PDB):
+        /// `NiPointer<AttachDistant3DTask>`.
+        0x38 spAttachDistant3DTask: Ptr,
+    }
+}
+
+/// The address of entry `index` of the array of `NiPointer`s that starts at
+/// `offset` in a `QueuedHelmet`.
+fn helmet_slot(this: Ptr<QueuedHelmet>, offset: u32, index: u32) -> Ptr {
+    this.byte_add(offset + 4 * index)
+}
+
+/// The address of `QueuedHelmet::cFlags`, which the game passes to the flag
+/// helpers.
+fn helmet_flags_pointer(this: Ptr<QueuedHelmet>) -> Ptr {
+    this.byte_add(QueuedHelmet::cFlags.off)
+}
+
+// Translated from 0043ea00 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedReplacementKF::GetDescription` (Xbox PDB):
+/// `QueuedFileEntry::GetDescription` with the kind word `"Replacement KF"`;
+/// returns its result.
+pub fn queued_replacement_kf_get_description(
+    e: &mut Engine,
+    this: Ptr<QueuedReplacementKF>,
+    buffer: u32,
+    size: u32,
+) -> bool {
+    e.call(
+        QUEUED_FILE_ENTRY_GET_DESCRIPTION,
+        &args![this, buffer, size, REPLACEMENT_KF_WORD],
+    )
+    .bool()
+}
+
+// Translated from 0043ea30 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedReplacementKFList` method (no name in the engine map): counts one
+/// more `iPostProcessedChildCount`; when the task's state is 4 or more, its
+/// children are all finished ([`fn_0043caa0`]) and that count has reached
+/// `iPostProcessingChildCount`, the loader's map of queued replacement KF
+/// lists is told about the animation ([`fn_0043ea90`]).
+pub fn fn_0043ea30(e: &mut Engine, this: Ptr<QueuedReplacementKFList>) {
+    let processed = e.get(this, QueuedReplacementKFList::iPostProcessedChildCount);
+    e.set(
+        this,
+        QueuedReplacementKFList::iPostProcessedChildCount,
+        processed.wrapping_add(1),
+    );
+    if e.call(TASK_STATE_AT_LEAST_4, &args![this]).bool() && fn_0043caa0(e, this.cast()) {
+        let processing = e.get(this, QueuedReplacementKFList::iPostProcessingChildCount);
+        let processed = e.get(this, QueuedReplacementKFList::iPostProcessedChildCount);
+        if processing == processed {
+            let animation = e.get(this, QueuedReplacementKFList::pAnim);
+            let loader = e.global::<u32>(FILE_MAP_OWNER);
+            fn_0043ea90(e, Ptr::new(loader), animation);
+        }
+    }
+}
+
+// Translated from 0043ea90 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `ModelLoader` method (no name in the engine map) on the loader at
+/// `this`: calls the virtual function `0x14` of its
+/// `pQueuedReplacementKFListMap` (`this + 0x14`, a `LockFreeMap<Animation*,
+/// ...>` in the Xbox PDB) with `animation`. What that slot does is not
+/// confirmed; both callers use it when the list is over.
+pub fn fn_0043ea90(e: &mut Engine, this: Ptr, animation: Ptr) {
+    let map = e.mem.u32(this.addr() + 0x14);
+    e.vcall(map, 0x14, &args![animation]);
+}
+
+// Translated from 0043eac0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedReplacementKFList::Cancel` (Xbox PDB): `QueuedFile::Cancel` with
+/// its two arguments, then the loader's map of queued replacement KF lists
+/// is told about the animation ([`fn_0043ea90`]).
+pub fn queued_replacement_kf_list_cancel(
+    e: &mut Engine,
+    this: Ptr<QueuedReplacementKFList>,
+    first: u32,
+    second: u32,
+) {
+    e.call(QUEUED_FILE_CANCEL, &args![this, first, second]);
+    let animation = e.get(this, QueuedReplacementKFList::pAnim);
+    let loader = e.global::<u32>(FILE_MAP_OWNER);
+    fn_0043ea90(e, Ptr::new(loader), animation);
+}
+
+// Translated from 0043eaf0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHead` constructor (no name in the engine map): the `QueuedFile`
+/// constructor with `context`, the head's virtual table, `pNPC` and two empty
+/// node pointers. Returns `this`.
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043eaf0(
+    e: &mut Engine,
+    this: Ptr<QueuedHead>,
+    npc: Ptr,
+    context: u32,
+) -> Ptr<QueuedHead> {
+    e.call(QUEUED_FILE_CONSTRUCT, &args![this, context]);
+    e.mem.set_u32(this.addr(), QUEUED_HEAD_VTABLE);
+    e.set(this, QueuedHead::pNPC, npc);
+    e.call(
+        NI_POINTER_CONSTRUCT,
+        &args![this.byte_add(QueuedHead::spBipedNode.off), 0u32],
+    );
+    e.call(
+        NI_POINTER_CONSTRUCT,
+        &args![this.byte_add(QueuedHead::spSkinnedNode.off), 0u32],
+    );
+    this
+}
+
+// Translated from 0043eb80 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHead::_scalar_deleting_destructor_` (Xbox PDB): runs the
+/// destructor ([`fn_0043ebb0`]) and, when bit 0 of `flags` is set, frees the
+/// object. Returns `this`.
+pub fn queued_head_scalar_deleting_destructor(
+    e: &mut Engine,
+    this: Ptr<QueuedHead>,
+    flags: u32,
+) -> Ptr<QueuedHead> {
+    fn_0043ebb0(e, this);
+    if flags & 1 != 0 {
+        e.call(MEMORY_FREE, &args![this]);
+    }
+    this
+}
+
+// Translated from 0043ebb0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHead` destructor (no name in the engine map; the decompiler's
+/// library match names it after a cancellation-token destructor): releases
+/// the two node pointers and runs the `QueuedFile` destructor body. It does
+/// not restore the virtual table.
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043ebb0(e: &mut Engine, this: Ptr<QueuedHead>) {
+    e.call(
+        NI_POINTER_DESTRUCT,
+        &args![this.byte_add(QueuedHead::spSkinnedNode.off)],
+    );
+    e.call(
+        NI_POINTER_DESTRUCT,
+        &args![this.byte_add(QueuedHead::spBipedNode.off)],
+    );
+    e.call(QUEUED_FILE_DESTRUCT, &args![this]);
+}
+
+// Translated from 0043ec20 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHead::QueueMe` (Xbox PDB): hands the NPC to the face generation
+/// manager (`00657150(NPC, priority byte of the key, this)`), then calls the
+/// virtual function `0x28` (`CheckFinished`).
+pub fn queued_head_queue_me(e: &mut Engine, this: Ptr<QueuedHead>) {
+    let key = fn_0043cc60(e, this.cast()) as u32;
+    let npc = e.get(this, QueuedHead::pNPC);
+    e.call(QUEUE_NPC_FACE_GEN, &args![npc, key, this]);
+    e.vcall(this.addr(), 0x28, &args![]);
+}
+
+// Translated from 0043ec60 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHead::CheckFinished` (Xbox PDB): when all children are finished
+/// ([`fn_0043caa0`]), a task still in state 0 is handed to the task queue
+/// (slot `0x48`), any other goes through `QueuedFile::CheckFinished`.
+pub fn queued_head_check_finished(e: &mut Engine, this: Ptr<QueuedHead>) {
+    if fn_0043caa0(e, this.cast()) {
+        if e.call(STATE_IS_ZERO, &args![this]).bool() {
+            let queue = e.global::<u32>(TASK_QUEUE);
+            e.vcall(queue, 0x48, &args![this]);
+        } else {
+            e.call(QUEUED_FILE_CHECK_FINISHED, &args![this]);
+        }
+    }
+}
+
+// Translated from 0043ecb0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHead::Run` (Xbox PDB): inside a face generation section and the
+/// memory context of the head (`0x37`, source line `0x5f9`), `TESNPC::InitHead`
+/// builds the two nodes, which are stored in `spBipedNode` and
+/// `spSkinnedNode`; when the NPC's form ID is 7 the race's EGT data is killed
+/// (`TESRace::KillEGTData`, race from the object at NPC `+0x10C`).
+///
+/// The exception-unwinding frame is not translated.
+pub fn queued_head_run(e: &mut Engine, this: Ptr<QueuedHead>) {
+    e.call(FACE_GEN_SECTION_ENTER, &args![]);
+    // The scope guard of the game's stack frame (4 bytes).
+    e.with_stack(4, |e, guard| {
+        e.call(
+            MEMORY_CONTEXT_ENTER,
+            &args![
+                guard,
+                HEAD_CONTEXT,
+                1u32,
+                MODEL_LOADER_SOURCE,
+                HEAD_RUN_SOURCE_LINE
+            ],
+        );
+        // The two out parameters of `InitHead`, zero to begin with.
+        e.with_stack(8, |e, nodes| {
+            let biped_out = nodes;
+            let skinned_out = nodes.byte_add(4);
+            let npc = e.get(this, QueuedHead::pNPC);
+            e.call(NPC_INIT_HEAD, &args![npc, biped_out, skinned_out]);
+            let biped = e.mem.u32(biped_out.addr());
+            e.call(
+                NI_POINTER_ASSIGN,
+                &args![this.byte_add(QueuedHead::spBipedNode.off), biped],
+            );
+            let skinned = e.mem.u32(skinned_out.addr());
+            e.call(
+                NI_POINTER_ASSIGN,
+                &args![this.byte_add(QueuedHead::spSkinnedNode.off), skinned],
+            );
+        });
+        let npc = e.get(this, QueuedHead::pNPC);
+        if e.call(FIELD_AT_C, &args![npc]).u32() == 7 {
+            let npc = e.get(this, QueuedHead::pNPC);
+            // The object embedded in the NPC at +0x10C; its dword at +4 is
+            // the race.
+            let race = e.call(FIELD_AT_4, &args![npc.byte_add(0x10c)]).u32();
+            e.call(KILL_EGT_DATA, &args![race]);
+        }
+        e.call(FACE_GEN_SECTION_LEAVE, &args![]);
+        e.call(MEMORY_CONTEXT_LEAVE, &args![guard]);
+    });
+}
+
+// Translated from 0043ed90 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHead` method (no name in the engine map): inside the memory
+/// context of the head (`0x37`, source line `0x613`), the NPC's base form
+/// of `reference` gets `reference`, `argument` and the two nodes
+/// (`00607420`). Unless `reference` is the player, both nodes are given the
+/// form ID of `reference` (`SetReferenceIDOnScenegraph`); then the dword at
+/// +0xE8 of each node that exists is set to `reference`.
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043ed90(e: &mut Engine, this: Ptr<QueuedHead>, reference: Ptr, argument: u32) {
+    let biped_slot = this.byte_add(QueuedHead::spBipedNode.off);
+    let skinned_slot = this.byte_add(QueuedHead::spSkinnedNode.off);
+    // The scope guard of the game's stack frame (4 bytes).
+    e.with_stack(4, |e, guard| {
+        e.call(
+            MEMORY_CONTEXT_ENTER,
+            &args![
+                guard,
+                HEAD_CONTEXT,
+                1u32,
+                MODEL_LOADER_SOURCE,
+                HEAD_SETUP_SOURCE_LINE
+            ],
+        );
+        let base_form = e.call(REFERENCE_BASE_FORM, &args![reference]).u32();
+        let skinned = ni_pointer_get(e, skinned_slot);
+        let biped = ni_pointer_get(e, biped_slot);
+        e.call(
+            NPC_SETUP_HEAD,
+            &args![base_form, reference, argument, biped, skinned],
+        );
+        if reference.addr() != e.global::<u32>(PLAYER_CHARACTER) {
+            let form_id = e.call(FIELD_AT_C, &args![reference]).u32();
+            let biped = ni_pointer_get(e, biped_slot);
+            e.call(SET_REFERENCE_ID_ON_SCENEGRAPH, &args![biped, form_id]);
+            if !ni_pointer_get(e, skinned_slot).is_null() {
+                let form_id = e.call(FIELD_AT_C, &args![reference]).u32();
+                let skinned = ni_pointer_get(e, skinned_slot);
+                e.call(SET_REFERENCE_ID_ON_SCENEGRAPH, &args![skinned, form_id]);
+            }
+        }
+        if !ni_pointer_get(e, skinned_slot).is_null() {
+            let skinned = ni_pointer_get(e, skinned_slot);
+            // The dword at +0xE8 of the face generation node.
+            e.mem.set_u32(skinned.addr() + 0xe8, reference.addr());
+        }
+        if !ni_pointer_get(e, biped_slot).is_null() {
+            let biped = ni_pointer_get(e, biped_slot);
+            e.mem.set_u32(biped.addr() + 0xe8, reference.addr());
+        }
+        e.call(MEMORY_CONTEXT_LEAVE, &args![guard]);
+    });
+}
+
+// Translated from 0043eed0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHead::GetDescription` (Xbox PDB): writes `"Queued head for NPC
+/// %s"` with the name of the NPC (the name object at NPC `+0xD0`,
+/// `00408da0`) into `buffer` (`size` bytes); returns true.
+pub fn queued_head_get_description(
+    e: &mut Engine,
+    this: Ptr<QueuedHead>,
+    buffer: u32,
+    size: u32,
+) -> bool {
+    let npc = e.get(this, QueuedHead::pNPC);
+    let name = e.call(NAME_OBJECT_STRING, &args![npc.byte_add(0xd0)]).u32();
+    e.call(
+        FORMAT_STRING,
+        &args![buffer, size, QUEUED_HEAD_FORMAT, name],
+    );
+    true
+}
+
+// Translated from 0043ef10 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHelmet` constructor (no name in the engine map): the `QueuedFile`
+/// constructor with `context`, the helmet's virtual table, `pBipedAnim`, the
+/// three arrays of twenty `NiPointer`s (vector constructors), no flags, and
+/// `pRef` from the biped animation ([`fn_0043f010`]). Returns `this`. The
+/// third argument word is never read.
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043ef10(
+    e: &mut Engine,
+    this: Ptr<QueuedHelmet>,
+    biped_anim: Ptr,
+    context: u32,
+    _unused_3: u32,
+) -> Ptr<QueuedHelmet> {
+    e.call(QUEUED_FILE_CONSTRUCT, &args![this, context]);
+    e.mem.set_u32(this.addr(), QUEUED_HELMET_VTABLE);
+    e.set(this, QueuedHelmet::pBipedAnim, biped_anim);
+    e.call(
+        VECTOR_CONSTRUCT,
+        &args![
+            helmet_slot(this, HELMET_MODELS_OFFSET, 0),
+            4u32,
+            HELMET_SLOT_COUNT,
+            HELMET_MODEL_POINTER_CONSTRUCT,
+            TASK_POINTER_DESTRUCT
+        ],
+    );
+    e.call(
+        VECTOR_CONSTRUCT,
+        &args![
+            helmet_slot(this, HELMET_FACE_GEN_MODELS_OFFSET, 0),
+            4u32,
+            HELMET_SLOT_COUNT,
+            NI_POINTER_DEFAULT_CONSTRUCT,
+            NI_POINTER_DESTRUCT
+        ],
+    );
+    e.call(
+        VECTOR_CONSTRUCT,
+        &args![
+            helmet_slot(this, HELMET_CLONED_NODES_OFFSET, 0),
+            4u32,
+            HELMET_SLOT_COUNT,
+            NI_POINTER_DEFAULT_CONSTRUCT,
+            NI_POINTER_DESTRUCT
+        ],
+    );
+    e.set(this, QueuedHelmet::cFlags, 0);
+    let reference = fn_0043f010(e, biped_anim);
+    e.set(this, QueuedHelmet::pRef, reference);
+    this
+}
+
+// Translated from 0043eff0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHelmet::PostProcess` (Xbox PDB): `QueuedHelmet::Attach`
+/// ([`queued_helmet_attach`]).
+pub fn queued_helmet_post_process(e: &mut Engine, this: Ptr<QueuedHelmet>) {
+    queued_helmet_attach(e, this);
+}
+
+// Translated from 0043f010 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `BipedAnim` getter (no name in the engine map): the dword at +0x2B0, the
+/// reference the animation belongs to.
+pub fn fn_0043f010(e: &mut Engine, this: Ptr) -> Ptr {
+    Ptr::new(e.mem.u32(this.addr() + 0x2b0))
+}
+
+// Translated from 0043f030 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHelmet::_scalar_deleting_destructor_` (Xbox PDB): runs the
+/// destructor ([`fn_0043f080`]) and, when bit 0 of `flags` is set, frees the
+/// object. Returns `this`.
+pub fn queued_helmet_scalar_deleting_destructor(
+    e: &mut Engine,
+    this: Ptr<QueuedHelmet>,
+    flags: u32,
+) -> Ptr<QueuedHelmet> {
+    fn_0043f080(e, this);
+    if flags & 1 != 0 {
+        e.call(MEMORY_FREE, &args![this]);
+    }
+    this
+}
+
+// Translated from 0043f060 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Default constructor of the task pointers in `QueuedHelmet`'s first array
+/// (no name in the engine map): the task pointer constructor with a null
+/// task.
+pub fn fn_0043f060(e: &mut Engine, this: Ptr) {
+    e.call(TASK_POINTER_CONSTRUCT, &args![this, 0u32]);
+}
+
+// Translated from 0043f080 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHelmet` destructor (no name in the engine map; the decompiler's
+/// library match names it after a cancellation-token destructor): destroys
+/// the three arrays of twenty `NiPointer`s, last first (vector destructors),
+/// and runs the `QueuedFile` destructor body. It does not restore the
+/// virtual table.
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043f080(e: &mut Engine, this: Ptr<QueuedHelmet>) {
+    e.call(
+        VECTOR_DESTRUCT,
+        &args![
+            helmet_slot(this, HELMET_CLONED_NODES_OFFSET, 0),
+            4u32,
+            HELMET_SLOT_COUNT,
+            NI_POINTER_DESTRUCT
+        ],
+    );
+    e.call(
+        VECTOR_DESTRUCT,
+        &args![
+            helmet_slot(this, HELMET_FACE_GEN_MODELS_OFFSET, 0),
+            4u32,
+            HELMET_SLOT_COUNT,
+            NI_POINTER_DESTRUCT
+        ],
+    );
+    e.call(
+        VECTOR_DESTRUCT,
+        &args![
+            helmet_slot(this, HELMET_MODELS_OFFSET, 0),
+            4u32,
+            HELMET_SLOT_COUNT,
+            TASK_POINTER_DESTRUCT
+        ],
+    );
+    e.call(QUEUED_FILE_DESTRUCT, &args![this]);
+}
+
+// Translated from 0043f120 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHelmet::QueueMe` (Xbox PDB): for each of the twenty biped slots
+/// that is in use, the loader queues the slot's model data into
+/// `spQueuedHelmetModel[slot]` (`00443dc0`, with the task's priority byte,
+/// `this` as the parent, LOD multiplier 3 and the constant flags the code
+/// pushes) and its EGM file (`ModelLoader::QueueEGMFile`, priority byte,
+/// `this`, -1). Then bit 1 of `cFlags` is set ([`fn_0043f1f0`]) and the
+/// virtual function `0x28` (`CheckFinished`) is called.
+pub fn queued_helmet_queue_me(e: &mut Engine, this: Ptr<QueuedHelmet>) {
+    for index in 0..HELMET_SLOT_COUNT {
+        let biped = e.get(this, QueuedHelmet::pBipedAnim);
+        if e.call(BIPED_ANIM_SLOT_IN_USE, &args![biped, index]).bool() {
+            let biped = e.get(this, QueuedHelmet::pBipedAnim);
+            let entry = fn_0043f220(e, biped, index);
+            // The dword at +4 of the biped's slot entry.
+            let model_data = e.mem.u32(entry.addr() + 4);
+            let loader = e.global::<u32>(FILE_MAP_OWNER);
+            let key = fn_0043cc60(e, this.cast()) as u32;
+            e.call(
+                MODEL_LOADER_QUEUE_HELMET_MODEL,
+                &args![
+                    loader,
+                    model_data,
+                    helmet_slot(this, HELMET_MODELS_OFFSET, index),
+                    key,
+                    this,
+                    3u32,
+                    1u32,
+                    1u32,
+                    1u32,
+                    0.0f32
+                ],
+            );
+            let key = fn_0043cc60(e, this.cast()) as u32;
+            e.call(
+                MODEL_LOADER_QUEUE_EGM_FILE,
+                &args![loader, model_data, key, this, 0xffff_ffffu32],
+            );
+        }
+    }
+    fn_0043f1f0(e, this, 1);
+    e.vcall(this.addr(), 0x28, &args![]);
+}
+
+// Translated from 0043f1f0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Sets (`flag` non-zero) or clears bit 1 of the helmet's `cFlags`.
+pub fn fn_0043f1f0(e: &mut Engine, this: Ptr<QueuedHelmet>, flag: u8) {
+    let flags = helmet_flags_pointer(this);
+    e.call(SET_FLAG_BIT_1, &args![flag as u32, flags]);
+}
+
+// Translated from 0043f220 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `BipedAnim` method (no name in the engine map): the address of the
+/// 0x10-byte entry of biped slot `index`, `this + 0x2C + 0x10 * index`.
+pub fn fn_0043f220(_e: &mut Engine, this: Ptr, index: u32) -> Ptr {
+    this.byte_add(0x2c + (index << 4))
+}
+
+// Translated from 0043f240 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHelmet::Run` (Xbox PDB): for each of the twenty biped slots that
+/// is in use, while the task's state is not 6, the face generation model of
+/// the slot is loaded (`BipedAnim::LoadFaceGenModel`) into
+/// `spHelmetFaceGenModel[slot]`.
+pub fn queued_helmet_run(e: &mut Engine, this: Ptr<QueuedHelmet>) {
+    for index in 0..HELMET_SLOT_COUNT {
+        let biped = e.get(this, QueuedHelmet::pBipedAnim);
+        if e.call(BIPED_ANIM_SLOT_IN_USE, &args![biped, index]).bool()
+            && !e.call(TASK_STATE_IS_6, &args![this]).bool()
+        {
+            let biped = e.get(this, QueuedHelmet::pBipedAnim);
+            let model = e
+                .call(BIPED_ANIM_LOAD_FACE_GEN_MODEL, &args![biped, index])
+                .u32();
+            e.call(
+                NI_POINTER_ASSIGN,
+                &args![
+                    helmet_slot(this, HELMET_FACE_GEN_MODELS_OFFSET, index),
+                    model
+                ],
+            );
+        }
+    }
+}
+
+// Translated from 0043f2b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHelmet::Finish` (Xbox PDB): a task without a parent whose state is
+/// not 6 is added to the post-process queue
+/// ([`iomanager_add_post_process_task`]); then the virtual function `0x28`
+/// (`CheckFinished`) is called ([`fn_0043c610`]).
+pub fn queued_helmet_finish(e: &mut Engine, this: Ptr<QueuedHelmet>) {
+    let parent = ni_pointer_get(e, this.byte_add(QUEUED_FILE_PARENT_OFFSET));
+    if parent.is_null() && !e.call(TASK_STATE_IS_6, &args![this]).bool() {
+        iomanager_add_post_process_task(e, this.cast());
+    }
+    fn_0043c610(e, this.cast());
+}
+
+// Translated from 0043f2f0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHelmet::CheckFinished` (Xbox PDB). Without bit 1 of `cFlags` (set
+/// once the models are queued) it is `QueuedFile::CheckFinished`. With it, a
+/// task whose children are all finished and whose state is 0 goes to the task
+/// queue (slot `0x48`). Any other task, inside the memory context `0x32`
+/// (source line `0x690`): if its state is 4 or more, the children are
+/// finished, the state is not 6 and the reference is not the player, every
+/// biped slot with a loaded model gets a cloned node
+/// (`BipedAnim::CloneHelmet`, stored in `spClonedHelmetNode[slot]`); unless
+/// the clone already has a child with a set pointer at +0xBC, the face
+/// generation model is taken (loaded when missing) and, for each child of
+/// the clone that has a deep-copyable part and belongs to an NPC reference
+/// (form type 0x2a), the part is deep-copied and given to the child (virtual
+/// function `0xE4`), the NPC's face coordinates are read
+/// (`TESNPC::GetFaceCoord`) and, when the setting byte [`fn_0043faf0`] is
+/// clear or the face generation model accepts them (`0065a970`), the child's
+/// local rotation is multiplied by a Y rotation of -pi/2
+/// ([`ni_matrix3_make_y_rotation`], [`ni_matrix3_multiply`]). At the end
+/// `QueuedFile::CheckFinished` runs.
+///
+/// The exception-unwinding frame is not translated; the locals of the game's
+/// stack frame (the scope guard, two `NiPointer`s, the four face coordinates
+/// and two matrices) are one block here.
+pub fn queued_helmet_check_finished(e: &mut Engine, this: Ptr<QueuedHelmet>) {
+    if !fn_0043fab0(e, this) {
+        e.call(QUEUED_FILE_CHECK_FINISHED, &args![this]);
+        return;
+    }
+    if fn_0043caa0(e, this.cast()) && e.call(STATE_IS_ZERO, &args![this]).bool() {
+        let queue = e.global::<u32>(TASK_QUEUE);
+        e.vcall(queue, 0x48, &args![this]);
+        return;
+    }
+    e.with_stack(HELMET_FRAME_SIZE, |e, frame| {
+        let guard = frame;
+        e.call(
+            MEMORY_CONTEXT_ENTER,
+            &args![
+                guard,
+                HELMET_CONTEXT,
+                1u32,
+                MODEL_LOADER_SOURCE,
+                HELMET_CHECK_FINISHED_SOURCE_LINE
+            ],
+        );
+        let spare_pointer = frame.byte_add(HELMET_FRAME_SPARE_POINTER);
+        e.call(NI_POINTER_CONSTRUCT, &args![spare_pointer, 0u32]);
+        let player = e.global::<u32>(PLAYER_CHARACTER);
+        if e.call(TASK_STATE_AT_LEAST_4, &args![this]).bool()
+            && fn_0043caa0(e, this.cast())
+            && !e.call(TASK_STATE_IS_6, &args![this]).bool()
+            && e.get(this, QueuedHelmet::pRef).addr() != player
+        {
+            for index in 0..HELMET_SLOT_COUNT {
+                helmet_clone_slot(e, this, frame, index);
+            }
+        }
+        e.call(QUEUED_FILE_CHECK_FINISHED, &args![this]);
+        e.call(NI_POINTER_DESTRUCT, &args![spare_pointer]);
+        e.call(MEMORY_CONTEXT_LEAVE, &args![guard]);
+    });
+}
+
+/// The block that stands for the locals of `QueuedHelmet::CheckFinished`:
+/// the scope guard (0), a spare `NiPointer` (4: the deep copy), the
+/// `NiPointer` holding the copy given to a child (8), the four 0x20-byte face
+/// coordinates (0x10), the rotation matrix (0x90) and the product (0xB4).
+const HELMET_FRAME_SIZE: u32 = 0xd8;
+const HELMET_FRAME_SPARE_POINTER: u32 = 4;
+const HELMET_FRAME_COPY_POINTER: u32 = 8;
+const HELMET_FRAME_FACE_COORDS: u32 = 0x10;
+const HELMET_FRAME_ROTATION: u32 = 0x90;
+const HELMET_FRAME_PRODUCT: u32 = 0xb4;
+
+/// The body of the loop of [`queued_helmet_check_finished`] for biped slot
+/// `index`.
+fn helmet_clone_slot(e: &mut Engine, this: Ptr<QueuedHelmet>, frame: Ptr, index: u32) {
+    let model_slot = helmet_slot(this, HELMET_MODELS_OFFSET, index);
+    let face_slot = helmet_slot(this, HELMET_FACE_GEN_MODELS_OFFSET, index);
+    let clone_slot = helmet_slot(this, HELMET_CLONED_NODES_OFFSET, index);
+    if ni_pointer_get(e, model_slot).is_null() {
+        return;
+    }
+    if loaded_model(e, model_slot).is_null() {
+        return;
+    }
+    let model = loaded_model(e, model_slot);
+    if fn_0043b230(e, model).is_null() {
+        return;
+    }
+    let model = loaded_model(e, model_slot);
+    let node_3d = fn_0043b230(e, model);
+    let face_model = ni_pointer_get(e, face_slot);
+    let biped = e.get(this, QueuedHelmet::pBipedAnim);
+    let clone = e
+        .call(
+            BIPED_ANIM_CLONE_HELMET,
+            &args![biped, face_model, node_3d, index],
+        )
+        .u32();
+    e.call(NI_POINTER_ASSIGN, &args![clone_slot, clone]);
+    if ni_pointer_get(e, clone_slot).is_null() {
+        return;
+    }
+    if helmet_clone_has_marked_child(e, clone_slot) {
+        return;
+    }
+    let face_model = if ni_pointer_get(e, face_slot).is_null() {
+        let biped = e.get(this, QueuedHelmet::pBipedAnim);
+        e.call(BIPED_ANIM_LOAD_FACE_GEN_MODEL, &args![biped, index])
+            .ptr()
+    } else {
+        ni_pointer_get(e, face_slot)
+    };
+    if face_model.is_null() {
+        return;
+    }
+    let mut child_index = 0u32;
+    loop {
+        let clone = ni_pointer_get(e, clone_slot);
+        if child_index >= fn_0043b480(e, clone) as u32 {
+            return;
+        }
+        let clone = ni_pointer_get(e, clone_slot);
+        let child = fn_0043b4a0(e, clone, child_index);
+        child_index += 1;
+        if child.is_null() || e.call(OBJECT_POINTER_AT_B8, &args![child]).u32() == 0 {
+            continue;
+        }
+        let npc = match helmet_npc(e, this) {
+            Some(npc) => npc,
+            None => continue,
+        };
+        helmet_orient_child(e, frame, child, npc, face_model);
+    }
+}
+
+/// `LoadedModel` of a `NiPointer<QueuedModel>` slot: the `Model` of the
+/// queued model (`004a8a90`).
+fn loaded_model(e: &mut Engine, model_slot: Ptr) -> Ptr {
+    let queued = ni_pointer_get(e, model_slot);
+    e.call(QUEUED_MODEL_GET_MODEL, &args![queued]).ptr()
+}
+
+/// Whether some child of the cloned node in `clone_slot` answers non-zero to
+/// the virtual function `0x18` and has a set `NiPointer` at +0xBC
+/// ([`fn_0043fad0`]).
+fn helmet_clone_has_marked_child(e: &mut Engine, clone_slot: Ptr) -> bool {
+    let mut child_index = 0u32;
+    loop {
+        let clone = ni_pointer_get(e, clone_slot);
+        if child_index >= fn_0043b480(e, clone) as u32 {
+            return false;
+        }
+        let clone = ni_pointer_get(e, clone_slot);
+        let child = fn_0043b4a0(e, clone, child_index);
+        if !child.is_null()
+            && e.vcall(child.addr(), 0x18, &args![]).u32() != 0
+            && !fn_0043fad0(e, child).is_null()
+        {
+            return true;
+        }
+        child_index += 1;
+    }
+}
+
+/// The NPC base form of the helmet's reference, when the biped animation has
+/// a reference whose base form is of type 0x2a.
+fn helmet_npc(e: &mut Engine, this: Ptr<QueuedHelmet>) -> Option<Ptr> {
+    let biped = e.get(this, QueuedHelmet::pBipedAnim);
+    if fn_0043f010(e, biped).is_null() {
+        return None;
+    }
+    let biped = e.get(this, QueuedHelmet::pBipedAnim);
+    let reference = fn_0043f010(e, biped);
+    if e.call(REFERENCE_BASE_FORM, &args![reference]).u32() == 0 {
+        return None;
+    }
+    let biped = e.get(this, QueuedHelmet::pBipedAnim);
+    let reference = fn_0043f010(e, biped);
+    let base_form = e.call(REFERENCE_BASE_FORM, &args![reference]).u32();
+    if e.call(FORM_TYPE, &args![base_form]).u32() != 0x2a {
+        return None;
+    }
+    let biped = e.get(this, QueuedHelmet::pBipedAnim);
+    let reference = fn_0043f010(e, biped);
+    Some(e.call(REFERENCE_BASE_FORM, &args![reference]).ptr())
+}
+
+/// The body of the inner loop of [`queued_helmet_check_finished`] for a
+/// `child` of the cloned node: deep copy of its part, face coordinates, and
+/// the rotation of its local matrix.
+fn helmet_orient_child(e: &mut Engine, frame: Ptr, child: Ptr, npc: Ptr, face_model: Ptr) {
+    let face_coords = frame.byte_add(HELMET_FRAME_FACE_COORDS);
+    let copy_pointer = frame.byte_add(HELMET_FRAME_COPY_POINTER);
+    let spare_pointer = frame.byte_add(HELMET_FRAME_SPARE_POINTER);
+    e.call(
+        VECTOR_CONSTRUCT,
+        &args![
+            face_coords,
+            0x20u32,
+            4u32,
+            FACE_COORD_CONSTRUCT,
+            FACE_COORD_DESTRUCT
+        ],
+    );
+    e.call(NI_POINTER_CONSTRUCT, &args![copy_pointer, 0u32]);
+    let part = e.call(OBJECT_POINTER_AT_B8, &args![child]).u32();
+    e.call(CREATE_DEEP_COPY, &args![part, spare_pointer]);
+    let deep_copy = ni_pointer_get(e, spare_pointer);
+    e.call(NI_POINTER_ASSIGN, &args![copy_pointer, deep_copy]);
+    let deep_copy = ni_pointer_get(e, copy_pointer);
+    e.vcall(child.addr(), 0xe4, &args![deep_copy]);
+    e.call(NPC_GET_FACE_COORD, &args![npc, face_coords]);
+    if fn_0043faf0(e) == 0
+        || e.call(
+            FACE_GEN_MODEL_APPLY_COORDS,
+            &args![face_model, face_coords, child, 0u32],
+        )
+        .bool()
+    {
+        let rotation = frame.byte_add(HELMET_FRAME_ROTATION);
+        let product = frame.byte_add(HELMET_FRAME_PRODUCT);
+        e.call(MATRIX_CONSTRUCT, &args![rotation]);
+        let angle = e.global::<f32>(HELMET_ROTATION_ANGLE);
+        ni_matrix3_make_y_rotation(e, rotation, angle);
+        let local_rotate = e.call(LOCAL_ROTATE_ADDRESS, &args![child]).ptr();
+        let result = ni_matrix3_multiply(e, local_rotate, product, rotation);
+        fn_0043fa80(e, child, result);
+    }
+    e.call(NI_POINTER_DESTRUCT, &args![copy_pointer]);
+    e.call(
+        VECTOR_DESTRUCT,
+        &args![face_coords, 0x20u32, 4u32, FACE_COORD_DESTRUCT],
+    );
+}
+
+// Translated from 0043f850 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `NiMatrix3::MakeYRotation` (engine map): the rotation by `angle` around
+/// the Y axis in the matrix at `this` (nine floats, row by row): `cos 0 -sin /
+/// 0 1 0 / sin 0 cos`, with `sin` and `cos` from the game's helper
+/// (`004169a0`).
+pub fn ni_matrix3_make_y_rotation(e: &mut Engine, this: Ptr, angle: f32) {
+    // The two floats the helper writes (sine, cosine) on the game's stack.
+    let (sin, cos) = e.with_stack(8, |e, out| {
+        e.call(SIN_COS, &args![angle, out, out.byte_add(4)]);
+        (e.mem.f32(out.addr()), e.mem.f32(out.addr() + 4))
+    });
+    let matrix = this.addr();
+    e.mem.set_f32(matrix, cos);
+    e.mem.set_f32(matrix + 4, 0.0);
+    e.mem.set_f32(matrix + 8, -sin);
+    e.mem.set_f32(matrix + 0xc, 0.0);
+    e.mem.set_f32(matrix + 0x10, 1.0);
+    e.mem.set_f32(matrix + 0x14, 0.0);
+    e.mem.set_f32(matrix + 0x18, sin);
+    e.mem.set_f32(matrix + 0x1c, 0.0);
+    e.mem.set_f32(matrix + 0x20, cos);
+}
+
+// Translated from 0043f8d0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `NiMatrix3::operator*` (engine map): the product of the matrix at `this`
+/// (left) and `other` (right), nine floats each, row by row, written to
+/// `out` (which may be either input); returns `out`. Every element is the sum
+/// `left[row][0] * right[0][column] + left[row][1] * right[1][column] +
+/// left[row][2] * right[2][column]`, added left to right and rounded to
+/// `float` once, as the x87 code does.
+pub fn ni_matrix3_multiply(e: &mut Engine, this: Ptr, out: Ptr, other: Ptr) -> Ptr {
+    // The result is built on the game's stack (after `NiMatrix3()`, which
+    // does nothing but return `this`).
+    e.with_stack(36, |e, result| {
+        e.call(MATRIX_CONSTRUCT, &args![result]);
+        let left: Vec<f64> = (0..9)
+            .map(|i| e.mem.f32(this.addr() + 4 * i) as f64)
+            .collect();
+        let right: Vec<f64> = (0..9)
+            .map(|i| e.mem.f32(other.addr() + 4 * i) as f64)
+            .collect();
+        for row in 0..3usize {
+            for column in 0..3usize {
+                let sum = left[3 * row] * right[column]
+                    + left[3 * row + 1] * right[3 + column]
+                    + left[3 * row + 2] * right[6 + column];
+                e.mem
+                    .set_f32(result.addr() + 4 * (3 * row + column) as u32, sum as f32);
+            }
+        }
+        for i in 0..9 {
+            let value = e.mem.u32(result.addr() + 4 * i);
+            e.mem.set_u32(out.addr() + 4 * i, value);
+        }
+    });
+    out
+}
+
+// Translated from 0043fa80 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `NiAVObject` method (no name in the engine map): copies the nine floats of
+/// `matrix` into the local rotation matrix at `this + 0x34`.
+pub fn fn_0043fa80(e: &mut Engine, this: Ptr, matrix: Ptr) {
+    for i in 0..9 {
+        let value = e.mem.u32(matrix.addr() + 4 * i);
+        e.mem.set_u32(this.addr() + 0x34 + 4 * i, value);
+    }
+}
+
+// Translated from 0043fab0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether bit 1 of the helmet's `cFlags` is set.
+pub fn fn_0043fab0(e: &mut Engine, this: Ptr<QueuedHelmet>) -> bool {
+    let flags = e.get(this, QueuedHelmet::cFlags);
+    e.call(TEST_FLAG_BIT_1, &args![flags as u32]).bool()
+}
+
+// Translated from 0043fad0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The `NiPointer` at +0xBC of `this` dereferenced.
+pub fn fn_0043fad0(e: &mut Engine, this: Ptr) -> Ptr {
+    ni_pointer_get(e, this.byte_add(0xbc))
+}
+
+// Translated from 0043faf0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The byte at +4 of the setting object at `011d5a44` (read through
+/// `00408d60`, which gives the address of that byte).
+pub fn fn_0043faf0(e: &mut Engine) -> u8 {
+    let address = e
+        .call(SETTING_BYTE_POINTER, &args![HELMET_ROTATION_SETTING])
+        .u32();
+    e.mem.u8(address)
+}
+
+// Translated from 0043fb10 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHelmet::Cancel` (Xbox PDB): `QueuedFile::Cancel` with its two
+/// arguments, then the loader's map of queued helmets is told about the
+/// reference ([`fn_0043fb50`]).
+pub fn queued_helmet_cancel(e: &mut Engine, this: Ptr<QueuedHelmet>, first: u32, second: u32) {
+    e.call(QUEUED_FILE_CANCEL, &args![this, first, second]);
+    let reference = e.get(this, QueuedHelmet::pRef);
+    let loader = e.global::<u32>(FILE_MAP_OWNER);
+    fn_0043fb50(e, Ptr::new(loader), reference);
+}
+
+// Translated from 0043fb50 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `ModelLoader` method (no name in the engine map) on the loader at
+/// `this`: calls the virtual function `0x14` of its `pQueuedHelmetMap`
+/// (`this + 0x18`, a `LockFreeMap<TESObjectREFR*, ...>` in the Xbox PDB) with
+/// `reference`. What that slot does is not confirmed; both callers use it
+/// when the task is over.
+pub fn fn_0043fb50(e: &mut Engine, this: Ptr, reference: Ptr) {
+    let map = e.mem.u32(this.addr() + 0x18);
+    e.vcall(map, 0x14, &args![reference]);
+}
+
+// Translated from 0043fb80 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHelmet::Attach` (Xbox PDB): for each of the twenty biped slots with
+/// a cloned node, `BipedAnim::AttachHelmet` with the slot's face generation
+/// model and cloned node; then the loader's map of queued helmets is told
+/// about the reference ([`fn_0043fb50`]).
+pub fn queued_helmet_attach(e: &mut Engine, this: Ptr<QueuedHelmet>) {
+    for index in 0..HELMET_SLOT_COUNT {
+        let clone_slot = helmet_slot(this, HELMET_CLONED_NODES_OFFSET, index);
+        if !ni_pointer_get(e, clone_slot).is_null() {
+            let clone = ni_pointer_get(e, clone_slot);
+            let face_model =
+                ni_pointer_get(e, helmet_slot(this, HELMET_FACE_GEN_MODELS_OFFSET, index));
+            let biped = e.get(this, QueuedHelmet::pBipedAnim);
+            e.call(
+                BIPED_ANIM_ATTACH_HELMET,
+                &args![biped, face_model, clone, index],
+            );
+        }
+    }
+    let reference = e.get(this, QueuedHelmet::pRef);
+    let loader = e.global::<u32>(FILE_MAP_OWNER);
+    fn_0043fb50(e, Ptr::new(loader), reference);
+}
+
+// Translated from 0043fc10 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedHelmet::GetDescription` (Xbox PDB): writes `"Queued helmet for
+/// biped anim %08X"` with `pBipedAnim` into `buffer` (`size` bytes); returns
+/// true.
+pub fn queued_helmet_get_description(
+    e: &mut Engine,
+    this: Ptr<QueuedHelmet>,
+    buffer: u32,
+    size: u32,
+) -> bool {
+    let biped = e.get(this, QueuedHelmet::pBipedAnim);
+    e.call(
+        FORMAT_STRING,
+        &args![buffer, size, QUEUED_HELMET_FORMAT, biped],
+    );
+    true
+}
+
+// Translated from 0043fc40 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `AttachDistant3DTask::PostProcess` (Xbox PDB): for a task whose state is
+/// not 6, that has a reference and whose reference does not pass
+/// [`fn_0043fcd0`], the reference gets the node as its 3D (`00570f70`), is
+/// loaded into the scene (`TES` method `00451ef0` with its parent cell, no
+/// source, flag 0) and `TESActorBase::SetStartsDead(1)` is called on it.
+/// Otherwise `spNode` is cleared.
+pub fn attach_distant_3d_task_post_process(e: &mut Engine, this: Ptr<AttachDistant3DTask>) {
+    let node_slot = this.byte_add(AttachDistant3DTask::spNode.off);
+    if !e.call(TASK_STATE_IS_6, &args![this]).bool()
+        && !e.get(this, AttachDistant3DTask::pRef).is_null()
+    {
+        let reference = e.get(this, AttachDistant3DTask::pRef);
+        if fn_0043fcd0(e, reference).is_null() {
+            let node = ni_pointer_get(e, node_slot);
+            let reference = e.get(this, AttachDistant3DTask::pRef);
+            e.call(REFERENCE_SET_3D, &args![reference, node]);
+            let reference = e.get(this, AttachDistant3DTask::pRef);
+            let cell = e.call(REFERENCE_CELL, &args![reference]).u32();
+            let reference = e.get(this, AttachDistant3DTask::pRef);
+            let tes = e.global::<u32>(TES_GLOBAL);
+            e.call(TES_LOAD_REFERENCE, &args![tes, reference, cell, 0u32, 0u32]);
+            let reference = e.get(this, AttachDistant3DTask::pRef);
+            e.call(SET_STARTS_DEAD, &args![reference, 1u32]);
+            return;
+        }
+    }
+    e.call(NI_POINTER_ASSIGN, &args![node_slot, 0u32]);
+}
+
+// Translated from 0043fcd0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `TESObjectREFR` method (no name in the engine map; `this` is a reference):
+/// while the thread's TLS word at +0x264 is `this`, the thread's TLS word at
+/// +0x260; otherwise, when the dword at `this + 0x64` is set, the `NiPointer`
+/// at +0x14 of the object it points to dereferenced, else 0.
+pub fn fn_0043fcd0(e: &mut Engine, this: Ptr) -> Ptr {
+    let tls = e.tls();
+    if this.addr() == e.mem.u32(tls + TLS_REFERENCE) {
+        return Ptr::new(e.mem.u32(tls + TLS_REFERENCE_3D));
+    }
+    let data = e.mem.u32(this.addr() + 0x64);
+    if data == 0 {
+        Ptr::NULL
+    } else {
+        let data = e.mem.u32(this.addr() + 0x64);
+        ni_pointer_get(e, Ptr::new(data + 0x14))
+    }
+}
+
+// Translated from 0043fd40 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedReference` constructor (no name in the engine map): the
+/// `QueuedFile` constructor with `context`, the reference task's virtual
+/// table, `pRef`, and four empty smart pointers (a task pointer, two
+/// `NiPointer`s, a task pointer). Returns `this`.
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043fd40(
+    e: &mut Engine,
+    this: Ptr<QueuedReference>,
+    reference: Ptr,
+    context: u32,
+) -> Ptr<QueuedReference> {
+    e.call(QUEUED_FILE_CONSTRUCT, &args![this, context]);
+    e.mem.set_u32(this.addr(), QUEUED_REFERENCE_VTABLE);
+    e.set(this, QueuedReference::pRef, reference);
+    e.call(
+        TASK_POINTER_CONSTRUCT,
+        &args![this.byte_add(QueuedReference::spQueuedModel.off), 0u32],
+    );
+    e.call(
+        NI_POINTER_CONSTRUCT,
+        &args![this.byte_add(QueuedReference::spModel.off), 0u32],
+    );
+    e.call(
+        NI_POINTER_CONSTRUCT,
+        &args![this.byte_add(QueuedReference::spCloned3D.off), 0u32],
+    );
+    e.call(
+        TASK_POINTER_CONSTRUCT,
+        &args![
+            this.byte_add(QueuedReference::spAttachDistant3DTask.off),
+            0u32
+        ],
+    );
+    this
+}
+
+// Translated from 0043fdf0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedReference::PostProcess` (Xbox PDB): calls the virtual function
+/// `0x3c` (`Attach`).
+pub fn queued_reference_post_process(e: &mut Engine, this: Ptr<QueuedReference>) {
+    e.vcall(this.addr(), 0x3c, &args![]);
+}
+
+// Translated from 0043fe10 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedReference` scalar deleting destructor (no name in the engine map;
+/// the decompiler's library match names it after `CBitmapButton`): runs the
+/// destructor ([`fn_0043fe40`]) and, when bit 0 of `flags` is set, frees the
+/// object. Returns `this`.
+pub fn fn_0043fe10(e: &mut Engine, this: Ptr<QueuedReference>, flags: u32) -> Ptr<QueuedReference> {
+    fn_0043fe40(e, this);
+    if flags & 1 != 0 {
+        e.call(MEMORY_FREE, &args![this]);
+    }
+    this
+}
+
+// Translated from 0043fe40 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedReference` destructor (no name in the engine map; the decompiler's
+/// library match names it `CBitmapButton::~CBitmapButton`): releases the
+/// attach task pointer, the cloned 3D, the model (`0040c110`) and the queued
+/// model pointer, and runs the `QueuedFile` destructor body. It does not
+/// restore the virtual table.
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043fe40(e: &mut Engine, this: Ptr<QueuedReference>) {
+    e.call(
+        TASK_POINTER_DESTRUCT,
+        &args![this.byte_add(QueuedReference::spAttachDistant3DTask.off)],
+    );
+    e.call(
+        NI_POINTER_DESTRUCT,
+        &args![this.byte_add(QueuedReference::spCloned3D.off)],
+    );
+    e.call(
+        MODEL_POINTER_RELEASE,
+        &args![this.byte_add(QueuedReference::spModel.off)],
+    );
+    e.call(
+        TASK_POINTER_DESTRUCT,
+        &args![this.byte_add(QueuedReference::spQueuedModel.off)],
+    );
+    e.call(QUEUED_FILE_DESTRUCT, &args![this]);
 }
 
 /// This unit's translated functions, by exe address.
@@ -4017,6 +5286,85 @@ pub fn funcs() -> Vec<(u32, AbiFn)> {
             0x0043e9b0,
             queued_replacement_kf_post_process(Ptr<QueuedReplacementKF>)
         ),
+        entry!(
+            0x0043ea00,
+            queued_replacement_kf_get_description(Ptr<QueuedReplacementKF>, u32, u32) -> bool
+        ),
+        entry!(0x0043ea30, fn_0043ea30(Ptr<QueuedReplacementKFList>)),
+        entry!(0x0043ea90, fn_0043ea90(Ptr, Ptr)),
+        entry!(
+            0x0043eac0,
+            queued_replacement_kf_list_cancel(Ptr<QueuedReplacementKFList>, u32, u32)
+        ),
+        entry!(
+            0x0043eaf0,
+            fn_0043eaf0(Ptr<QueuedHead>, Ptr, u32) -> Ptr<QueuedHead>
+        ),
+        entry!(
+            0x0043eb80,
+            queued_head_scalar_deleting_destructor(Ptr<QueuedHead>, u32) -> Ptr<QueuedHead>
+        ),
+        entry!(0x0043ebb0, fn_0043ebb0(Ptr<QueuedHead>)),
+        entry!(0x0043ec20, queued_head_queue_me(Ptr<QueuedHead>)),
+        entry!(0x0043ec60, queued_head_check_finished(Ptr<QueuedHead>)),
+        entry!(0x0043ecb0, queued_head_run(Ptr<QueuedHead>)),
+        entry!(0x0043ed90, fn_0043ed90(Ptr<QueuedHead>, Ptr, u32)),
+        entry!(
+            0x0043eed0,
+            queued_head_get_description(Ptr<QueuedHead>, u32, u32) -> bool
+        ),
+        entry!(
+            0x0043ef10,
+            fn_0043ef10(Ptr<QueuedHelmet>, Ptr, u32, u32) -> Ptr<QueuedHelmet>
+        ),
+        entry!(0x0043eff0, queued_helmet_post_process(Ptr<QueuedHelmet>)),
+        entry!(0x0043f010, fn_0043f010(Ptr) -> Ptr),
+        entry!(
+            0x0043f030,
+            queued_helmet_scalar_deleting_destructor(Ptr<QueuedHelmet>, u32) -> Ptr<QueuedHelmet>
+        ),
+        entry!(0x0043f060, fn_0043f060(Ptr)),
+        entry!(0x0043f080, fn_0043f080(Ptr<QueuedHelmet>)),
+        entry!(0x0043f120, queued_helmet_queue_me(Ptr<QueuedHelmet>)),
+        entry!(0x0043f1f0, fn_0043f1f0(Ptr<QueuedHelmet>, u8)),
+        entry!(0x0043f220, fn_0043f220(Ptr, u32) -> Ptr),
+        entry!(0x0043f240, queued_helmet_run(Ptr<QueuedHelmet>)),
+        entry!(0x0043f2b0, queued_helmet_finish(Ptr<QueuedHelmet>)),
+        entry!(0x0043f2f0, queued_helmet_check_finished(Ptr<QueuedHelmet>)),
+        entry!(0x0043f850, ni_matrix3_make_y_rotation(Ptr, f32)),
+        entry!(0x0043f8d0, ni_matrix3_multiply(Ptr, Ptr, Ptr) -> Ptr),
+        entry!(0x0043fa80, fn_0043fa80(Ptr, Ptr)),
+        entry!(0x0043fab0, fn_0043fab0(Ptr<QueuedHelmet>) -> bool),
+        entry!(0x0043fad0, fn_0043fad0(Ptr) -> Ptr),
+        entry!(0x0043faf0, fn_0043faf0() -> u8),
+        entry!(
+            0x0043fb10,
+            queued_helmet_cancel(Ptr<QueuedHelmet>, u32, u32)
+        ),
+        entry!(0x0043fb50, fn_0043fb50(Ptr, Ptr)),
+        entry!(0x0043fb80, queued_helmet_attach(Ptr<QueuedHelmet>)),
+        entry!(
+            0x0043fc10,
+            queued_helmet_get_description(Ptr<QueuedHelmet>, u32, u32) -> bool
+        ),
+        entry!(
+            0x0043fc40,
+            attach_distant_3d_task_post_process(Ptr<AttachDistant3DTask>)
+        ),
+        entry!(0x0043fcd0, fn_0043fcd0(Ptr) -> Ptr),
+        entry!(
+            0x0043fd40,
+            fn_0043fd40(Ptr<QueuedReference>, Ptr, u32) -> Ptr<QueuedReference>
+        ),
+        entry!(
+            0x0043fdf0,
+            queued_reference_post_process(Ptr<QueuedReference>)
+        ),
+        entry!(
+            0x0043fe10,
+            fn_0043fe10(Ptr<QueuedReference>, u32) -> Ptr<QueuedReference>
+        ),
+        entry!(0x0043fe40, fn_0043fe40(Ptr<QueuedReference>)),
     ]
 }
 
@@ -7631,7 +8979,6 @@ mod tests {
             QUEUED_KF_QUEUE_ME,
             ANIM_IDLE_LOADED,
             ANIMATION_KF_LOADED,
-            REPLACEMENT_KF_LIST_CHILD_POST_PROCESSED,
             LOAD_KF_SEQUENCE,
             ANIM_MAP_SLOT,
         ] {
@@ -8854,28 +10201,1539 @@ mod tests {
     #[test]
     fn replacement_kf_post_process_hands_the_model_to_the_animation() {
         let mut e = part_engine();
-        let this = queued_replacement_kf(&mut e, Ptr::new(0x6400), 4, true);
+        let list: Ptr<QueuedReplacementKFList> = e.new_object();
+        e.set(list, QueuedReplacementKFList::iPostProcessingChildCount, 2);
+        let this = queued_replacement_kf(&mut e, list.cast(), 4, true);
         e.call_log = Some(vec![]);
         e.call(0x0043_e9b0, &args![this]);
         assert_eq!(
             calls_to(&e, ANIMATION_KF_LOADED),
             vec![vec![0x6300, 0x4b40]]
         );
+        // The owning list counted the child (its function is in this file,
+        // so the call is direct).
         assert_eq!(
-            calls_to(&e, REPLACEMENT_KF_LIST_CHILD_POST_PROCESSED),
-            vec![vec![0x6400]]
+            e.get(list, QueuedReplacementKFList::iPostProcessedChildCount),
+            1
         );
         // No owner: the list is not told.
         let orphan = queued_replacement_kf(&mut e, Ptr::NULL, 4, true);
         e.call_log = Some(vec![]);
         e.call(0x0043_e9b0, &args![orphan]);
         assert_eq!(calls_to(&e, ANIMATION_KF_LOADED).len(), 1);
-        assert!(calls_to(&e, REPLACEMENT_KF_LIST_CHILD_POST_PROCESSED).is_empty());
+        assert_eq!(
+            e.get(list, QueuedReplacementKFList::iPostProcessedChildCount),
+            1
+        );
         // State 6: nothing at all.
-        let cancelled = queued_replacement_kf(&mut e, Ptr::new(0x6400), 6, true);
+        let cancelled = queued_replacement_kf(&mut e, list.cast(), 6, true);
         e.call_log = Some(vec![]);
         e.call(0x0043_e9b0, &args![cancelled]);
         assert!(calls_to(&e, ANIMATION_KF_LOADED).is_empty());
-        assert!(calls_to(&e, REPLACEMENT_KF_LIST_CHILD_POST_PROCESSED).is_empty());
+        assert_eq!(
+            e.get(list, QueuedReplacementKFList::iPostProcessedChildCount),
+            1
+        );
+    }
+
+    // --- The fifth part: the replacement KF list, `QueuedHead`,
+    // `QueuedHelmet`, the distant-3D task and `QueuedReference`. ---
+
+    /// Data the doubles of this part read: the answers of `CloneHelmet` and
+    /// `LoadFaceGenModel` by slot, and the answer of the face coordinates
+    /// test.
+    const HELMET_DATA: u32 = 0x0ff7_0000;
+    const CLONE_ANSWERS: u32 = HELMET_DATA;
+    const FACE_ANSWERS: u32 = HELMET_DATA + 0x80;
+    const APPLY_ANSWER: u32 = HELMET_DATA + 0x100;
+    /// The tables of a child node (slot 0x18 answers the dword at +0xB0,
+    /// slot 0xE4 takes the deep copy), of the loader's helmet map and
+    /// replacement KF list map (slot 0x14), and of a reference task (slot
+    /// 0x3c).
+    const CHILD_VTABLE: u32 = 0x0ff7_1000;
+    const CHILD_MARKED_SLOT: u32 = 0x0ff0_0130;
+    const CHILD_SET_PART_SLOT: u32 = 0x0ff0_0131;
+    const HELMET_MAP_VTABLE: u32 = 0x0ff7_2000;
+    const HELMET_MAP_SLOT: u32 = 0x0ff0_0132;
+    const KF_LIST_MAP_VTABLE: u32 = 0x0ff7_3000;
+    const KF_LIST_MAP_SLOT: u32 = 0x0ff0_0133;
+    const REFERENCE_TASK_VTABLE: u32 = 0x0ff7_4000;
+    const ATTACH_HOOK: u32 = 0x0ff0_0134;
+    const HELMET_MAP_OBJECT: u32 = LOADER + 0x500;
+    const KF_LIST_MAP_OBJECT: u32 = LOADER + 0x600;
+    /// The nodes `InitHead` gives, the player and the `TES` object.
+    const BIPED_NODE: u32 = 0x6a01;
+    const SKINNED_NODE: u32 = 0x6a02;
+    const PLAYER: u32 = 0x7ee0_0001;
+    const TES_OBJECT: u32 = 0x7ee0_0002;
+
+    /// An engine with doubles for what this part calls, on top of the
+    /// previous part's.
+    fn helmet_engine() -> Engine {
+        let mut e = part_engine();
+        e.map(HELMET_DATA, 0x1000);
+        e.map(0x011d_e000, 0x1000);
+        e.mem
+            .set_f32(HELMET_ROTATION_ANGLE, -std::f32::consts::FRAC_PI_2);
+        e.mem.set_u32(PART_IO_MANAGER, QUEUE_VTABLE);
+        e.mem.set_u32(HELMET_MAP_OBJECT, HELMET_MAP_VTABLE);
+        e.mem.set_u32(KF_LIST_MAP_OBJECT, KF_LIST_MAP_VTABLE);
+        e.mem.set_u32(LOADER + 0x14, KF_LIST_MAP_OBJECT);
+        e.mem.set_u32(LOADER + 0x18, HELMET_MAP_OBJECT);
+        e.set_global(PLAYER_CHARACTER, PLAYER);
+        e.set_global(TES_GLOBAL, TES_OBJECT);
+        e.mem
+            .set_cstr(QUEUED_HEAD_FORMAT, b"Queued head for NPC %s");
+        e.mem
+            .set_cstr(QUEUED_HELMET_FORMAT, b"Queued helmet for biped anim %08X");
+        e.register(FORMAT_STRING, |e, a| {
+            let format = String::from_utf8(e.mem.cstr(a[2])).unwrap();
+            let text = if format.contains("%s") {
+                format.replace("%s", &String::from_utf8(e.mem.cstr(a[3])).unwrap())
+            } else {
+                format.replace("%08X", &format!("{:08X}", a[3]))
+            };
+            e.mem.set_cstr(a[0], text.as_bytes());
+            Ret::default()
+        });
+        e.register(NAME_OBJECT_STRING, |e, a| e.mem.u32(a[0] + 4).into_ret());
+        e.register(FIELD_AT_C, |e, a| e.mem.u32(a[0] + 0xc).into_ret());
+        e.register(NPC_INIT_HEAD, |e, a| {
+            e.mem.set_u32(a[1], BIPED_NODE);
+            e.mem.set_u32(a[2], SKINNED_NODE);
+            Ret::default()
+        });
+        e.register(REFERENCE_BASE_FORM, |e, a| {
+            e.mem.u32(a[0] + 0x20).into_ret()
+        });
+        e.register(BIPED_ANIM_SLOT_IN_USE, |e, a| {
+            (e.mem.u32(a[0] + 0x30 + 0x10 * a[1]) != 0).into_ret()
+        });
+        e.register(BIPED_ANIM_LOAD_FACE_GEN_MODEL, |e, a| {
+            e.mem.u32(FACE_ANSWERS + 4 * a[1]).into_ret()
+        });
+        e.register(BIPED_ANIM_CLONE_HELMET, |e, a| {
+            e.mem.u32(CLONE_ANSWERS + 4 * a[3]).into_ret()
+        });
+        e.register(QUEUED_MODEL_GET_MODEL, |e, a| {
+            e.mem.u32(a[0] + 0x30).into_ret()
+        });
+        e.register(OBJECT_POINTER_AT_B8, |e, a| {
+            e.mem.u32(a[0] + 0xb8).into_ret()
+        });
+        e.register(CREATE_DEEP_COPY, |e, a| {
+            e.mem.set_u32(a[1], 0x7d00_0000 + a[0]);
+            Ret::default()
+        });
+        e.register(FACE_GEN_MODEL_APPLY_COORDS, |e, _| {
+            e.mem.u32(APPLY_ANSWER).into_ret()
+        });
+        e.register(SETTING_BYTE_POINTER, |_, a| (a[0] + 4).into_ret());
+        e.register(LOCAL_ROTATE_ADDRESS, |_, a| (a[0] + 0x34).into_ret());
+        e.register(MATRIX_CONSTRUCT, |_, a| a[0].into_ret());
+        e.register(SIN_COS, |e, a| {
+            let (sin, cos) = (f32::from_bits(a[0]) as f64).sin_cos();
+            e.mem.set_f32(a[1], sin as f32);
+            e.mem.set_f32(a[2], cos as f32);
+            Ret::default()
+        });
+        e.register(REFERENCE_CELL, |e, a| e.mem.u32(a[0] + 0x40).into_ret());
+        e.register(CHILD_MARKED_SLOT, |e, a| e.mem.u32(a[0] + 0xb0).into_ret());
+        for address in [
+            FACE_GEN_SECTION_ENTER,
+            FACE_GEN_SECTION_LEAVE,
+            KILL_EGT_DATA,
+            NPC_SETUP_HEAD,
+            QUEUE_NPC_FACE_GEN,
+            SET_REFERENCE_ID_ON_SCENEGRAPH,
+            VECTOR_CONSTRUCT,
+            VECTOR_DESTRUCT,
+            BIPED_ANIM_ATTACH_HELMET,
+            MODEL_LOADER_QUEUE_HELMET_MODEL,
+            MODEL_LOADER_QUEUE_EGM_FILE,
+            NPC_GET_FACE_COORD,
+            REFERENCE_SET_3D,
+            SET_STARTS_DEAD,
+            TES_LOAD_REFERENCE,
+            CHILD_SET_PART_SLOT,
+            HELMET_MAP_SLOT,
+            KF_LIST_MAP_SLOT,
+            ATTACH_HOOK,
+        ] {
+            e.register(address, |_, _| Ret::default());
+        }
+        put_slots(
+            &mut e,
+            CHILD_VTABLE,
+            &[(0x18, CHILD_MARKED_SLOT), (0xe4, CHILD_SET_PART_SLOT)],
+        );
+        put_slots(&mut e, HELMET_MAP_VTABLE, &[(0x14, HELMET_MAP_SLOT)]);
+        put_slots(&mut e, KF_LIST_MAP_VTABLE, &[(0x14, KF_LIST_MAP_SLOT)]);
+        put_slots(
+            &mut e,
+            REFERENCE_TASK_VTABLE,
+            &[(0x28, CHECK_FINISHED), (0x3c, ATTACH_HOOK)],
+        );
+        e
+    }
+
+    /// A queued head for the NPC `npc`, in state `state`.
+    fn queued_head(e: &mut Engine, npc: Ptr, state: i32) -> Ptr<QueuedHead> {
+        let this: Ptr<QueuedHead> = e.new_object();
+        e.mem.set_u32(this.addr(), TASK_VTABLE);
+        e.mem.set_i32(this.addr() + 0xc, state);
+        e.set(this, QueuedHead::pNPC, npc);
+        this
+    }
+
+    /// An NPC with the form ID `form_id`, the race `race` in the object at
+    /// +0x10C and the name string `name` in the name object at +0xD0.
+    fn npc(e: &mut Engine, form_id: u32, race: u32, name: u32) -> Ptr {
+        let npc = Ptr::new(e.mem.alloc(0x200));
+        e.mem.set_u32(npc.addr() + 0xc, form_id);
+        e.mem.set_u32(npc.addr() + 0x10c + 4, race);
+        e.mem.set_u32(npc.addr() + 0xd0 + 4, name);
+        npc
+    }
+
+    #[test]
+    fn replacement_kf_get_description_names_the_kind() {
+        let mut e = helmet_engine();
+        let this = queued_replacement_kf(&mut e, Ptr::NULL, 4, false);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_ea00, &args![this, 0x1000u32, 0x40u32]);
+        assert!(back.bool());
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_GET_DESCRIPTION),
+            vec![vec![this.addr(), 0x1000, 0x40, REPLACEMENT_KF_WORD]]
+        );
+        // The result of the base function is passed on.
+        e.register(QUEUED_FILE_ENTRY_GET_DESCRIPTION, |_, _| 0u32.into_ret());
+        assert!(!e.call(0x0043_ea00, &args![this, 0x1000u32, 0x40u32]).bool());
+    }
+
+    /// A replacement KF list in state `state` with the animation 0x6300 and
+    /// the two counters.
+    fn replacement_list(
+        e: &mut Engine,
+        state: i32,
+        processing: u32,
+        processed: u32,
+    ) -> Ptr<QueuedReplacementKFList> {
+        let list: Ptr<QueuedReplacementKFList> = e.new_object();
+        e.mem.set_u32(list.addr(), TASK_VTABLE);
+        e.mem.set_i32(list.addr() + 0xc, state);
+        e.set(list, QueuedReplacementKFList::pAnim, Ptr::new(0x6300));
+        e.set(
+            list,
+            QueuedReplacementKFList::iPostProcessingChildCount,
+            processing,
+        );
+        e.set(
+            list,
+            QueuedReplacementKFList::iPostProcessedChildCount,
+            processed,
+        );
+        list
+    }
+
+    #[test]
+    fn replacement_kf_list_child_post_processed_tells_the_loader_at_the_last_child() {
+        let mut e = helmet_engine();
+        let list = replacement_list(&mut e, 4, 2, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ea30, &args![list]);
+        assert_eq!(
+            e.get(list, QueuedReplacementKFList::iPostProcessedChildCount),
+            1
+        );
+        assert!(calls_to(&e, KF_LIST_MAP_SLOT).is_empty());
+        // The second child is the last: the map is told about the animation.
+        e.call(0x0043_ea30, &args![list]);
+        assert_eq!(
+            e.get(list, QueuedReplacementKFList::iPostProcessedChildCount),
+            2
+        );
+        assert_eq!(
+            calls_to(&e, KF_LIST_MAP_SLOT),
+            vec![vec![KF_LIST_MAP_OBJECT, 0x6300]]
+        );
+        // A task that is not yet in state 4 only counts.
+        let early = replacement_list(&mut e, 3, 1, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ea30, &args![early]);
+        assert_eq!(
+            e.get(early, QueuedReplacementKFList::iPostProcessedChildCount),
+            1
+        );
+        assert!(calls_to(&e, KF_LIST_MAP_SLOT).is_empty());
+        // Unfinished children: the same.
+        let busy = replacement_list(&mut e, 4, 1, 0);
+        let children: Ptr<QueuedChildren> = e.new_object();
+        e.mem.set_u32(children.addr() + 8, 2);
+        e.set(children, QueuedChildren::iNumChildrenFinished, 1);
+        e.mem.set_u32(busy.addr() + 0x20, children.addr());
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ea30, &args![busy]);
+        assert!(calls_to(&e, KF_LIST_MAP_SLOT).is_empty());
+        // The count wraps like the 32-bit add.
+        let wrapping = replacement_list(&mut e, 0, 0, u32::MAX);
+        e.call(0x0043_ea30, &args![wrapping]);
+        assert_eq!(
+            e.get(wrapping, QueuedReplacementKFList::iPostProcessedChildCount),
+            0
+        );
+    }
+
+    #[test]
+    fn loader_replacement_list_map_slot_0x14_is_called_with_the_animation() {
+        let mut e = helmet_engine();
+        e.call_log = Some(vec![]);
+        e.call(
+            0x0043_ea90,
+            &args![Ptr::<()>::new(LOADER), Ptr::<()>::new(0x6300)],
+        );
+        assert_eq!(
+            calls_to(&e, KF_LIST_MAP_SLOT),
+            vec![vec![KF_LIST_MAP_OBJECT, 0x6300]]
+        );
+    }
+
+    #[test]
+    fn replacement_kf_list_cancel_runs_the_base_then_tells_the_loader() {
+        let mut e = helmet_engine();
+        let list = replacement_list(&mut e, 4, 2, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_eac0, &args![list, 5u32, 6u32]);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_CANCEL),
+            vec![vec![list.addr(), 5, 6]]
+        );
+        assert_eq!(
+            calls_to(&e, KF_LIST_MAP_SLOT),
+            vec![vec![KF_LIST_MAP_OBJECT, 0x6300]]
+        );
+        let order = call_order(&e);
+        let cancel = order.iter().position(|a| *a == QUEUED_FILE_CANCEL).unwrap();
+        let slot = order.iter().position(|a| *a == KF_LIST_MAP_SLOT).unwrap();
+        assert!(cancel < slot);
+    }
+
+    #[test]
+    fn head_constructor_sets_table_npc_and_empty_node_pointers() {
+        let mut e = helmet_engine();
+        let this: Ptr<QueuedHead> = e.new_object();
+        e.mem.set_u32(this.addr() + 0x2c, 0x1111);
+        e.mem.set_u32(this.addr() + 0x30, 0x2222);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_eaf0, &args![this, 0x6500u32, 0x37u32]);
+        assert_eq!(back.ptr::<QueuedHead>(), this);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_CONSTRUCT),
+            vec![vec![this.addr(), 0x37]]
+        );
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_HEAD_VTABLE);
+        assert_eq!(e.get(this, QueuedHead::pNPC), Ptr::new(0x6500));
+        assert_eq!(
+            calls_to(&e, NI_POINTER_CONSTRUCT),
+            vec![vec![this.addr() + 0x2c, 0], vec![this.addr() + 0x30, 0]]
+        );
+        assert_eq!(e.get(this, QueuedHead::spBipedNode), Ptr::NULL);
+        assert_eq!(e.get(this, QueuedHead::spSkinnedNode), Ptr::NULL);
+    }
+
+    #[test]
+    fn head_scalar_deleting_destructor_frees_on_bit_0() {
+        let mut e = helmet_engine();
+        let this = queued_head(&mut e, Ptr::NULL, 0);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_eb80, &args![this, 0u32]);
+        assert_eq!(back.ptr::<QueuedHead>(), this);
+        assert!(calls_to(&e, MEMORY_FREE).is_empty());
+        assert_eq!(calls_to(&e, QUEUED_FILE_DESTRUCT).len(), 1);
+        e.call(0x0043_eb80, &args![this, 1u32]);
+        assert_eq!(calls_to(&e, MEMORY_FREE), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn head_destructor_releases_the_skinned_node_first() {
+        let mut e = helmet_engine();
+        let this = queued_head(&mut e, Ptr::NULL, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ebb0, &args![this]);
+        assert_eq!(
+            call_order(&e),
+            vec![
+                0x0043_ebb0,
+                NI_POINTER_DESTRUCT,
+                NI_POINTER_DESTRUCT,
+                QUEUED_FILE_DESTRUCT
+            ]
+        );
+        assert_eq!(
+            calls_to(&e, NI_POINTER_DESTRUCT),
+            vec![vec![this.addr() + 0x30], vec![this.addr() + 0x2c]]
+        );
+        // The virtual table is left as it was.
+        assert_eq!(e.mem.u32(this.addr()), TASK_VTABLE);
+    }
+
+    #[test]
+    fn head_queue_me_hands_the_npc_to_the_face_gen_manager_then_checks() {
+        let mut e = helmet_engine();
+        let this = queued_head(&mut e, Ptr::new(0x6500), 0);
+        e.mem.set_u64(this.addr() + 0x10, 7 << 16);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ec20, &args![this]);
+        assert_eq!(
+            calls_to(&e, QUEUE_NPC_FACE_GEN),
+            vec![vec![0x6500, 7, this.addr()]]
+        );
+        assert_eq!(calls_to(&e, CHECK_FINISHED), vec![vec![this.addr()]]);
+        let order = call_order(&e);
+        let queue = order.iter().position(|a| *a == QUEUE_NPC_FACE_GEN).unwrap();
+        let check = order.iter().position(|a| *a == CHECK_FINISHED).unwrap();
+        assert!(queue < check);
+    }
+
+    #[test]
+    fn head_check_finished_queues_a_new_task_or_checks_the_file() {
+        let mut e = helmet_engine();
+        // No children: a task still in state 0 goes to the task queue.
+        let fresh = queued_head(&mut e, Ptr::NULL, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ec60, &args![fresh]);
+        assert_eq!(
+            calls_to(&e, QUEUE_ADD),
+            vec![vec![PART_IO_MANAGER, fresh.addr()]]
+        );
+        assert!(calls_to(&e, QUEUED_FILE_CHECK_FINISHED).is_empty());
+        // Any other state goes through `QueuedFile::CheckFinished`.
+        let running = queued_head(&mut e, Ptr::NULL, 3);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ec60, &args![running]);
+        assert!(calls_to(&e, QUEUE_ADD).is_empty());
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_CHECK_FINISHED),
+            vec![vec![running.addr()]]
+        );
+        // Unfinished children: nothing.
+        let busy = queued_head(&mut e, Ptr::NULL, 0);
+        let children: Ptr<QueuedChildren> = e.new_object();
+        e.mem.set_u32(children.addr() + 8, 2);
+        e.set(children, QueuedChildren::iNumChildrenFinished, 1);
+        e.mem.set_u32(busy.addr() + 0x20, children.addr());
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ec60, &args![busy]);
+        assert!(calls_to(&e, QUEUE_ADD).is_empty());
+        assert!(calls_to(&e, QUEUED_FILE_CHECK_FINISHED).is_empty());
+    }
+
+    #[test]
+    fn head_run_builds_the_nodes_inside_the_face_gen_section() {
+        let mut e = helmet_engine();
+        let other = npc(&mut e, 0x14, 0x7ace, 0);
+        let this = queued_head(&mut e, other, 3);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ecb0, &args![this]);
+        assert_eq!(
+            call_order(&e),
+            vec![
+                0x0043_ecb0,
+                FACE_GEN_SECTION_ENTER,
+                MEMORY_CONTEXT_ENTER,
+                NPC_INIT_HEAD,
+                NI_POINTER_ASSIGN,
+                NI_POINTER_ASSIGN,
+                FIELD_AT_C,
+                FACE_GEN_SECTION_LEAVE,
+                MEMORY_CONTEXT_LEAVE
+            ]
+        );
+        let enter = calls_to(&e, MEMORY_CONTEXT_ENTER)[0].clone();
+        assert_eq!(
+            &enter[1..],
+            &[HEAD_CONTEXT, 1, MODEL_LOADER_SOURCE, HEAD_RUN_SOURCE_LINE]
+        );
+        let init = &calls_to(&e, NPC_INIT_HEAD)[0];
+        assert_eq!(init[0], other.addr());
+        assert_eq!(
+            calls_to(&e, NI_POINTER_ASSIGN),
+            vec![
+                vec![this.addr() + 0x2c, BIPED_NODE],
+                vec![this.addr() + 0x30, SKINNED_NODE]
+            ]
+        );
+        assert_eq!(e.get(this, QueuedHead::spBipedNode), Ptr::new(BIPED_NODE));
+        assert_eq!(
+            e.get(this, QueuedHead::spSkinnedNode),
+            Ptr::new(SKINNED_NODE)
+        );
+        // The scope guard is the same block in the enter and the leave.
+        assert_eq!(calls_to(&e, MEMORY_CONTEXT_LEAVE), vec![vec![enter[0]]]);
+        // The NPC of form ID 7: the race's EGT data is killed.
+        let player_npc = npc(&mut e, 7, 0x7ace, 0);
+        let this = queued_head(&mut e, player_npc, 3);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ecb0, &args![this]);
+        assert_eq!(
+            calls_to(&e, FIELD_AT_4),
+            vec![vec![player_npc.addr() + 0x10c]]
+        );
+        assert_eq!(calls_to(&e, KILL_EGT_DATA), vec![vec![0x7ace]]);
+        let order = call_order(&e);
+        let kill = order.iter().position(|a| *a == KILL_EGT_DATA).unwrap();
+        let leave = order
+            .iter()
+            .position(|a| *a == FACE_GEN_SECTION_LEAVE)
+            .unwrap();
+        assert!(kill < leave);
+    }
+
+    /// A node with a dword at +0xE8.
+    fn node_with_reference_slot(e: &mut Engine) -> Ptr {
+        Ptr::new(e.mem.alloc(0x100))
+    }
+
+    /// A reference with the base form 0x8000 and the form ID 0x1234.
+    fn reference(e: &mut Engine) -> Ptr {
+        let reference = Ptr::new(e.mem.alloc(0x100));
+        e.mem.set_u32(reference.addr() + 0xc, 0x1234);
+        e.mem.set_u32(reference.addr() + 0x20, 0x8000);
+        reference
+    }
+
+    #[test]
+    fn head_setup_gives_the_nodes_the_reference() {
+        let mut e = helmet_engine();
+        let this = queued_head(&mut e, Ptr::NULL, 3);
+        let biped = node_with_reference_slot(&mut e);
+        let skinned = node_with_reference_slot(&mut e);
+        e.set(this, QueuedHead::spBipedNode, biped);
+        e.set(this, QueuedHead::spSkinnedNode, skinned);
+        let subject = reference(&mut e);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ed90, &args![this, subject, 9u32]);
+        assert_eq!(
+            calls_to(&e, NPC_SETUP_HEAD),
+            vec![vec![
+                0x8000,
+                subject.addr(),
+                9,
+                biped.addr(),
+                skinned.addr()
+            ]]
+        );
+        assert_eq!(
+            calls_to(&e, SET_REFERENCE_ID_ON_SCENEGRAPH),
+            vec![vec![biped.addr(), 0x1234], vec![skinned.addr(), 0x1234]]
+        );
+        assert_eq!(e.mem.u32(biped.addr() + 0xe8), subject.addr());
+        assert_eq!(e.mem.u32(skinned.addr() + 0xe8), subject.addr());
+        let enter = calls_to(&e, MEMORY_CONTEXT_ENTER)[0].clone();
+        assert_eq!(
+            &enter[1..],
+            &[HEAD_CONTEXT, 1, MODEL_LOADER_SOURCE, HEAD_SETUP_SOURCE_LINE]
+        );
+        assert_eq!(calls_to(&e, MEMORY_CONTEXT_LEAVE), vec![vec![enter[0]]]);
+        // The player reference: no form ID on the scene graph, same stores.
+        let biped2 = node_with_reference_slot(&mut e);
+        let skinned2 = node_with_reference_slot(&mut e);
+        let this2 = queued_head(&mut e, Ptr::NULL, 3);
+        e.set(this2, QueuedHead::spBipedNode, biped2);
+        e.set(this2, QueuedHead::spSkinnedNode, skinned2);
+        e.set_global(PLAYER_CHARACTER, subject.addr());
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ed90, &args![this2, subject, 9u32]);
+        assert!(calls_to(&e, SET_REFERENCE_ID_ON_SCENEGRAPH).is_empty());
+        assert_eq!(e.mem.u32(biped2.addr() + 0xe8), subject.addr());
+        assert_eq!(e.mem.u32(skinned2.addr() + 0xe8), subject.addr());
+        // No skinned node: only the biped one is touched.
+        e.set_global(PLAYER_CHARACTER, PLAYER);
+        let biped3 = node_with_reference_slot(&mut e);
+        let this3 = queued_head(&mut e, Ptr::NULL, 3);
+        e.set(this3, QueuedHead::spBipedNode, biped3);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ed90, &args![this3, subject, 9u32]);
+        assert_eq!(
+            calls_to(&e, SET_REFERENCE_ID_ON_SCENEGRAPH),
+            vec![vec![biped3.addr(), 0x1234]]
+        );
+        assert_eq!(e.mem.u32(biped3.addr() + 0xe8), subject.addr());
+    }
+
+    #[test]
+    fn head_get_description_names_the_npc() {
+        let mut e = helmet_engine();
+        let name = text(&mut e, "Doc Mitchell");
+        let doc = npc(&mut e, 0x14, 0, name);
+        let this = queued_head(&mut e, doc, 0);
+        let buffer = e.mem.alloc(0x80);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_eed0, &args![this, buffer, 0x80u32]);
+        assert!(back.bool());
+        assert_eq!(
+            calls_to(&e, NAME_OBJECT_STRING),
+            vec![vec![doc.addr() + 0xd0]]
+        );
+        assert_eq!(
+            calls_to(&e, FORMAT_STRING),
+            vec![vec![buffer, 0x80, QUEUED_HEAD_FORMAT, name]]
+        );
+        assert_eq!(e.mem.cstr(buffer), b"Queued head for NPC Doc Mitchell");
+    }
+
+    /// A biped animation for `reference` whose slots `used` hold model data
+    /// (`0x9000 + slot`).
+    fn biped_anim(e: &mut Engine, reference: Ptr, used: &[u32]) -> Ptr {
+        let biped = Ptr::new(e.mem.alloc(0x300));
+        e.mem.set_u32(biped.addr() + 0x2b0, reference.addr());
+        for slot in used {
+            e.mem
+                .set_u32(biped.addr() + 0x30 + 0x10 * slot, 0x9000 + slot);
+        }
+        biped
+    }
+
+    /// A queued helmet task for `biped` and `reference` (in state `state`,
+    /// flags `flags`) whose table makes slot 0x28 `CheckFinished`.
+    fn queued_helmet(
+        e: &mut Engine,
+        biped: Ptr,
+        reference: Ptr,
+        state: i32,
+        flags: u8,
+    ) -> Ptr<QueuedHelmet> {
+        let this: Ptr<QueuedHelmet> = e.new_object();
+        e.mem.set_u32(this.addr(), TASK_VTABLE);
+        e.mem.set_i32(this.addr() + 0xc, state);
+        e.set(this, QueuedHelmet::pBipedAnim, biped);
+        e.set(this, QueuedHelmet::pRef, reference);
+        e.set(this, QueuedHelmet::cFlags, flags);
+        this
+    }
+
+    #[test]
+    fn helmet_constructor_builds_the_three_arrays() {
+        let mut e = helmet_engine();
+        let subject = reference(&mut e);
+        let biped = biped_anim(&mut e, subject, &[]);
+        let this: Ptr<QueuedHelmet> = e.new_object();
+        e.mem.set_u8(this.addr() + 0x120, 0xff);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_ef10, &args![this, biped, 0x31u32, 0xdead_beefu32]);
+        assert_eq!(back.ptr::<QueuedHelmet>(), this);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_CONSTRUCT),
+            vec![vec![this.addr(), 0x31]]
+        );
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_HELMET_VTABLE);
+        assert_eq!(e.get(this, QueuedHelmet::pBipedAnim), biped);
+        assert_eq!(
+            calls_to(&e, VECTOR_CONSTRUCT),
+            vec![
+                vec![
+                    this.addr() + 0x2c,
+                    4,
+                    0x14,
+                    HELMET_MODEL_POINTER_CONSTRUCT,
+                    TASK_POINTER_DESTRUCT
+                ],
+                vec![
+                    this.addr() + 0x7c,
+                    4,
+                    0x14,
+                    NI_POINTER_DEFAULT_CONSTRUCT,
+                    NI_POINTER_DESTRUCT
+                ],
+                vec![
+                    this.addr() + 0xcc,
+                    4,
+                    0x14,
+                    NI_POINTER_DEFAULT_CONSTRUCT,
+                    NI_POINTER_DESTRUCT
+                ],
+            ]
+        );
+        assert_eq!(e.get(this, QueuedHelmet::cFlags), 0);
+        // The reference comes from the biped animation.
+        assert_eq!(e.get(this, QueuedHelmet::pRef), subject);
+    }
+
+    #[test]
+    fn helmet_post_process_attaches() {
+        let mut e = helmet_engine();
+        let subject = reference(&mut e);
+        let biped = biped_anim(&mut e, subject, &[]);
+        let this = queued_helmet(&mut e, biped, subject, 4, 1);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_eff0, &args![this]);
+        // With no cloned nodes only the loader's helmet map is told.
+        assert!(calls_to(&e, BIPED_ANIM_ATTACH_HELMET).is_empty());
+        assert_eq!(
+            calls_to(&e, HELMET_MAP_SLOT),
+            vec![vec![HELMET_MAP_OBJECT, subject.addr()]]
+        );
+    }
+
+    #[test]
+    fn biped_reference_getter_reads_offset_0x2b0() {
+        let mut e = helmet_engine();
+        let block = Ptr::<()>::new(e.mem.alloc(0x300));
+        e.mem.set_u32(block.addr() + 0x2b0, 0x4321);
+        assert_eq!(e.call(0x0043_f010, &args![block]).u32(), 0x4321);
+    }
+
+    #[test]
+    fn helmet_scalar_deleting_destructor_frees_on_bit_0() {
+        let mut e = helmet_engine();
+        let this = queued_helmet(&mut e, Ptr::NULL, Ptr::NULL, 0, 0);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_f030, &args![this, 0u32]);
+        assert_eq!(back.ptr::<QueuedHelmet>(), this);
+        assert!(calls_to(&e, MEMORY_FREE).is_empty());
+        assert_eq!(calls_to(&e, QUEUED_FILE_DESTRUCT).len(), 1);
+        e.call(0x0043_f030, &args![this, 1u32]);
+        assert_eq!(calls_to(&e, MEMORY_FREE), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn helmet_model_pointer_constructor_is_the_task_pointer_with_null() {
+        let mut e = helmet_engine();
+        let slot = Ptr::<()>::new(e.mem.alloc(8));
+        e.mem.set_u32(slot.addr(), 0x1234);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f060, &args![slot]);
+        assert_eq!(
+            calls_to(&e, TASK_POINTER_CONSTRUCT),
+            vec![vec![slot.addr(), 0]]
+        );
+        assert_eq!(e.mem.u32(slot.addr()), 0);
+    }
+
+    #[test]
+    fn helmet_destructor_destroys_the_arrays_last_first() {
+        let mut e = helmet_engine();
+        let this = queued_helmet(&mut e, Ptr::NULL, Ptr::NULL, 0, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f080, &args![this]);
+        assert_eq!(
+            calls_to(&e, VECTOR_DESTRUCT),
+            vec![
+                vec![this.addr() + 0xcc, 4, 0x14, NI_POINTER_DESTRUCT],
+                vec![this.addr() + 0x7c, 4, 0x14, NI_POINTER_DESTRUCT],
+                vec![this.addr() + 0x2c, 4, 0x14, TASK_POINTER_DESTRUCT],
+            ]
+        );
+        let order = call_order(&e);
+        assert_eq!(*order.last().unwrap(), QUEUED_FILE_DESTRUCT);
+        assert_eq!(e.mem.u32(this.addr()), TASK_VTABLE);
+    }
+
+    #[test]
+    fn helmet_queue_me_queues_each_slot_in_use() {
+        let mut e = helmet_engine();
+        let subject = reference(&mut e);
+        let biped = biped_anim(&mut e, subject, &[2, 5]);
+        let this = queued_helmet(&mut e, biped, subject, 0, 0);
+        e.mem.set_u64(this.addr() + 0x10, 6 << 16);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f120, &args![this]);
+        assert_eq!(
+            calls_to(&e, BIPED_ANIM_SLOT_IN_USE).len(),
+            0x14,
+            "every slot is asked"
+        );
+        // Model data is the dword at +4 of the slot's entry.
+        assert_eq!(
+            calls_to(&e, MODEL_LOADER_QUEUE_HELMET_MODEL),
+            vec![
+                vec![
+                    LOADER,
+                    0x9002,
+                    this.addr() + 0x2c + 8,
+                    6,
+                    this.addr(),
+                    3,
+                    1,
+                    1,
+                    1,
+                    0
+                ],
+                vec![
+                    LOADER,
+                    0x9005,
+                    this.addr() + 0x2c + 20,
+                    6,
+                    this.addr(),
+                    3,
+                    1,
+                    1,
+                    1,
+                    0
+                ],
+            ]
+        );
+        assert_eq!(
+            calls_to(&e, MODEL_LOADER_QUEUE_EGM_FILE),
+            vec![
+                vec![LOADER, 0x9002, 6, this.addr(), 0xffff_ffff],
+                vec![LOADER, 0x9005, 6, this.addr(), 0xffff_ffff],
+            ]
+        );
+        // Flag bit 1 is set before `CheckFinished` is called.
+        assert_eq!(e.get(this, QueuedHelmet::cFlags), 1);
+        let order = call_order(&e);
+        let flag = order.iter().position(|a| *a == SET_FLAG_BIT_1).unwrap();
+        let check = order.iter().position(|a| *a == CHECK_FINISHED).unwrap();
+        assert!(flag < check);
+        assert_eq!(calls_to(&e, CHECK_FINISHED), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn helmet_flag_setter_sets_and_clears_bit_1() {
+        let mut e = helmet_engine();
+        let this = queued_helmet(&mut e, Ptr::NULL, Ptr::NULL, 0, 0xf0);
+        e.call(0x0043_f1f0, &args![this, 1u32]);
+        assert_eq!(e.get(this, QueuedHelmet::cFlags), 0xf1);
+        e.call(0x0043_f1f0, &args![this, 0u32]);
+        assert_eq!(e.get(this, QueuedHelmet::cFlags), 0xf0);
+    }
+
+    #[test]
+    fn biped_slot_entry_address_is_0x2c_plus_0x10_per_slot() {
+        let mut e = helmet_engine();
+        let block = Ptr::<()>::new(0x5000);
+        assert_eq!(e.call(0x0043_f220, &args![block, 0u32]).u32(), 0x502c);
+        assert_eq!(e.call(0x0043_f220, &args![block, 3u32]).u32(), 0x505c);
+    }
+
+    #[test]
+    fn helmet_run_loads_the_face_gen_model_of_each_slot_in_use() {
+        let mut e = helmet_engine();
+        let subject = reference(&mut e);
+        let biped = biped_anim(&mut e, subject, &[1, 4]);
+        e.mem.set_u32(FACE_ANSWERS + 4, 0x5001);
+        e.mem.set_u32(FACE_ANSWERS + 16, 0x5004);
+        let this = queued_helmet(&mut e, biped, subject, 3, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f240, &args![this]);
+        assert_eq!(
+            calls_to(&e, BIPED_ANIM_LOAD_FACE_GEN_MODEL),
+            vec![vec![biped.addr(), 1], vec![biped.addr(), 4]]
+        );
+        assert_eq!(e.mem.u32(this.addr() + 0x7c + 4), 0x5001);
+        assert_eq!(e.mem.u32(this.addr() + 0x7c + 16), 0x5004);
+        assert_eq!(e.mem.u32(this.addr() + 0x7c), 0);
+        // A cancelled task (state 6) loads nothing.
+        let cancelled = queued_helmet(&mut e, biped, subject, 6, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f240, &args![cancelled]);
+        assert!(calls_to(&e, BIPED_ANIM_LOAD_FACE_GEN_MODEL).is_empty());
+        assert_eq!(e.mem.u32(cancelled.addr() + 0x7c + 4), 0);
+    }
+
+    #[test]
+    fn helmet_finish_posts_a_parentless_task_then_checks() {
+        let mut e = helmet_engine();
+        let this = queued_helmet(&mut e, Ptr::NULL, Ptr::NULL, 4, 0);
+        e.mem.set_u64(this.addr() + 0x10, 2 << 16);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2b0, &args![this]);
+        let holder = calls_to(&e, TASK_POINTER_CONSTRUCT)[0][0];
+        assert_eq!(calls_to(&e, QUEUE_TABLE_ADD), vec![vec![0x7100, 2, holder]]);
+        let order = call_order(&e);
+        let post = order
+            .iter()
+            .position(|a| *a == TASK_POINTER_CONSTRUCT)
+            .unwrap();
+        let check = order.iter().position(|a| *a == CHECK_FINISHED).unwrap();
+        assert!(post < check);
+        // With a parent: only the check.
+        e.mem.set_u32(this.addr() + 0x1c, 0x6600);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2b0, &args![this]);
+        assert!(calls_to(&e, QUEUE_TABLE_ADD).is_empty());
+        assert_eq!(calls_to(&e, CHECK_FINISHED).len(), 1);
+        // State 6: the same.
+        let cancelled = queued_helmet(&mut e, Ptr::NULL, Ptr::NULL, 6, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2b0, &args![cancelled]);
+        assert!(calls_to(&e, QUEUE_TABLE_ADD).is_empty());
+        assert_eq!(calls_to(&e, CHECK_FINISHED).len(), 1);
+    }
+
+    /// A child node of a cloned helmet: its virtual function 0x18 answers
+    /// `answer`, the `NiPointer` at +0xBC is `marker`, the part at +0xB8 is
+    /// `part`, and the local rotation is the identity.
+    fn helmet_child(e: &mut Engine, answer: u32, marker: u32, part: u32) -> Ptr {
+        let child = Ptr::new(e.mem.alloc(0x100));
+        e.mem.set_u32(child.addr(), CHILD_VTABLE);
+        e.mem.set_u32(child.addr() + 0xb0, answer);
+        e.mem.set_u32(child.addr() + 0xb8, part);
+        e.mem.set_u32(child.addr() + 0xbc, marker);
+        for (i, value) in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+            .iter()
+            .enumerate()
+        {
+            e.mem.set_f32(child.addr() + 0x34 + 4 * i as u32, *value);
+        }
+        child
+    }
+
+    /// A node whose child array (at +0x9C) holds `children`.
+    fn node_with_children(e: &mut Engine, children: &[Ptr]) -> Ptr {
+        let node = Ptr::new(e.mem.alloc(0x100));
+        let base = e.mem.alloc(4 * children.len() as u32 + 4);
+        for (i, child) in children.iter().enumerate() {
+            e.mem.set_u32(base + 4 * i as u32, child.addr());
+        }
+        e.mem.set_u32(node.addr() + 0x9c + 4, base);
+        e.mem
+            .set_u16(node.addr() + 0x9c + 0xa, children.len() as u16);
+        node
+    }
+
+    /// The rotation matrix of a child, as floats.
+    fn child_rotation(e: &Engine, child: Ptr) -> Vec<f32> {
+        (0..9)
+            .map(|i| e.mem.f32(child.addr() + 0x34 + 4 * i))
+            .collect()
+    }
+
+    /// Queues a loaded model into `slot` of `this`: the queued model has a
+    /// model whose 3D object is `node_3d`.
+    fn give_loaded_model(e: &mut Engine, this: Ptr<QueuedHelmet>, slot: u32, node_3d: u32) {
+        let queued = e.mem.alloc(0x80);
+        let model = e.mem.alloc(0x20);
+        e.mem.set_u32(model + 0xc, node_3d);
+        e.mem.set_u32(queued + 0x30, model);
+        e.mem.set_u32(this.addr() + 0x2c + 4 * slot, queued);
+    }
+
+    /// An NPC reference (base form of type 0x2a) and its helmet task in
+    /// state 4 with bit 1 set, for a biped with `used` slots.
+    fn helmet_scene(e: &mut Engine, used: &[u32]) -> (Ptr<QueuedHelmet>, Ptr, Ptr) {
+        let form = Ptr::<()>::new(e.mem.alloc(0x40));
+        e.mem.set_u8(form.addr() + 4, 0x2a);
+        let subject = reference(e);
+        e.mem.set_u32(subject.addr() + 0x20, form.addr());
+        let biped = biped_anim(e, subject, used);
+        (queued_helmet(e, biped, subject, 4, 1), form, subject)
+    }
+
+    #[test]
+    fn helmet_check_finished_without_bit_1_is_the_file_check() {
+        let mut e = helmet_engine();
+        let this = queued_helmet(&mut e, Ptr::NULL, Ptr::NULL, 4, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2f0, &args![this]);
+        assert_eq!(
+            call_order(&e),
+            vec![0x0043_f2f0, TEST_FLAG_BIT_1, QUEUED_FILE_CHECK_FINISHED]
+        );
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_CHECK_FINISHED),
+            vec![vec![this.addr()]]
+        );
+    }
+
+    #[test]
+    fn helmet_check_finished_queues_a_new_task() {
+        let mut e = helmet_engine();
+        let this = queued_helmet(&mut e, Ptr::NULL, Ptr::NULL, 0, 1);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2f0, &args![this]);
+        assert_eq!(
+            calls_to(&e, QUEUE_ADD),
+            vec![vec![PART_IO_MANAGER, this.addr()]]
+        );
+        assert!(calls_to(&e, MEMORY_CONTEXT_ENTER).is_empty());
+        assert!(calls_to(&e, QUEUED_FILE_CHECK_FINISHED).is_empty());
+    }
+
+    #[test]
+    fn helmet_check_finished_does_not_clone_for_the_player_or_early() {
+        let mut e = helmet_engine();
+        let (this, _, subject) = helmet_scene(&mut e, &[1]);
+        // Unfinished children: the task is not queued but the context is
+        // entered, and nothing is cloned.
+        let children: Ptr<QueuedChildren> = e.new_object();
+        e.mem.set_u32(children.addr() + 8, 2);
+        e.mem.set_u32(this.addr() + 0x20, children.addr());
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2f0, &args![this]);
+        assert!(calls_to(&e, QUEUE_ADD).is_empty());
+        let enter = calls_to(&e, MEMORY_CONTEXT_ENTER)[0].clone();
+        assert_eq!(
+            &enter[1..],
+            &[
+                HELMET_CONTEXT,
+                1,
+                MODEL_LOADER_SOURCE,
+                HELMET_CHECK_FINISHED_SOURCE_LINE
+            ]
+        );
+        assert!(calls_to(&e, BIPED_ANIM_CLONE_HELMET).is_empty());
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_CHECK_FINISHED),
+            vec![vec![this.addr()]]
+        );
+        // The spare `NiPointer` is built first and destroyed last, and the
+        // context is left with the same guard.
+        let spare = calls_to(&e, NI_POINTER_CONSTRUCT)[0][0];
+        assert_eq!(calls_to(&e, NI_POINTER_DESTRUCT), vec![vec![spare]]);
+        assert_eq!(calls_to(&e, MEMORY_CONTEXT_LEAVE), vec![vec![enter[0]]]);
+        // The player's helmet is never cloned.
+        e.mem.set_u32(this.addr() + 0x20, 0);
+        give_loaded_model(&mut e, this, 1, 0x3d00);
+        e.set_global(PLAYER_CHARACTER, subject.addr());
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2f0, &args![this]);
+        assert!(calls_to(&e, BIPED_ANIM_CLONE_HELMET).is_empty());
+        // State 3 (before 4) and state 6: the same.
+        e.set_global(PLAYER_CHARACTER, PLAYER);
+        for state in [3, 6] {
+            e.mem.set_i32(this.addr() + 0xc, state);
+            e.call_log = Some(vec![]);
+            e.call(0x0043_f2f0, &args![this]);
+            assert!(calls_to(&e, BIPED_ANIM_CLONE_HELMET).is_empty());
+        }
+    }
+
+    #[test]
+    fn helmet_check_finished_clones_and_turns_the_child() {
+        let mut e = helmet_engine();
+        let (this, form, _) = helmet_scene(&mut e, &[1]);
+        let biped = e.get(this, QueuedHelmet::pBipedAnim);
+        give_loaded_model(&mut e, this, 1, 0x3d00);
+        let child = helmet_child(&mut e, 0, 0, 0x1111);
+        let clone = node_with_children(&mut e, &[child]);
+        e.mem.set_u32(CLONE_ANSWERS + 4, clone.addr());
+        e.mem.set_u32(FACE_ANSWERS + 4, 0x5001);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2f0, &args![this]);
+        // The clone is made from the model's 3D, and kept in the array.
+        assert_eq!(
+            calls_to(&e, BIPED_ANIM_CLONE_HELMET),
+            vec![vec![biped.addr(), 0, 0x3d00, 1]]
+        );
+        assert_eq!(e.mem.u32(this.addr() + 0xcc + 4), clone.addr());
+        // The face generation model was missing: it is loaded.
+        assert_eq!(
+            calls_to(&e, BIPED_ANIM_LOAD_FACE_GEN_MODEL),
+            vec![vec![biped.addr(), 1]]
+        );
+        // The child's part is deep-copied and given to the child.
+        let spare = calls_to(&e, NI_POINTER_CONSTRUCT)[0][0];
+        assert_eq!(calls_to(&e, CREATE_DEEP_COPY), vec![vec![0x1111, spare]]);
+        assert_eq!(
+            calls_to(&e, CHILD_SET_PART_SLOT),
+            vec![vec![child.addr(), 0x7d00_1111]]
+        );
+        // The NPC's face coordinates go into four 0x20-byte elements.
+        let coords = calls_to(&e, VECTOR_CONSTRUCT)[0][0];
+        assert_eq!(
+            calls_to(&e, VECTOR_CONSTRUCT),
+            vec![vec![
+                coords,
+                0x20,
+                4,
+                FACE_COORD_CONSTRUCT,
+                FACE_COORD_DESTRUCT
+            ]]
+        );
+        assert_eq!(
+            calls_to(&e, NPC_GET_FACE_COORD),
+            vec![vec![form.addr(), coords]]
+        );
+        assert_eq!(
+            calls_to(&e, VECTOR_DESTRUCT),
+            vec![vec![coords, 0x20, 4, FACE_COORD_DESTRUCT]]
+        );
+        // The setting byte is clear: the child is turned by -pi/2 around Y
+        // without asking the face generation model.
+        assert!(calls_to(&e, FACE_GEN_MODEL_APPLY_COORDS).is_empty());
+        let (sin, cos) = (-std::f32::consts::FRAC_PI_2 as f64).sin_cos();
+        let expected = [
+            cos as f32,
+            0.0,
+            -sin as f32,
+            0.0,
+            1.0,
+            0.0,
+            sin as f32,
+            0.0,
+            cos as f32,
+        ];
+        assert_eq!(child_rotation(&e, child), expected);
+        // The context is left last, after the file check.
+        let order = call_order(&e);
+        assert_eq!(*order.last().unwrap(), MEMORY_CONTEXT_LEAVE);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_CHECK_FINISHED),
+            vec![vec![this.addr()]]
+        );
+    }
+
+    #[test]
+    fn helmet_check_finished_asks_the_face_gen_model_when_the_setting_is_set() {
+        let mut e = helmet_engine();
+        let (this, _, _) = helmet_scene(&mut e, &[1]);
+        give_loaded_model(&mut e, this, 1, 0x3d00);
+        let child = helmet_child(&mut e, 0, 0, 0x1111);
+        let clone = node_with_children(&mut e, &[child]);
+        e.mem.set_u32(CLONE_ANSWERS + 4, clone.addr());
+        // The face generation model is there already.
+        e.mem.set_u32(this.addr() + 0x7c + 4, 0x5001);
+        e.mem.set_u8(HELMET_ROTATION_SETTING + 4, 1);
+        // It says no: the child keeps its rotation.
+        e.mem.set_u32(APPLY_ANSWER, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2f0, &args![this]);
+        assert!(calls_to(&e, BIPED_ANIM_LOAD_FACE_GEN_MODEL).is_empty());
+        let coords = calls_to(&e, VECTOR_CONSTRUCT)[0][0];
+        assert_eq!(
+            calls_to(&e, FACE_GEN_MODEL_APPLY_COORDS),
+            vec![vec![0x5001, coords, child.addr(), 0]]
+        );
+        assert_eq!(
+            child_rotation(&e, child),
+            vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        );
+        // It says yes: the child is turned.
+        e.mem.set_u32(APPLY_ANSWER, 1);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2f0, &args![this]);
+        let turned = child_rotation(&e, child);
+        assert_eq!(turned[4], 1.0);
+        assert_eq!(turned[2], 1.0, "-sin(-pi/2) is 1");
+        assert_eq!(turned[6], -1.0);
+    }
+
+    #[test]
+    fn helmet_check_finished_skips_what_cannot_be_cloned() {
+        let mut e = helmet_engine();
+        let (this, form, _) = helmet_scene(&mut e, &[1, 2, 3, 4]);
+        // Slot 1 has no queued model; slot 2 a model without a 3D; slot 3 a
+        // clone that is null; slot 4 has no queued model either.
+        give_loaded_model(&mut e, this, 2, 0);
+        give_loaded_model(&mut e, this, 3, 0x3d03);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2f0, &args![this]);
+        assert_eq!(
+            calls_to(&e, BIPED_ANIM_CLONE_HELMET).len(),
+            1,
+            "only slot 3 reaches the clone call"
+        );
+        assert!(calls_to(&e, NPC_GET_FACE_COORD).is_empty());
+        // A clone with a marked child (answers non-zero and has a pointer at
+        // +0xBC) is left alone: no face model, no turn.
+        let marked = helmet_child(&mut e, 1, 0x6666, 0x1111);
+        let clone = node_with_children(&mut e, &[marked]);
+        e.mem.set_u32(CLONE_ANSWERS + 12, clone.addr());
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2f0, &args![this]);
+        assert!(calls_to(&e, BIPED_ANIM_LOAD_FACE_GEN_MODEL).is_empty());
+        assert!(calls_to(&e, NPC_GET_FACE_COORD).is_empty());
+        // A child that answers non-zero but has no pointer is not marked.
+        let unmarked = helmet_child(&mut e, 1, 0, 0x1111);
+        let clone = node_with_children(&mut e, &[unmarked]);
+        e.mem.set_u32(CLONE_ANSWERS + 12, clone.addr());
+        e.mem.set_u32(FACE_ANSWERS + 12, 0x5003);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2f0, &args![this]);
+        assert_eq!(calls_to(&e, NPC_GET_FACE_COORD).len(), 1);
+        // A face generation model that cannot be loaded: nothing is turned.
+        let child = helmet_child(&mut e, 0, 0, 0x1111);
+        let clone = node_with_children(&mut e, &[child]);
+        e.mem.set_u32(CLONE_ANSWERS + 12, clone.addr());
+        e.mem.set_u32(FACE_ANSWERS + 12, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2f0, &args![this]);
+        assert!(calls_to(&e, NPC_GET_FACE_COORD).is_empty());
+        // A child without a part, or a base form that is not an NPC (type
+        // 0x2a): skipped.
+        let no_part = helmet_child(&mut e, 0, 0, 0);
+        let clone = node_with_children(&mut e, &[no_part]);
+        e.mem.set_u32(CLONE_ANSWERS + 12, clone.addr());
+        e.mem.set_u32(FACE_ANSWERS + 12, 0x5003);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2f0, &args![this]);
+        assert!(calls_to(&e, NPC_GET_FACE_COORD).is_empty());
+        let child = helmet_child(&mut e, 0, 0, 0x1111);
+        let clone = node_with_children(&mut e, &[child]);
+        e.mem.set_u32(CLONE_ANSWERS + 12, clone.addr());
+        e.mem.set_u8(form.addr() + 4, 0x2b);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2f0, &args![this]);
+        assert!(calls_to(&e, NPC_GET_FACE_COORD).is_empty());
+        // A biped animation without a reference: skipped too.
+        e.mem.set_u8(form.addr() + 4, 0x2a);
+        let biped = e.get(this, QueuedHelmet::pBipedAnim);
+        e.mem.set_u32(biped.addr() + 0x2b0, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f2f0, &args![this]);
+        assert!(calls_to(&e, NPC_GET_FACE_COORD).is_empty());
+    }
+
+    #[test]
+    fn matrix_y_rotation_fills_cos_sin() {
+        let mut e = helmet_engine();
+        let matrix = Ptr::<()>::new(e.mem.alloc(36));
+        for i in 0..9 {
+            e.mem.set_f32(matrix.addr() + 4 * i, 7.0);
+        }
+        e.call_log = Some(vec![]);
+        e.call(0x0043_f850, &args![matrix, 0.5f32]);
+        let call = calls_to(&e, SIN_COS)[0].clone();
+        assert_eq!(call[0], 0.5f32.to_bits());
+        let (sin, cos) = 0.5f64.sin_cos();
+        let (sin, cos) = (sin as f32, cos as f32);
+        let values: Vec<f32> = (0..9).map(|i| e.mem.f32(matrix.addr() + 4 * i)).collect();
+        assert_eq!(values, vec![cos, 0.0, -sin, 0.0, 1.0, 0.0, sin, 0.0, cos]);
+        // The sine goes to the first output, the cosine to the second.
+        assert_eq!(call[2], call[1] + 4);
+    }
+
+    fn write_matrix(e: &mut Engine, values: [f32; 9]) -> Ptr {
+        let matrix = Ptr::new(e.mem.alloc(36));
+        for (i, value) in values.iter().enumerate() {
+            e.mem.set_f32(matrix.addr() + 4 * i as u32, *value);
+        }
+        matrix
+    }
+
+    fn read_matrix(e: &Engine, matrix: Ptr) -> Vec<f32> {
+        (0..9).map(|i| e.mem.f32(matrix.addr() + 4 * i)).collect()
+    }
+
+    #[test]
+    fn matrix_multiply_is_the_row_by_column_product() {
+        let mut e = helmet_engine();
+        let left = write_matrix(&mut e, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        let right = write_matrix(&mut e, [9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]);
+        let out = write_matrix(&mut e, [0.0; 9]);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_f8d0, &args![left, out, right]);
+        assert_eq!(back.ptr::<()>(), out);
+        assert_eq!(
+            read_matrix(&e, out),
+            vec![30.0, 24.0, 18.0, 84.0, 69.0, 54.0, 138.0, 114.0, 90.0]
+        );
+        // The inputs are untouched; the constructor is called on a stack
+        // block, not on the output.
+        assert_eq!(
+            read_matrix(&e, left),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+        );
+        assert_eq!(calls_to(&e, MATRIX_CONSTRUCT).len(), 1);
+        assert_ne!(calls_to(&e, MATRIX_CONSTRUCT)[0][0], out.addr());
+        // The output may be the left operand.
+        e.call(0x0043_f8d0, &args![left, left, right]);
+        assert_eq!(
+            read_matrix(&e, left),
+            vec![30.0, 24.0, 18.0, 84.0, 69.0, 54.0, 138.0, 114.0, 90.0]
+        );
+    }
+
+    #[test]
+    fn matrix_multiply_rounds_each_sum_once() {
+        let mut e = helmet_engine();
+        // 1 + 2^-30 is not a float, but the sum is rounded to a float only at
+        // the store: (1 + 2^-30) + (-1) is 2^-30, where rounding each partial
+        // sum to float would give 0.
+        let tiny = 2.0f32.powi(-30);
+        let left = write_matrix(&mut e, [1.0, tiny, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let right = write_matrix(&mut e, [1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        let out = write_matrix(&mut e, [0.0; 9]);
+        e.call(0x0043_f8d0, &args![left, out, right]);
+        // Row 0, column 0: 1 * 1 + tiny * 1 + (-1) * 1.
+        assert_eq!(e.mem.f32(out.addr()), tiny);
+    }
+
+    #[test]
+    fn local_rotation_copy_writes_nine_dwords_at_0x34() {
+        let mut e = helmet_engine();
+        let object = Ptr::<()>::new(e.mem.alloc(0x80));
+        e.mem.set_u32(object.addr() + 0x34 + 36, 0xaaaa);
+        let matrix = write_matrix(&mut e, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        e.call(0x0043_fa80, &args![object, matrix]);
+        let copied: Vec<f32> = (0..9)
+            .map(|i| e.mem.f32(object.addr() + 0x34 + 4 * i))
+            .collect();
+        assert_eq!(copied, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        // The word after the matrix is not touched.
+        assert_eq!(e.mem.u32(object.addr() + 0x34 + 36), 0xaaaa);
+    }
+
+    #[test]
+    fn helmet_bit_1_test_reads_the_flags() {
+        let mut e = helmet_engine();
+        let on = queued_helmet(&mut e, Ptr::NULL, Ptr::NULL, 0, 0x03);
+        let off = queued_helmet(&mut e, Ptr::NULL, Ptr::NULL, 0, 0x02);
+        assert!(e.call(0x0043_fab0, &args![on]).bool());
+        assert!(!e.call(0x0043_fab0, &args![off]).bool());
+    }
+
+    #[test]
+    fn node_pointer_at_0xbc_is_dereferenced() {
+        let mut e = helmet_engine();
+        let block = Ptr::<()>::new(e.mem.alloc(0x100));
+        e.mem.set_u32(block.addr() + 0xbc, 0x7777);
+        assert_eq!(e.call(0x0043_fad0, &args![block]).u32(), 0x7777);
+    }
+
+    #[test]
+    fn setting_byte_is_read_through_the_pointer_getter() {
+        let mut e = helmet_engine();
+        e.call_log = Some(vec![]);
+        e.mem.set_u8(HELMET_ROTATION_SETTING + 4, 0);
+        assert_eq!(e.call(0x0043_faf0, &args![]).u8(), 0);
+        e.mem.set_u8(HELMET_ROTATION_SETTING + 4, 1);
+        assert_eq!(e.call(0x0043_faf0, &args![]).u8(), 1);
+        assert_eq!(
+            calls_to(&e, SETTING_BYTE_POINTER),
+            vec![vec![HELMET_ROTATION_SETTING], vec![HELMET_ROTATION_SETTING]]
+        );
+    }
+
+    #[test]
+    fn helmet_cancel_runs_the_base_then_tells_the_loader() {
+        let mut e = helmet_engine();
+        let subject = reference(&mut e);
+        let this = queued_helmet(&mut e, Ptr::NULL, subject, 4, 1);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_fb10, &args![this, 5u32, 6u32]);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_CANCEL),
+            vec![vec![this.addr(), 5, 6]]
+        );
+        assert_eq!(
+            calls_to(&e, HELMET_MAP_SLOT),
+            vec![vec![HELMET_MAP_OBJECT, subject.addr()]]
+        );
+        let order = call_order(&e);
+        let cancel = order.iter().position(|a| *a == QUEUED_FILE_CANCEL).unwrap();
+        let slot = order.iter().position(|a| *a == HELMET_MAP_SLOT).unwrap();
+        assert!(cancel < slot);
+    }
+
+    #[test]
+    fn loader_helmet_map_slot_0x14_is_called_with_the_reference() {
+        let mut e = helmet_engine();
+        e.call_log = Some(vec![]);
+        e.call(
+            0x0043_fb50,
+            &args![Ptr::<()>::new(LOADER), Ptr::<()>::new(0x6300)],
+        );
+        assert_eq!(
+            calls_to(&e, HELMET_MAP_SLOT),
+            vec![vec![HELMET_MAP_OBJECT, 0x6300]]
+        );
+    }
+
+    #[test]
+    fn helmet_attach_attaches_each_cloned_node() {
+        let mut e = helmet_engine();
+        let subject = reference(&mut e);
+        let biped = biped_anim(&mut e, subject, &[]);
+        let this = queued_helmet(&mut e, biped, subject, 4, 1);
+        e.mem.set_u32(this.addr() + 0xcc + 8, 0x3c02);
+        e.mem.set_u32(this.addr() + 0x7c + 8, 0x5002);
+        e.mem.set_u32(this.addr() + 0xcc + 12 * 4, 0x3c0c);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_fb80, &args![this]);
+        assert_eq!(
+            calls_to(&e, BIPED_ANIM_ATTACH_HELMET),
+            vec![
+                vec![biped.addr(), 0x5002, 0x3c02, 2],
+                vec![biped.addr(), 0, 0x3c0c, 12]
+            ]
+        );
+        assert_eq!(
+            calls_to(&e, HELMET_MAP_SLOT),
+            vec![vec![HELMET_MAP_OBJECT, subject.addr()]]
+        );
+    }
+
+    #[test]
+    fn helmet_get_description_names_the_biped_anim() {
+        let mut e = helmet_engine();
+        let subject = reference(&mut e);
+        let biped = biped_anim(&mut e, subject, &[]);
+        let this = queued_helmet(&mut e, biped, subject, 4, 1);
+        let buffer = e.mem.alloc(0x80);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_fc10, &args![this, buffer, 0x80u32]);
+        assert!(back.bool());
+        assert_eq!(
+            calls_to(&e, FORMAT_STRING),
+            vec![vec![buffer, 0x80, QUEUED_HELMET_FORMAT, biped.addr()]]
+        );
+        let expected = format!("Queued helmet for biped anim {:08X}", biped.addr());
+        assert_eq!(e.mem.cstr(buffer), expected.as_bytes());
+    }
+
+    /// A distant 3D task for `reference` holding the node 0x6d00 in
+    /// `spNode`, in `state`.
+    fn distant_task(e: &mut Engine, reference: Ptr, state: i32) -> Ptr<AttachDistant3DTask> {
+        let this: Ptr<AttachDistant3DTask> = e.new_object();
+        e.mem.set_u32(this.addr(), TASK_VTABLE);
+        e.mem.set_i32(this.addr() + 0xc, state);
+        e.set(this, AttachDistant3DTask::pRef, reference);
+        e.set(this, AttachDistant3DTask::spNode, Ptr::new(0x6d00));
+        this
+    }
+
+    #[test]
+    fn distant_3d_task_post_process_attaches_the_node_to_the_reference() {
+        let mut e = helmet_engine();
+        let subject = reference(&mut e);
+        e.mem.set_u32(subject.addr() + 0x40, 0xce11);
+        let this = distant_task(&mut e, subject, 4);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_fc40, &args![this]);
+        assert_eq!(
+            calls_to(&e, REFERENCE_SET_3D),
+            vec![vec![subject.addr(), 0x6d00]]
+        );
+        assert_eq!(
+            calls_to(&e, TES_LOAD_REFERENCE),
+            vec![vec![TES_OBJECT, subject.addr(), 0xce11, 0, 0]]
+        );
+        assert_eq!(calls_to(&e, SET_STARTS_DEAD), vec![vec![subject.addr(), 1]]);
+        assert!(calls_to(&e, NI_POINTER_ASSIGN).is_empty());
+        assert_eq!(e.get(this, AttachDistant3DTask::spNode), Ptr::new(0x6d00));
+        // A cancelled task (state 6) clears the node and does nothing else.
+        let cancelled = distant_task(&mut e, subject, 6);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_fc40, &args![cancelled]);
+        assert!(calls_to(&e, REFERENCE_SET_3D).is_empty());
+        assert_eq!(
+            calls_to(&e, NI_POINTER_ASSIGN),
+            vec![vec![cancelled.addr() + 0x1c, 0]]
+        );
+        assert_eq!(e.get(cancelled, AttachDistant3DTask::spNode), Ptr::NULL);
+        // No reference: the same.
+        let orphan = distant_task(&mut e, Ptr::NULL, 4);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_fc40, &args![orphan]);
+        assert!(calls_to(&e, TES_LOAD_REFERENCE).is_empty());
+        assert_eq!(e.get(orphan, AttachDistant3DTask::spNode), Ptr::NULL);
+        // A reference that already has a 3D (`0043fcd0` non-zero): the same.
+        let loaded = reference(&mut e);
+        let data = e.mem.alloc(0x40);
+        e.mem.set_u32(data + 0x14, 0x7001);
+        e.mem.set_u32(loaded.addr() + 0x64, data);
+        let busy = distant_task(&mut e, loaded, 4);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_fc40, &args![busy]);
+        assert!(calls_to(&e, REFERENCE_SET_3D).is_empty());
+        assert_eq!(e.get(busy, AttachDistant3DTask::spNode), Ptr::NULL);
+    }
+
+    #[test]
+    fn reference_3d_getter_checks_the_thread_word_then_the_data() {
+        let mut e = helmet_engine();
+        let subject = reference(&mut e);
+        // No data: 0.
+        assert_eq!(e.call(0x0043_fcd0, &args![subject]).u32(), 0);
+        // Data: the NiPointer at +0x14 of it.
+        let data = e.mem.alloc(0x40);
+        e.mem.set_u32(data + 0x14, 0x7001);
+        e.mem.set_u32(subject.addr() + 0x64, data);
+        assert_eq!(e.call(0x0043_fcd0, &args![subject]).u32(), 0x7001);
+        // The thread's reference word is this reference: the thread's 3D
+        // word, whatever the data is.
+        let tls = e.tls();
+        e.mem.set_u32(tls + 0x264, subject.addr());
+        e.mem.set_u32(tls + 0x260, 0x7002);
+        assert_eq!(e.call(0x0043_fcd0, &args![subject]).u32(), 0x7002);
+        // Another reference does not match.
+        let other = reference(&mut e);
+        assert_eq!(e.call(0x0043_fcd0, &args![other]).u32(), 0);
+    }
+
+    #[test]
+    fn reference_task_constructor_builds_the_four_pointers() {
+        let mut e = helmet_engine();
+        let this: Ptr<QueuedReference> = e.new_object();
+        e.mem.set_u32(this.addr() + 0x34, 0x1111);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_fd40, &args![this, 0x6500u32, 0x31u32]);
+        assert_eq!(back.ptr::<QueuedReference>(), this);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_CONSTRUCT),
+            vec![vec![this.addr(), 0x31]]
+        );
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_REFERENCE_VTABLE);
+        assert_eq!(e.get(this, QueuedReference::pRef), Ptr::new(0x6500));
+        assert_eq!(
+            calls_to(&e, TASK_POINTER_CONSTRUCT),
+            vec![vec![this.addr() + 0x2c, 0], vec![this.addr() + 0x38, 0]]
+        );
+        assert_eq!(
+            calls_to(&e, NI_POINTER_CONSTRUCT),
+            vec![vec![this.addr() + 0x30, 0], vec![this.addr() + 0x34, 0]]
+        );
+        assert_eq!(e.get(this, QueuedReference::spCloned3D), Ptr::NULL);
+    }
+
+    #[test]
+    fn reference_task_post_process_calls_slot_0x3c() {
+        let mut e = helmet_engine();
+        let this: Ptr<QueuedReference> = e.new_object();
+        e.mem.set_u32(this.addr(), REFERENCE_TASK_VTABLE);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_fdf0, &args![this]);
+        assert_eq!(calls_to(&e, ATTACH_HOOK), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn reference_task_scalar_deleting_destructor_frees_on_bit_0() {
+        let mut e = helmet_engine();
+        let this: Ptr<QueuedReference> = e.new_object();
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_fe10, &args![this, 0u32]);
+        assert_eq!(back.ptr::<QueuedReference>(), this);
+        assert!(calls_to(&e, MEMORY_FREE).is_empty());
+        assert_eq!(calls_to(&e, QUEUED_FILE_DESTRUCT).len(), 1);
+        e.call(0x0043_fe10, &args![this, 1u32]);
+        assert_eq!(calls_to(&e, MEMORY_FREE), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn reference_task_destructor_releases_the_pointers_last_first() {
+        let mut e = helmet_engine();
+        let this: Ptr<QueuedReference> = e.new_object();
+        e.mem.set_u32(this.addr(), 0x2222);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_fe40, &args![this]);
+        assert_eq!(
+            call_order(&e),
+            vec![
+                0x0043_fe40,
+                TASK_POINTER_DESTRUCT,
+                NI_POINTER_DESTRUCT,
+                MODEL_POINTER_RELEASE,
+                TASK_POINTER_DESTRUCT,
+                QUEUED_FILE_DESTRUCT
+            ]
+        );
+        assert_eq!(
+            calls_to(&e, TASK_POINTER_DESTRUCT),
+            vec![vec![this.addr() + 0x38], vec![this.addr() + 0x2c]]
+        );
+        assert_eq!(
+            calls_to(&e, NI_POINTER_DESTRUCT),
+            vec![vec![this.addr() + 0x34]]
+        );
+        assert_eq!(
+            calls_to(&e, MODEL_POINTER_RELEASE),
+            vec![vec![this.addr() + 0x30]]
+        );
+        // The virtual table is left as it was.
+        assert_eq!(e.mem.u32(this.addr()), 0x2222);
     }
 }

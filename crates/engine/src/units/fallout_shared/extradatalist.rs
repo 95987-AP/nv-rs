@@ -121,369 +121,369 @@ layout! {
 
 /// `BaseExtraList::ExtraCritSection` (Xbox PDB), the `BSSpinLock` that guards
 /// every list operation.
-const EXTRA_CRIT_SECTION: u32 = 0x011c_3920;
+pub(crate) const EXTRA_CRIT_SECTION: u32 = 0x011c_3920;
 /// `BSSpinLock::Lock(const char *name)` on [`EXTRA_CRIT_SECTION`].
-const LOCK: u32 = 0x0040_fbf0;
+pub(crate) const LOCK: u32 = 0x0040_fbf0;
 /// `BSSpinLock::Unlock()`.
-const UNLOCK: u32 = 0x0040_fba0;
+pub(crate) const UNLOCK: u32 = 0x0040_fba0;
 /// `BaseExtraList::iDirty` (Xbox PDB): bumped whenever a list loses an
 /// extra data, so every thread's cache is dropped.
-const DIRTY: u32 = 0x011c_38e4;
+pub(crate) const DIRTY: u32 = 0x011c_38e4;
 /// `BSExtraData::BSExtraData(type)`: sets the base vtable, the type, and a
 /// null next. The subclass constructors call it, then set their own vtable.
-const BS_EXTRA_DATA_INIT: u32 = 0x0040_ec80;
+pub(crate) const BS_EXTRA_DATA_INIT: u32 = 0x0040_ec80;
 /// `cEtype` getter (`MOV AL,[ECX+4]`; the engine map files it under
 /// `tesregiondata.cpp`, identical code folded).
-const GET_TYPE: u32 = 0x004f_1540;
+pub(crate) const GET_TYPE: u32 = 0x004f_1540;
 /// `pNext` getter (`MOV EAX,[ECX+8]`).
-const GET_NEXT: u32 = 0x0044_ddc0;
+pub(crate) const GET_NEXT: u32 = 0x0044_ddc0;
 /// `pNext` setter (`MOV [ECX+8],arg`).
-const SET_NEXT: u32 = 0x0040_3550;
+pub(crate) const SET_NEXT: u32 = 0x0040_3550;
 /// `MOV EAX,[ECX+4]`: `BSSimpleList`'s `m_pkNext`, and the `pHead` of a
 /// `BaseExtraList` where `RemoveExtra_ov2` starts its walk.
-const SIMPLE_LIST_NEXT: u32 = 0x0072_6070;
+pub(crate) const SIMPLE_LIST_NEXT: u32 = 0x0072_6070;
 /// `MOV EAX,ECX`: a `BSSimpleList` node's address, which is the address of its
 /// item slot (the item is read through the returned pointer).
-const SIMPLE_LIST_ITEM: u32 = 0x0068_15c0;
+pub(crate) const SIMPLE_LIST_ITEM: u32 = 0x0068_15c0;
 /// `MOV EAX,[ECX]`: reads the word a handle points at.
-const READ_WORD: u32 = 0x0055_9450;
+pub(crate) const READ_WORD: u32 = 0x0055_9450;
 /// `memset(dst, value, size)`.
-const MEMSET: u32 = 0x0040_3d30;
+pub(crate) const MEMSET: u32 = 0x0040_3d30;
 /// `memcpy(dst, src, size)` (the game's wrapper).
-const MEMCPY: u32 = 0x0040_1460;
+pub(crate) const MEMCPY: u32 = 0x0040_1460;
 /// `operator new(size)`.
-const OPERATOR_NEW: u32 = 0x0040_1000;
+pub(crate) const OPERATOR_NEW: u32 = 0x0040_1000;
 /// `operator delete(block)` (`platform`).
-const OPERATOR_DELETE: u32 = 0x0040_1030;
+pub(crate) const OPERATOR_DELETE: u32 = 0x0040_1030;
 /// `__RTDynamicCast(object, vfDelta, srcType, targetType, isReference)`.
-const RT_DYNAMIC_CAST: u32 = 0x00ec_43fb;
+pub(crate) const RT_DYNAMIC_CAST: u32 = 0x00ec_43fb;
 
 /// Size of the bitmap `iFlags`, in bytes.
-const FLAGS_LEN: u32 = 0x15;
+pub(crate) const FLAGS_LEN: u32 = 0x15;
 /// Entries of `ppLastExtraData`; also the first type that is not cached.
-const CACHE_ENTRIES: u32 = 0x93;
+pub(crate) const CACHE_ENTRIES: u32 = 0x93;
 /// Bytes of `ppLastExtraData` (`CACHE_ENTRIES * 4`).
-const CACHE_BYTES: u32 = 0x24c;
+pub(crate) const CACHE_BYTES: u32 = 0x24c;
 
 /// Lock names the functions pass to [`LOCK`] (strings in the exe).
-const NAME_REMOVE_ALL: u32 = 0x0101_4304;
-const NAME_REMOVE_ALL_DEFAULT: u32 = 0x0101_4320;
-const NAME_ITEMS_IN_LIST: u32 = 0x0101_4344;
-const NAME_ADD_EXTRA: u32 = 0x0101_4364;
+pub(crate) const NAME_REMOVE_ALL: u32 = 0x0101_4304;
+pub(crate) const NAME_REMOVE_ALL_DEFAULT: u32 = 0x0101_4320;
+pub(crate) const NAME_ITEMS_IN_LIST: u32 = 0x0101_4344;
+pub(crate) const NAME_ADD_EXTRA: u32 = 0x0101_4364;
 /// `"BaseExtraList::RemoveExtra()"`, used by both overloads.
-const NAME_REMOVE_EXTRA: u32 = 0x0101_4380;
-const NAME_GET_EXTRA_DATA: u32 = 0x0101_43a0;
-const NAME_GET_PREV_EXTRA_DATA: u32 = 0x0101_43c0;
+pub(crate) const NAME_REMOVE_EXTRA: u32 = 0x0101_4380;
+pub(crate) const NAME_GET_EXTRA_DATA: u32 = 0x0101_43a0;
+pub(crate) const NAME_GET_PREV_EXTRA_DATA: u32 = 0x0101_43c0;
 /// `"AI: No Copy function available for Extra Data type %i."`.
-const NO_COPY_MESSAGE: u32 = 0x0101_43ec;
+pub(crate) const NO_COPY_MESSAGE: u32 = 0x0101_43ec;
 /// Reports a message through the game's log (`005b5e40`, cdecl, printf-like).
-const LOG_MESSAGE: u32 = 0x005b_5e40;
+pub(crate) const LOG_MESSAGE: u32 = 0x005b_5e40;
 
 /// Vtables set by the constructors of this unit.
-const VTABLE_EXTRA_NORTH_ROTATION: u32 = 0x0101_42a0;
-const VTABLE_EXTRA_DETACH_TIME: u32 = 0x0101_42ac;
-const VTABLE_BASE_EXTRA_LIST: u32 = 0x0101_4300;
-const VTABLE_EXTRA_DATA_LIST: u32 = 0x0101_43e8;
-const VTABLE_EXTRA_REFLECTED_REFS: u32 = 0x0101_4428;
-const VTABLE_EXTRA_REFLECTOR_REFS: u32 = 0x0101_4434;
-const VTABLE_EXTRA_WATER_LIGHT_REFS: u32 = 0x0101_4440;
-const VTABLE_EXTRA_LIT_WATER_REFS: u32 = 0x0101_444c;
-const VTABLE_EXTRA_TYPE_92: u32 = 0x0101_4458;
+pub(crate) const VTABLE_EXTRA_NORTH_ROTATION: u32 = 0x0101_42a0;
+pub(crate) const VTABLE_EXTRA_DETACH_TIME: u32 = 0x0101_42ac;
+pub(crate) const VTABLE_BASE_EXTRA_LIST: u32 = 0x0101_4300;
+pub(crate) const VTABLE_EXTRA_DATA_LIST: u32 = 0x0101_43e8;
+pub(crate) const VTABLE_EXTRA_REFLECTED_REFS: u32 = 0x0101_4428;
+pub(crate) const VTABLE_EXTRA_REFLECTOR_REFS: u32 = 0x0101_4434;
+pub(crate) const VTABLE_EXTRA_WATER_LIGHT_REFS: u32 = 0x0101_4440;
+pub(crate) const VTABLE_EXTRA_LIT_WATER_REFS: u32 = 0x0101_444c;
+pub(crate) const VTABLE_EXTRA_TYPE_92: u32 = 0x0101_4458;
 
 // Second batch: lock names, callees and helpers (list operations, the save
 // writer `fn_00412970`, the loader `extra_data_list_load`, `InitItem`).
 
 /// `BSExtraData::~BSExtraData` (`0040ecb0`), run by the subclass destructors
 /// after they set their own vtable.
-const BS_EXTRA_DATA_DESTROY: u32 = 0x0040_ecb0;
+pub(crate) const BS_EXTRA_DATA_DESTROY: u32 = 0x0040_ecb0;
 /// `_ftol2_sse` (`00ec62c0`): truncates the float in ST0 (a leading `f64`
 /// argument here).
-const FTOL: u32 = 0x00ec_62c0;
+pub(crate) const FTOL: u32 = 0x00ec_62c0;
 
-const NAME_COPY_LIST: u32 = 0x0101_4468;
-const NAME_REMOVE_ALL_COPYABLE: u32 = 0x0101_4484;
-const NAME_REMOVE_NON_PERSISTENT: u32 = 0x0101_44ac;
-const NAME_COPY_LIST_FOR_CONTAINER: u32 = 0x0101_44dc;
-const NAME_DUPLICATE_FOR_CONTAINER: u32 = 0x0101_4504;
-const NAME_COPY_LIST_FOR_REFERENCE: u32 = 0x0101_4534;
-const NAME_COMPARE_LIST_FOR_CONTAINER: u32 = 0x0101_455c;
-const NAME_COMPARE_LIST: u32 = 0x0101_4588;
+pub(crate) const NAME_COPY_LIST: u32 = 0x0101_4468;
+pub(crate) const NAME_REMOVE_ALL_COPYABLE: u32 = 0x0101_4484;
+pub(crate) const NAME_REMOVE_NON_PERSISTENT: u32 = 0x0101_44ac;
+pub(crate) const NAME_COPY_LIST_FOR_CONTAINER: u32 = 0x0101_44dc;
+pub(crate) const NAME_DUPLICATE_FOR_CONTAINER: u32 = 0x0101_4504;
+pub(crate) const NAME_COPY_LIST_FOR_REFERENCE: u32 = 0x0101_4534;
+pub(crate) const NAME_COMPARE_LIST_FOR_CONTAINER: u32 = 0x0101_455c;
+pub(crate) const NAME_COMPARE_LIST: u32 = 0x0101_4588;
 
 /// The global word `RemoveNonPersistentCellData` passes as `this` to
 /// `fn_004121b0`, which does not use it.
-const THREAD_STATE_OWNER: u32 = 0x011d_df38;
+pub(crate) const THREAD_STATE_OWNER: u32 = 0x011d_df38;
 /// Offset in the TLS block of the word whose bit 2 `fn_004121b0` tests.
-const THREAD_FLAGS_OFFSET: u32 = 0x294;
+pub(crate) const THREAD_FLAGS_OFFSET: u32 = 0x294;
 
 /// `ExtraDataList::GetScript` (`00418800`).
-const GET_SCRIPT: u32 = 0x0041_8800;
+pub(crate) const GET_SCRIPT: u32 = 0x0041_8800;
 /// `ExtraScript::ExtraScript(script)` (`00432000`, `this` = the new block).
-const EXTRA_SCRIPT_INIT: u32 = 0x0043_2000;
+pub(crate) const EXTRA_SCRIPT_INIT: u32 = 0x0043_2000;
 /// `005abf60` on a script, whose result `00419f80` takes.
-const SCRIPT_GET_RESULT: u32 = 0x005a_bf60;
+pub(crate) const SCRIPT_GET_RESULT: u32 = 0x005a_bf60;
 /// `00419f80`: the list's setter for the script result (`AddExtraCopy` uses it
 /// for the second word of a type `0D` extra data).
-const EXTRA_DATA_LIST_SET_SCRIPT_RESULT: u32 = 0x0041_9f80;
+pub(crate) const EXTRA_DATA_LIST_SET_SCRIPT_RESULT: u32 = 0x0041_9f80;
 
 /// `Swap32(pointer, 0)` (`00401080`): byte-swaps the word at `pointer` in
 /// place (cdecl; the byte argument is not used).
-const SWAP_DWORD: u32 = 0x0040_1080;
+pub(crate) const SWAP_DWORD: u32 = 0x0040_1080;
 /// `Swap16(pointer, 0)` (`00407a90`).
-const SWAP_WORD: u32 = 0x0040_7a90;
+pub(crate) const SWAP_WORD: u32 = 0x0040_7a90;
 
 // The save writer's callees.
 /// `TESForm::iFormID` getter (`MOV EAX,[ECX+0x0C]`).
-const FORM_ID: u32 = 0x0084_e3a0;
+pub(crate) const FORM_ID: u32 = 0x0084_e3a0;
 /// `TESForm::AddChunk(tag, word)`: one word, swapped first on a big-endian
 /// target.
-const ADD_CHUNK_WORD: u32 = 0x0048_5910;
+pub(crate) const ADD_CHUNK_WORD: u32 = 0x0048_5910;
 /// `TESForm::AddChunk(tag, byte)`.
-const ADD_CHUNK_BYTE: u32 = 0x0048_58f0;
+pub(crate) const ADD_CHUNK_BYTE: u32 = 0x0048_58f0;
 /// `TESForm::AddChunk(tag)`: a chunk without data.
-const ADD_CHUNK_EMPTY: u32 = 0x0048_56d0;
+pub(crate) const ADD_CHUNK_EMPTY: u32 = 0x0048_56d0;
 /// `TESForm::__AddChunkData(tag, data, size)`.
-const ADD_CHUNK_DATA: u32 = 0x0048_5990;
+pub(crate) const ADD_CHUNK_DATA: u32 = 0x0048_5990;
 /// `TESForm::AddChunkArray_ov2(tag, data, count)` (`00485710`).
-const ADD_CHUNK_ARRAY: u32 = 0x0048_5710;
+pub(crate) const ADD_CHUNK_ARRAY: u32 = 0x0048_5710;
 /// `TESForm::AddChunkArray(tag, data, size)` (`004856f0`).
-const ADD_CHUNK_ARRAY_RAW: u32 = 0x0048_56f0;
+pub(crate) const ADD_CHUNK_ARRAY_RAW: u32 = 0x0048_56f0;
 /// The save writer's big-endian flag (`MOV AL,[011c54ba]`).
-const IS_BIG_ENDIAN: u32 = 0x0040_1500;
+pub(crate) const IS_BIG_ENDIAN: u32 = 0x0040_1500;
 /// Byte-swap of the word at `this` (`Swap32`, `00503210`).
-const SWAP_WORD_AT: u32 = 0x0050_3210;
+pub(crate) const SWAP_WORD_AT: u32 = 0x0050_3210;
 /// Byte-swap of the word at `this + 4` (`0060ce80`).
-const SWAP_WORD_AT_4: u32 = 0x0060_ce80;
+pub(crate) const SWAP_WORD_AT_4: u32 = 0x0060_ce80;
 /// Byte-swap of the words at `this` and `this + 4` (`00462230`).
-const SWAP_TWO_WORDS: u32 = 0x0046_2230;
+pub(crate) const SWAP_TWO_WORDS: u32 = 0x0046_2230;
 /// Count of the non-null items of a `BSSimpleList` (`005ae380`).
-const LIST_COUNT: u32 = 0x005a_e380;
+pub(crate) const LIST_COUNT: u32 = 0x005a_e380;
 /// `BSSimpleList::IsEmpty`: no item and no next (`008256d0`).
-const LIST_IS_EMPTY: u32 = 0x0082_56d0;
+pub(crate) const LIST_IS_EMPTY: u32 = 0x0082_56d0;
 /// `RagDollData::Save` (`004d93c0`).
-const RAGDOLL_DATA_SAVE: u32 = 0x004d_93c0;
+pub(crate) const RAGDOLL_DATA_SAVE: u32 = 0x004d_93c0;
 /// The teleport data's save (`0043a420`).
-const TELEPORT_DATA_SAVE: u32 = 0x0043_a420;
+pub(crate) const TELEPORT_DATA_SAVE: u32 = 0x0043_a420;
 /// The map marker data's save (`00438c10`).
-const MAP_MARKER_DATA_SAVE: u32 = 0x0043_8c10;
+pub(crate) const MAP_MARKER_DATA_SAVE: u32 = 0x0043_8c10;
 /// The `GetSeed` of the list (`00418b40`): the type `0x31` byte, 0xFF if none.
-const EXTRA_DATA_LIST_GET_SEED: u32 = 0x0041_8b40;
+pub(crate) const EXTRA_DATA_LIST_GET_SEED: u32 = 0x0041_8b40;
 /// Constructor of the decal data (`0055a400`).
-const DECAL_DATA_INIT: u32 = 0x0055_a400;
+pub(crate) const DECAL_DATA_INIT: u32 = 0x0055_a400;
 /// `BSSimpleList` node constructor (`0096a2d0`): item and next to 0.
-const SIMPLE_LIST_INIT: u32 = 0x0096_a2d0;
+pub(crate) const SIMPLE_LIST_INIT: u32 = 0x0096_a2d0;
 /// Copy of the 8-byte member of the navmesh portal data (`0069a690`).
-const NAVMESH_PORTAL_COPY: u32 = 0x0069_a690;
+pub(crate) const NAVMESH_PORTAL_COPY: u32 = 0x0069_a690;
 /// `MultiBoundMarkerData` save (`00438f90`).
-const MULTIBOUND_MARKER_DATA_SAVE: u32 = 0x0043_8f90;
+pub(crate) const MULTIBOUND_MARKER_DATA_SAVE: u32 = 0x0043_8f90;
 /// `PackageEventAction::Save` (`0067dc80`).
-const PACKAGE_EVENT_ACTION_SAVE: u32 = 0x0067_dc80;
+pub(crate) const PACKAGE_EVENT_ACTION_SAVE: u32 = 0x0067_dc80;
 /// `BSOcclusionPlane` size member getter: the address `this + 0x14`.
-const PLANE_HALF_EXTENTS: u32 = 0x007d_6bb0;
+pub(crate) const PLANE_HALF_EXTENTS: u32 = 0x007d_6bb0;
 /// `NiMatrix3` to axis and angle (`00a58550`): `(matrix, &angle, &x, &y, &z)`.
-const MATRIX_TO_AXIS_ANGLE: u32 = 0x00a5_8550;
+pub(crate) const MATRIX_TO_AXIS_ANGLE: u32 = 0x00a5_8550;
 /// `AudioMarkerData` save (`00589560`).
-const AUDIO_MARKER_DATA_SAVE: u32 = 0x0058_9560;
+pub(crate) const AUDIO_MARKER_DATA_SAVE: u32 = 0x0058_9560;
 /// `AudioBuoyMarkerData` save (`00483710`).
-const AUDIO_BUOY_MARKER_DATA_SAVE: u32 = 0x0048_3710;
+pub(crate) const AUDIO_BUOY_MARKER_DATA_SAVE: u32 = 0x0048_3710;
 /// `BSStringT::GetLength` (`004048e0`).
-const STRING_LENGTH: u32 = 0x0040_48e0;
+pub(crate) const STRING_LENGTH: u32 = 0x0040_48e0;
 /// `ExtraDataList::GetActivateTextOverride(out)` (`0041ec80`): copies the
 /// activate text of the type `0x53` extra data (or an empty string) into
 /// `out` and returns `out`.
-const GET_ACTIVATE_TEXT: u32 = 0x0041_ec80;
+pub(crate) const GET_ACTIVATE_TEXT: u32 = 0x0041_ec80;
 /// `BSStringT` destructor (`004037d0`).
-const STRING_DESTROY: u32 = 0x0040_37d0;
+pub(crate) const STRING_DESTROY: u32 = 0x0040_37d0;
 /// Constructor of the package start location record (`006d5320`).
-const PATH_LOCATION_INIT: u32 = 0x006d_5320;
+pub(crate) const PATH_LOCATION_INIT: u32 = 0x006d_5320;
 
 // The loader's callees.
 /// `TESFile::GetTESChunk`: the type of the current chunk (`004726b0`).
-const GET_TES_CHUNK: u32 = 0x0047_26b0;
+pub(crate) const GET_TES_CHUNK: u32 = 0x0047_26b0;
 /// `TESFile::GetChunkData(&value)`: reads the 4-byte value (`004727f0`).
-const GET_CHUNK_WORD: u32 = 0x0047_27f0;
+pub(crate) const GET_CHUNK_WORD: u32 = 0x0047_27f0;
 /// `TESFile::GetChunkData(buffer, size)` (`00472890`).
-const GET_CHUNK_DATA: u32 = 0x0047_2890;
+pub(crate) const GET_CHUNK_DATA: u32 = 0x0047_2890;
 /// `TESFile::GetChunkDataSize` (`00401660`, `MOV EAX,[ECX+0x25C]`).
-const GET_CHUNK_SIZE: u32 = 0x0040_1660;
+pub(crate) const GET_CHUNK_SIZE: u32 = 0x0040_1660;
 /// The file's byte-swap flag (`00401680`, `MOV AL,[ECX+0x299]`).
-const FILE_NEEDS_SWAP: u32 = 0x0040_1680;
+pub(crate) const FILE_NEEDS_SWAP: u32 = 0x0040_1680;
 /// `TESFile::NextChunk`-like skip to the next chunk (`004726f0`).
-const SKIP_CHUNK: u32 = 0x0047_26f0;
+pub(crate) const SKIP_CHUNK: u32 = 0x0047_26f0;
 /// `TESFile` file name field address, `this + 0x20` (`00891170`).
-const FILE_NAME: u32 = 0x0089_1170;
+pub(crate) const FILE_NAME: u32 = 0x0089_1170;
 /// `TESForm::AddCompileIndex(&id, file)` (`00485d50`, cdecl).
-const ADD_COMPILE_INDEX: u32 = 0x0048_5d50;
+pub(crate) const ADD_COMPILE_INDEX: u32 = 0x0048_5d50;
 /// The data handler singleton pointer (`011c3f2c`).
-const DATA_HANDLER: u32 = 0x011c_3f2c;
+pub(crate) const DATA_HANDLER: u32 = 0x011c_3f2c;
 /// `DataHandler::pRegionList` getter (`004169d0`, `MOV EAX,[ECX+0x1D8]`).
-const DATA_HANDLER_REGIONS: u32 = 0x0041_69d0;
+pub(crate) const DATA_HANDLER_REGIONS: u32 = 0x0041_69d0;
 /// `TESRegionList::TESRegionList(bool)` (`004f6320`).
-const REGION_LIST_INIT: u32 = 0x004f_6320;
+pub(crate) const REGION_LIST_INIT: u32 = 0x004f_6320;
 /// Region of a `TESRegionList` by form id (`004f66c0`).
-const REGION_LIST_FIND: u32 = 0x004f_66c0;
+pub(crate) const REGION_LIST_FIND: u32 = 0x004f_66c0;
 /// Adds a region to a `TESRegionList` (`004f6600`).
-const REGION_LIST_ADD: u32 = 0x004f_6600;
+pub(crate) const REGION_LIST_ADD: u32 = 0x004f_6600;
 /// `ExtraDataList::SetRegionList` (`0041bbd0`).
-const SET_REGION_LIST: u32 = 0x0041_bbd0;
+pub(crate) const SET_REGION_LIST: u32 = 0x0041_bbd0;
 /// `"MASTERFILE: Invalid Extra Data - Region List in file \"%s\"."`
-const MESSAGE_BAD_REGION_LIST: u32 = 0x0101_45d8;
+pub(crate) const MESSAGE_BAD_REGION_LIST: u32 = 0x0101_45d8;
 /// `"MASTERFILE: Failed to load RagDoll Data."`
-const MESSAGE_BAD_RAGDOLL: u32 = 0x0101_45ac;
+pub(crate) const MESSAGE_BAD_RAGDOLL: u32 = 0x0101_45ac;
 /// The float default of the third distant-data value (`010145a8`).
-const LOD_DEFAULT: u32 = 0x0101_45a8;
+pub(crate) const LOD_DEFAULT: u32 = 0x0101_45a8;
 
-const SET_HEALTH: u32 = 0x0041_9970;
-const SET_USES: u32 = 0x0041_9a20;
-const SET_COUNT: u32 = 0x0041_9ad0;
+pub(crate) const SET_HEALTH: u32 = 0x0041_9970;
+pub(crate) const SET_USES: u32 = 0x0041_9a20;
+pub(crate) const SET_COUNT: u32 = 0x0041_9ad0;
 /// `ExtraDataList::GetAmmo` (`0042eb40`): the type `0x6E` extra data.
-const GET_AMMO: u32 = 0x0042_eb40;
+pub(crate) const GET_AMMO: u32 = 0x0042_eb40;
 /// `ExtraDataList::SetAmmo(ammo, count)` (`0042eb60`).
-const SET_AMMO: u32 = 0x0042_eb60;
-const SET_SEED: u32 = 0x0041_ac30;
+pub(crate) const SET_AMMO: u32 = 0x0042_eb60;
+pub(crate) const SET_SEED: u32 = 0x0041_ac30;
 /// `ExtraLock::ExtraLock(lock data)` (`00430c70`, `this` = the new block).
-const EXTRA_LOCK_INIT: u32 = 0x0043_0c70;
+pub(crate) const EXTRA_LOCK_INIT: u32 = 0x0043_0c70;
 /// `REFR_LOCK::SetLocked(bool)` (`00430a90`).
-const REFR_LOCK_SET_LOCKED: u32 = 0x0043_0a90;
-const SET_RADIO_DATA: u32 = 0x0041_8310;
-const GET_TELEPORT: u32 = 0x0041_8460;
-const DOOR_TELEPORT_DATA_INIT: u32 = 0x0043_a160;
-const SET_TELEPORT: u32 = 0x0041_9120;
-const DOOR_TELEPORT_DATA_LOAD: u32 = 0x0043_a4e0;
-const GET_MAP_MARKER: u32 = 0x0041_8490;
-const MAP_MARKER_DATA_INIT: u32 = 0x0043_8bb0;
-const SET_MAP_MARKER: u32 = 0x0041_9250;
-const MAP_MARKER_DATA_LOAD: u32 = 0x0043_8ca0;
-const GET_AUDIO_MARKER: u32 = 0x0041_84c0;
-const AUDIO_MARKER_DATA_INIT: u32 = 0x0058_9450;
-const SET_AUDIO_MARKER: u32 = 0x0041_9380;
-const AUDIO_MARKER_DATA_LOAD: u32 = 0x0058_9600;
-const GET_AUDIO_BUOY_MARKER: u32 = 0x0041_84f0;
-const AUDIO_BUOY_MARKER_DATA_INIT: u32 = 0x0068_0890;
-const SET_AUDIO_BUOY_MARKER: u32 = 0x0041_94b0;
-const AUDIO_BUOY_MARKER_DATA_LOAD: u32 = 0x0058_9890;
-const SET_PACKAGE_START_LOCATION: u32 = 0x0041_ad00;
+pub(crate) const REFR_LOCK_SET_LOCKED: u32 = 0x0043_0a90;
+pub(crate) const SET_RADIO_DATA: u32 = 0x0041_8310;
+pub(crate) const GET_TELEPORT: u32 = 0x0041_8460;
+pub(crate) const DOOR_TELEPORT_DATA_INIT: u32 = 0x0043_a160;
+pub(crate) const SET_TELEPORT: u32 = 0x0041_9120;
+pub(crate) const DOOR_TELEPORT_DATA_LOAD: u32 = 0x0043_a4e0;
+pub(crate) const GET_MAP_MARKER: u32 = 0x0041_8490;
+pub(crate) const MAP_MARKER_DATA_INIT: u32 = 0x0043_8bb0;
+pub(crate) const SET_MAP_MARKER: u32 = 0x0041_9250;
+pub(crate) const MAP_MARKER_DATA_LOAD: u32 = 0x0043_8ca0;
+pub(crate) const GET_AUDIO_MARKER: u32 = 0x0041_84c0;
+pub(crate) const AUDIO_MARKER_DATA_INIT: u32 = 0x0058_9450;
+pub(crate) const SET_AUDIO_MARKER: u32 = 0x0041_9380;
+pub(crate) const AUDIO_MARKER_DATA_LOAD: u32 = 0x0058_9600;
+pub(crate) const GET_AUDIO_BUOY_MARKER: u32 = 0x0041_84f0;
+pub(crate) const AUDIO_BUOY_MARKER_DATA_INIT: u32 = 0x0068_0890;
+pub(crate) const SET_AUDIO_BUOY_MARKER: u32 = 0x0041_94b0;
+pub(crate) const AUDIO_BUOY_MARKER_DATA_LOAD: u32 = 0x0058_9890;
+pub(crate) const SET_PACKAGE_START_LOCATION: u32 = 0x0041_ad00;
 /// `ExtraRagDollData::ExtraRagDollData` (`00432cb0`).
-const EXTRA_RAGDOLL_DATA_INIT: u32 = 0x0043_2cb0;
+pub(crate) const EXTRA_RAGDOLL_DATA_INIT: u32 = 0x0043_2cb0;
 /// `RagDollData::RagDollData` (`004d9330`).
-const RAGDOLL_DATA_INIT: u32 = 0x004d_9330;
+pub(crate) const RAGDOLL_DATA_INIT: u32 = 0x004d_9330;
 /// `RagDollData::Load(file)` (`004d94a0`), true if it loaded.
-const RAGDOLL_DATA_LOAD: u32 = 0x004d_94a0;
-const SET_DISTANT_DATA: u32 = 0x0041_d950;
-const SET_ENABLE_STATE_PARENT: u32 = 0x0041_da40;
-const SET_ENABLE_STATE_FLAGS: u32 = 0x0041_dc70;
+pub(crate) const RAGDOLL_DATA_LOAD: u32 = 0x004d_94a0;
+pub(crate) const SET_DISTANT_DATA: u32 = 0x0041_d950;
+pub(crate) const SET_ENABLE_STATE_PARENT: u32 = 0x0041_da40;
+pub(crate) const SET_ENABLE_STATE_FLAGS: u32 = 0x0041_dc70;
 /// Constructor of the type `0x53` extra data (`004338b0`, `0x20` bytes).
-const ACTIVATE_REF_INIT: u32 = 0x0043_38b0;
+pub(crate) const ACTIVATE_REF_INIT: u32 = 0x0043_38b0;
 /// `ExtraDataList::SetActivateTextOverride(char *)` (`0041ece0`).
-const SET_ACTIVATE_TEXT_OVERRIDE: u32 = 0x0041_ece0;
+pub(crate) const SET_ACTIVATE_TEXT_OVERRIDE: u32 = 0x0041_ece0;
 /// `BSSimpleList::AddHead(&item)` (`005ae3d0`).
-const LIST_ADD_HEAD: u32 = 0x005a_e3d0;
-const ADD_DECAL_REF: u32 = 0x0041_f080;
-const MULTIBOUND_MARKER_DATA_INIT: u32 = 0x0043_8f50;
-const MULTIBOUND_MARKER_DATA_LOAD: u32 = 0x0043_8fc0;
-const SET_MULTIBOUND_DATA: u32 = 0x0042_1f30;
-const NAVMESH_PORTAL_INIT: u32 = 0x0069_2870;
-const NAVMESH_PORTAL_LOAD: u32 = 0x0069_dfd0;
-const SET_NAVMESH_PORTAL: u32 = 0x0042_e2c0;
-const NAVMESH_PORTAL_EXTRA_DESTROY: u32 = 0x0043_2f30;
-const ADD_REFLECTOR_REF: u32 = 0x0041_f1a0;
-const ADD_REFLECTED_REF: u32 = 0x0041_f330;
-const ADD_LIT_WATER_REF: u32 = 0x0041_f940;
+pub(crate) const LIST_ADD_HEAD: u32 = 0x005a_e3d0;
+pub(crate) const ADD_DECAL_REF: u32 = 0x0041_f080;
+pub(crate) const MULTIBOUND_MARKER_DATA_INIT: u32 = 0x0043_8f50;
+pub(crate) const MULTIBOUND_MARKER_DATA_LOAD: u32 = 0x0043_8fc0;
+pub(crate) const SET_MULTIBOUND_DATA: u32 = 0x0042_1f30;
+pub(crate) const NAVMESH_PORTAL_INIT: u32 = 0x0069_2870;
+pub(crate) const NAVMESH_PORTAL_LOAD: u32 = 0x0069_dfd0;
+pub(crate) const SET_NAVMESH_PORTAL: u32 = 0x0042_e2c0;
+pub(crate) const NAVMESH_PORTAL_EXTRA_DESTROY: u32 = 0x0043_2f30;
+pub(crate) const ADD_REFLECTOR_REF: u32 = 0x0041_f1a0;
+pub(crate) const ADD_REFLECTED_REF: u32 = 0x0041_f330;
+pub(crate) const ADD_LIT_WATER_REF: u32 = 0x0041_f940;
 /// `BGSPrimitive` factory `(type, radii, color)` (`004a4e90`, cdecl).
-const PRIMITIVE_CREATE: u32 = 0x004a_4e90;
-const ADD_PRIMITIVE: u32 = 0x0041_fa60;
+pub(crate) const PRIMITIVE_CREATE: u32 = 0x004a_4e90;
+pub(crate) const ADD_PRIMITIVE: u32 = 0x0041_fa60;
 /// Allocation of `0xFC` bytes for the occlusion plane (`00aa13e0`, cdecl).
-const ALLOCATE_ALIGNED: u32 = 0x00aa_13e0;
+pub(crate) const ALLOCATE_ALIGNED: u32 = 0x00aa_13e0;
 /// `BSOcclusionPlane::BSOcclusionPlane` (`00c335d0`).
-const OCCLUSION_PLANE_INIT: u32 = 0x00c3_35d0;
+pub(crate) const OCCLUSION_PLANE_INIT: u32 = 0x00c3_35d0;
 /// `NiMatrix3::MakeRotation(angle, x, y, z)` (`004168a0`).
-const MATRIX_MAKE_ROTATION: u32 = 0x0041_68a0;
-const SET_OCCLUSION_PLANE: u32 = 0x0042_2150;
-const PATROL_REF_DATA_INIT: u32 = 0x0067_c690;
-const SET_PATROL_REF_DATA: u32 = 0x0041_fc10;
-const SET_OCCLUSION_PLANE_REF_DATA: u32 = 0x0041_fec0;
-const SET_PORTAL_REF_DATA: u32 = 0x0042_0210;
-const SET_ROOM_REF_DATA: u32 = 0x0042_0440;
-const SET_COLLISION_DATA: u32 = 0x0042_0fd0;
-const GET_PATROL_REF_DATA: u32 = 0x0041_fe90;
-const PACKAGE_EVENT_ACTION_LOAD: u32 = 0x0067_dd20;
-const SET_IGNORED_BY_SANDBOX: u32 = 0x0042_f200;
+pub(crate) const MATRIX_MAKE_ROTATION: u32 = 0x0041_68a0;
+pub(crate) const SET_OCCLUSION_PLANE: u32 = 0x0042_2150;
+pub(crate) const PATROL_REF_DATA_INIT: u32 = 0x0067_c690;
+pub(crate) const SET_PATROL_REF_DATA: u32 = 0x0041_fc10;
+pub(crate) const SET_OCCLUSION_PLANE_REF_DATA: u32 = 0x0041_fec0;
+pub(crate) const SET_PORTAL_REF_DATA: u32 = 0x0042_0210;
+pub(crate) const SET_ROOM_REF_DATA: u32 = 0x0042_0440;
+pub(crate) const SET_COLLISION_DATA: u32 = 0x0042_0fd0;
+pub(crate) const GET_PATROL_REF_DATA: u32 = 0x0041_fe90;
+pub(crate) const PACKAGE_EVENT_ACTION_LOAD: u32 = 0x0067_dd20;
+pub(crate) const SET_IGNORED_BY_SANDBOX: u32 = 0x0042_f200;
 /// Stores its argument at `this + 0x0C` (`0041fd00`).
-const SET_SPECIAL_RENDER_WORD: u32 = 0x0041_fd00;
+pub(crate) const SET_SPECIAL_RENDER_WORD: u32 = 0x0041_fd00;
 /// `BGSSaveFormBuffer::GetForm` (`007af430`).
-const SAVE_BUFFER_GET_FORM: u32 = 0x007a_f430;
+pub(crate) const SAVE_BUFFER_GET_FORM: u32 = 0x007a_f430;
 /// `TESForm::GetFormType` (`00401170`, `MOVZX EAX,[ECX+4]`).
-const FORM_TYPE: u32 = 0x0040_1170;
+pub(crate) const FORM_TYPE: u32 = 0x0040_1170;
 
 // InitItem's callees.
-const TES_FORM_GET_FILE: u32 = 0x0048_4e60;
+pub(crate) const TES_FORM_GET_FILE: u32 = 0x0048_4e60;
 /// Form by id (`004839c0`, cdecl).
-const LOOKUP_FORM: u32 = 0x0048_39c0;
+pub(crate) const LOOKUP_FORM: u32 = 0x0048_39c0;
 /// `reference + 0x44`, the reference's embedded `ExtraDataList` (`005d43c0`).
-const REFERENCE_EXTRA_LIST: u32 = 0x005d_43c0;
+pub(crate) const REFERENCE_EXTRA_LIST: u32 = 0x005d_43c0;
 /// `TESObjectREFR::pBaseForm` getter (`004181e0`, via `007af430`: `+0x20`).
-const REFERENCE_BASE_FORM: u32 = 0x0041_81e0;
-const ACTOR_BASE_GET_HEALTH: u32 = 0x005f_0b00;
-const DOOR_TELEPORT_DATA_INIT_ITEM: u32 = 0x0043_a590;
-const MAP_MARKER_GET_VISIBLE: u32 = 0x0043_8ed0;
-const MAP_MARKER_GET_TRAVEL_LOC: u32 = 0x0043_8ef0;
-const MAP_MARKER_SET_TRAVEL_LOC: u32 = 0x0044_de80;
-const MAP_MARKER_GET_REPUTATION: u32 = 0x0044_edb0;
-const MAP_MARKER_SET_REPUTATION: u32 = 0x0043_7730;
-const DATA_HANDLER_GET_REPUTATION: u32 = 0x0046_1630;
-const CHECK_ENABLE_PARENT_LOOP: u32 = 0x0056_aac0;
-const ENABLE_PARENT_ADD_CHILD: u32 = 0x0041_dcd0;
-const LINKED_REF_ADD_CHILD: u32 = 0x0041_e530;
-const DECAL_REFS_INIT_ITEM: u32 = 0x0043_3db0;
-const REFLECTOR_REFS_INIT_ITEM: u32 = 0x0043_3ed0;
-const LIT_WATER_REFS_INIT_ITEM: u32 = 0x0043_4050;
-const REFERENCE_GET_INTERIOR: u32 = 0x0057_5d10;
-const PATROL_REF_DATA_INIT_ITEM: u32 = 0x0067_c6c0;
-const GET_OCCLUSION_PLANE: u32 = 0x0042_2120;
-const SET_LINKED_PLANE: u32 = 0x0041_81c0;
-const PORTAL_ADD_REFERENCE: u32 = 0x0042_0ce0;
-const LIST_SET_ITEM: u32 = 0x0072_6c60;
-const IMPACT_SWAP_INIT_ITEM: u32 = 0x0058_f210;
-const AUDIO_MARKER_GET_CONTROLLER: u32 = 0x0059_bb30;
-const AUDIO_MARKER_SET_CONTROLLER: u32 = 0x0070_37c0;
-const ADD_ACTIVATE_REF_CHILD: u32 = 0x0041_edd0;
-const LIST_REMOVE_AFTER: u32 = 0x0090_5330;
-const LIST_REMOVE_HEAD: u32 = 0x0063_f7b0;
+pub(crate) const REFERENCE_BASE_FORM: u32 = 0x0041_81e0;
+pub(crate) const ACTOR_BASE_GET_HEALTH: u32 = 0x005f_0b00;
+pub(crate) const DOOR_TELEPORT_DATA_INIT_ITEM: u32 = 0x0043_a590;
+pub(crate) const MAP_MARKER_GET_VISIBLE: u32 = 0x0043_8ed0;
+pub(crate) const MAP_MARKER_GET_TRAVEL_LOC: u32 = 0x0043_8ef0;
+pub(crate) const MAP_MARKER_SET_TRAVEL_LOC: u32 = 0x0044_de80;
+pub(crate) const MAP_MARKER_GET_REPUTATION: u32 = 0x0044_edb0;
+pub(crate) const MAP_MARKER_SET_REPUTATION: u32 = 0x0043_7730;
+pub(crate) const DATA_HANDLER_GET_REPUTATION: u32 = 0x0046_1630;
+pub(crate) const CHECK_ENABLE_PARENT_LOOP: u32 = 0x0056_aac0;
+pub(crate) const ENABLE_PARENT_ADD_CHILD: u32 = 0x0041_dcd0;
+pub(crate) const LINKED_REF_ADD_CHILD: u32 = 0x0041_e530;
+pub(crate) const DECAL_REFS_INIT_ITEM: u32 = 0x0043_3db0;
+pub(crate) const REFLECTOR_REFS_INIT_ITEM: u32 = 0x0043_3ed0;
+pub(crate) const LIT_WATER_REFS_INIT_ITEM: u32 = 0x0043_4050;
+pub(crate) const REFERENCE_GET_INTERIOR: u32 = 0x0057_5d10;
+pub(crate) const PATROL_REF_DATA_INIT_ITEM: u32 = 0x0067_c6c0;
+pub(crate) const GET_OCCLUSION_PLANE: u32 = 0x0042_2120;
+pub(crate) const SET_LINKED_PLANE: u32 = 0x0041_81c0;
+pub(crate) const PORTAL_ADD_REFERENCE: u32 = 0x0042_0ce0;
+pub(crate) const LIST_SET_ITEM: u32 = 0x0072_6c60;
+pub(crate) const IMPACT_SWAP_INIT_ITEM: u32 = 0x0058_f210;
+pub(crate) const AUDIO_MARKER_GET_CONTROLLER: u32 = 0x0059_bb30;
+pub(crate) const AUDIO_MARKER_SET_CONTROLLER: u32 = 0x0070_37c0;
+pub(crate) const ADD_ACTIVATE_REF_CHILD: u32 = 0x0041_edd0;
+pub(crate) const LIST_REMOVE_AFTER: u32 = 0x0090_5330;
+pub(crate) const LIST_REMOVE_HEAD: u32 = 0x0063_f7b0;
 /// Type descriptors for `__RTDynamicCast`: `TESKey` and the controller of an
 /// audio marker.
-const RTTI_TES_KEY: u32 = 0x0118_41b4;
-const RTTI_MEDIA_LOCATION_CONTROLLER: u32 = 0x0118_418c;
+pub(crate) const RTTI_TES_KEY: u32 = 0x0118_41b4;
+pub(crate) const RTTI_MEDIA_LOCATION_CONTROLLER: u32 = 0x0118_418c;
 
-const MESSAGE_RAGDOLL_ON_LIVE_ACTOR: u32 = 0x0101_4b88;
-const MESSAGE_LOCK_KEY_MISSING: u32 = 0x0101_5060;
-const MESSAGE_ENABLE_PARENT_MISSING: u32 = 0x0101_4c90;
-const MESSAGE_ENABLE_PARENT_LOOP: u32 = 0x0101_4c50;
-const MESSAGE_LINKED_REF_MISSING: u32 = 0x0101_4b28;
-const MESSAGE_EMPTY_DECALS: u32 = 0x0101_4890;
-const MESSAGE_MULTIBOUND_REF_MISSING: u32 = 0x0101_46b8;
-const MESSAGE_EMPTY_REFLECTOR_REFS: u32 = 0x0101_4684;
-const MESSAGE_EMITTANCE_SOURCE_MISSING: u32 = 0x0101_4728;
-const MESSAGE_RADIO_POSITION_MISSING: u32 = 0x0101_50f8;
-const MESSAGE_RADIO_POSITION_INTERIOR: u32 = 0x0101_50b0;
-const MESSAGE_PLANE_REF_MISSING: u32 = 0x0101_4ab8;
-const MESSAGE_NO_OCCLUSION_PLANE: u32 = 0x0101_4a80;
-const MESSAGE_PORTAL_REF_MISSING: u32 = 0x0101_4a18;
-const MESSAGE_PORTAL_ROOMS_SAME: u32 = 0x0101_49c0;
-const MESSAGE_PORTAL_ROOMS_NULL: u32 = 0x0101_4984;
-const MESSAGE_ROOM_REF_MISSING: u32 = 0x0101_4920;
-const MESSAGE_EMPTY_LIT_WATER: u32 = 0x0101_4658;
-const MESSAGE_CONTROLLER_MISSING: u32 = 0x0101_5000;
-const MESSAGE_ACTIVATE_REF_MISSING: u32 = 0x0101_48ec;
-const MESSAGE_EMPTY_ACTIVATE_PARENT: u32 = 0x0101_48b8;
+pub(crate) const MESSAGE_RAGDOLL_ON_LIVE_ACTOR: u32 = 0x0101_4b88;
+pub(crate) const MESSAGE_LOCK_KEY_MISSING: u32 = 0x0101_5060;
+pub(crate) const MESSAGE_ENABLE_PARENT_MISSING: u32 = 0x0101_4c90;
+pub(crate) const MESSAGE_ENABLE_PARENT_LOOP: u32 = 0x0101_4c50;
+pub(crate) const MESSAGE_LINKED_REF_MISSING: u32 = 0x0101_4b28;
+pub(crate) const MESSAGE_EMPTY_DECALS: u32 = 0x0101_4890;
+pub(crate) const MESSAGE_MULTIBOUND_REF_MISSING: u32 = 0x0101_46b8;
+pub(crate) const MESSAGE_EMPTY_REFLECTOR_REFS: u32 = 0x0101_4684;
+pub(crate) const MESSAGE_EMITTANCE_SOURCE_MISSING: u32 = 0x0101_4728;
+pub(crate) const MESSAGE_RADIO_POSITION_MISSING: u32 = 0x0101_50f8;
+pub(crate) const MESSAGE_RADIO_POSITION_INTERIOR: u32 = 0x0101_50b0;
+pub(crate) const MESSAGE_PLANE_REF_MISSING: u32 = 0x0101_4ab8;
+pub(crate) const MESSAGE_NO_OCCLUSION_PLANE: u32 = 0x0101_4a80;
+pub(crate) const MESSAGE_PORTAL_REF_MISSING: u32 = 0x0101_4a18;
+pub(crate) const MESSAGE_PORTAL_ROOMS_SAME: u32 = 0x0101_49c0;
+pub(crate) const MESSAGE_PORTAL_ROOMS_NULL: u32 = 0x0101_4984;
+pub(crate) const MESSAGE_ROOM_REF_MISSING: u32 = 0x0101_4920;
+pub(crate) const MESSAGE_EMPTY_LIT_WATER: u32 = 0x0101_4658;
+pub(crate) const MESSAGE_CONTROLLER_MISSING: u32 = 0x0101_5000;
+pub(crate) const MESSAGE_ACTIVATE_REF_MISSING: u32 = 0x0101_48ec;
+pub(crate) const MESSAGE_EMPTY_ACTIVATE_PARENT: u32 = 0x0101_48b8;
 
 /// The four letters of a chunk name as the word the exe pushes
 /// (`chunk_tag(b"XCWT")` is `0x54574358`).
-const fn chunk_tag(name: &[u8; 4]) -> u32 {
+pub(crate) const fn chunk_tag(name: &[u8; 4]) -> u32 {
     u32::from_le_bytes(*name)
 }
 
 /// A `float` word loaded and stored through the x87 stack (`FLD`/`FSTP`):
 /// the same bits, except that a signalling NaN comes out quiet.
-fn x87_float_bits(bits: u32) -> u32 {
+pub(crate) fn x87_float_bits(bits: u32) -> u32 {
     let is_nan = bits & 0x7f80_0000 == 0x7f80_0000 && bits & 0x007f_ffff != 0;
     if is_nan {
         bits | 0x0040_0000
@@ -493,7 +493,7 @@ fn x87_float_bits(bits: u32) -> u32 {
 }
 
 /// Copies `bytes` bytes (a multiple of 4) from `source` to `target`.
-fn copy_block(e: &mut Engine, source: u32, target: u32, bytes: u32) {
+pub(crate) fn copy_block(e: &mut Engine, source: u32, target: u32, bytes: u32) {
     for offset in (0..bytes).step_by(4) {
         let word = e.mem.u32(source.wrapping_add(offset));
         e.mem.set_u32(target.wrapping_add(offset), word);
@@ -501,48 +501,48 @@ fn copy_block(e: &mut Engine, source: u32, target: u32, bytes: u32) {
 }
 
 /// Vtable of the type `0x5A` extra data.
-const VTABLE_EXTRA_TYPE_5A: u32 = 0x0101_4618;
+pub(crate) const VTABLE_EXTRA_TYPE_5A: u32 = 0x0101_4618;
 // ---------------------------------------------------------------------------
 // Helpers
 
-fn lock(e: &mut Engine, name: u32) {
+pub(crate) fn lock(e: &mut Engine, name: u32) {
     e.call(LOCK, &args![EXTRA_CRIT_SECTION, name]);
 }
 
-fn unlock(e: &mut Engine) {
+pub(crate) fn unlock(e: &mut Engine) {
     e.call(UNLOCK, &args![EXTRA_CRIT_SECTION]);
 }
 
-fn get_type(e: &mut Engine, extra: Ptr<BSExtraData>) -> u8 {
+pub(crate) fn get_type(e: &mut Engine, extra: Ptr<BSExtraData>) -> u8 {
     e.call(GET_TYPE, &args![extra]).u8()
 }
 
-fn get_next(e: &mut Engine, extra: Ptr<BSExtraData>) -> Ptr<BSExtraData> {
+pub(crate) fn get_next(e: &mut Engine, extra: Ptr<BSExtraData>) -> Ptr<BSExtraData> {
     e.call(GET_NEXT, &args![extra]).ptr()
 }
 
-fn set_next(e: &mut Engine, extra: Ptr<BSExtraData>, next: Ptr<BSExtraData>) {
+pub(crate) fn set_next(e: &mut Engine, extra: Ptr<BSExtraData>, next: Ptr<BSExtraData>) {
     e.call(SET_NEXT, &args![extra, next]);
 }
 
 /// The thread's `BaseExtraList` statics (the TLS block).
-fn thread_cache(e: &mut Engine) -> Ptr<BaseExtraListThreadCache> {
+pub(crate) fn thread_cache(e: &mut Engine) -> Ptr<BaseExtraListThreadCache> {
     Ptr::new(e.tls())
 }
 
 /// Address of cache entry `index` (`ppLastExtraData[index]`).
-fn cache_entry(cache: Ptr<BaseExtraListThreadCache>, index: u32) -> u32 {
+pub(crate) fn cache_entry(cache: Ptr<BaseExtraListThreadCache>, index: u32) -> u32 {
     cache.addr() + 0x10 + index.wrapping_mul(4)
 }
 
 /// `memset` of the whole `ppLastExtraData` array to null.
-fn clear_cache_entries(e: &mut Engine, cache: Ptr<BaseExtraListThreadCache>) {
+pub(crate) fn clear_cache_entries(e: &mut Engine, cache: Ptr<BaseExtraListThreadCache>) {
     e.call(MEMSET, &args![cache_entry(cache, 0), 0u32, CACHE_BYTES]);
 }
 
 /// `iDirty` and this thread's `iThreadDirty` both go up by one, so the other
 /// threads (and this one) drop what they cached.
-fn bump_dirty_counters(e: &mut Engine) {
+pub(crate) fn bump_dirty_counters(e: &mut Engine) {
     let dirty = e.global::<u32>(DIRTY).wrapping_add(1);
     e.set_global(DIRTY, dirty);
     let cache = thread_cache(e);
@@ -553,7 +553,7 @@ fn bump_dirty_counters(e: &mut Engine) {
 }
 
 /// `delete extra`: the scalar deleting destructor, slot 0 of the vtable.
-fn delete_extra(e: &mut Engine, extra: Ptr<BSExtraData>) {
+pub(crate) fn delete_extra(e: &mut Engine, extra: Ptr<BSExtraData>) {
     if !extra.is_null() {
         e.vcall(extra.addr(), 0, &args![1u32]);
     }
@@ -561,7 +561,7 @@ fn delete_extra(e: &mut Engine, extra: Ptr<BSExtraData>) {
 
 /// The destructors of the extra data subclasses all end the same way:
 /// the real destructor, then `operator delete` when bit 0 of `flags` is set.
-fn finish_scalar_deleting_destructor(e: &mut Engine, this: Ptr, flags: u32) -> Ptr {
+pub(crate) fn finish_scalar_deleting_destructor(e: &mut Engine, this: Ptr, flags: u32) -> Ptr {
     if flags & 1 != 0 {
         e.call(OPERATOR_DELETE, &args![this]);
     }
@@ -1016,7 +1016,7 @@ pub fn fn_004103b0(e: &mut Engine, this: Ptr<ExtraDataList>) {
 
 /// Copies whose setter takes the 32-bit word at `extra + 0x0C`:
 /// `list.Setter(word)`. (type, setter address)
-const COPY_WORD: &[(u8, u32)] = &[
+pub(crate) const COPY_WORD: &[(u8, u32)] = &[
     (0x03, 0x0041_e160),
     (0x07, 0x0041_bd10),
     (0x08, 0x0041_c190),
@@ -1042,7 +1042,7 @@ const COPY_WORD: &[(u8, u32)] = &[
 ];
 
 /// Copies whose setter takes the `float` at `extra + 0x0C`.
-const COPY_FLOAT: &[(u8, u32)] = &[
+pub(crate) const COPY_FLOAT: &[(u8, u32)] = &[
     (0x25, 0x0041_9970),
     (0x27, 0x0041_9bb0),
     (0x28, 0x0041_9c60),
@@ -1053,7 +1053,7 @@ const COPY_FLOAT: &[(u8, u32)] = &[
 ];
 
 /// Copies whose setter takes the byte at `extra + 0x0C`.
-const COPY_BYTE: &[(u8, u32)] = &[
+pub(crate) const COPY_BYTE: &[(u8, u32)] = &[
     (0x0e, 0x0041_b3d0),
     (0x26, 0x0041_9a20),
     (0x31, 0x0041_ac30),
@@ -1061,7 +1061,7 @@ const COPY_BYTE: &[(u8, u32)] = &[
 ];
 
 /// Copies whose setter takes the word that `READ_WORD(extra + 0x0C)` reads.
-const COPY_READ_WORD: &[(u8, u32)] = &[
+pub(crate) const COPY_READ_WORD: &[(u8, u32)] = &[
     (0x02, 0x0041_b7e0),
     (0x61, 0x0042_2050),
     (0x71, 0x0042_2150),
@@ -1069,11 +1069,11 @@ const COPY_READ_WORD: &[(u8, u32)] = &[
 ];
 
 /// Copies whose setter takes the address of the payload, `extra + 0x0C`.
-const COPY_PAYLOAD_ADDRESS: &[(u8, u32)] = &[(0x13, 0x0041_d950), (0x68, 0x0041_8310)];
+pub(crate) const COPY_PAYLOAD_ADDRESS: &[(u8, u32)] = &[(0x13, 0x0041_d950), (0x68, 0x0041_8310)];
 
 /// Copies that make a new payload object: (type, size, constructor,
 /// copy-from-source `object.Copy(source word)`, list setter).
-const COPY_NEW_OBJECT: &[(u8, u32, u32, u32, u32)] = &[
+pub(crate) const COPY_NEW_OBJECT: &[(u8, u32, u32, u32, u32)] = &[
     (0x2b, 0x20, 0x0043_a160, 0x0043_a810, 0x0041_9120),
     (0x2c, 0x14, 0x0043_8bb0, 0x0043_8df0, 0x0041_9250),
     (0x6f, 0x14, 0x0067_c650, 0x0067_c6f0, 0x0041_fc10),
@@ -1084,7 +1084,11 @@ const COPY_NEW_OBJECT: &[(u8, u32, u32, u32, u32)] = &[
 
 /// `new` and construct: allocates `size` bytes and runs `construct` on the
 /// block, or gives null when the allocation failed.
-fn new_object(e: &mut Engine, size: u32, construct: impl FnOnce(&mut Engine, u32) -> u32) -> u32 {
+pub(crate) fn new_object(
+    e: &mut Engine,
+    size: u32,
+    construct: impl FnOnce(&mut Engine, u32) -> u32,
+) -> u32 {
     let block = e.call(OPERATOR_NEW, &args![size]).u32();
     if block == 0 {
         0
@@ -1095,7 +1099,7 @@ fn new_object(e: &mut Engine, size: u32, construct: impl FnOnce(&mut Engine, u32
 
 /// The extra data of `extra_type` in `list`, created with `new_object` and
 /// added when the list has none.
-fn get_or_add_extra(
+pub(crate) fn get_or_add_extra(
     e: &mut Engine,
     list: Ptr<ExtraDataList>,
     extra_type: u8,
@@ -1111,13 +1115,13 @@ fn get_or_add_extra(
 }
 
 /// The word of the source extra data's payload at `extra + offset`.
-fn payload(e: &Engine, extra: Ptr<BSExtraData>, offset: u32) -> u32 {
+pub(crate) fn payload(e: &Engine, extra: Ptr<BSExtraData>, offset: u32) -> u32 {
     e.mem.u32(extra.addr() + offset)
 }
 
 /// Copies the 32-bit words `[from, to)` (byte offsets) of `source` to the same
 /// offsets of `target`.
-fn copy_words(e: &mut Engine, source: u32, target: u32, from: u32, to: u32) {
+pub(crate) fn copy_words(e: &mut Engine, source: u32, target: u32, from: u32, to: u32) {
     for offset in (from..to).step_by(4) {
         let word = e.mem.u32(source + offset);
         e.mem.set_u32(target + offset, word);
@@ -1503,7 +1507,7 @@ pub fn fn_00411b00(e: &mut Engine, this: Ptr) -> Ptr {
 /// The constructors of `ExtraReflectedRefs` & co: the base constructor with
 /// the type, the vtable, and an empty `BSSimpleList` (item and next null,
 /// `0096a2d0`) at +0x0C.
-fn construct_ref_list_extra(
+pub(crate) fn construct_ref_list_extra(
     e: &mut Engine,
     this: Ptr<ExtraRefList>,
     extra_type: u32,
@@ -1935,7 +1939,7 @@ pub fn extra_data_list_copy_list_for_reference(
 
 /// True when `list` has no extra data of the type of `extra`, or has one whose
 /// virtual `Compare` (slot `+4`) says it differs from `extra`.
-fn differs_from_extra_in(
+pub(crate) fn differs_from_extra_in(
     e: &mut Engine,
     list: Ptr<ExtraDataList>,
     extra: Ptr<BSExtraData>,
@@ -2113,7 +2117,7 @@ pub fn fn_00414010(e: &mut Engine, this: Ptr) -> Ptr {
 
 /// Byte-swaps in place the words `[0, count)` of the structure at `this`
 /// with `Swap32(ptr, 0)` (`00401080`), in order.
-fn swap_words(e: &mut Engine, this: Ptr, count: u32) {
+pub(crate) fn swap_words(e: &mut Engine, this: Ptr, count: u32) {
     for index in 0..count {
         e.call(SWAP_DWORD, &args![this.addr() + index * 4, 0u32]);
     }
@@ -2233,8 +2237,8 @@ pub fn fn_004169d0(e: &mut Engine, this: Ptr) -> u32 {
 }
 
 /// The two flag bytes the setters of the occlusion plane set.
-const PLANE_DIRTY_VERTICES: u32 = 0xe4;
-const PLANE_DIRTY_PLANES: u32 = 0xe5;
+pub(crate) const PLANE_DIRTY_VERTICES: u32 = 0xe4;
+pub(crate) const PLANE_DIRTY_PLANES: u32 = 0xe5;
 
 // Translated from 004169f0 (decompiled, FalloutNV.exe 1.4.0.525)
 /// `BSOcclusionPlane` centre setter: copies the three words at `center` to
@@ -2323,64 +2327,64 @@ pub fn fn_00416b80(e: &mut Engine, this: Ptr) -> Ptr {
 
 /// Reads the form id of the form at `form` (`TESForm::iFormID`, +0x0C, via
 /// the getter `0084e3a0`).
-fn form_id(e: &mut Engine, form: u32) -> u32 {
+pub(crate) fn form_id(e: &mut Engine, form: u32) -> u32 {
     e.call(FORM_ID, &args![form]).u32()
 }
 
 /// Adds a chunk holding one word (`TESForm::AddChunk(tag, value)`,
 /// `00485910`; the word is byte-swapped first on a big-endian target).
-fn add_chunk_word(e: &mut Engine, tag: u32, value: u32) {
+pub(crate) fn add_chunk_word(e: &mut Engine, tag: u32, value: u32) {
     e.call(ADD_CHUNK_WORD, &args![tag, value]);
 }
 
 /// Adds a chunk holding one byte (`004858f0`).
-fn add_chunk_byte(e: &mut Engine, tag: u32, value: u8) {
+pub(crate) fn add_chunk_byte(e: &mut Engine, tag: u32, value: u8) {
     e.call(ADD_CHUNK_BYTE, &args![tag, value]);
 }
 
 /// Adds a chunk with no data (`004856d0`).
-fn add_chunk_empty(e: &mut Engine, tag: u32) {
+pub(crate) fn add_chunk_empty(e: &mut Engine, tag: u32) {
     e.call(ADD_CHUNK_EMPTY, &args![tag]);
 }
 
 /// Adds a chunk of `size` bytes at `data` (`TESForm::__AddChunkData`,
 /// `00485990`).
-fn add_chunk_data(e: &mut Engine, tag: u32, data: u32, size: u32) {
+pub(crate) fn add_chunk_data(e: &mut Engine, tag: u32, data: u32, size: u32) {
     e.call(ADD_CHUNK_DATA, &args![tag, data, size]);
 }
 
 /// Adds a chunk holding `count` words at `data` (`TESForm::AddChunkArray`,
 /// `00485710`).
-fn add_chunk_array(e: &mut Engine, tag: u32, data: u32, count: u32) {
+pub(crate) fn add_chunk_array(e: &mut Engine, tag: u32, data: u32, count: u32) {
     e.call(ADD_CHUNK_ARRAY, &args![tag, data, count]);
 }
 
 /// The save writer's "target is big-endian" flag (byte at `011c54ba`, read
 /// through `00401500`).
-fn is_big_endian(e: &mut Engine) -> bool {
+pub(crate) fn is_big_endian(e: &mut Engine) -> bool {
     e.call(IS_BIG_ENDIAN, &args![]).bool()
 }
 
 /// The item of a `BSSimpleList` node (`006815c0` returns the node's own
 /// address, the item is the word there).
-fn list_item(e: &mut Engine, node: u32) -> u32 {
+pub(crate) fn list_item(e: &mut Engine, node: u32) -> u32 {
     let slot = e.call(SIMPLE_LIST_ITEM, &args![node]).u32();
     e.mem.u32(slot)
 }
 
 /// The next node of a `BSSimpleList` node (`00726070`).
-fn list_next(e: &mut Engine, node: u32) -> u32 {
+pub(crate) fn list_next(e: &mut Engine, node: u32) -> u32 {
     e.call(SIMPLE_LIST_NEXT, &args![node]).u32()
 }
 
 /// Adds the chunk `tag` with the form id of `form`.
-fn add_form_chunk(e: &mut Engine, tag: u32, form: u32) {
+pub(crate) fn add_form_chunk(e: &mut Engine, tag: u32, form: u32) {
     let id = form_id(e, form);
     add_chunk_word(e, tag, id);
 }
 
 /// Adds the chunk `tag` with the form id of `form` when it is not null.
-fn add_optional_form_chunk(e: &mut Engine, tag: u32, form: u32) {
+pub(crate) fn add_optional_form_chunk(e: &mut Engine, tag: u32, form: u32) {
     if form != 0 {
         add_form_chunk(e, tag, form);
     }
@@ -2388,7 +2392,7 @@ fn add_optional_form_chunk(e: &mut Engine, tag: u32, form: u32) {
 
 /// Adds `tag` for a structure at `data` of `size` bytes, byte-swapping it
 /// around the call with `swap` on a big-endian target.
-fn add_swapped_chunk_data(
+pub(crate) fn add_swapped_chunk_data(
     e: &mut Engine,
     tag: u32,
     data: Ptr,
@@ -2405,17 +2409,17 @@ fn add_swapped_chunk_data(
 }
 
 /// Byte-swap of a single word at `this` (`Swap32`, `00503210`'s body).
-fn swap_word_at(e: &mut Engine, this: Ptr) {
+pub(crate) fn swap_word_at(e: &mut Engine, this: Ptr) {
     e.call(SWAP_WORD_AT, &args![this]);
 }
 
 /// Byte-swap of the word at +4 (`0060ce80`, the lock structure's key).
-fn swap_word_at_4(e: &mut Engine, this: Ptr) {
+pub(crate) fn swap_word_at_4(e: &mut Engine, this: Ptr) {
     e.call(SWAP_WORD_AT_4, &args![this]);
 }
 
 /// Byte-swap of two words (`00462230`).
-fn swap_two_words(e: &mut Engine, this: Ptr) {
+pub(crate) fn swap_two_words(e: &mut Engine, this: Ptr) {
     e.call(SWAP_TWO_WORDS, &args![this]);
 }
 
@@ -2442,7 +2446,7 @@ pub fn fn_00412970(e: &mut Engine, this: Ptr<ExtraDataList>) {
 }
 
 /// One arm of the save writer's switch.
-fn save_extra_data(
+pub(crate) fn save_extra_data(
     e: &mut Engine,
     list: Ptr<ExtraDataList>,
     extra: Ptr<BSExtraData>,
@@ -2806,7 +2810,7 @@ fn save_extra_data(
 
 /// `EXTRA_ACTIVATE_REF`: the flags byte (`XAPD`), each REF_ACTIVATE_DATA of
 /// the parent list (`XAPR`), then the activate text override (`XATO`).
-fn save_activate_ref(e: &mut Engine, list: Ptr<ExtraDataList>, extra: Ptr<BSExtraData>) {
+pub(crate) fn save_activate_ref(e: &mut Engine, list: Ptr<ExtraDataList>, extra: Ptr<BSExtraData>) {
     let flags = e.mem.u8(extra.addr() + 0x14);
     add_chunk_byte(e, chunk_tag(b"XAPD"), flags);
     let mut node = extra.addr() + 0x0c;
@@ -2848,7 +2852,7 @@ fn save_activate_ref(e: &mut Engine, list: Ptr<ExtraDataList>, extra: Ptr<BSExtr
 /// `EXTRA_OCCLUSION_PLANE` / `EXTRA_PORTAL`: the record of nine words: the
 /// plane's half extents (two words), centre (three), then the rotation as an
 /// axis (three floats) and an angle from `NiMatrix3` (`00a58550`).
-fn save_plane(e: &mut Engine, extra: Ptr<BSExtraData>, tag: u32) {
+pub(crate) fn save_plane(e: &mut Engine, extra: Ptr<BSExtraData>, tag: u32) {
     e.with_stack(0x24, |e, record| {
         fn_00414470(e, record);
         let plane = e.call(READ_WORD, &args![extra.addr() + 0x0c]).u32();
@@ -2878,7 +2882,7 @@ fn save_plane(e: &mut Engine, extra: Ptr<BSExtraData>, tag: u32) {
 
 /// Chunks whose data is one word handed to a setter of the list:
 /// `list.Setter(word)`. (chunk, setter)
-const LOAD_WORD_SETTERS: &[(&[u8; 4], u32)] = &[
+pub(crate) const LOAD_WORD_SETTERS: &[(&[u8; 4], u32)] = &[
     (b"XACT", 0x0041_b3d0),
     (b"XOWN", 0x0041_9700),
     (b"XGLB", 0x0041_97d0),
@@ -2901,7 +2905,7 @@ const LOAD_WORD_SETTERS: &[(&[u8; 4], u32)] = &[
 
 /// Chunks whose data is one `float` handed to a setter of the list (the value
 /// goes through the x87 stack). (chunk, setter)
-const LOAD_FLOAT_SETTERS: &[(&[u8; 4], u32)] = &[
+pub(crate) const LOAD_FLOAT_SETTERS: &[(&[u8; 4], u32)] = &[
     (b"XHLP", 0x0041_b580),
     (b"XTIM", 0x0041_9bb0),
     (b"XCHG", 0x0041_9c60),
@@ -2911,7 +2915,7 @@ const LOAD_FLOAT_SETTERS: &[(&[u8; 4], u32)] = &[
 
 /// `TESFile::GetChunkData(file, &value)` (`004727f0`): reads the 4-byte
 /// value of the current chunk into a local that starts at zero.
-fn read_chunk_word(e: &mut Engine, file: Ptr) -> u32 {
+pub(crate) fn read_chunk_word(e: &mut Engine, file: Ptr) -> u32 {
     e.with_stack(4, |e, local| {
         e.call(GET_CHUNK_WORD, &args![file, local]);
         e.mem.u32(local.addr())
@@ -2919,24 +2923,27 @@ fn read_chunk_word(e: &mut Engine, file: Ptr) -> u32 {
 }
 
 /// `TESFile::GetChunkData(file, buffer, size)` (`00472890`).
-fn read_chunk_data(e: &mut Engine, file: Ptr, buffer: u32, size: u32) {
+pub(crate) fn read_chunk_data(e: &mut Engine, file: Ptr, buffer: u32, size: u32) {
     e.call(GET_CHUNK_DATA, &args![file, buffer, size]);
 }
 
 /// Whether the file's chunk data must be byte-swapped (the byte at `+0x299`
 /// of the `TESFile`, read through `00401680`).
-fn file_needs_swap(e: &mut Engine, file: Ptr) -> bool {
+pub(crate) fn file_needs_swap(e: &mut Engine, file: Ptr) -> bool {
     e.call(FILE_NEEDS_SWAP, &args![file]).bool()
 }
 
 /// `Swap32(address, 0)` (`00401080`).
-fn swap_dword_at(e: &mut Engine, address: u32) {
+pub(crate) fn swap_dword_at(e: &mut Engine, address: u32) {
     e.call(SWAP_DWORD, &args![address, 0u32]);
 }
 
 /// The activate-parent extra data (type `0x53`), created and added when the
 /// list has none (the `0x20`-byte constructor `004338b0`).
-fn get_or_add_activate_ref(e: &mut Engine, list: Ptr<ExtraDataList>) -> Ptr<BSExtraData> {
+pub(crate) fn get_or_add_activate_ref(
+    e: &mut Engine,
+    list: Ptr<ExtraDataList>,
+) -> Ptr<BSExtraData> {
     get_or_add_extra(e, list, 0x53, 0x20, |e, block| {
         e.call(ACTIVATE_REF_INIT, &args![block]).u32()
     })
@@ -2945,7 +2952,7 @@ fn get_or_add_activate_ref(e: &mut Engine, list: Ptr<ExtraDataList>) -> Ptr<BSEx
 /// A sub-object kept behind a getter/setter pair of the list (the teleport
 /// data, the map marker, the audio markers): the getter's result, or a new
 /// object of `size` bytes built by `construct` and given to the setter.
-fn get_or_make_member(
+pub(crate) fn get_or_make_member(
     e: &mut Engine,
     list: Ptr<ExtraDataList>,
     getter: u32,
@@ -3505,7 +3512,10 @@ pub fn extra_data_list_load(e: &mut Engine, this: Ptr<ExtraDataList>, file: Ptr,
 
 /// The type `0x92` extra data, created (`fn_00411e40`, `0x14` bytes) and added
 /// when the list has none.
-fn get_or_add_special_render_flags(e: &mut Engine, list: Ptr<ExtraDataList>) -> Ptr<BSExtraData> {
+pub(crate) fn get_or_add_special_render_flags(
+    e: &mut Engine,
+    list: Ptr<ExtraDataList>,
+) -> Ptr<BSExtraData> {
     let existing = base_extra_list_get_extra_data(e, list.cast(), 0x92);
     if !existing.is_null() {
         return existing;
@@ -3517,7 +3527,7 @@ fn get_or_add_special_render_flags(e: &mut Engine, list: Ptr<ExtraDataList>) -> 
 /// Whether the form of the save buffer (`BGSSaveFormBuffer::GetForm`,
 /// `007af430`) exists and has form type `0x23` (`TESForm::GetFormType`,
 /// `00401170`).
-fn form_is_type_0x23(e: &mut Engine, buffer: Ptr) -> bool {
+pub(crate) fn form_is_type_0x23(e: &mut Engine, buffer: Ptr) -> bool {
     let form = e.call(SAVE_BUFFER_GET_FORM, &args![buffer]).u32();
     if form == 0 {
         return false;
@@ -3531,14 +3541,14 @@ fn form_is_type_0x23(e: &mut Engine, buffer: Ptr) -> bool {
 
 /// Type descriptor of `TESForm` for `__RTDynamicCast` (the source type of
 /// every cast the master file fix-ups make).
-const RTTI_TES_FORM: u32 = 0x0118_3028;
+pub(crate) const RTTI_TES_FORM: u32 = 0x0118_3028;
 /// Type descriptor of `TESObjectREFR`.
-const RTTI_TES_OBJECT_REFR: u32 = 0x0118_41cc;
+pub(crate) const RTTI_TES_OBJECT_REFR: u32 = 0x0118_41cc;
 
 /// The arms of `InitItem` that replace the form id at `+0x0C` of the extra
 /// data by the form it names and remove the extra data when there is none:
 /// (type, `__RTDynamicCast` target or 0 for no cast, message with the id).
-const INIT_ITEM_FORM_FIXUPS: &[(u8, u32, u32)] = &[
+pub(crate) const INIT_ITEM_FORM_FIXUPS: &[(u8, u32, u32)] = &[
     // EXTRA_WATERTYPE
     (0x03, 0x0118_4118, 0x0101_4db0),
     // EXTRA_CELLMUSICTYPE
@@ -3571,7 +3581,7 @@ const INIT_ITEM_FORM_FIXUPS: &[(u8, u32, u32)] = &[
 
 /// `TESForm::AddCompileIndex(&id, file)` (`00485d50`, cdecl): turns an id as
 /// the file stores it into the id of the load order, in a local copy.
-fn add_compile_index(e: &mut Engine, id: u32, file: u32) -> u32 {
+pub(crate) fn add_compile_index(e: &mut Engine, id: u32, file: u32) -> u32 {
     e.with_stack(4, |e, local| {
         e.mem.set_u32(local.addr(), id);
         e.call(ADD_COMPILE_INDEX, &args![local, file]);
@@ -3580,7 +3590,7 @@ fn add_compile_index(e: &mut Engine, id: u32, file: u32) -> u32 {
 }
 
 /// `__RTDynamicCast(form, 0, TESForm, target, 0)`.
-fn dynamic_cast(e: &mut Engine, form: u32, target: u32) -> u32 {
+pub(crate) fn dynamic_cast(e: &mut Engine, form: u32, target: u32) -> u32 {
     e.call(
         RT_DYNAMIC_CAST,
         &args![form, 0u32, RTTI_TES_FORM, target, 0u32],
@@ -3591,7 +3601,12 @@ fn dynamic_cast(e: &mut Engine, form: u32, target: u32) -> u32 {
 /// The id as the file stores it becomes the form: `AddCompileIndex`, the
 /// lookup by id (`004839c0`) and, when `target` is not 0, the dynamic cast.
 /// Returns the id of the load order and the form.
-fn resolve_form_id(e: &mut Engine, file: u32, stored_id: u32, target: u32) -> (u32, u32) {
+pub(crate) fn resolve_form_id(
+    e: &mut Engine,
+    file: u32,
+    stored_id: u32,
+    target: u32,
+) -> (u32, u32) {
     let id = add_compile_index(e, stored_id, file);
     let form = e.call(LOOKUP_FORM, &args![id]).u32();
     let form = if target == 0 {
@@ -3603,13 +3618,13 @@ fn resolve_form_id(e: &mut Engine, file: u32, stored_id: u32, target: u32) -> (u
 }
 
 /// `RemoveExtra(extra, destroy)` on the list being fixed up.
-fn remove_and_delete(e: &mut Engine, list: Ptr<ExtraDataList>, extra: Ptr<BSExtraData>) {
+pub(crate) fn remove_and_delete(e: &mut Engine, list: Ptr<ExtraDataList>, extra: Ptr<BSExtraData>) {
     base_extra_list_remove_extra(e, list.cast(), extra, true);
 }
 
 /// The `TESObjectREFR` embedded `ExtraDataList` (`005d43c0` gives
 /// `reference + 0x44`).
-fn reference_extra_list(e: &mut Engine, reference: u32) -> u32 {
+pub(crate) fn reference_extra_list(e: &mut Engine, reference: u32) -> u32 {
     e.call(REFERENCE_EXTRA_LIST, &args![reference]).u32()
 }
 
@@ -3644,7 +3659,7 @@ pub fn extra_data_list_init_item(e: &mut Engine, this: Ptr<ExtraDataList>, refer
 }
 
 /// One arm of `InitItem`'s switch.
-fn init_item_extra(
+pub(crate) fn init_item_extra(
     e: &mut Engine,
     this: Ptr<ExtraDataList>,
     reference: Ptr,
@@ -3978,7 +3993,7 @@ fn init_item_extra(
 /// is gone (deleting their data) and tells the others' lists about this
 /// reference (`AddActivateRefChild`, `0041edd0`); an extra data left with no
 /// entries, no flags and no text is removed.
-fn init_activate_ref(
+pub(crate) fn init_activate_ref(
     e: &mut Engine,
     this: Ptr<ExtraDataList>,
     reference: Ptr,
@@ -4026,23 +4041,23 @@ fn init_activate_ref(
 
 /// `EXTRA_DATA_TYPE` values (Xbox PDB) that more than one function of this
 /// batch uses.
-const EXTRA_GHOST: u8 = 0x1f;
-const EXTRA_ORIGINAL_REFERENCE: u8 = 0x20;
-const EXTRA_LEVELED_ITEM: u8 = 0x2f;
-const EXTRA_RADIO_DATA: u8 = 0x68;
+pub(crate) const EXTRA_GHOST: u8 = 0x1f;
+pub(crate) const EXTRA_ORIGINAL_REFERENCE: u8 = 0x20;
+pub(crate) const EXTRA_LEVELED_ITEM: u8 = 0x2f;
+pub(crate) const EXTRA_RADIO_DATA: u8 = 0x68;
 /// `-1.0f` in the exe's read-only data: the default of the health and charge
 /// getters.
-const MINUS_ONE: u32 = 0x0101_2054;
+pub(crate) const MINUS_ONE: u32 = 0x0101_2054;
 /// `ExtraRadioData`'s vtable (slot 0 `0041b680`, slot 1 `Compare` `00437290`).
-const VTABLE_EXTRA_RADIO_DATA: u32 = 0x0101_5138;
+pub(crate) const VTABLE_EXTRA_RADIO_DATA: u32 = 0x0101_5138;
 /// Copy of a `RADIO_DATA` record (`00437240`, `this` = destination, one
 /// argument: the source).
-const RADIO_DATA_COPY: u32 = 0x0043_7240;
+pub(crate) const RADIO_DATA_COPY: u32 = 0x0043_7240;
 /// `ExtraOriginalReference::ExtraOriginalReference(reference)` (`00431950`,
 /// `this` = the new block).
-const EXTRA_ORIGINAL_REFERENCE_INIT: u32 = 0x0043_1950;
+pub(crate) const EXTRA_ORIGINAL_REFERENCE_INIT: u32 = 0x0043_1950;
 /// `BGSSaveFormBuffer::GetForm` (`007af430`): `MOV EAX,[ECX+0x20]`.
-const SAVE_FORM_BUFFER_GET_FORM: u32 = 0x007a_f430;
+pub(crate) const SAVE_FORM_BUFFER_GET_FORM: u32 = 0x007a_f430;
 
 layout! {
     /// `BSSoundHandle` (Xbox PDB), 0x0C bytes: the id of the playing sound,
@@ -4058,13 +4073,22 @@ layout! {
 }
 
 /// The first extra data of `extra_type` in the list (`GetExtraData`).
-fn find_extra(e: &mut Engine, list: Ptr<ExtraDataList>, extra_type: u8) -> Ptr<BSExtraData> {
+pub(crate) fn find_extra(
+    e: &mut Engine,
+    list: Ptr<ExtraDataList>,
+    extra_type: u8,
+) -> Ptr<BSExtraData> {
     base_extra_list_get_extra_data(e, list.cast(), extra_type)
 }
 
 /// The word at +0x0C of the first extra data of `extra_type`, or `default`
 /// when the list has none.
-fn extra_word_or(e: &mut Engine, list: Ptr<ExtraDataList>, extra_type: u8, default: u32) -> u32 {
+pub(crate) fn extra_word_or(
+    e: &mut Engine,
+    list: Ptr<ExtraDataList>,
+    extra_type: u8,
+    default: u32,
+) -> u32 {
     let extra = find_extra(e, list, extra_type);
     if extra.is_null() {
         default
@@ -4076,7 +4100,12 @@ fn extra_word_or(e: &mut Engine, list: Ptr<ExtraDataList>, extra_type: u8, defau
 /// The `float` at +0x0C of the first extra data of `extra_type`, or the
 /// `float` with the bits `default`; loaded and returned through the x87
 /// stack, so a signalling NaN comes out quiet.
-fn extra_float_or(e: &mut Engine, list: Ptr<ExtraDataList>, extra_type: u8, default: u32) -> f32 {
+pub(crate) fn extra_float_or(
+    e: &mut Engine,
+    list: Ptr<ExtraDataList>,
+    extra_type: u8,
+    default: u32,
+) -> f32 {
     let bits = extra_word_or(e, list, extra_type, default);
     f32::from_bits(x87_float_bits(bits))
 }
@@ -4084,7 +4113,12 @@ fn extra_float_or(e: &mut Engine, list: Ptr<ExtraDataList>, extra_type: u8, defa
 /// A sound getter's body: copies the `BSSoundHandle` at +0x0C of the first
 /// extra data of `extra_type` into `out` (`00418900`), or stores the empty
 /// handle (`004188d0`). Returns `out`.
-fn extra_sound_or_empty(e: &mut Engine, list: Ptr<ExtraDataList>, extra_type: u8, out: Ptr) -> Ptr {
+pub(crate) fn extra_sound_or_empty(
+    e: &mut Engine,
+    list: Ptr<ExtraDataList>,
+    extra_type: u8,
+    out: Ptr,
+) -> Ptr {
     let extra = find_extra(e, list, extra_type);
     if extra.is_null() {
         fn_004188d0(e, out)
@@ -4514,91 +4548,91 @@ pub fn fn_00418a80(e: &mut Engine, this: Ptr<ExtraDataList>) -> bool {
 
 /// Extra data types (`EXTRA_DATA_TYPE` of the Xbox PDB; the number is the
 /// `cEtype` byte the PC code uses) of this batch.
-const EXTRA_SCRIPT: u8 = 0x0d;
-const EXTRA_ACTION: u8 = 0x0e;
-const EXTRA_STARTING_POSITION: u8 = 0x0f;
-const EXTRA_ANIM: u8 = 0x10;
-const EXTRA_CONTAINER_CHANGES: u8 = 0x15;
-const EXTRA_WORN: u8 = 0x16;
-const EXTRA_WORN_LEFT: u8 = 0x17;
-const EXTRA_PACKAGE_START_LOCATION: u8 = 0x18;
-const EXTRA_OWNERSHIP: u8 = 0x21;
-const EXTRA_GLOBAL: u8 = 0x22;
-const EXTRA_RANK: u8 = 0x23;
-const EXTRA_COUNT: u8 = 0x24;
-const EXTRA_HEALTH: u8 = 0x25;
-const EXTRA_USES: u8 = 0x26;
-const EXTRA_TIME_LEFT: u8 = 0x27;
-const EXTRA_CHARGE: u8 = 0x28;
-const EXTRA_LOCK: u8 = 0x2a;
-const EXTRA_TELEPORT: u8 = 0x2b;
-const EXTRA_MAP_MARKER: u8 = 0x2c;
-const EXTRA_SCALE: u8 = 0x30;
-const EXTRA_SEED: u8 = 0x31;
-const EXTRA_CAN_NOT_WEAR: u8 = 0x3e;
-const EXTRA_POISON: u8 = 0x3f;
-const EXTRA_TYPE_46: u8 = 0x46;
-const EXTRA_CREATURE_AWAKE_SOUND: u8 = 0x7d;
-const EXTRA_WEAPON_IDLE_SOUND: u8 = 0x83;
-const EXTRA_WEAPON_ATTACK_SOUND: u8 = 0x86;
-const EXTRA_CREATURE_MOVEMENT_SOUND: u8 = 0x8a;
-const EXTRA_WEAPON_MOD_SLOTS: u8 = 0x8d;
-const EXTRA_AUDIO_MARKER: u8 = 0x90;
-const EXTRA_AUDIO_BUOY_MARKER: u8 = 0x91;
+pub(crate) const EXTRA_SCRIPT: u8 = 0x0d;
+pub(crate) const EXTRA_ACTION: u8 = 0x0e;
+pub(crate) const EXTRA_STARTING_POSITION: u8 = 0x0f;
+pub(crate) const EXTRA_ANIM: u8 = 0x10;
+pub(crate) const EXTRA_CONTAINER_CHANGES: u8 = 0x15;
+pub(crate) const EXTRA_WORN: u8 = 0x16;
+pub(crate) const EXTRA_WORN_LEFT: u8 = 0x17;
+pub(crate) const EXTRA_PACKAGE_START_LOCATION: u8 = 0x18;
+pub(crate) const EXTRA_OWNERSHIP: u8 = 0x21;
+pub(crate) const EXTRA_GLOBAL: u8 = 0x22;
+pub(crate) const EXTRA_RANK: u8 = 0x23;
+pub(crate) const EXTRA_COUNT: u8 = 0x24;
+pub(crate) const EXTRA_HEALTH: u8 = 0x25;
+pub(crate) const EXTRA_USES: u8 = 0x26;
+pub(crate) const EXTRA_TIME_LEFT: u8 = 0x27;
+pub(crate) const EXTRA_CHARGE: u8 = 0x28;
+pub(crate) const EXTRA_LOCK: u8 = 0x2a;
+pub(crate) const EXTRA_TELEPORT: u8 = 0x2b;
+pub(crate) const EXTRA_MAP_MARKER: u8 = 0x2c;
+pub(crate) const EXTRA_SCALE: u8 = 0x30;
+pub(crate) const EXTRA_SEED: u8 = 0x31;
+pub(crate) const EXTRA_CAN_NOT_WEAR: u8 = 0x3e;
+pub(crate) const EXTRA_POISON: u8 = 0x3f;
+pub(crate) const EXTRA_TYPE_46: u8 = 0x46;
+pub(crate) const EXTRA_CREATURE_AWAKE_SOUND: u8 = 0x7d;
+pub(crate) const EXTRA_WEAPON_IDLE_SOUND: u8 = 0x83;
+pub(crate) const EXTRA_WEAPON_ATTACK_SOUND: u8 = 0x86;
+pub(crate) const EXTRA_CREATURE_MOVEMENT_SOUND: u8 = 0x8a;
+pub(crate) const EXTRA_WEAPON_MOD_SLOTS: u8 = 0x8d;
+pub(crate) const EXTRA_AUDIO_MARKER: u8 = 0x90;
+pub(crate) const EXTRA_AUDIO_BUOY_MARKER: u8 = 0x91;
 
 /// Constructors of the extra data these setters build (`this` = the new
 /// block; the other words are the value the setter was given).
-const EXTRA_ANIM_INIT: u32 = 0x0043_00c0;
-const EXTRA_STARTING_POSITION_INIT: u32 = 0x0043_0780;
-const EXTRA_TELEPORT_INIT: u32 = 0x0043_1230;
-const EXTRA_MAP_MARKER_INIT: u32 = 0x0043_1360;
-const EXTRA_AUDIO_MARKER_INIT: u32 = 0x0043_14c0;
-const EXTRA_AUDIO_BUOY_MARKER_INIT: u32 = 0x0043_1620;
-const EXTRA_ACTION_INIT: u32 = 0x0043_1780;
-const EXTRA_CONTAINER_CHANGES_INIT: u32 = 0x0043_1830;
-const EXTRA_OWNERSHIP_INIT: u32 = 0x0043_1a40;
-const EXTRA_GLOBAL_INIT: u32 = 0x0043_1ae0;
-const EXTRA_RANK_INIT: u32 = 0x0043_1b80;
-const EXTRA_COUNT_INIT: u32 = 0x0043_1c20;
-const EXTRA_HEALTH_INIT: u32 = 0x0043_1d10;
-const EXTRA_USES_INIT: u32 = 0x0043_1e20;
-const EXTRA_TIME_LEFT_INIT: u32 = 0x0043_1ec0;
-const EXTRA_CHARGE_INIT: u32 = 0x0043_1f60;
-const EXTRA_SCALE_INIT: u32 = 0x0043_2220;
-const EXTRA_POISON_INIT: u32 = 0x0043_5150;
-const EXTRA_ITEM_DROPPER_INIT: u32 = 0x0043_5ec0;
+pub(crate) const EXTRA_ANIM_INIT: u32 = 0x0043_00c0;
+pub(crate) const EXTRA_STARTING_POSITION_INIT: u32 = 0x0043_0780;
+pub(crate) const EXTRA_TELEPORT_INIT: u32 = 0x0043_1230;
+pub(crate) const EXTRA_MAP_MARKER_INIT: u32 = 0x0043_1360;
+pub(crate) const EXTRA_AUDIO_MARKER_INIT: u32 = 0x0043_14c0;
+pub(crate) const EXTRA_AUDIO_BUOY_MARKER_INIT: u32 = 0x0043_1620;
+pub(crate) const EXTRA_ACTION_INIT: u32 = 0x0043_1780;
+pub(crate) const EXTRA_CONTAINER_CHANGES_INIT: u32 = 0x0043_1830;
+pub(crate) const EXTRA_OWNERSHIP_INIT: u32 = 0x0043_1a40;
+pub(crate) const EXTRA_GLOBAL_INIT: u32 = 0x0043_1ae0;
+pub(crate) const EXTRA_RANK_INIT: u32 = 0x0043_1b80;
+pub(crate) const EXTRA_COUNT_INIT: u32 = 0x0043_1c20;
+pub(crate) const EXTRA_HEALTH_INIT: u32 = 0x0043_1d10;
+pub(crate) const EXTRA_USES_INIT: u32 = 0x0043_1e20;
+pub(crate) const EXTRA_TIME_LEFT_INIT: u32 = 0x0043_1ec0;
+pub(crate) const EXTRA_CHARGE_INIT: u32 = 0x0043_1f60;
+pub(crate) const EXTRA_SCALE_INIT: u32 = 0x0043_2220;
+pub(crate) const EXTRA_POISON_INIT: u32 = 0x0043_5150;
+pub(crate) const EXTRA_ITEM_DROPPER_INIT: u32 = 0x0043_5ec0;
 /// Constructors of the four sound extra data; each takes a `BSSoundHandle`
 /// by value (three words).
-const EXTRA_CREATURE_AWAKE_SOUND_INIT: u32 = 0x0043_61e0;
-const EXTRA_CREATURE_MOVEMENT_SOUND_INIT: u32 = 0x0043_6300;
-const EXTRA_WEAPON_IDLE_SOUND_INIT: u32 = 0x0043_6420;
-const EXTRA_WEAPON_ATTACK_SOUND_INIT: u32 = 0x0043_6540;
+pub(crate) const EXTRA_CREATURE_AWAKE_SOUND_INIT: u32 = 0x0043_61e0;
+pub(crate) const EXTRA_CREATURE_MOVEMENT_SOUND_INIT: u32 = 0x0043_6300;
+pub(crate) const EXTRA_WEAPON_IDLE_SOUND_INIT: u32 = 0x0043_6420;
+pub(crate) const EXTRA_WEAPON_ATTACK_SOUND_INIT: u32 = 0x0043_6540;
 
 /// The scalar deleting destructor `00418d20` of the object an `ExtraAnim`
 /// holds (`this`, then flags: bit 0 deletes the block).
-const ANIM_SCALAR_DELETING_DESTRUCTOR: u32 = 0x0041_8d20;
+pub(crate) const ANIM_SCALAR_DELETING_DESTRUCTOR: u32 = 0x0041_8d20;
 /// The destructor `fn_00419220` runs on the teleport data before it deletes.
-const TELEPORT_DATA_DESTRUCTOR: u32 = 0x0066_65a0;
+pub(crate) const TELEPORT_DATA_DESTRUCTOR: u32 = 0x0066_65a0;
 /// The destructor `fn_00419350` runs on the map marker data.
-const MAP_MARKER_DATA_DESTRUCTOR: u32 = 0x0043_8bf0;
+pub(crate) const MAP_MARKER_DATA_DESTRUCTOR: u32 = 0x0043_8bf0;
 /// The destructor `fn_00419480` runs on the audio marker data.
-const AUDIO_MARKER_DATA_DESTRUCTOR: u32 = 0x0058_9500;
+pub(crate) const AUDIO_MARKER_DATA_DESTRUCTOR: u32 = 0x0058_9500;
 /// The scalar deleting destructor of the object an `ExtraAudioBuoyMarker`
 /// holds (`this`, then flags).
-const AUDIO_BUOY_MARKER_DATA_SCALAR_DELETING_DESTRUCTOR: u32 = 0x007b_3fa0;
+pub(crate) const AUDIO_BUOY_MARKER_DATA_SCALAR_DELETING_DESTRUCTOR: u32 = 0x007b_3fa0;
 /// `TESObjectREFR::SetTargeted(bool)` (`this` = the reference).
-const REFERENCE_SET_TARGETED: u32 = 0x0056_4db0;
+pub(crate) const REFERENCE_SET_TARGETED: u32 = 0x0056_4db0;
 /// `BSSoundHandle::~BSSoundHandle` (`00483710`, an empty function).
-const SOUND_HANDLE_DESTRUCTOR: u32 = 0x0048_3710;
+pub(crate) const SOUND_HANDLE_DESTRUCTOR: u32 = 0x0048_3710;
 /// `1.0` as a `double` in the exe's read-only data: the value the scale
 /// setter compares with.
-const ONE_DOUBLE: u32 = 0x0101_2070;
+pub(crate) const ONE_DOUBLE: u32 = 0x0101_2070;
 
 /// A new extra data of `size` bytes, built by the constructor at `construct`
 /// (`this` = the block, then `construct_args`) and added to the list. As in
 /// the code, a failed allocation gives a null extra data that is added
 /// anyway. Returns the extra data.
-fn add_new_extra(
+pub(crate) fn add_new_extra(
     e: &mut Engine,
     list: Ptr<ExtraDataList>,
     size: u32,
@@ -4617,7 +4651,7 @@ fn add_new_extra(
 /// The shape of the plain setters: when the list has an extra data of
 /// `extra_type`, `store` writes the value into it; otherwise one of `size`
 /// bytes is built from `construct_word` by `construct` and added.
-fn set_or_add_extra(
+pub(crate) fn set_or_add_extra(
     e: &mut Engine,
     list: Ptr<ExtraDataList>,
     extra_type: u8,
@@ -4638,7 +4672,7 @@ fn set_or_add_extra(
 /// an existing extra data is deleted for `none` and overwritten (the word
 /// at +0x0C) otherwise; a missing one is built (a `0x10`-byte extra data)
 /// unless the value is `none`.
-fn set_or_remove_extra(
+pub(crate) fn set_or_remove_extra(
     e: &mut Engine,
     list: Ptr<ExtraDataList>,
     extra_type: u8,
@@ -4664,7 +4698,7 @@ fn set_or_remove_extra(
 /// `destroy_old` ran on a non-null old one) or builds the extra data. The
 /// result is the extra data; after a deletion it is the deleted one when
 /// `keep_deleted` (the teleport setter) and null otherwise.
-fn set_owned_pointer_extra(
+pub(crate) fn set_owned_pointer_extra(
     e: &mut Engine,
     list: Ptr<ExtraDataList>,
     extra_type: u8,
@@ -5224,7 +5258,7 @@ pub fn extra_data_list_set_scale(e: &mut Engine, this: Ptr<ExtraDataList>, scale
 /// copy made by `fn_00418900` on the stack, three words), and adds it; an
 /// empty handle does nothing. The temporary empty handles are destroyed by
 /// `00483710`.
-fn set_sound_extra(
+pub(crate) fn set_sound_extra(
     e: &mut Engine,
     list: Ptr<ExtraDataList>,
     extra_type: u8,

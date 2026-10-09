@@ -12,9 +12,13 @@
 //! template can replace), and the `LOADED_CELL_DATA` block (its constructor,
 //! destructor, the build that sorts a cell's references, and the handlers
 //! that add and remove emittance, scripted, activating and water references
-//! and the multibound nodes of marker references). The next session
-//! continues with the first `open` function after `00545960` (`00545a30`,
-//! `TESObjectCELL::AttachMultiBoundNodes`).
+//! and the multibound nodes of marker references). The third translated the
+//! next 40, `00545a30` to `00547610`: `AttachMultiBoundNodes`, the portal
+//! graph, `Get3D` and `Load3D` (the node tree of a cell), six small functions
+//! of the scene graph node class that the compiler emitted here, the
+//! ownership accessors and checks, the land, region list, water height and
+//! acoustic space accessors. The next session continues with the first
+//! `open` function of this unit's range after `00547610`.
 //!
 //! ## Layout (PC build)
 //!
@@ -3282,6 +3286,1052 @@ pub fn fn_00545960(e: &mut Engine, this: Ptr<TESObjectCELL>, reference: Ptr<TESO
     })
 }
 
+// ---- the cell's 3D, its ownership, land, regions and water ----
+//
+// Functions `00545a30` to `00547610`. The 3D of a cell is a `NiNode` that
+// `Load3D` builds (the root, its child nodes, the multibound nodes and the
+// markers) and stores in `LOADED_CELL_DATA::spCell3D`. The accessors that
+// follow read the cell's extra data list (`this + 0x28`, through `004610d0`)
+// for the owner and the detach time, or the cell's land, region list, water
+// height and acoustic space. Six small functions of the range (`00546780`,
+// `005467c0`, `005467e0`, `00546890`, `005468b0`, `005468d0`) belong to the
+// scene graph node class (they write the node's flags, bound and a field at
+// `+0xB0`); the compiler emitted them in this unit.
+
+/// The child of the node the cell's `Get3D` returns, at the given index
+/// (`00456fc0`, `ret 4`): `0043b4a0(node, index)`.
+const CELL_CHILD_NODE: u32 = 0x0045_6fc0;
+/// The allocation scope object (a 4-byte local): `(this, 0x1A or 0x1B, 1,
+/// file, line)`, and its destructor.
+const SCOPE_ENTER: u32 = 0x0040_4eb0;
+const SCOPE_LEAVE: u32 = 0x0040_4ee0;
+/// `"D:\_Fallout3\Platforms\Common\Code\Fallout Shared\TESObjectCELL.cpp"`.
+const SOURCE_FILE: u32 = 0x0102_ed68;
+/// `"Shared Portal Geometry"`.
+const PORTAL_GEOMETRY_NAME: u32 = 0x0102_ed50;
+/// Three zero floats, and the 3 x 3 identity matrix (nine floats).
+const ZERO_VECTOR: u32 = 0x011f_426c;
+const IDENTITY_MATRIX: u32 = 0x011a_9448;
+/// `NiNode` constructor (`(this, 0)`, 0xAC bytes).
+const NODE_CONSTRUCT: u32 = 0x00a5_ecb0;
+/// Copies the three words at the argument to `this + 0x58`, and the nine
+/// words at the argument to `this + 0x34` (the node's local translation and
+/// rotation).
+const NODE_SET_TRANSLATION: u32 = 0x0044_0460;
+const NODE_SET_ROTATION: u32 = 0x0043_fa80;
+/// Sets or clears the bit given by the second argument in the word at
+/// `this + 0x30` (the node's flags): `(this, set, mask)`; `00450f90` is it
+/// with the mask 1.
+const NODE_SET_FLAG_BITS: u32 = 0x0043_b370;
+const NODE_SET_FLAG: u32 = 0x0045_0f90;
+/// `NiNode::AttachChild(child, replace)` is the node's virtual slot `0xDC`.
+const NODE_ATTACH_CHILD_SLOT: u32 = 0xdc;
+/// The 9-byte update data (`(this, time, byte, byte)`) and the node's
+/// update with it.
+const UPDATE_DATA_CONSTRUCT: u32 = 0x0043_d410;
+const NODE_UPDATE: u32 = 0x00a5_9c60;
+/// `BSMultiBound` (0x10 bytes) and `BSMultiBoundAABB` (0x24 bytes)
+/// constructors.
+const MULTI_BOUND_CONSTRUCT: u32 = 0x00c3_5e00;
+const MULTI_BOUND_AABB_CONSTRUCT: u32 = 0x00c3_7ec0;
+/// The fixed string constructor `(this, text)` (returns `this`), its
+/// destructor, and the node's set-name.
+const FIXED_STRING_CONSTRUCT: u32 = 0x0043_8170;
+const FIXED_STRING_DESTRUCT: u32 = 0x0043_81b0;
+const NODE_SET_NAME: u32 = 0x00a5_b950;
+/// `cCellState` setter (`(this, byte)`, `MOV [ECX+0x26],AL`).
+const CELL_SET_STATE: u32 = 0x0045_12a0;
+/// The work `Load3D` runs on the new cell 3D.
+const CELL_FINISH_3D: u32 = 0x0055_2dc0;
+/// `BGSSaveLoadGame::LoadCell` (Xbox PDB), `(loader, cell)`; and the loader's
+/// follow-up call `(loader, 0)`.
+const SAVE_LOAD_CELL: u32 = 0x0084_9b10;
+const LOADER_AFTER_LOAD: u32 = 0x0084_92b0;
+/// `BSPortalGraph` constructor (0x78 bytes), and the world space's portal
+/// graph (`this + 0x6C` slot, built on first use).
+const PORTAL_GRAPH_CONSTRUCT: u32 = 0x00c5_a9d0;
+const WORLD_SPACE_PORTAL_GRAPH: u32 = 0x0058_31d0;
+/// Releases the world space's portal graph slot (when its word at `+4` is 1).
+const WORLD_SPACE_RELEASE_PORTAL_GRAPH: u32 = 0x0058_3270;
+/// The entry `n` of the table at `011f91c8` (cdecl), the word at `+0x1E0` of
+/// that entry (the current portal graph), and its setter `(entry, graph)`.
+const GLOBAL_TABLE_ENTRY: u32 = 0x0045_0b80;
+const CURRENT_PORTAL_GRAPH: u32 = 0x0045_4b30;
+const SET_CURRENT_PORTAL_GRAPH: u32 = 0x00b5_ddf0;
+/// Extra data accessors on `ExtraDataList` (`this` = the list):
+/// the owner (extra data type 0x21), its setter, the ownership global
+/// (`ExtraDataList::GetGlobal`) and rank (`ExtraDataList::GetRank`), the
+/// detach time (type 0xB) and its setter, the extra data of type 1 and its
+/// reset, the one of type 0x74, 7 and 8, and the acoustic space (type 0x81).
+const EXTRA_LIST_GET_OWNER: u32 = 0x0041_8660;
+const EXTRA_LIST_SET_OWNER: u32 = 0x0041_9700;
+const EXTRA_LIST_GET_GLOBAL: u32 = 0x0041_8690;
+const EXTRA_LIST_GET_RANK: u32 = 0x0041_86c0;
+const EXTRA_LIST_GET_DETACH_TIME: u32 = 0x0042_1820;
+const EXTRA_LIST_SET_DETACH_TIME: u32 = 0x0042_1850;
+const EXTRA_LIST_GET_TYPE_1: u32 = 0x0041_b9a0;
+const EXTRA_LIST_RESET_TYPE_1: u32 = 0x0041_b8d0;
+const EXTRA_LIST_GET_TYPE_74: u32 = 0x0042_1c30;
+const EXTRA_LIST_GET_TYPE_7: u32 = 0x0041_bde0;
+const EXTRA_LIST_GET_TYPE_8: u32 = 0x0041_c260;
+const EXTRA_LIST_GET_ACOUSTIC_SPACE: u32 = 0x0041_c160;
+const EXTRA_LIST_SET_REGION_LIST: u32 = 0x0041_bbd0;
+/// `TESRegionList` constructor `(this, 0)`, 0x10 bytes.
+const REGION_LIST_CONSTRUCT: u32 = 0x004f_6320;
+/// `TESObjectLAND` constructor (0x2C bytes).
+const LAND_CONSTRUCT: u32 = 0x0053_3120;
+/// The world space's accessors: the word at `+0x18` of a form is the
+/// owner's `WORD_AT_18`; the world space's owner-form (`00458400`), the
+/// default water height (`004536e0`, the float at `+0xCC`), and the three
+/// accessors used by `00546c20`, `005474b0` and `005475b0`.
+const WORLD_SPACE_OWNER_FORM: u32 = 0x0045_8400;
+const WORLD_SPACE_WATER_HEIGHT: u32 = 0x0045_36e0;
+const WORLD_SPACE_TYPE_7_VALUE: u32 = 0x0058_6150;
+const WORLD_SPACE_ACOUSTIC_VALUE: u32 = 0x0058_5fe0;
+/// Tests bit 1 of `cCellFlags` (`004518e0`) and bit 7 (`00454b10`).
+const CELL_FLAG_2: u32 = 0x0045_18e0;
+const CELL_FLAG_80: u32 = 0x0045_4b10;
+/// The word at `+0xC4` of a cell (`pLoadedData`).
+const CELL_LOADED_DATA: u32 = 0x0070_58c0;
+/// `TESActorBaseData::GetFactionRank` (Xbox PDB): `(this, faction, flag)`.
+const ACTOR_BASE_GET_FACTION_RANK: u32 = 0x0047_d680;
+/// `0040eb10(a, b, c)` (cdecl, three floats): whether `a` and `b` differ by
+/// no more than `c`.
+const FLOAT_NEAR: u32 = 0x0040_eb10;
+/// Sets the radius (float at `+0xC`) of the bound `this` (`(this, radius)`),
+/// and copies three words and a radius into it (`(this, vector, radius)`);
+/// `006240d0` is the body `00546890` calls.
+const BOUND_SET_RADIUS: u32 = 0x0063_f790;
+const BOUND_SET_CENTER_AND_RADIUS: u32 = 0x004a_51d0;
+const BOUND_BASE_CONSTRUCT: u32 = 0x0062_40d0;
+/// `00867e30(this)`: the integer `00546c70` passes to `fn_00546b10`, computed
+/// from the object at `011de7b8`.
+const DETACH_TIME_SOURCE: u32 = 0x0086_7e30;
+const DETACH_TIME_SOURCE_OBJECT: u32 = 0x011d_e7b8;
+/// The child of a node at an index (`(node, index)`, `ret 4`), and the
+/// address of the sub-object at `+0xC` of a multibound primitive.
+const NODE_CHILD_AT: u32 = 0x0043_b4a0;
+const PRIMITIVE_PART: u32 = 0x0048_d150;
+/// The owner `00546ca0`, `00546da0` and `00546ee0` compare the actor with.
+const ACTOR_SINGLETON_POINTER: u32 = 0x011d_ea3c;
+/// RTTI type descriptors of the ownership checks: the source types
+/// `00546ca0` casts the actor's form from and `00546ee0` casts the form
+/// from, and the two targets (the owner is a character base or a faction).
+const RTTI_OWNER_SOURCE_FORM: u32 = 0x0118_3108;
+const RTTI_OWNER_SOURCE_ARGUMENT: u32 = 0x0118_46e8;
+const RTTI_OWNER_CHARACTER: u32 = 0x0118_3a1c;
+const RTTI_OWNER_FACTION: u32 = 0x0118_4704;
+/// The word at `011c9520` that `00546a90` returns.
+const OWNER_EXCLUDED_FORM: u32 = 0x011c_9520;
+/// Statics of `fn_005474b0`: the guard word, a copy of the three words at
+/// `011f426c`, and the last value stored.
+const STATIC_RECORD_GUARD: u32 = 0x011c_a1d0;
+const STATIC_RECORD_COPY: u32 = 0x011c_a1c4;
+const STATIC_RECORD_LAST: u32 = 0x011c_a1c0;
+/// `-FLT_MAX` (float); `FLT_MAX` as a double (the "unset" water height); and
+/// `0.001` (float).
+const LOWEST_FLOAT: u32 = 0x0101_5f5c;
+const UNSET_WATER_HEIGHT_DOUBLE: u32 = 0x0102_31b0;
+const WATER_HEIGHT_TOLERANCE: u32 = 0x0101_7d00;
+
+/// Allocates (cdecl `size`) and constructs a `NiNode` with the node
+/// constructor, as every `new NiNode` of `Load3D` does. Null when the
+/// allocation fails.
+fn new_ni_node(e: &mut Engine) -> Ptr {
+    let block = e.call(NODE_ALLOCATE, &args![0xacu32]).ptr::<()>();
+    if block.is_null() {
+        Ptr::NULL
+    } else {
+        e.call(NODE_CONSTRUCT, &args![block, 0u32]).ptr()
+    }
+}
+
+/// `parent->AttachChild(child, true)` (virtual slot `0xDC`).
+fn attach_child(e: &mut Engine, parent: Ptr, child: Ptr) {
+    e.vcall(parent.addr(), NODE_ATTACH_CHILD_SLOT, &args![child, 1u32]);
+}
+
+/// What `Load3D` does to a new node before it gets its flag: the two flag
+/// setters, in this order.
+fn prepare_node(e: &mut Engine, node: Ptr) {
+    fn_00546780(e, node, true);
+    fn_005467c0(e, node, true);
+}
+
+// Translated from 00545a30 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `TESObjectCELL::AttachMultiBoundNodes` (Xbox PDB): for every entry of the
+/// loaded data's `MultiboundRefMap` whose node has no parent (the word at
+/// `+0x18`), attaches the node to the child at index 7 of the cell's 3D
+/// (`AttachChild(node, true)`, virtual slot `0xDC`). Does nothing without
+/// that child or loaded data. The exception-unwinding frame is not
+/// translated.
+pub fn tes_object_cell_attach_multi_bound_nodes(e: &mut Engine, this: Ptr<TESObjectCELL>) {
+    let parent = e.call(CELL_CHILD_NODE, &args![this, 7u32]).ptr::<()>();
+    if parent.is_null() || loaded_data(e, this).is_null() {
+        return;
+    }
+    // Locals: the iteration position, the key and the value slot.
+    e.with_stack(0xc, |e, frame| {
+        let position = frame;
+        let key = frame.byte_add(4);
+        let slot = frame.byte_add(8);
+        let loaded = loaded_data(e, this);
+        let map = loaded_part(loaded, LoadedCellData::MultiboundRefMap);
+        let first = e.call(MAP_FIRST_POSITION, &args![map]).u32();
+        e.mem.set_u32(position.addr(), first);
+        while e.mem.u32(position.addr()) != 0 {
+            e.call(SLOT_CONSTRUCT, &args![slot, 0u32]);
+            e.mem.set_u32(key.addr(), 0);
+            let loaded = loaded_data(e, this);
+            let map = loaded_part(loaded, LoadedCellData::MultiboundRefMap);
+            e.call(MAP_GET_NEXT, &args![map, position, key, slot]);
+            if !slot_get(e, slot).is_null() {
+                let node = slot_get(e, slot);
+                if e.call(WORD_AT_18, &args![node]).u32() == 0 {
+                    let node = slot_get(e, slot);
+                    attach_child(e, parent, node);
+                }
+            }
+            e.call(SLOT_RELEASE, &args![slot]);
+        }
+    });
+}
+
+// Translated from 00545b30 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The cell's portal graph (`spPortalGraph`, `this + 0xD4`), built on first
+/// use: an interior cell gets a new 0x78-byte object, an exterior cell the
+/// graph of its world space. Returns the graph. The exception-unwinding
+/// frame is not translated.
+pub fn fn_00545b30(e: &mut Engine, this: Ptr<TESObjectCELL>) -> Ptr {
+    let slot = this.byte_add(TESObjectCELL::spPortalGraph.off);
+    if slot_get(e, slot).is_null() {
+        if is_interior(e, this.cast()) {
+            let block = e.call(NODE_ALLOCATE, &args![0x78u32]).ptr::<()>();
+            let graph = if block.is_null() {
+                Ptr::NULL
+            } else {
+                e.call(PORTAL_GRAPH_CONSTRUCT, &args![block]).ptr::<()>()
+            };
+            slot_assign(e, slot, graph);
+        } else {
+            let world = world_space(e, this.cast());
+            let graph = e.call(WORLD_SPACE_PORTAL_GRAPH, &args![world]).ptr::<()>();
+            slot_assign(e, slot, graph);
+        }
+    }
+    slot_get(e, slot)
+}
+
+// Translated from 00545c10 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Drops the cell's portal graph. With a graph: an interior cell whose graph
+/// is the current one (the word at `+0x1E0` of the table entry 0) resets the
+/// current graph to null; the slot is cleared; a cell with a world space
+/// releases the world space's graph slot (`00583270`).
+pub fn fn_00545c10(e: &mut Engine, this: Ptr<TESObjectCELL>) {
+    let slot = this.byte_add(TESObjectCELL::spPortalGraph.off);
+    if slot_get(e, slot).is_null() {
+        return;
+    }
+    if is_interior(e, this.cast()) {
+        let entry = e.call(GLOBAL_TABLE_ENTRY, &args![0u32]).ptr::<()>();
+        let current = e.call(CURRENT_PORTAL_GRAPH, &args![entry]).u32();
+        if current == slot_get(e, slot).addr() {
+            let entry = e.call(GLOBAL_TABLE_ENTRY, &args![0u32]).ptr::<()>();
+            e.call(SET_CURRENT_PORTAL_GRAPH, &args![entry, 0u32]);
+        }
+    }
+    slot_assign(e, slot, Ptr::NULL);
+    if !world_space(e, this.cast()).is_null() {
+        let world = world_space(e, this.cast());
+        e.call(WORLD_SPACE_RELEASE_PORTAL_GRAPH, &args![world]);
+    }
+}
+
+// Translated from 00545cb0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `TESObjectCELL::Get3D` (Xbox PDB): the cell's 3D node (`spCell3D`, the
+/// first slot of the loaded data), null without loaded data.
+pub fn tes_object_cell_get_3d(e: &mut Engine, this: Ptr<TESObjectCELL>) -> Ptr {
+    let loaded = loaded_data(e, this);
+    if loaded.is_null() {
+        Ptr::NULL
+    } else {
+        slot_get(e, loaded.cast())
+    }
+}
+
+// Translated from 00545cf0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `TESObjectCELL::Load3D` (Xbox PDB): the cell's 3D node. Returns the
+/// existing one when the cell has it. Otherwise builds it: sets the cell
+/// state to 2 and `bCellDetached` to false, creates the root `NiNode`
+/// (translation zero, identity rotation) and its children, each with the two
+/// flag setters (`00546780`, `005467c0`) and a flag from `005468f0(n)`
+/// (`00450f90`): children 0, 1 (also `005468b0`), 2 (the multibound parent,
+/// which gets four `BSMultiBoundNode`s with a `BSMultiBound` of a
+/// `BSMultiBoundAABB` each and the field `+0xB0` set to 1), 3, a child with
+/// flag 0, 5, 6, 7 and 8 (the last two attached twice), and the two markers
+/// under child 1, whose slots are `spLightMarkerNode` (`005468f0(9)`) and
+/// `spSoundMarkerNode` (`005468f0(0xA)`). The root is updated, the loaded
+/// data is created and given the root (`spCell3D`), the multibound nodes are
+/// attached and `00552dc0` runs; unless the loader reports bit 2 of its
+/// `+0x244` word, the loader's flag is cleared around `LoadCell` and, when
+/// bit 0x10 of that word is clear, the loader's follow-up call. The cell state
+/// is then 3. In every case the portal graph is built and, when it holds no
+/// geometry node (`fn_00546930`), gets a new `NiNode` named "Shared Portal
+/// Geometry". The exception-unwinding frame is not translated.
+pub fn tes_object_cell_load_3d(e: &mut Engine, this: Ptr<TESObjectCELL>) -> Ptr {
+    let scope = Ptr::<()>::new(e.mem.alloc(4));
+    e.call(
+        SCOPE_ENTER,
+        &args![scope, 0x1au32, 1u32, SOURCE_FILE, 0xd84u32],
+    );
+    let mut root = tes_object_cell_get_3d(e, this);
+    if root.is_null() {
+        e.call(CELL_SET_STATE, &args![this, 2u32]);
+        e.set(this, TESObjectCELL::bCellDetached, false);
+        root = new_ni_node(e);
+        e.call(NODE_SET_TRANSLATION, &args![root, ZERO_VECTOR]);
+        e.call(NODE_SET_ROTATION, &args![root, IDENTITY_MATRIX]);
+        fn_005467c0(e, root, true);
+        fn_00546780(e, root, true);
+        // Child 0.
+        let node = new_ni_node(e);
+        prepare_node(e, node);
+        let flag = fn_005468f0(e, 0);
+        e.call(NODE_SET_FLAG, &args![node, flag]);
+        attach_child(e, root, node);
+        // Child 1, the parent of the two markers.
+        let parent = new_ni_node(e);
+        prepare_node(e, parent);
+        fn_005468b0(e, parent, true);
+        let flag = fn_005468f0(e, 1);
+        e.call(NODE_SET_FLAG, &args![parent, flag]);
+        attach_child(e, root, parent);
+        // The light marker and the sound marker, kept in the cell's slots.
+        for (index, slot) in [
+            (9u8, TESObjectCELL::spLightMarkerNode),
+            (0xa, TESObjectCELL::spSoundMarkerNode),
+        ] {
+            let node = new_ni_node(e);
+            prepare_node(e, node);
+            let flag = fn_005468f0(e, index);
+            e.call(NODE_SET_FLAG, &args![node, flag]);
+            attach_child(e, parent, node);
+            slot_assign(e, this.byte_add(slot.off), node);
+        }
+        // Child 2, the parent of the multibound nodes.
+        let multi_bound_parent = new_ni_node(e);
+        prepare_node(e, multi_bound_parent);
+        let flag = fn_005468f0(e, 2);
+        e.call(NODE_SET_FLAG, &args![multi_bound_parent, flag]);
+        attach_child(e, root, multi_bound_parent);
+        for _ in 0..4 {
+            let block = e.call(NODE_ALLOCATE, &args![0xb4u32]).ptr::<()>();
+            let node = if block.is_null() {
+                Ptr::NULL
+            } else {
+                e.call(MULTI_BOUND_NODE_CONSTRUCT, &args![block])
+                    .ptr::<()>()
+            };
+            fn_005468d0(e, node, 1);
+            let block = e.call(NODE_ALLOCATE, &args![0x10u32]).ptr::<()>();
+            let bound = if block.is_null() {
+                Ptr::NULL
+            } else {
+                e.call(MULTI_BOUND_CONSTRUCT, &args![block]).ptr::<()>()
+            };
+            let block = e.call(NODE_ALLOCATE, &args![0x24u32]).ptr::<()>();
+            let shape = if block.is_null() {
+                Ptr::NULL
+            } else {
+                e.call(MULTI_BOUND_AABB_CONSTRUCT, &args![block])
+                    .ptr::<()>()
+            };
+            e.call(MULTI_BOUND_SET_PRIMITIVE, &args![bound, shape]);
+            e.call(MULTI_BOUND_SET_DATA, &args![node, bound]);
+            attach_child(e, multi_bound_parent, node);
+        }
+        // Children 3 to 8.
+        let node = new_ni_node(e);
+        prepare_node(e, node);
+        let flag = fn_005468f0(e, 3);
+        e.call(NODE_SET_FLAG, &args![node, flag]);
+        attach_child(e, root, node);
+        let node = new_ni_node(e);
+        prepare_node(e, node);
+        e.call(NODE_SET_FLAG, &args![node, 0u32]);
+        attach_child(e, root, node);
+        for (index, times) in [(5u8, 1), (6, 1), (7, 2), (8, 2)] {
+            let node = new_ni_node(e);
+            prepare_node(e, node);
+            let flag = fn_005468f0(e, index);
+            e.call(NODE_SET_FLAG, &args![node, flag]);
+            for _ in 0..times {
+                attach_child(e, root, node);
+            }
+        }
+        // The root is updated with the 9-byte update data (time 0.0).
+        e.with_stack(12, |e, update| {
+            e.call(UPDATE_DATA_CONSTRUCT, &args![update, 0.0f32, 0u32, 0u32]);
+            e.call(NODE_UPDATE, &args![root, update]);
+        });
+        fn_00544ce0(e, this);
+        let loaded = loaded_data(e, this);
+        slot_assign(e, loaded.cast(), root);
+        tes_object_cell_attach_multi_bound_nodes(e, this);
+        e.call(CELL_FINISH_3D, &args![this]);
+        let loader: u32 = e.global(GAME_LOADER_POINTER);
+        if !e.call(LOADER_FLAG_244_2, &args![loader]).bool() {
+            let previous = e.call(GAME_LOADER_FLAG_SETTER, &args![loader, 0u32]).u8();
+            e.call(SAVE_LOAD_CELL, &args![loader, this]);
+            if !fn_00546950(e, Ptr::new(loader)) {
+                e.call(LOADER_AFTER_LOAD, &args![loader, 0u32]);
+            }
+            e.call(GAME_LOADER_FLAG_SETTER, &args![loader, previous]);
+        }
+        e.call(CELL_SET_STATE, &args![this, 3u32]);
+    }
+    let graph = fn_00545b30(e, this);
+    if fn_00546930(e, graph).is_null() {
+        let geometry = new_ni_node(e);
+        e.with_stack(4, |e, name| {
+            let name = e
+                .call(FIXED_STRING_CONSTRUCT, &args![name, PORTAL_GEOMETRY_NAME])
+                .ptr::<()>();
+            e.call(NODE_SET_NAME, &args![geometry, name]);
+            e.call(FIXED_STRING_DESTRUCT, &args![name]);
+        });
+        fn_00546910(e, graph, geometry);
+    }
+    e.call(SCOPE_LEAVE, &args![scope]);
+    e.mem.free(scope.addr());
+    root
+}
+
+// Translated from 00546780 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Sets or clears flag bit 0x800 of the node (`0043b370`), makes sure it
+/// has a bound (`fn_005467e0`) and, when setting, gives the bound the
+/// radius 1.0 (`0063f790` on the pointer at `+0x20`).
+pub fn fn_00546780(e: &mut Engine, this: Ptr, set: bool) {
+    e.call(NODE_SET_FLAG_BITS, &args![this, set, 0x800u32]);
+    fn_005467e0(e, this);
+    if set {
+        let bound = e.mem.u32(this.addr() + 0x20);
+        e.call(BOUND_SET_RADIUS, &args![bound, 1.0f32]);
+    }
+}
+
+// Translated from 005467c0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Sets or clears flag bit 0x2000 of the node (`0043b370`).
+pub fn fn_005467c0(e: &mut Engine, this: Ptr, set: bool) {
+    e.call(NODE_SET_FLAG_BITS, &args![this, set, 0x2000u32]);
+}
+
+// Translated from 005467e0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Gives a node without a bound (the pointer at `+0x20`) one: a 0x10-byte
+/// block (`00546890` is called on it and does nothing to its contents) set
+/// through the node's virtual slot `0x78`, then given the three words of
+/// `011f426c` and the radius 0.0 (`004a51d0`). The exception-unwinding frame
+/// is not translated.
+pub fn fn_005467e0(e: &mut Engine, this: Ptr) {
+    if e.mem.u32(this.addr() + 0x20) != 0 {
+        return;
+    }
+    let block = e.call(ALLOCATE, &args![0x10u32]).ptr::<()>();
+    let bound = if block.is_null() {
+        Ptr::NULL
+    } else {
+        fn_00546890(e, block, 0x100, 0)
+    };
+    e.vcall(this.addr(), 0x78, &args![bound]);
+    let bound = e.mem.u32(this.addr() + 0x20);
+    e.call(
+        BOUND_SET_CENTER_AND_RADIUS,
+        &args![bound, ZERO_VECTOR, 0.0f32],
+    );
+}
+
+// Translated from 00546890 (decompiled, FalloutNV.exe 1.4.0.525)
+/// A constructor-shaped function (`std::_String_alloc<..>::_Getal` by the
+/// map's folded name): calls `006240d0` and returns `this`. Its two stack
+/// words are not read.
+pub fn fn_00546890(e: &mut Engine, this: Ptr, _unused_1: u32, _unused_2: u32) -> Ptr {
+    e.call(BOUND_BASE_CONSTRUCT, &args![this]);
+    this
+}
+
+// Translated from 005468b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Sets or clears flag bit 0x200000 of the node (`0043b370`).
+pub fn fn_005468b0(e: &mut Engine, this: Ptr, set: bool) {
+    e.call(NODE_SET_FLAG_BITS, &args![this, set, 0x20_0000u32]);
+}
+
+// Translated from 005468d0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Writes `value` to the word at `+0xB0` of the multibound node.
+pub fn fn_005468d0(e: &mut Engine, this: Ptr, value: u32) {
+    e.mem.set_u32(this.addr() + 0xb0, value);
+}
+
+// Translated from 005468f0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether bit `index & 0x1F` of the word at `011ca08c` is set (cdecl).
+pub fn fn_005468f0(e: &mut Engine, index: u8) -> bool {
+    let word: u32 = e.global(STATIC_FLAG);
+    (1u32 << (index & 0x1f)) & word != 0
+}
+
+// Translated from 00546910 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Stores `value` in the smart-pointer slot at `+0x4C` (`0066b0d0`).
+pub fn fn_00546910(e: &mut Engine, this: Ptr, value: Ptr) {
+    slot_assign(e, this.byte_add(0x4c), value);
+}
+
+// Translated from 00546930 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The object in the smart-pointer slot at `+0x4C`.
+pub fn fn_00546930(e: &mut Engine, this: Ptr) -> Ptr {
+    slot_get(e, this.byte_add(0x4c))
+}
+
+// Translated from 00546950 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether bit 0x10 of the word at `+0x244` (of the game loader) is set.
+pub fn fn_00546950(e: &mut Engine, this: Ptr) -> bool {
+    e.mem.u32(this.addr() + 0x244) & 0x10 != 0
+}
+
+// Translated from 00546970 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Unloads the cell's runtime state: when the extra data list has its
+/// type-1 data and the object at `011ca088` exists, tells that object about
+/// the first (`fn_00541c80`, then `006242f0`); sets the cell state to 1,
+/// releases the loaded data (`fn_00545030`), resets the type-1 extra data
+/// (`0041b8d0(list, 0)`), clears the two reference counters
+/// (`fn_00546a00`, `fn_00546a20`), sets the cell state to 0 and
+/// `bCellDetached` to false.
+pub fn fn_00546970(e: &mut Engine, this: Ptr<TESObjectCELL>) {
+    let list = this.byte_add(EXTRA_DATA_OFFSET);
+    let extra = e.call(EXTRA_LIST_GET_TYPE_1, &args![list]).ptr::<()>();
+    let object: u32 = e.global(STATIC_OBJECT);
+    if !extra.is_null() && object != 0 {
+        let value = fn_00541c80(e, extra);
+        e.call(STATIC_RELEASE_HELPER, &args![object, value]);
+    }
+    e.call(CELL_SET_STATE, &args![this, 1u32]);
+    fn_00545030(e, this);
+    e.call(EXTRA_LIST_RESET_TYPE_1, &args![list, 0u32]);
+    fn_00546a00(e, this);
+    fn_00546a20(e, this);
+    e.call(CELL_SET_STATE, &args![this, 0u32]);
+    e.set(this, TESObjectCELL::bCellDetached, false);
+}
+
+// Translated from 00546a00 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Clears `iQueuedRefCount`.
+pub fn fn_00546a00(e: &mut Engine, this: Ptr<TESObjectCELL>) {
+    e.set(this, TESObjectCELL::iQueuedRefCount, 0);
+}
+
+// Translated from 00546a20 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Clears `iCriticalQueuedRefCount`.
+pub fn fn_00546a20(e: &mut Engine, this: Ptr<TESObjectCELL>) {
+    e.set(this, TESObjectCELL::iCriticalQueuedRefCount, 0);
+}
+
+// Translated from 00546a40 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `TESObjectCELL::GetOwner` (Xbox PDB): the owner of the cell's extra data
+/// list; without one, the form at `+0x18` of the owner `fn_00546c20` finds
+/// when that is not the form `fn_00546a90` returns.
+pub fn tes_object_cell_get_owner(e: &mut Engine, this: Ptr<TESObjectCELL>) -> u32 {
+    let list = e.call(CELL_EXTRA_DATA_LIST, &args![this]).ptr::<()>();
+    let mut owner = e.call(EXTRA_LIST_GET_OWNER, &args![list]).u32();
+    if owner == 0 {
+        let candidate = fn_00546c20(e, this);
+        if candidate != 0 && candidate != fn_00546a90(e) {
+            owner = e.call(WORD_AT_18, &args![candidate]).u32();
+        }
+    }
+    owner
+}
+
+// Translated from 00546a90 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The word at `011c9520`.
+pub fn fn_00546a90(e: &mut Engine) -> u32 {
+    e.global(OWNER_EXCLUDED_FORM)
+}
+
+// Translated from 00546aa0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `TESObjectCELL::GetOwnershipGlobal` (Xbox PDB): the global of the cell's
+/// extra data list (`ExtraDataList::GetGlobal`).
+pub fn tes_object_cell_get_ownership_global(e: &mut Engine, this: Ptr<TESObjectCELL>) -> u32 {
+    let list = e.call(CELL_EXTRA_DATA_LIST, &args![this]).ptr::<()>();
+    e.call(EXTRA_LIST_GET_GLOBAL, &args![list]).u32()
+}
+
+// Translated from 00546ac0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `TESObjectCELL::GetOwnershipRank` (Xbox PDB): `ExtraDataList::GetRank`,
+/// with -1 (no rank) turned into 0.
+pub fn tes_object_cell_get_ownership_rank(e: &mut Engine, this: Ptr<TESObjectCELL>) -> i32 {
+    let list = e.call(CELL_EXTRA_DATA_LIST, &args![this]).ptr::<()>();
+    let rank = e.call(EXTRA_LIST_GET_RANK, &args![list]).i32();
+    if rank == -1 {
+        0
+    } else {
+        rank
+    }
+}
+
+// Translated from 00546af0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `TESObjectCELL::GetDetachTime` (Xbox PDB): the detach time of the cell's
+/// extra data list (`ExtraDataList::GetDetachTime`).
+pub fn tes_object_cell_get_detach_time(e: &mut Engine, this: Ptr<TESObjectCELL>) -> u32 {
+    let list = e.call(CELL_EXTRA_DATA_LIST, &args![this]).ptr::<()>();
+    e.call(EXTRA_LIST_GET_DETACH_TIME, &args![list]).u32()
+}
+
+// Translated from 00546b10 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Sets the cell's detach time and form flags. Unless the loader reports
+/// bit 2 of its `+0x244` word and `time` is non-zero and `keep` is zero,
+/// stores `time` in the extra data list (`ExtraDataList` setter `00421850`).
+/// A zero `time` then clears flags through the cell's virtual slot `0x4C`
+/// (`0x70000000`); otherwise slot `0x48` sets `0x40000000`, and, for an
+/// exterior cell, `0x20000000` when both grid coordinates are within
+/// -128..127 and `0x10000000` when not.
+pub fn fn_00546b10(e: &mut Engine, this: Ptr<TESObjectCELL>, time: u32, keep: bool) {
+    let loader: u32 = e.global(GAME_LOADER_POINTER);
+    if !e.call(LOADER_FLAG_244_2, &args![loader]).bool() || time == 0 || keep {
+        let list = e.call(CELL_EXTRA_DATA_LIST, &args![this]).ptr::<()>();
+        e.call(EXTRA_LIST_SET_DETACH_TIME, &args![list, time]);
+    }
+    if time == 0 {
+        e.vcall(this.addr(), 0x4c, &args![0x7000_0000u32]);
+        return;
+    }
+    e.vcall(this.addr(), 0x48, &args![0x4000_0000u32]);
+    if !is_interior(e, this.cast()) {
+        let x = tes_object_cell_get_data_x(e, this);
+        let y = tes_object_cell_get_data_y(e, this);
+        let bit = if (-0x80..=0x7f).contains(&x) && (-0x80..=0x7f).contains(&y) {
+            0x2000_0000u32
+        } else {
+            0x1000_0000
+        };
+        e.vcall(this.addr(), 0x48, &args![bit]);
+    }
+}
+
+// Translated from 00546bf0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Sets the cell's owner (`00419700` on its extra data list) and the form
+/// flag 8 through virtual slot `0x48`.
+pub fn fn_00546bf0(e: &mut Engine, this: Ptr<TESObjectCELL>, owner: u32) {
+    let list = e.call(CELL_EXTRA_DATA_LIST, &args![this]).ptr::<()>();
+    e.call(EXTRA_LIST_SET_OWNER, &args![list, owner]);
+    e.vcall(this.addr(), 0x48, &args![8u32]);
+}
+
+// Translated from 00546c20 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The owner candidate of the cell: the extra data of type 0x74, or, when
+/// absent, what `00458400` gives for the cell's world space (if it has one).
+pub fn fn_00546c20(e: &mut Engine, this: Ptr<TESObjectCELL>) -> u32 {
+    let list = e.call(CELL_EXTRA_DATA_LIST, &args![this]).ptr::<()>();
+    let mut result = e.call(EXTRA_LIST_GET_TYPE_74, &args![list]).u32();
+    if result == 0 && !world_space(e, this.cast()).is_null() {
+        let world = world_space(e, this.cast());
+        result = e.call(WORLD_SPACE_OWNER_FORM, &args![world]).u32();
+    }
+    result
+}
+
+// Translated from 00546c70 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `fn_00546b10` with the value `00867e30` computes from the object at
+/// `011de7b8`, and `keep` false.
+pub fn fn_00546c70(e: &mut Engine, this: Ptr<TESObjectCELL>) {
+    let time = e
+        .call(DETACH_TIME_SOURCE, &args![DETACH_TIME_SOURCE_OBJECT])
+        .u32();
+    fn_00546b10(e, this, time, false);
+}
+
+// Translated from 00546ca0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether the actor may use the cell's things freely: false without an
+/// owner or when the actor's virtual slot `0x218` says false; an owner that
+/// is a character base (cast target `01183a1c`) must be the actor's form
+/// (`007af430`); an owner that is a faction (`01184704`) needs the actor's
+/// faction rank (`TESActorBaseData::GetFactionRank` on the actor's base data
+/// at `+0x30`, with the flag "actor is the singleton at `011dea3c`") to be at
+/// least the cell's ownership rank.
+pub fn fn_00546ca0(e: &mut Engine, this: Ptr<TESObjectCELL>, actor: Ptr) -> bool {
+    let owner = Ptr::new(tes_object_cell_get_owner(e, this));
+    if owner.is_null() {
+        return false;
+    }
+    if !e.vcall(actor.addr(), 0x218, &[]).bool() {
+        return false;
+    }
+    let character = dynamic_cast(e, owner, RTTI_OWNER_CHARACTER);
+    if !character.is_null() {
+        let form = e.call(SAVE_FORM_BUFFER_GET_FORM, &args![actor]).u32();
+        return character.addr() == form;
+    }
+    let faction = dynamic_cast(e, owner, RTTI_OWNER_FACTION);
+    if faction.is_null() {
+        return false;
+    }
+    let rank = tes_object_cell_get_ownership_rank(e, this);
+    let form = e.call(SAVE_FORM_BUFFER_GET_FORM, &args![actor]).ptr::<()>();
+    let base = cast_from(e, form, RTTI_OWNER_SOURCE_FORM, RTTI_OWNER_CHARACTER);
+    let singleton: u32 = e.global(ACTOR_SINGLETON_POINTER);
+    let actor_rank = e
+        .call(
+            ACTOR_BASE_GET_FACTION_RANK,
+            &args![base.byte_add(0x30), faction, actor.addr() == singleton],
+        )
+        .i32();
+    actor_rank >= rank
+}
+
+// Translated from 00546da0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The opposite check, for taking things: false when the actor's virtual
+/// slot `0x304` (called without arguments) is true, without an owner, for a
+/// cell `fn_005443e0` reports, with an ownership global, or when the actor's
+/// slot `0x218` is false. An owner that is a character base must differ from
+/// the actor's form; a faction owner needs the actor's faction rank to be
+/// below the cell's ownership rank.
+pub fn fn_00546da0(e: &mut Engine, this: Ptr<TESObjectCELL>, actor: Ptr) -> bool {
+    if e.vcall(actor.addr(), 0x304, &[]).bool() {
+        return false;
+    }
+    let owner = Ptr::new(tes_object_cell_get_owner(e, this));
+    if owner.is_null() || fn_005443e0(e, this) {
+        return false;
+    }
+    if tes_object_cell_get_ownership_global(e, this) != 0
+        || !e.vcall(actor.addr(), 0x218, &[]).bool()
+    {
+        return false;
+    }
+    let character = dynamic_cast(e, owner, RTTI_OWNER_CHARACTER);
+    if !character.is_null() {
+        let form = e.call(SAVE_FORM_BUFFER_GET_FORM, &args![actor]).u32();
+        return character.addr() != form;
+    }
+    let faction = dynamic_cast(e, owner, RTTI_OWNER_FACTION);
+    if faction.is_null() {
+        return false;
+    }
+    let rank = tes_object_cell_get_ownership_rank(e, this);
+    let form = e.call(SAVE_FORM_BUFFER_GET_FORM, &args![actor]).ptr::<()>();
+    let base = cast_from(e, form, RTTI_OWNER_SOURCE_FORM, RTTI_OWNER_CHARACTER);
+    let singleton: u32 = e.global(ACTOR_SINGLETON_POINTER);
+    let actor_rank = e
+        .call(
+            ACTOR_BASE_GET_FACTION_RANK,
+            &args![base.byte_add(0x30), faction, actor.addr() == singleton],
+        )
+        .i32();
+    actor_rank < rank
+}
+
+// Translated from 00546ee0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether the form owns the cell: false without an owner; an owner that is
+/// a character base must be `form`; a faction owner needs `form` (cast from
+/// `011846e8` to the character base) to have a faction rank (flag false) at
+/// least the cell's ownership rank, and false when the cast fails.
+pub fn fn_00546ee0(e: &mut Engine, this: Ptr<TESObjectCELL>, form: Ptr) -> bool {
+    let owner = Ptr::new(tes_object_cell_get_owner(e, this));
+    if owner.is_null() {
+        return false;
+    }
+    let character = dynamic_cast(e, owner, RTTI_OWNER_CHARACTER);
+    if !character.is_null() {
+        return character.addr() == form.addr();
+    }
+    let faction = dynamic_cast(e, owner, RTTI_OWNER_FACTION);
+    if faction.is_null() {
+        return false;
+    }
+    let rank = tes_object_cell_get_ownership_rank(e, this);
+    let base = cast_from(e, form, RTTI_OWNER_SOURCE_ARGUMENT, RTTI_OWNER_CHARACTER);
+    if base.is_null() {
+        return false;
+    }
+    let form_rank = e
+        .call(
+            ACTOR_BASE_GET_FACTION_RANK,
+            &args![base.byte_add(0x30), faction, false],
+        )
+        .i32();
+    form_rank >= rank
+}
+
+/// `__RTDynamicCast` of `object` from the type descriptor `source` to
+/// `target`.
+fn cast_from(e: &mut Engine, object: Ptr, source: u32, target: u32) -> Ptr {
+    e.call(RT_DYNAMIC_CAST, &args![object, 0u32, source, target, 0u32])
+        .ptr()
+}
+
+// Translated from 00546fb0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `TESObjectCELL::GetLand` (Xbox PDB): null for an interior cell or one
+/// with the persistent flag; the cell's `pCellLand`, built on first use (a
+/// new 0x2C-byte `TESObjectLAND` given the cell with `SetCell`, inside an
+/// allocation scope). The exception-unwinding frame is not translated.
+pub fn tes_object_cell_get_land(e: &mut Engine, this: Ptr<TESObjectCELL>) -> Ptr {
+    if is_interior(e, this.cast()) || persistent_flag(e, this.cast()) {
+        return Ptr::NULL;
+    }
+    if e.get(this, TESObjectCELL::pCellLand).is_null() {
+        let scope = Ptr::<()>::new(e.mem.alloc(4));
+        e.call(
+            SCOPE_ENTER,
+            &args![scope, 0x1bu32, 1u32, SOURCE_FILE, 0xfb6u32],
+        );
+        let block = e.call(ALLOCATE, &args![0x2cu32]).ptr::<()>();
+        let land = if block.is_null() {
+            Ptr::NULL
+        } else {
+            e.call(LAND_CONSTRUCT, &args![block]).ptr::<()>()
+        };
+        e.set(this, TESObjectCELL::pCellLand, land);
+        let land = e.get(this, TESObjectCELL::pCellLand);
+        e.call(LAND_SET_CELL, &args![land, this]);
+        e.call(SCOPE_LEAVE, &args![scope]);
+        e.mem.free(scope.addr());
+    }
+    e.get(this, TESObjectCELL::pCellLand)
+}
+
+// Translated from 005470a0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `TESObjectCELL::SetLand` (Xbox PDB): for an exterior cell whose land
+/// differs, destroys the old land (virtual slot `0x10` with 1, the scalar
+/// deleting destructor) and stores the new one.
+pub fn tes_object_cell_set_land(e: &mut Engine, this: Ptr<TESObjectCELL>, land: Ptr) {
+    if is_interior(e, this.cast()) {
+        return;
+    }
+    let old = e.get(this, TESObjectCELL::pCellLand);
+    if old.addr() == land.addr() {
+        return;
+    }
+    if !old.is_null() {
+        e.vcall(old.addr(), 0x10, &args![1u32]);
+    }
+    e.set(this, TESObjectCELL::pCellLand, land);
+}
+
+// Translated from 00547110 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `TESObjectCELL::GetRegionList` (Xbox PDB): null for an interior cell;
+/// the extra data list's region list, which `create` makes (a new 0x10-byte
+/// `TESRegionList`, stored with `SetRegionList`) when it is absent. The
+/// exception-unwinding frame is not translated.
+pub fn tes_object_cell_get_region_list(
+    e: &mut Engine,
+    this: Ptr<TESObjectCELL>,
+    create: bool,
+) -> Ptr {
+    if is_interior(e, this.cast()) {
+        return Ptr::NULL;
+    }
+    let list = this.byte_add(EXTRA_DATA_OFFSET);
+    let mut regions = e.call(EXTRA_LIST_GET_REGION_LIST, &args![list]).ptr::<()>();
+    if regions.is_null() && create {
+        let block = e.call(ALLOCATE, &args![0x10u32]).ptr::<()>();
+        regions = if block.is_null() {
+            Ptr::NULL
+        } else {
+            e.call(REGION_LIST_CONSTRUCT, &args![block, 0u32]).ptr()
+        };
+        e.call(EXTRA_LIST_SET_REGION_LIST, &args![list, regions]);
+    }
+    regions
+}
+
+// Translated from 005471e0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `TESObjectCELL::GetWaterHeight` (Xbox PDB): `-FLT_MAX` for a cell
+/// without bit 1 of `cCellFlags` or an interior cell; `fWaterHeight` unless
+/// it is `FLT_MAX` (unset); then the default water height of the cell's world
+/// space (`004536e0`), 0.0 without a world space.
+pub fn tes_object_cell_get_water_height(e: &mut Engine, this: Ptr<TESObjectCELL>) -> f32 {
+    if !e.call(CELL_FLAG_2, &args![this]).bool() || is_interior(e, this.cast()) {
+        return e.global(LOWEST_FLOAT);
+    }
+    let height = e.get(this, TESObjectCELL::fWaterHeight);
+    let unset: f64 = e.global(UNSET_WATER_HEIGHT_DOUBLE);
+    if f64::from(height) != unset {
+        return height;
+    }
+    let world = world_space(e, this.cast());
+    if world.is_null() {
+        0.0
+    } else {
+        e.call(WORLD_SPACE_WATER_HEIGHT, &args![world]).f32()
+    }
+}
+
+// Translated from 00547250 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The water height at a position: stores the cell's water height in
+/// `*height` (`-FLT_MAX` and false for an interior cell without bit 1 of
+/// `cCellFlags`), then walks the loaded data's `WaterRefs` list; for each
+/// reference it takes the first child of its 3D's child, whose shape's
+/// bound primitive (type 1 or 2 replaces the position's third float with the
+/// float at `+8` of the primitive's sub-object at `+0xC`) is asked if it contains
+/// the position (virtual slot `0x108`); a reference that does raises `*height`
+/// to the float at `+8` of its virtual slot `0x1F4` result and the result
+/// becomes true. The reference's virtual slots `0x1D8` and `0x1DC` are
+/// called with two 12-byte buffers whose contents are never read.
+pub fn fn_00547250(e: &mut Engine, this: Ptr<TESObjectCELL>, position: Ptr, height: Ptr) -> bool {
+    if is_interior(e, this.cast()) && !e.call(CELL_FLAG_2, &args![this]).bool() {
+        let lowest: f32 = e.global(LOWEST_FLOAT);
+        e.mem.set_f32(height.addr(), lowest);
+        return false;
+    }
+    let water = tes_object_cell_get_water_height(e, this);
+    e.mem.set_f32(height.addr(), water);
+    // Locals: the position (3 floats), two 12-byte buffers, and the copy of
+    // the reference's rotation the function never reads.
+    e.with_stack(0x30, |e, frame| {
+        let local_position = frame;
+        let first_buffer = frame.byte_add(0xc);
+        let second_buffer = frame.byte_add(0x18);
+        let rotation_copy = frame.byte_add(0x24);
+        for word in 0..3 {
+            let value = e.mem.u32(position.addr() + 4 * word);
+            e.mem.set_u32(local_position.addr() + 4 * word, value);
+        }
+        let mut found = false;
+        let loaded = e.call(CELL_LOADED_DATA, &args![this]).ptr::<()>();
+        if loaded.is_null() {
+            return found;
+        }
+        let mut node = loaded.byte_add(LoadedCellData::WaterRefs.off);
+        while !node.is_null() {
+            if list_item(e, node).is_null() {
+                break;
+            }
+            let reference = list_item(e, node);
+            e.vcall(reference.addr(), 0x1d8, &args![first_buffer]);
+            e.vcall(reference.addr(), 0x1dc, &args![second_buffer]);
+            let rotation = e.call(REFERENCE_ROTATION, &args![reference]).u32();
+            for word in 0..3 {
+                let value = e.mem.u32(rotation + 4 * word);
+                e.mem.set_u32(rotation_copy.addr() + 4 * word, value);
+            }
+            let node_3d = e.vcall(reference.addr(), 0x1d0, &[]).ptr::<()>();
+            let holder = e.vcall(node_3d.addr(), 0xc, &[]).ptr::<()>();
+            let child = e.call(NODE_CHILD_AT, &args![holder, 0u32]).ptr::<()>();
+            let shape = e.vcall(child.addr(), 0x14, &[]).ptr::<()>();
+            if !shape.is_null() {
+                let data = e.call(MULTI_BOUND_DATA_OF_ROOM, &args![shape]).ptr::<()>();
+                let primitive = e.call(MULTI_BOUND_PRIMITIVE_SLOT, &args![data]).ptr::<()>();
+                for kind in [1u32, 2] {
+                    if e.vcall(primitive.addr(), 0x8c, &[]).u32() == kind {
+                        let part = e.call(PRIMITIVE_PART, &args![primitive]).u32();
+                        let value = e.mem.u32(part + 8);
+                        e.mem.set_u32(local_position.addr() + 8, value);
+                    }
+                }
+                if e.vcall(shape.addr(), 0x108, &args![local_position]).bool() {
+                    let result = e.vcall(reference.addr(), 0x1f4, &[]).u32();
+                    let top = e.mem.f32(result + 8);
+                    if e.mem.f32(height.addr()) < top {
+                        e.mem.set_f32(height.addr(), top);
+                    }
+                    found = true;
+                }
+            }
+            node = list_next(e, node);
+        }
+        found
+    })
+}
+
+// Translated from 00547440 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Sets `fWaterHeight`: `FLT_MAX` (unset) when the cell has a world space
+/// whose default water height (`004536e0`) is within 0.001 of `height`
+/// (`0040eb10`), `height` otherwise.
+pub fn fn_00547440(e: &mut Engine, this: Ptr<TESObjectCELL>, height: f32) {
+    let world = world_space(e, this.cast());
+    if !world.is_null() {
+        let default_height = e.call(WORLD_SPACE_WATER_HEIGHT, &args![world]).f32();
+        let tolerance: f32 = e.global(WATER_HEIGHT_TOLERANCE);
+        if e.call(FLOAT_NEAR, &args![default_height, height, tolerance])
+            .bool()
+        {
+            let unset: f32 = e.global(DEFAULT_WATER_HEIGHT);
+            e.set(this, TESObjectCELL::fWaterHeight, unset);
+            return;
+        }
+    }
+    e.set(this, TESObjectCELL::fWaterHeight, height);
+}
+
+// Translated from 005474b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Under the cell's lock (`fn_00541ac0` / `fn_00541ae0`): the extra data of
+/// type 7 of the cell; without it, for an exterior cell with a world space,
+/// what `00586150` gives for the world space (also stored in the static at
+/// `011ca1c0`); 0 otherwise. The first call fills the static record at
+/// `011ca1c4` with the three words of `011f426c`. Returns the value.
+pub fn fn_005474b0(e: &mut Engine, this: Ptr<TESObjectCELL>) -> u32 {
+    fn_00541ac0(e, this);
+    let guard: u32 = e.global(STATIC_RECORD_GUARD);
+    if guard & 1 == 0 {
+        e.set_global(STATIC_RECORD_GUARD, guard | 1);
+        for word in 0..3 {
+            let value = e.mem.u32(ZERO_VECTOR + 4 * word);
+            e.mem.set_u32(STATIC_RECORD_COPY + 4 * word, value);
+        }
+    }
+    let mut result = 0;
+    let list = e.call(CELL_EXTRA_DATA_LIST, &args![this]).ptr::<()>();
+    let value = e.call(EXTRA_LIST_GET_TYPE_7, &args![list]).u32();
+    if value != 0 || is_interior(e, this.cast()) {
+        fn_00541ae0(e, this);
+        return value;
+    }
+    // The code also tests its result local, which is still 0 here.
+    if !is_interior(e, this.cast()) {
+        let world = world_space(e, this.cast());
+        if !world.is_null() {
+            result = e.call(WORLD_SPACE_TYPE_7_VALUE, &args![world]).u32();
+            e.set_global(STATIC_RECORD_LAST, result);
+        }
+    }
+    fn_00541ae0(e, this);
+    result
+}
+
+// Translated from 00547590 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `TESObjectCELL::GetAcousticSpace` (Xbox PDB): the acoustic space of the
+/// cell's extra data list (type 0x81).
+pub fn tes_object_cell_get_acoustic_space(e: &mut Engine, this: Ptr<TESObjectCELL>) -> u32 {
+    let list = e.call(CELL_EXTRA_DATA_LIST, &args![this]).ptr::<()>();
+    e.call(EXTRA_LIST_GET_ACOUSTIC_SPACE, &args![list]).u32()
+}
+
+// Translated from 005475b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// An interior cell: 0 unless bit 7 of `cCellFlags` is set (`00454b10`),
+/// else the extra data of type 8 of the cell; an exterior cell: what
+/// `00585fe0` gives for its world space.
+pub fn fn_005475b0(e: &mut Engine, this: Ptr<TESObjectCELL>) -> u32 {
+    if is_interior(e, this.cast()) {
+        if !e.call(CELL_FLAG_80, &args![this]).bool() {
+            return 0;
+        }
+        let list = e.call(CELL_EXTRA_DATA_LIST, &args![this]).ptr::<()>();
+        e.call(EXTRA_LIST_GET_TYPE_8, &args![list]).u32()
+    } else {
+        let world = world_space(e, this.cast());
+        e.call(WORLD_SPACE_ACOUSTIC_VALUE, &args![world]).u32()
+    }
+}
+
+// Translated from 00547610 (decompiled, FalloutNV.exe 1.4.0.525)
+/// For an interior cell, the extra data accessor `0041c460` on the cell's
+/// list (the one `EXTRA_LIST_GET_IMPACT_SWAP` names); 0 for an exterior cell.
+pub fn fn_00547610(e: &mut Engine, this: Ptr<TESObjectCELL>) -> u32 {
+    if is_interior(e, this.cast()) {
+        let list = e.call(CELL_EXTRA_DATA_LIST, &args![this]).ptr::<()>();
+        e.call(EXTRA_LIST_GET_IMPACT_SWAP, &args![list]).u32()
+    } else {
+        0
+    }
+}
+
 /// This unit's translated functions, by exe address.
 pub fn funcs() -> Vec<(u32, AbiFn)> {
     vec![
@@ -3456,6 +4506,85 @@ pub fn funcs() -> Vec<(u32, AbiFn)> {
             0x00545960,
             fn_00545960(Ptr<TESObjectCELL>, Ptr<TESObjectREFR>) -> Ptr
         ),
+        entry!(
+            0x00545a30,
+            tes_object_cell_attach_multi_bound_nodes(Ptr<TESObjectCELL>)
+        ),
+        entry!(0x00545b30, fn_00545b30(Ptr<TESObjectCELL>) -> Ptr),
+        entry!(0x00545c10, fn_00545c10(Ptr<TESObjectCELL>)),
+        entry!(
+            0x00545cb0,
+            tes_object_cell_get_3d(Ptr<TESObjectCELL>) -> Ptr
+        ),
+        entry!(
+            0x00545cf0,
+            tes_object_cell_load_3d(Ptr<TESObjectCELL>) -> Ptr
+        ),
+        entry!(0x00546780, fn_00546780(Ptr, bool)),
+        entry!(0x005467c0, fn_005467c0(Ptr, bool)),
+        entry!(0x005467e0, fn_005467e0(Ptr)),
+        entry!(0x00546890, fn_00546890(Ptr, u32, u32) -> Ptr),
+        entry!(0x005468b0, fn_005468b0(Ptr, bool)),
+        entry!(0x005468d0, fn_005468d0(Ptr, u32)),
+        entry!(0x005468f0, fn_005468f0(u8) -> bool),
+        entry!(0x00546910, fn_00546910(Ptr, Ptr)),
+        entry!(0x00546930, fn_00546930(Ptr) -> Ptr),
+        entry!(0x00546950, fn_00546950(Ptr) -> bool),
+        entry!(0x00546970, fn_00546970(Ptr<TESObjectCELL>)),
+        entry!(0x00546a00, fn_00546a00(Ptr<TESObjectCELL>)),
+        entry!(0x00546a20, fn_00546a20(Ptr<TESObjectCELL>)),
+        entry!(
+            0x00546a40,
+            tes_object_cell_get_owner(Ptr<TESObjectCELL>) -> u32
+        ),
+        entry!(0x00546a90, fn_00546a90() -> u32),
+        entry!(
+            0x00546aa0,
+            tes_object_cell_get_ownership_global(Ptr<TESObjectCELL>) -> u32
+        ),
+        entry!(
+            0x00546ac0,
+            tes_object_cell_get_ownership_rank(Ptr<TESObjectCELL>) -> i32
+        ),
+        entry!(
+            0x00546af0,
+            tes_object_cell_get_detach_time(Ptr<TESObjectCELL>) -> u32
+        ),
+        entry!(0x00546b10, fn_00546b10(Ptr<TESObjectCELL>, u32, bool)),
+        entry!(0x00546bf0, fn_00546bf0(Ptr<TESObjectCELL>, u32)),
+        entry!(0x00546c20, fn_00546c20(Ptr<TESObjectCELL>) -> u32),
+        entry!(0x00546c70, fn_00546c70(Ptr<TESObjectCELL>)),
+        entry!(0x00546ca0, fn_00546ca0(Ptr<TESObjectCELL>, Ptr) -> bool),
+        entry!(0x00546da0, fn_00546da0(Ptr<TESObjectCELL>, Ptr) -> bool),
+        entry!(0x00546ee0, fn_00546ee0(Ptr<TESObjectCELL>, Ptr) -> bool),
+        entry!(
+            0x00546fb0,
+            tes_object_cell_get_land(Ptr<TESObjectCELL>) -> Ptr
+        ),
+        entry!(
+            0x005470a0,
+            tes_object_cell_set_land(Ptr<TESObjectCELL>, Ptr)
+        ),
+        entry!(
+            0x00547110,
+            tes_object_cell_get_region_list(Ptr<TESObjectCELL>, bool) -> Ptr
+        ),
+        entry!(
+            0x005471e0,
+            tes_object_cell_get_water_height(Ptr<TESObjectCELL>) -> f32
+        ),
+        entry!(
+            0x00547250,
+            fn_00547250(Ptr<TESObjectCELL>, Ptr, Ptr) -> bool
+        ),
+        entry!(0x00547440, fn_00547440(Ptr<TESObjectCELL>, f32)),
+        entry!(0x005474b0, fn_005474b0(Ptr<TESObjectCELL>) -> u32),
+        entry!(
+            0x00547590,
+            tes_object_cell_get_acoustic_space(Ptr<TESObjectCELL>) -> u32
+        ),
+        entry!(0x005475b0, fn_005475b0(Ptr<TESObjectCELL>) -> u32),
+        entry!(0x00547610, fn_00547610(Ptr<TESObjectCELL>) -> u32),
     ]
 }
 
@@ -7674,5 +8803,1486 @@ mod tests {
         let result = e.call(0x0054_5960, &args![cell, reference]);
         assert_eq!(result.u32(), room.addr());
         assert_eq!(calls_to(&take_log(&mut e), SLOT_ASSIGN).len(), 1);
+    }
+
+    // ---- tests of the 3D, ownership, land, region and water functions ----
+
+    const ACTOR_VTABLE: u32 = 0x0130_8000;
+    /// Words of the test cells and objects of this section.
+    const KIND_WORD: u32 = 0x1f0;
+    const FACTION_RANK_WORD: u32 = 0x1f4;
+    const CANDIDATE_WORD: u32 = 0xe4;
+    const CELL_WORD_A: u32 = 0xe0;
+    const CELL_WORD_B: u32 = 0xe4;
+    const CELL_WORD_C: u32 = 0xe8;
+
+    fn actor_slot(slot: u32) -> u32 {
+        0x7300_0000 + slot
+    }
+
+    /// The wide engine plus the pages the globals of this section live in,
+    /// the actors' vtable and doubles for the accessors that only read a
+    /// word.
+    fn scene_engine() -> Engine {
+        let mut e = wide_engine();
+        // `wide_engine` stands in for the cell's 3D detach (`00545c10`),
+        // which this section translates: use the translation.
+        for (address, function) in funcs() {
+            if address == CELL_DETACH_LOADED_3D {
+                e.register(address, function);
+            }
+        }
+        for page in [0x0101_5000, 0x0101_7000, 0x0102_3000, 0x011c_9000] {
+            e.map(page, 0x1000);
+        }
+        e.set_global(LOWEST_FLOAT, f32::MIN);
+        e.set_global(UNSET_WATER_HEIGHT_DOUBLE, f64::from(f32::MAX));
+        e.set_global(WATER_HEIGHT_TOLERANCE, 0.001f32);
+        e.set_global(DEFAULT_WATER_HEIGHT, f32::MAX);
+        // The actors' vtable: slots 0x218 and 0x304 answer with the words of
+        // the same offset.
+        let slots: Vec<u32> = (0..=0x304 / 4).map(|i| actor_slot(4 * i)).collect();
+        e.put_vtable(ACTOR_VTABLE, &slots);
+        for slot in [0x218, 0x304] {
+            e.register_double(actor_slot(slot), move |e, a| {
+                e.mem.u32(a[0] + slot).into_ret()
+            });
+        }
+        e.register(CELL_FLAG_20, |e, a| {
+            u32::from(e.mem.u8(a[0] + 0x24) & 0x20 != 0).into_ret()
+        });
+        e.register(CELL_FLAG_2, |e, a| {
+            u32::from(e.mem.u8(a[0] + 0x24) & 2 != 0).into_ret()
+        });
+        e.register(CELL_FLAG_80, |e, a| {
+            u32::from(e.mem.u8(a[0] + 0x24) & 0x80 != 0).into_ret()
+        });
+        e.register(WORD_AT_18, |e, a| e.mem.u32(a[0] + 0x18).into_ret());
+        e
+    }
+
+    /// An actor-like object (0x400 bytes) with the actor vtable.
+    fn actor(e: &mut Engine) -> Ptr {
+        let block = e.mem.alloc(0x400);
+        e.mem.set_u32(block, ACTOR_VTABLE);
+        Ptr::new(block)
+    }
+
+    /// Doubles of the extra data accessors the ownership functions use; the
+    /// cell's extra data list is at `+0x28`, so they read words of the cell.
+    fn ownership_doubles(e: &mut Engine) {
+        e.register(EXTRA_LIST_GET_OWNER, |e, a| {
+            e.mem.u32(a[0] - 0x28 + CELL_WORD_A).into_ret()
+        });
+        e.register(EXTRA_LIST_GET_TYPE_74, |e, a| {
+            e.mem.u32(a[0] - 0x28 + CELL_WORD_B).into_ret()
+        });
+        e.register(EXTRA_LIST_GET_RANK, |e, a| {
+            e.mem.u32(a[0] - 0x28 + CELL_WORD_C).into_ret()
+        });
+        e.register(EXTRA_LIST_GET_GLOBAL, |e, a| {
+            e.mem.u32(a[0] - 0x28 + 0xec).into_ret()
+        });
+        e.register(WORLD_SPACE_OWNER_FORM, |e, a| {
+            e.mem.u32(a[0] + CANDIDATE_WORD).into_ret()
+        });
+        // A cast succeeds when the object's `KIND_WORD` is the target.
+        e.register(RT_DYNAMIC_CAST, |e, a| {
+            if e.mem.u32(a[0] + KIND_WORD) == a[3] {
+                a[0].into_ret()
+            } else {
+                0u32.into_ret()
+            }
+        });
+        e.register(ACTOR_BASE_GET_FACTION_RANK, |e, a| {
+            e.mem.u32(a[0] - 0x30 + FACTION_RANK_WORD).into_ret()
+        });
+    }
+
+    #[test]
+    fn multibound_nodes_without_a_parent_are_attached_to_the_cells_child() {
+        let mut e = scene_engine();
+        let (cell, _) = loaded_cell(&mut e, false);
+        let parent = wide_object(&mut e);
+        let parent_address = parent.addr();
+        e.register_double(CELL_CHILD_NODE, move |_, a| {
+            assert_eq!(a[1], 7);
+            parent_address.into_ret()
+        });
+        let (free, taken, other_free) = (
+            wide_object(&mut e),
+            wide_object(&mut e),
+            wide_object(&mut e),
+        );
+        word(&mut e, taken, 0x18, 0x1234);
+        let entries = Rc::new(RefCell::new(VecDeque::from(vec![
+            free.addr(),
+            taken.addr(),
+            0,
+            other_free.addr(),
+        ])));
+        returns(&mut e, MAP_FIRST_POSITION, 1);
+        let queue = entries.clone();
+        e.register_double(MAP_GET_NEXT, move |e, a| {
+            let node = queue.borrow_mut().pop_front().unwrap();
+            e.mem.set_u32(a[3], node);
+            e.mem.set_u32(a[1], u32::from(!queue.borrow().is_empty()));
+            Ret::default()
+        });
+        e.call_log = Some(vec![]);
+        e.call(0x0054_5a30, &args![cell]);
+        let log = take_log(&mut e);
+        // Only the nodes without a parent are attached, with the flag 1.
+        assert_eq!(
+            calls_to(&log, wide(0xdc)),
+            vec![
+                vec![parent.addr(), free.addr(), 1],
+                vec![parent.addr(), other_free.addr(), 1]
+            ]
+        );
+        assert_eq!(calls_to(&log, SLOT_RELEASE).len(), 4);
+
+        // No child node, or no loaded data: nothing is walked.
+        e.register(CELL_CHILD_NODE, |_, _| 0u32.into_ret());
+        e.call_log = Some(vec![]);
+        e.call(0x0054_5a30, &args![cell]);
+        assert!(calls_to(&take_log(&mut e), MAP_FIRST_POSITION).is_empty());
+        e.register_double(CELL_CHILD_NODE, move |_, _| parent_address.into_ret());
+        e.set(cell, TESObjectCELL::pLoadedData, Ptr::NULL);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_5a30, &args![cell]);
+        assert!(calls_to(&take_log(&mut e), MAP_FIRST_POSITION).is_empty());
+    }
+
+    #[test]
+    fn the_portal_graph_is_built_on_first_use() {
+        let mut e = scene_engine();
+        let slot = TESObjectCELL::spPortalGraph.off;
+        e.register(PORTAL_GRAPH_CONSTRUCT, |_, a| a[0].into_ret());
+        let graph = wide_object(&mut e);
+        let graph_address = graph.addr();
+        e.register_double(WORLD_SPACE_PORTAL_GRAPH, move |_, _| {
+            graph_address.into_ret()
+        });
+
+        // An interior cell builds a 0x78-byte object.
+        let interior = cell(&mut e, true);
+        e.call_log = Some(vec![]);
+        let built = e.call(0x0054_5b30, &args![interior]).u32();
+        let log = take_log(&mut e);
+        assert_eq!(calls_to(&log, NODE_ALLOCATE), vec![vec![0x78]]);
+        assert_eq!(calls_to(&log, PORTAL_GRAPH_CONSTRUCT), vec![vec![built]]);
+        assert_eq!(e.mem.u32(interior.addr() + slot), built);
+
+        // Built once: the second call only reads the slot (twice).
+        e.call_log = Some(vec![]);
+        assert_eq!(e.call(0x0054_5b30, &args![interior]).u32(), built);
+        assert_eq!(take_log(&mut e).len(), 1 + 2);
+
+        // An exterior cell takes the graph of its world space.
+        let exterior = cell(&mut e, false);
+        let world = wide_object(&mut e);
+        e.set(exterior, TESObjectCELL::pWorldSpace, world);
+        e.call_log = Some(vec![]);
+        assert_eq!(e.call(0x0054_5b30, &args![exterior]).u32(), graph.addr());
+        let log = take_log(&mut e);
+        assert_eq!(
+            calls_to(&log, WORLD_SPACE_PORTAL_GRAPH),
+            vec![vec![world.addr()]]
+        );
+        assert_eq!(e.mem.u32(exterior.addr() + slot), graph.addr());
+    }
+
+    #[test]
+    fn dropping_the_portal_graph_resets_the_current_one() {
+        let mut e = scene_engine();
+        let slot = TESObjectCELL::spPortalGraph.off;
+        let entry = wide_object(&mut e);
+        let entry_address = entry.addr();
+        e.register_double(GLOBAL_TABLE_ENTRY, move |_, a| {
+            assert_eq!(a[0], 0);
+            entry_address.into_ret()
+        });
+        e.register(CURRENT_PORTAL_GRAPH, |e, a| {
+            e.mem.u32(a[0] + 0x1e0).into_ret()
+        });
+        quiet(
+            &mut e,
+            &[SET_CURRENT_PORTAL_GRAPH, WORLD_SPACE_RELEASE_PORTAL_GRAPH],
+        );
+        let graph = wide_object(&mut e);
+
+        // No graph: only the slot is read.
+        let interior = cell(&mut e, true);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_5c10, &args![interior]);
+        assert_eq!(take_log(&mut e).len(), 1 + 1);
+
+        // The cell's graph is the current one: the current one is reset.
+        e.mem.set_u32(interior.addr() + slot, graph.addr());
+        e.mem.set_u32(entry.addr() + 0x1e0, graph.addr());
+        e.call_log = Some(vec![]);
+        e.call(0x0054_5c10, &args![interior]);
+        let log = take_log(&mut e);
+        assert_eq!(
+            calls_to(&log, SET_CURRENT_PORTAL_GRAPH),
+            vec![vec![entry.addr(), 0]]
+        );
+        assert_eq!(e.mem.u32(interior.addr() + slot), 0);
+        assert!(calls_to(&log, WORLD_SPACE_RELEASE_PORTAL_GRAPH).is_empty());
+
+        // Another graph is current: left alone.
+        e.mem.set_u32(interior.addr() + slot, graph.addr());
+        e.mem.set_u32(entry.addr() + 0x1e0, 0x99);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_5c10, &args![interior]);
+        assert!(calls_to(&take_log(&mut e), SET_CURRENT_PORTAL_GRAPH).is_empty());
+
+        // An exterior cell releases its world space's graph.
+        let exterior = cell(&mut e, false);
+        let world = wide_object(&mut e);
+        e.set(exterior, TESObjectCELL::pWorldSpace, world);
+        e.mem.set_u32(exterior.addr() + slot, graph.addr());
+        e.call_log = Some(vec![]);
+        e.call(0x0054_5c10, &args![exterior]);
+        let log = take_log(&mut e);
+        assert!(calls_to(&log, GLOBAL_TABLE_ENTRY).is_empty());
+        assert_eq!(
+            calls_to(&log, WORLD_SPACE_RELEASE_PORTAL_GRAPH),
+            vec![vec![world.addr()]]
+        );
+        assert_eq!(e.mem.u32(exterior.addr() + slot), 0);
+    }
+
+    #[test]
+    fn the_cells_3d_is_the_first_slot_of_its_loaded_data() {
+        let mut e = scene_engine();
+        let (cell, loaded) = loaded_cell(&mut e, false);
+        assert_eq!(e.call(0x0054_5cb0, &args![cell]).u32(), 0);
+        let node = wide_object(&mut e);
+        e.mem.set_u32(loaded.addr(), node.addr());
+        assert_eq!(e.call(0x0054_5cb0, &args![cell]).u32(), node.addr());
+        e.set(cell, TESObjectCELL::pLoadedData, Ptr::NULL);
+        assert_eq!(e.call(0x0054_5cb0, &args![cell]).u32(), 0);
+    }
+
+    /// Everything `Load3D` calls outside the file, as doubles. Returns the
+    /// nodes created, in order, and the loader.
+    fn load_doubles(e: &mut Engine) -> (Rc<RefCell<Vec<u32>>>, Ptr) {
+        let created = Rc::new(RefCell::new(vec![]));
+        let record = created.clone();
+        e.register_double(NODE_CONSTRUCT, move |e, a| {
+            e.mem.set_u32(a[0], WIDE_VTABLE);
+            record.borrow_mut().push(a[0]);
+            a[0].into_ret()
+        });
+        quiet(
+            e,
+            &[
+                SCOPE_ENTER,
+                SCOPE_LEAVE,
+                CELL_SET_STATE,
+                NODE_SET_TRANSLATION,
+                NODE_SET_ROTATION,
+                NODE_SET_FLAG_BITS,
+                NODE_SET_FLAG,
+                BOUND_SET_RADIUS,
+                BOUND_SET_CENTER_AND_RADIUS,
+                BOUND_BASE_CONSTRUCT,
+                UPDATE_DATA_CONSTRUCT,
+                NODE_UPDATE,
+                CELL_FINISH_3D,
+                SAVE_LOAD_CELL,
+                LOADER_AFTER_LOAD,
+                FIXED_STRING_DESTRUCT,
+                NODE_SET_NAME,
+            ],
+        );
+        for constructor in [MULTI_BOUND_CONSTRUCT, MULTI_BOUND_AABB_CONSTRUCT] {
+            e.register(constructor, |_, a| a[0].into_ret());
+        }
+        e.register(PORTAL_GRAPH_CONSTRUCT, |_, a| a[0].into_ret());
+        e.register(FIXED_STRING_CONSTRUCT, |e, a| {
+            e.mem.set_u32(a[0], a[1]);
+            a[0].into_ret()
+        });
+        // The node stores the bound it is given at `+0x20`.
+        e.register(wide(0x78), |e, a| {
+            e.mem.set_u32(a[0] + 0x20, a[1]);
+            Ret::default()
+        });
+        e.register(CELL_CHILD_NODE, |_, _| 0u32.into_ret());
+        e.register(GAME_LOADER_FLAG_SETTER, |_, _| 0x5au32.into_ret());
+        let loader = wide_object(e);
+        e.set_global(GAME_LOADER_POINTER, loader.addr());
+        // Flags 1, 3, 6 and 9 set.
+        e.set_global(STATIC_FLAG, 0b10_0100_1010u32);
+        (created, loader)
+    }
+
+    #[test]
+    fn load_3d_builds_the_node_tree_of_a_cell() {
+        let mut e = scene_engine();
+        let (created, loader) = load_doubles(&mut e);
+        let cell = cell(&mut e, true);
+        e.call_log = Some(vec![]);
+        let root = e.call(0x0054_5cf0, &args![cell]).u32();
+        let log = take_log(&mut e);
+        let nodes = created.borrow().clone();
+
+        // Twelve nodes for the tree and one for the portal geometry.
+        assert_eq!(nodes.len(), 13);
+        assert_eq!(root, nodes[0]);
+        let (n1, n2, n3, n4, n5) = (nodes[1], nodes[2], nodes[3], nodes[4], nodes[5]);
+        let (n6, n7, n8, n9, n10, n11) =
+            (nodes[6], nodes[7], nodes[8], nodes[9], nodes[10], nodes[11]);
+        let geometry = nodes[12];
+        assert_eq!(calls_to(&log, NODE_ALLOCATE)[0], vec![0xac]);
+
+        // The cell state goes 2, then 3; the cell is not detached.
+        assert_eq!(
+            calls_to(&log, CELL_SET_STATE),
+            vec![vec![cell.addr(), 2], vec![cell.addr(), 3]]
+        );
+        assert!(!e.get(cell, TESObjectCELL::bCellDetached));
+        assert_eq!(
+            calls_to(&log, SCOPE_ENTER)[0][1..],
+            [0x1a, 1, SOURCE_FILE, 0xd84]
+        );
+        assert_eq!(calls_to(&log, SCOPE_LEAVE).len(), 1);
+        // The root: zero translation, identity rotation.
+        assert_eq!(
+            calls_to(&log, NODE_SET_TRANSLATION),
+            vec![vec![root, ZERO_VECTOR]]
+        );
+        assert_eq!(
+            calls_to(&log, NODE_SET_ROTATION),
+            vec![vec![root, IDENTITY_MATRIX]]
+        );
+
+        // The attach calls: (parent, child, 1).
+        let multi_bound: Vec<u32> = calls_to(&log, MULTI_BOUND_NODE_CONSTRUCT)
+            .iter()
+            .map(|call| call[0])
+            .collect();
+        assert_eq!(multi_bound.len(), 4);
+        let mut expected: Vec<Vec<u32>> = vec![
+            vec![root, n1, 1],
+            vec![root, n2, 1],
+            vec![n2, n3, 1],
+            vec![n2, n4, 1],
+            vec![root, n5, 1],
+        ];
+        expected.extend(multi_bound.iter().map(|node| vec![n5, *node, 1]));
+        expected.extend([
+            vec![root, n6, 1],
+            vec![root, n7, 1],
+            vec![root, n8, 1],
+            vec![root, n9, 1],
+            vec![root, n10, 1],
+            vec![root, n10, 1],
+            vec![root, n11, 1],
+            vec![root, n11, 1],
+        ]);
+        assert_eq!(calls_to(&log, wide(0xdc)), expected);
+        // The markers are kept in the cell's slots.
+        assert_eq!(e.get(cell, TESObjectCELL::spLightMarkerNode).addr(), n3);
+        assert_eq!(e.get(cell, TESObjectCELL::spSoundMarkerNode).addr(), n4);
+        // Each multibound node: field +0xB0 is 1, its data is a `BSMultiBound`
+        // that holds a `BSMultiBoundAABB`.
+        for node in &multi_bound {
+            assert_eq!(e.mem.u32(node + 0xb0), 1);
+        }
+        assert_eq!(calls_to(&log, MULTI_BOUND_SET_PRIMITIVE).len(), 4);
+        assert_eq!(calls_to(&log, MULTI_BOUND_SET_DATA).len(), 4);
+        assert_eq!(calls_to(&log, NODE_ALLOCATE).len(), 13 + 4 * 3 + 1);
+        // The loaded data (0x64 bytes) was built; each tree node got a bound
+        // (0x10 bytes) through its virtual slot 0x78.
+        let allocations = calls_to(&log, ALLOCATE);
+        assert_eq!(allocations.iter().filter(|call| call[0] == 0x64).count(), 1);
+        assert_eq!(
+            allocations.iter().filter(|call| call[0] == 0x10).count(),
+            12
+        );
+        assert_eq!(calls_to(&log, wide(0x78)).len(), 12);
+        assert_eq!(calls_to(&log, BOUND_SET_RADIUS).len(), 12);
+
+        // The flags follow `005468f0` of the indices 0, 1, 9, 10, 2, 3, then
+        // 0 itself, then 5, 6, 7, 8 (bits 1, 3, 6 and 9 are set).
+        let flags: Vec<u32> = calls_to(&log, NODE_SET_FLAG)
+            .iter()
+            .map(|call| call[1])
+            .collect();
+        assert_eq!(flags, vec![0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0]);
+        // Two flag setters per node (and the extra one of child 1).
+        let bit_calls = calls_to(&log, NODE_SET_FLAG_BITS);
+        assert_eq!(bit_calls.len(), 25);
+        assert_eq!(bit_calls[0], vec![root, 1, 0x2000]);
+        assert_eq!(bit_calls[1], vec![root, 1, 0x800]);
+        assert_eq!(bit_calls[4], vec![n2, 1, 0x800]);
+        assert_eq!(bit_calls[5], vec![n2, 1, 0x2000]);
+        assert_eq!(bit_calls[6], vec![n2, 1, 0x20_0000]);
+
+        // The root is updated, stored as the loaded data's `spCell3D`, and
+        // the portal graph gets its geometry.
+        let loaded = e.get(cell, TESObjectCELL::pLoadedData);
+        assert_eq!(e.mem.u32(loaded.addr()), root);
+        let update = calls_to(&log, UPDATE_DATA_CONSTRUCT);
+        assert_eq!(update[0][1..], [0, 0, 0]);
+        assert_eq!(calls_to(&log, NODE_UPDATE)[0][1], update[0][0]);
+        assert_eq!(calls_to(&log, NODE_UPDATE)[0][0], root);
+        let graph = e.mem.u32(cell.addr() + TESObjectCELL::spPortalGraph.off);
+        assert_eq!(e.mem.u32(graph + 0x4c), geometry);
+        let name = calls_to(&log, FIXED_STRING_CONSTRUCT);
+        assert_eq!(name[0][1], PORTAL_GEOMETRY_NAME);
+        assert_eq!(
+            calls_to(&log, NODE_SET_NAME),
+            vec![vec![geometry, name[0][0]]]
+        );
+        assert_eq!(calls_to(&log, FIXED_STRING_DESTRUCT).len(), 1);
+
+        // The loader's flag is cleared around `LoadCell` (the previous value
+        // is restored) and its follow-up runs.
+        assert_eq!(
+            calls_to(&log, GAME_LOADER_FLAG_SETTER),
+            vec![vec![loader.addr(), 0], vec![loader.addr(), 0x5a]]
+        );
+        assert_eq!(
+            calls_to(&log, SAVE_LOAD_CELL),
+            vec![vec![loader.addr(), cell.addr()]]
+        );
+        assert_eq!(
+            calls_to(&log, LOADER_AFTER_LOAD),
+            vec![vec![loader.addr(), 0]]
+        );
+        assert_eq!(calls_to(&log, CELL_FINISH_3D), vec![vec![cell.addr()]]);
+
+        // A cell that has its 3D: returned as it is, the portal graph keeps
+        // its geometry, nothing is built.
+        e.call_log = Some(vec![]);
+        assert_eq!(e.call(0x0054_5cf0, &args![cell]).u32(), root);
+        let log = take_log(&mut e);
+        assert_eq!(created.borrow().len(), 13);
+        assert!(calls_to(&log, CELL_SET_STATE).is_empty());
+        assert!(calls_to(&log, wide(0xdc)).is_empty());
+    }
+
+    #[test]
+    fn load_3d_leaves_the_loader_alone_when_it_says_so() {
+        let mut e = scene_engine();
+        let (_, loader) = load_doubles(&mut e);
+        // Bit 2 of the loader's word: no `LoadCell` at all.
+        e.mem.set_u32(loader.addr() + 0x244, 2);
+        let first = cell(&mut e, true);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_5cf0, &args![first]);
+        let log = take_log(&mut e);
+        assert!(calls_to(&log, GAME_LOADER_FLAG_SETTER).is_empty());
+        assert!(calls_to(&log, SAVE_LOAD_CELL).is_empty());
+        // Bit 0x10: `LoadCell` runs without the follow-up.
+        e.mem.set_u32(loader.addr() + 0x244, 0x10);
+        let second = cell(&mut e, true);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_5cf0, &args![second]);
+        let log = take_log(&mut e);
+        assert_eq!(calls_to(&log, SAVE_LOAD_CELL).len(), 1);
+        assert!(calls_to(&log, LOADER_AFTER_LOAD).is_empty());
+        assert_eq!(calls_to(&log, GAME_LOADER_FLAG_SETTER).len(), 2);
+    }
+
+    fn flag_node(e: &mut Engine) -> (Ptr, Ptr) {
+        let bound = wide_object(e);
+        e.register(NODE_SET_FLAG_BITS, |e, a| {
+            let flags = e.mem.u32(a[0] + 0x30);
+            let flags = if a[1] & 0xff != 0 {
+                flags | a[2]
+            } else {
+                flags & !a[2]
+            };
+            e.mem.set_u32(a[0] + 0x30, flags);
+            Ret::default()
+        });
+        quiet(e, &[BOUND_SET_RADIUS]);
+        let node = wide_object(e);
+        e.mem.set_u32(node.addr() + 0x20, bound.addr());
+        (node, bound)
+    }
+
+    #[test]
+    fn flag_0x800_comes_with_a_bound_of_radius_1() {
+        let mut e = scene_engine();
+        let (node, bound) = flag_node(&mut e);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_6780, &args![node, true]);
+        assert_eq!(e.mem.u32(node.addr() + 0x30), 0x800);
+        let log = take_log(&mut e);
+        assert_eq!(
+            calls_to(&log, BOUND_SET_RADIUS),
+            vec![vec![bound.addr(), 1.0f32.to_bits()]]
+        );
+        // Cleared: no radius.
+        e.call_log = Some(vec![]);
+        e.call(0x0054_6780, &args![node, false]);
+        assert_eq!(e.mem.u32(node.addr() + 0x30), 0);
+        assert!(calls_to(&take_log(&mut e), BOUND_SET_RADIUS).is_empty());
+    }
+
+    #[test]
+    fn flag_0x2000_is_set_and_cleared() {
+        let mut e = scene_engine();
+        let (node, _) = flag_node(&mut e);
+        e.mem.set_u32(node.addr() + 0x30, 0x1);
+        e.call(0x0054_67c0, &args![node, true]);
+        assert_eq!(e.mem.u32(node.addr() + 0x30), 0x2001);
+        e.call(0x0054_67c0, &args![node, false]);
+        assert_eq!(e.mem.u32(node.addr() + 0x30), 0x1);
+    }
+
+    #[test]
+    fn flag_0x200000_is_set_and_cleared() {
+        let mut e = scene_engine();
+        let (node, _) = flag_node(&mut e);
+        e.mem.set_u32(node.addr() + 0x30, 0x1);
+        e.call(0x0054_68b0, &args![node, true]);
+        assert_eq!(e.mem.u32(node.addr() + 0x30), 0x20_0001);
+        e.call(0x0054_68b0, &args![node, false]);
+        assert_eq!(e.mem.u32(node.addr() + 0x30), 0x1);
+    }
+
+    #[test]
+    fn a_node_without_a_bound_gets_one() {
+        let mut e = scene_engine();
+        quiet(&mut e, &[BOUND_SET_CENTER_AND_RADIUS, BOUND_BASE_CONSTRUCT]);
+        e.register(wide(0x78), |e, a| {
+            e.mem.set_u32(a[0] + 0x20, a[1]);
+            Ret::default()
+        });
+        let node = wide_object(&mut e);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_67e0, &args![node]);
+        let log = take_log(&mut e);
+        let bound = e.mem.u32(node.addr() + 0x20);
+        assert_ne!(bound, 0);
+        assert_eq!(calls_to(&log, ALLOCATE), vec![vec![0x10]]);
+        assert_eq!(calls_to(&log, BOUND_BASE_CONSTRUCT), vec![vec![bound]]);
+        assert_eq!(calls_to(&log, wide(0x78)), vec![vec![node.addr(), bound]]);
+        assert_eq!(
+            calls_to(&log, BOUND_SET_CENTER_AND_RADIUS),
+            vec![vec![bound, ZERO_VECTOR, 0.0f32.to_bits()]]
+        );
+        // A node that has a bound is left alone.
+        e.call_log = Some(vec![]);
+        e.call(0x0054_67e0, &args![node]);
+        assert_eq!(take_log(&mut e).len(), 1);
+    }
+
+    #[test]
+    fn the_bound_constructor_shape_returns_this() {
+        let mut e = scene_engine();
+        quiet(&mut e, &[BOUND_BASE_CONSTRUCT]);
+        e.call_log = Some(vec![]);
+        let result = e.call(0x0054_6890, &args![0x4444u32, 0x100u32, 0u32]);
+        assert_eq!(result.u32(), 0x4444);
+        assert_eq!(
+            calls_to(&take_log(&mut e), BOUND_BASE_CONSTRUCT),
+            vec![vec![0x4444]]
+        );
+    }
+
+    #[test]
+    fn the_multibound_node_field_is_written() {
+        let mut e = scene_engine();
+        let node = wide_object(&mut e);
+        e.call(0x0054_68d0, &args![node, 0x77u32]);
+        assert_eq!(e.mem.u32(node.addr() + 0xb0), 0x77);
+    }
+
+    #[test]
+    fn a_static_flag_is_tested_by_index() {
+        let mut e = scene_engine();
+        e.set_global(STATIC_FLAG, 0b101u32);
+        assert!(e.call(0x0054_68f0, &args![0u8]).bool());
+        assert!(!e.call(0x0054_68f0, &args![1u8]).bool());
+        assert!(e.call(0x0054_68f0, &args![2u8]).bool());
+        // Only the low five bits of the index count.
+        assert!(e.call(0x0054_68f0, &args![0x20u32]).bool());
+        assert!(!e.call(0x0054_68f0, &args![0x21u32]).bool());
+    }
+
+    #[test]
+    fn the_node_slot_at_4c_is_stored() {
+        let mut e = scene_engine();
+        let object = wide_object(&mut e);
+        let node = wide_object(&mut e);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_6910, &args![object, node]);
+        let log = take_log(&mut e);
+        assert_eq!(
+            calls_to(&log, SLOT_ASSIGN),
+            vec![vec![object.addr() + 0x4c, node.addr()]]
+        );
+        assert_eq!(e.mem.u32(object.addr() + 0x4c), node.addr());
+    }
+
+    #[test]
+    fn the_node_slot_at_4c_is_read() {
+        let mut e = scene_engine();
+        let object = wide_object(&mut e);
+        assert_eq!(e.call(0x0054_6930, &args![object]).u32(), 0);
+        e.mem.set_u32(object.addr() + 0x4c, 0x1234);
+        assert_eq!(e.call(0x0054_6930, &args![object]).u32(), 0x1234);
+    }
+
+    #[test]
+    fn the_loader_bit_0x10_is_tested() {
+        let mut e = scene_engine();
+        let loader = wide_object(&mut e);
+        assert!(!e.call(0x0054_6950, &args![loader]).bool());
+        e.mem.set_u32(loader.addr() + 0x244, 0x10);
+        assert!(e.call(0x0054_6950, &args![loader]).bool());
+        e.mem.set_u32(loader.addr() + 0x244, 0xffff_ffef);
+        assert!(!e.call(0x0054_6950, &args![loader]).bool());
+    }
+
+    #[test]
+    fn unloading_a_cell_resets_its_runtime_state() {
+        let mut e = scene_engine();
+        let (cell, _) = loaded_cell(&mut e, false);
+        let helper = wide_object(&mut e);
+        e.set_global(STATIC_OBJECT, helper.addr());
+        let extra = wide_object(&mut e);
+        answer(&mut e, extra, 0x94, 0x4321);
+        let extra_address = extra.addr();
+        e.register_double(EXTRA_LIST_GET_TYPE_1, move |_, _| extra_address.into_ret());
+        quiet(
+            &mut e,
+            &[
+                EXTRA_LIST_RESET_TYPE_1,
+                STATIC_RELEASE_HELPER,
+                CELL_SET_STATE,
+            ],
+        );
+        returns(&mut e, MAP_FIRST_POSITION, 0);
+        e.set(cell, TESObjectCELL::iQueuedRefCount, 5);
+        e.set(cell, TESObjectCELL::iCriticalQueuedRefCount, 6);
+        e.set(cell, TESObjectCELL::bCellDetached, true);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_6970, &args![cell]);
+        let log = take_log(&mut e);
+        let list = cell.addr() + 0x28;
+        // The object at 011ca088 is told the extra data's value (slot 0x94).
+        assert_eq!(
+            calls_to(&log, STATIC_RELEASE_HELPER),
+            vec![vec![helper.addr(), 0x4321]]
+        );
+        assert_eq!(
+            calls_to(&log, CELL_SET_STATE),
+            vec![vec![cell.addr(), 1], vec![cell.addr(), 0]]
+        );
+        assert_eq!(calls_to(&log, EXTRA_LIST_RESET_TYPE_1), vec![vec![list, 0]]);
+        // The loaded data was released, the counters cleared.
+        assert_eq!(e.get(cell, TESObjectCELL::pLoadedData), Ptr::NULL);
+        assert_eq!(e.get(cell, TESObjectCELL::iQueuedRefCount), 0);
+        assert_eq!(e.get(cell, TESObjectCELL::iCriticalQueuedRefCount), 0);
+        assert!(!e.get(cell, TESObjectCELL::bCellDetached));
+
+        // Without the type-1 extra data, the helper is not told.
+        e.register(EXTRA_LIST_GET_TYPE_1, |_, _| 0u32.into_ret());
+        e.call_log = Some(vec![]);
+        e.call(0x0054_6970, &args![cell]);
+        assert!(calls_to(&take_log(&mut e), STATIC_RELEASE_HELPER).is_empty());
+    }
+
+    #[test]
+    fn the_queued_reference_counter_is_cleared() {
+        let mut e = scene_engine();
+        let cell = cell(&mut e, false);
+        e.set(cell, TESObjectCELL::iQueuedRefCount, 3);
+        e.set(cell, TESObjectCELL::iCriticalQueuedRefCount, 4);
+        e.call(0x0054_6a00, &args![cell]);
+        assert_eq!(e.get(cell, TESObjectCELL::iQueuedRefCount), 0);
+        assert_eq!(e.get(cell, TESObjectCELL::iCriticalQueuedRefCount), 4);
+    }
+
+    #[test]
+    fn the_critical_queued_reference_counter_is_cleared() {
+        let mut e = scene_engine();
+        let cell = cell(&mut e, false);
+        e.set(cell, TESObjectCELL::iQueuedRefCount, 3);
+        e.set(cell, TESObjectCELL::iCriticalQueuedRefCount, 4);
+        e.call(0x0054_6a20, &args![cell]);
+        assert_eq!(e.get(cell, TESObjectCELL::iQueuedRefCount), 3);
+        assert_eq!(e.get(cell, TESObjectCELL::iCriticalQueuedRefCount), 0);
+    }
+
+    #[test]
+    fn the_owner_comes_from_the_extra_data_or_the_candidate() {
+        let mut e = scene_engine();
+        ownership_doubles(&mut e);
+        e.set_global(OWNER_EXCLUDED_FORM, 0x99u32);
+        let cell = cell(&mut e, false);
+        let candidate = wide_object(&mut e);
+        word(&mut e, candidate, 0x18, 0x5151);
+
+        // The extra data has the owner: the candidate is not looked up.
+        e.mem.set_u32(cell.addr() + CELL_WORD_A, 0x4242);
+        e.call_log = Some(vec![]);
+        assert_eq!(e.call(0x0054_6a40, &args![cell]).u32(), 0x4242);
+        assert!(calls_to(&take_log(&mut e), EXTRA_LIST_GET_TYPE_74).is_empty());
+
+        // Without it, the word at +0x18 of the candidate.
+        e.mem.set_u32(cell.addr() + CELL_WORD_A, 0);
+        e.mem.set_u32(cell.addr() + CELL_WORD_B, candidate.addr());
+        assert_eq!(e.call(0x0054_6a40, &args![cell]).u32(), 0x5151);
+        // The excluded candidate and a missing one give no owner.
+        e.set_global(OWNER_EXCLUDED_FORM, candidate.addr());
+        assert_eq!(e.call(0x0054_6a40, &args![cell]).u32(), 0);
+        e.mem.set_u32(cell.addr() + CELL_WORD_B, 0);
+        assert_eq!(e.call(0x0054_6a40, &args![cell]).u32(), 0);
+    }
+
+    #[test]
+    fn the_excluded_owner_form_is_read_from_its_global() {
+        let mut e = scene_engine();
+        e.set_global(OWNER_EXCLUDED_FORM, 0xabcdu32);
+        assert_eq!(e.call(0x0054_6a90, &[]).u32(), 0xabcd);
+    }
+
+    #[test]
+    fn the_ownership_global_is_the_extra_datas() {
+        let mut e = scene_engine();
+        ownership_doubles(&mut e);
+        let cell = cell(&mut e, false);
+        e.mem.set_u32(cell.addr() + 0xec, 0x777);
+        e.call_log = Some(vec![]);
+        assert_eq!(e.call(0x0054_6aa0, &args![cell]).u32(), 0x777);
+        assert_eq!(
+            calls_to(&take_log(&mut e), EXTRA_LIST_GET_GLOBAL),
+            vec![vec![cell.addr() + 0x28]]
+        );
+    }
+
+    #[test]
+    fn the_ownership_rank_turns_minus_one_into_zero() {
+        let mut e = scene_engine();
+        ownership_doubles(&mut e);
+        let cell = cell(&mut e, false);
+        e.mem.set_u32(cell.addr() + CELL_WORD_C, 0xffff_ffff);
+        assert_eq!(e.call(0x0054_6ac0, &args![cell]).i32(), 0);
+        e.mem.set_u32(cell.addr() + CELL_WORD_C, 3);
+        assert_eq!(e.call(0x0054_6ac0, &args![cell]).i32(), 3);
+        e.mem.set_u32(cell.addr() + CELL_WORD_C, (-2i32) as u32);
+        assert_eq!(e.call(0x0054_6ac0, &args![cell]).i32(), -2);
+    }
+
+    #[test]
+    fn the_detach_time_is_the_extra_datas() {
+        let mut e = scene_engine();
+        e.register(EXTRA_LIST_GET_DETACH_TIME, |_, a| (a[0] + 1).into_ret());
+        let cell = cell(&mut e, false);
+        assert_eq!(e.call(0x0054_6af0, &args![cell]).u32(), cell.addr() + 0x29);
+    }
+
+    #[test]
+    fn setting_the_detach_time_sets_the_form_flags() {
+        let mut e = scene_engine();
+        quiet(&mut e, &[EXTRA_LIST_SET_DETACH_TIME, fake(0x4c)]);
+        let loader = wide_object(&mut e);
+        e.set_global(GAME_LOADER_POINTER, loader.addr());
+        let exterior = cell(&mut e, false);
+        let data = e.new_object::<ExteriorData>();
+        e.set(exterior, TESObjectCELL::pCellData, data.cast());
+        // Bit 2 of the loader's word is clear: the time is stored. Within
+        // -128..127 on both axes: flag 0x20000000 after 0x40000000.
+        e.call_log = Some(vec![]);
+        e.call(0x0054_6b10, &args![exterior, 77u32, false]);
+        let log = take_log(&mut e);
+        assert_eq!(
+            calls_to(&log, EXTRA_LIST_SET_DETACH_TIME),
+            vec![vec![exterior.addr() + 0x28, 77]]
+        );
+        assert_eq!(
+            calls_to(&log, fake(0x48)),
+            vec![
+                vec![exterior.addr(), 0x4000_0000],
+                vec![exterior.addr(), 0x2000_0000]
+            ]
+        );
+        // Outside the range on either axis: 0x10000000.
+        for (x, y) in [(128, 0), (-129, 0), (0, 128), (0, -129)] {
+            e.set(data, ExteriorData::iCellX, x);
+            e.set(data, ExteriorData::iCellY, y);
+            e.call_log = Some(vec![]);
+            e.call(0x0054_6b10, &args![exterior, 77u32, false]);
+            assert_eq!(
+                calls_to(&take_log(&mut e), fake(0x48))[1],
+                vec![exterior.addr(), 0x1000_0000]
+            );
+        }
+        // The edges are inside.
+        for (x, y) in [(127, -128), (-128, 127)] {
+            e.set(data, ExteriorData::iCellX, x);
+            e.set(data, ExteriorData::iCellY, y);
+            e.call_log = Some(vec![]);
+            e.call(0x0054_6b10, &args![exterior, 77u32, false]);
+            assert_eq!(
+                calls_to(&take_log(&mut e), fake(0x48))[1],
+                vec![exterior.addr(), 0x2000_0000]
+            );
+        }
+        // An interior cell only gets 0x40000000.
+        let interior = cell(&mut e, true);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_6b10, &args![interior, 5u32, false]);
+        assert_eq!(
+            calls_to(&take_log(&mut e), fake(0x48)),
+            vec![vec![interior.addr(), 0x4000_0000]]
+        );
+        // A zero time clears 0x70000000 through slot 0x4c.
+        e.call_log = Some(vec![]);
+        e.call(0x0054_6b10, &args![exterior, 0u32, false]);
+        let log = take_log(&mut e);
+        assert_eq!(
+            calls_to(&log, fake(0x4c)),
+            vec![vec![exterior.addr(), 0x7000_0000]]
+        );
+        assert!(calls_to(&log, fake(0x48)).is_empty());
+        // With the loader's bit 2, the time is stored only when it is zero
+        // or `keep` is set.
+        e.mem.set_u32(loader.addr() + 0x244, 2);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_6b10, &args![exterior, 9u32, false]);
+        assert!(calls_to(&take_log(&mut e), EXTRA_LIST_SET_DETACH_TIME).is_empty());
+        e.call_log = Some(vec![]);
+        e.call(0x0054_6b10, &args![exterior, 9u32, true]);
+        assert_eq!(
+            calls_to(&take_log(&mut e), EXTRA_LIST_SET_DETACH_TIME).len(),
+            1
+        );
+        e.call_log = Some(vec![]);
+        e.call(0x0054_6b10, &args![exterior, 0u32, false]);
+        assert_eq!(
+            calls_to(&take_log(&mut e), EXTRA_LIST_SET_DETACH_TIME),
+            vec![vec![exterior.addr() + 0x28, 0]]
+        );
+    }
+
+    #[test]
+    fn setting_the_owner_sets_form_flag_8() {
+        let mut e = scene_engine();
+        quiet(&mut e, &[EXTRA_LIST_SET_OWNER]);
+        let cell = cell(&mut e, false);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_6bf0, &args![cell, 0x1357u32]);
+        let log = take_log(&mut e);
+        assert_eq!(
+            sequence(&log),
+            vec![CELL_EXTRA_DATA_LIST, EXTRA_LIST_SET_OWNER, fake(0x48)]
+        );
+        assert_eq!(
+            calls_to(&log, EXTRA_LIST_SET_OWNER),
+            vec![vec![cell.addr() + 0x28, 0x1357]]
+        );
+        assert_eq!(calls_to(&log, fake(0x48)), vec![vec![cell.addr(), 8]]);
+    }
+
+    #[test]
+    fn the_owner_candidate_is_the_extra_data_or_the_worlds() {
+        let mut e = scene_engine();
+        ownership_doubles(&mut e);
+        let interior = cell(&mut e, true);
+        let exterior = cell(&mut e, false);
+        let world = wide_object(&mut e);
+        e.set(exterior, TESObjectCELL::pWorldSpace, world);
+        word(&mut e, world, CANDIDATE_WORD, 0x8080);
+        // The extra data wins.
+        e.mem.set_u32(exterior.addr() + CELL_WORD_B, 0x6060);
+        assert_eq!(e.call(0x0054_6c20, &args![exterior]).u32(), 0x6060);
+        // Otherwise the world space's (an interior cell has none).
+        e.mem.set_u32(exterior.addr() + CELL_WORD_B, 0);
+        assert_eq!(e.call(0x0054_6c20, &args![exterior]).u32(), 0x8080);
+        assert_eq!(e.call(0x0054_6c20, &args![interior]).u32(), 0);
+        e.set(exterior, TESObjectCELL::pWorldSpace, Ptr::NULL);
+        assert_eq!(e.call(0x0054_6c20, &args![exterior]).u32(), 0);
+    }
+
+    #[test]
+    fn the_detach_time_is_set_from_the_source_object() {
+        let mut e = scene_engine();
+        quiet(&mut e, &[EXTRA_LIST_SET_DETACH_TIME]);
+        let loader = wide_object(&mut e);
+        e.set_global(GAME_LOADER_POINTER, loader.addr());
+        returns(&mut e, DETACH_TIME_SOURCE, 42);
+        let cell = cell(&mut e, true);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_6c70, &args![cell]);
+        let log = take_log(&mut e);
+        assert_eq!(
+            calls_to(&log, DETACH_TIME_SOURCE),
+            vec![vec![DETACH_TIME_SOURCE_OBJECT]]
+        );
+        assert_eq!(
+            calls_to(&log, EXTRA_LIST_SET_DETACH_TIME),
+            vec![vec![cell.addr() + 0x28, 42]]
+        );
+        assert_eq!(
+            calls_to(&log, fake(0x48)),
+            vec![vec![cell.addr(), 0x4000_0000]]
+        );
+    }
+
+    /// A cell owned by an object of the given kind (the RTTI target its
+    /// casts succeed for) with an ownership rank.
+    fn owned_cell(e: &mut Engine, owner_kind: u32, rank: u32) -> (Ptr<TESObjectCELL>, Ptr) {
+        let cell = cell(e, false);
+        let owner = wide_object(e);
+        e.mem.set_u32(owner.addr() + KIND_WORD, owner_kind);
+        e.mem.set_u32(cell.addr() + CELL_WORD_A, owner.addr());
+        e.mem.set_u32(cell.addr() + CELL_WORD_C, rank);
+        (cell, owner)
+    }
+
+    #[test]
+    fn the_actor_may_use_what_its_form_or_faction_owns() {
+        let mut e = scene_engine();
+        ownership_doubles(&mut e);
+        let actor = actor(&mut e);
+        word(&mut e, actor, 0x218, 1);
+        let form = wide_object(&mut e);
+        word(&mut e, actor, BASE_FORM, form.addr());
+
+        // No owner.
+        let free = cell(&mut e, false);
+        assert!(!e.call(0x0054_6ca0, &args![free, actor]).bool());
+        // The actor's slot 0x218 says no.
+        let (cell, owner) = owned_cell(&mut e, RTTI_OWNER_CHARACTER, 0);
+        word(&mut e, actor, 0x218, 0);
+        assert!(!e.call(0x0054_6ca0, &args![cell, actor]).bool());
+        word(&mut e, actor, 0x218, 1);
+        // A character owner must be the actor's form.
+        assert!(!e.call(0x0054_6ca0, &args![cell, actor]).bool());
+        word(&mut e, actor, BASE_FORM, owner.addr());
+        assert!(e.call(0x0054_6ca0, &args![cell, actor]).bool());
+
+        // A faction owner: the rank of the actor's base data (a cast of the
+        // actor's form) against the cell's ownership rank.
+        let (cell, faction) = owned_cell(&mut e, RTTI_OWNER_FACTION, 2);
+        let base = wide_object(&mut e);
+        e.mem.set_u32(base.addr() + KIND_WORD, RTTI_OWNER_CHARACTER);
+        word(&mut e, actor, BASE_FORM, base.addr());
+        e.mem.set_u32(base.addr() + FACTION_RANK_WORD, 1);
+        assert!(!e.call(0x0054_6ca0, &args![cell, actor]).bool());
+        e.mem.set_u32(base.addr() + FACTION_RANK_WORD, 2);
+        e.call_log = Some(vec![]);
+        assert!(e.call(0x0054_6ca0, &args![cell, actor]).bool());
+        let log = take_log(&mut e);
+        // The actor is not the singleton: the flag is false.
+        assert_eq!(
+            calls_to(&log, ACTOR_BASE_GET_FACTION_RANK),
+            vec![vec![base.addr() + 0x30, faction.addr(), 0]]
+        );
+        let casts = calls_to(&log, RT_DYNAMIC_CAST);
+        assert_eq!(
+            casts[2][2..4],
+            [RTTI_OWNER_SOURCE_FORM, RTTI_OWNER_CHARACTER]
+        );
+        // The singleton gets the flag.
+        e.set_global(ACTOR_SINGLETON_POINTER, actor.addr());
+        e.mem.set_u32(base.addr() + FACTION_RANK_WORD, 9);
+        e.call_log = Some(vec![]);
+        assert!(e.call(0x0054_6ca0, &args![cell, actor]).bool());
+        assert_eq!(
+            calls_to(&take_log(&mut e), ACTOR_BASE_GET_FACTION_RANK)[0][2],
+            1
+        );
+        // An owner that is neither.
+        let (cell, _) = owned_cell(&mut e, 0x1, 2);
+        assert!(!e.call(0x0054_6ca0, &args![cell, actor]).bool());
+    }
+
+    #[test]
+    fn the_actor_may_not_take_what_another_owns() {
+        let mut e = scene_engine();
+        ownership_doubles(&mut e);
+        let actor = actor(&mut e);
+        word(&mut e, actor, 0x218, 1);
+        let form = wide_object(&mut e);
+        word(&mut e, actor, BASE_FORM, form.addr());
+
+        // The actor's slot 0x304 (called without arguments) vetoes.
+        let (cell, owner) = owned_cell(&mut e, RTTI_OWNER_CHARACTER, 0);
+        word(&mut e, actor, 0x304, 1);
+        e.call_log = Some(vec![]);
+        assert!(!e.call(0x0054_6da0, &args![cell, actor]).bool());
+        let log = take_log(&mut e);
+        assert_eq!(calls_to(&log, actor_slot(0x304)), vec![vec![actor.addr()]]);
+        word(&mut e, actor, 0x304, 0);
+        // A character owner: it must differ from the actor's form.
+        assert!(e.call(0x0054_6da0, &args![cell, actor]).bool());
+        word(&mut e, actor, BASE_FORM, owner.addr());
+        assert!(!e.call(0x0054_6da0, &args![cell, actor]).bool());
+        word(&mut e, actor, BASE_FORM, form.addr());
+        // Cell flag 0x20 (then 0x40) makes it false; so does an ownership
+        // global and the actor's slot 0x218.
+        e.mem.set_u8(cell.addr() + 0x24, 0x20);
+        assert!(!e.call(0x0054_6da0, &args![cell, actor]).bool());
+        e.mem.set_u8(cell.addr() + 0x24, 0x40);
+        assert!(!e.call(0x0054_6da0, &args![cell, actor]).bool());
+        e.mem.set_u8(cell.addr() + 0x24, 0);
+        e.mem.set_u32(cell.addr() + 0xec, 7);
+        assert!(!e.call(0x0054_6da0, &args![cell, actor]).bool());
+        e.mem.set_u32(cell.addr() + 0xec, 0);
+        word(&mut e, actor, 0x218, 0);
+        assert!(!e.call(0x0054_6da0, &args![cell, actor]).bool());
+        word(&mut e, actor, 0x218, 1);
+        // No owner.
+        let free = self::cell(&mut e, false);
+        assert!(!e.call(0x0054_6da0, &args![free, actor]).bool());
+
+        // A faction owner: true when the actor's rank is below the cell's.
+        let (cell, _) = owned_cell(&mut e, RTTI_OWNER_FACTION, 2);
+        let base = wide_object(&mut e);
+        e.mem.set_u32(base.addr() + KIND_WORD, RTTI_OWNER_CHARACTER);
+        word(&mut e, actor, BASE_FORM, base.addr());
+        e.mem.set_u32(base.addr() + FACTION_RANK_WORD, 2);
+        assert!(!e.call(0x0054_6da0, &args![cell, actor]).bool());
+        e.mem.set_u32(base.addr() + FACTION_RANK_WORD, 1);
+        assert!(e.call(0x0054_6da0, &args![cell, actor]).bool());
+        let (cell, _) = owned_cell(&mut e, 0x1, 2);
+        assert!(!e.call(0x0054_6da0, &args![cell, actor]).bool());
+    }
+
+    #[test]
+    fn a_form_owns_a_cell_by_identity_or_faction_rank() {
+        let mut e = scene_engine();
+        ownership_doubles(&mut e);
+        let form = wide_object(&mut e);
+
+        // No owner.
+        let free = cell(&mut e, false);
+        assert!(!e.call(0x0054_6ee0, &args![free, form]).bool());
+        // A character owner: the form itself.
+        let (cell, owner) = owned_cell(&mut e, RTTI_OWNER_CHARACTER, 0);
+        assert!(!e.call(0x0054_6ee0, &args![cell, form]).bool());
+        assert!(e.call(0x0054_6ee0, &args![cell, owner]).bool());
+        // A faction owner: the form cast from 011846e8 must have the rank.
+        let (cell, faction) = owned_cell(&mut e, RTTI_OWNER_FACTION, 3);
+        e.mem.set_u32(form.addr() + KIND_WORD, RTTI_OWNER_CHARACTER);
+        e.mem.set_u32(form.addr() + FACTION_RANK_WORD, 2);
+        assert!(!e.call(0x0054_6ee0, &args![cell, form]).bool());
+        e.mem.set_u32(form.addr() + FACTION_RANK_WORD, 3);
+        e.call_log = Some(vec![]);
+        assert!(e.call(0x0054_6ee0, &args![cell, form]).bool());
+        let log = take_log(&mut e);
+        assert_eq!(
+            calls_to(&log, ACTOR_BASE_GET_FACTION_RANK),
+            vec![vec![form.addr() + 0x30, faction.addr(), 0]]
+        );
+        let casts = calls_to(&log, RT_DYNAMIC_CAST);
+        assert_eq!(
+            casts[2][2..4],
+            [RTTI_OWNER_SOURCE_ARGUMENT, RTTI_OWNER_CHARACTER]
+        );
+        // A form that is not a character base.
+        e.mem.set_u32(form.addr() + KIND_WORD, 0);
+        assert!(!e.call(0x0054_6ee0, &args![cell, form]).bool());
+        // An owner of neither kind.
+        let (cell, _) = owned_cell(&mut e, 0x1, 3);
+        assert!(!e.call(0x0054_6ee0, &args![cell, form]).bool());
+    }
+
+    #[test]
+    fn an_exterior_cells_land_is_built_on_first_use() {
+        let mut e = scene_engine();
+        e.register(LAND_CONSTRUCT, |_, a| a[0].into_ret());
+        quiet(&mut e, &[SCOPE_ENTER, SCOPE_LEAVE, LAND_SET_CELL]);
+        let exterior = cell(&mut e, false);
+        e.call_log = Some(vec![]);
+        let land = e.call(0x0054_6fb0, &args![exterior]).u32();
+        let log = take_log(&mut e);
+        assert_ne!(land, 0);
+        assert_eq!(e.get(exterior, TESObjectCELL::pCellLand).addr(), land);
+        assert_eq!(calls_to(&log, ALLOCATE), vec![vec![0x2c]]);
+        assert_eq!(calls_to(&log, LAND_CONSTRUCT), vec![vec![land]]);
+        assert_eq!(
+            calls_to(&log, LAND_SET_CELL),
+            vec![vec![land, exterior.addr()]]
+        );
+        assert_eq!(
+            calls_to(&log, SCOPE_ENTER)[0][1..],
+            [0x1b, 1, SOURCE_FILE, 0xfb6]
+        );
+        assert_eq!(calls_to(&log, SCOPE_LEAVE).len(), 1);
+        // Built once.
+        e.call_log = Some(vec![]);
+        assert_eq!(e.call(0x0054_6fb0, &args![exterior]).u32(), land);
+        assert!(calls_to(&take_log(&mut e), ALLOCATE).is_empty());
+        // Interior cells and persistent cells have no land.
+        let interior = cell(&mut e, true);
+        assert_eq!(e.call(0x0054_6fb0, &args![interior]).u32(), 0);
+        let persistent = cell(&mut e, false);
+        e.mem.set_u32(persistent.addr() + 8, 0x400);
+        assert_eq!(e.call(0x0054_6fb0, &args![persistent]).u32(), 0);
+        assert_eq!(e.get(persistent, TESObjectCELL::pCellLand), Ptr::NULL);
+    }
+
+    #[test]
+    fn replacing_the_land_destroys_the_old_one() {
+        let mut e = scene_engine();
+        let old = wide_object(&mut e);
+        let new = wide_object(&mut e);
+        let exterior = cell(&mut e, false);
+        e.set(exterior, TESObjectCELL::pCellLand, old);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_70a0, &args![exterior, new]);
+        let log = take_log(&mut e);
+        assert_eq!(calls_to(&log, wide(0x10)), vec![vec![old.addr(), 1]]);
+        assert_eq!(e.get(exterior, TESObjectCELL::pCellLand), new);
+        // The same land again: nothing happens.
+        e.call_log = Some(vec![]);
+        e.call(0x0054_70a0, &args![exterior, new]);
+        assert!(calls_to(&take_log(&mut e), wide(0x10)).is_empty());
+        // No old land: just stored.
+        let bare = cell(&mut e, false);
+        e.call_log = Some(vec![]);
+        e.call(0x0054_70a0, &args![bare, new]);
+        assert!(calls_to(&take_log(&mut e), wide(0x10)).is_empty());
+        assert_eq!(e.get(bare, TESObjectCELL::pCellLand), new);
+        // An interior cell ignores it.
+        let interior = cell(&mut e, true);
+        e.call(0x0054_70a0, &args![interior, new]);
+        assert_eq!(e.get(interior, TESObjectCELL::pCellLand), Ptr::NULL);
+    }
+
+    #[test]
+    fn the_region_list_is_created_on_request() {
+        let mut e = scene_engine();
+        e.register(EXTRA_LIST_GET_REGION_LIST, |e, a| {
+            e.mem.u32(a[0] - 0x28 + CELL_WORD_A).into_ret()
+        });
+        e.register(REGION_LIST_CONSTRUCT, |_, a| a[0].into_ret());
+        e.register(EXTRA_LIST_SET_REGION_LIST, |e, a| {
+            e.mem.set_u32(a[0] - 0x28 + CELL_WORD_A, a[1]);
+            Ret::default()
+        });
+        let exterior = cell(&mut e, false);
+        let interior = cell(&mut e, true);
+        // Absent and not asked for.
+        assert_eq!(e.call(0x0054_7110, &args![exterior, false]).u32(), 0);
+        // Asked for: a 0x10-byte list is built and stored.
+        e.call_log = Some(vec![]);
+        let list = e.call(0x0054_7110, &args![exterior, true]).u32();
+        let log = take_log(&mut e);
+        assert_ne!(list, 0);
+        assert_eq!(calls_to(&log, ALLOCATE), vec![vec![0x10]]);
+        assert_eq!(calls_to(&log, REGION_LIST_CONSTRUCT), vec![vec![list, 0]]);
+        assert_eq!(
+            calls_to(&log, EXTRA_LIST_SET_REGION_LIST),
+            vec![vec![exterior.addr() + 0x28, list]]
+        );
+        // Present: returned without building.
+        e.call_log = Some(vec![]);
+        assert_eq!(e.call(0x0054_7110, &args![exterior, true]).u32(), list);
+        assert!(calls_to(&take_log(&mut e), ALLOCATE).is_empty());
+        // An interior cell has none.
+        assert_eq!(e.call(0x0054_7110, &args![interior, true]).u32(), 0);
+    }
+
+    #[test]
+    fn the_water_height_follows_the_flag_the_cell_and_the_world() {
+        let mut e = scene_engine();
+        let world = wide_object(&mut e);
+        e.register(WORLD_SPACE_WATER_HEIGHT, |_, _| Ret {
+            st0: 64.0,
+            ..Ret::default()
+        });
+        let water = |e: &mut Engine, cell: Ptr<TESObjectCELL>| -> f32 {
+            e.call(0x0054_71e0, &args![cell]).f32()
+        };
+        let exterior = cell(&mut e, false);
+        e.set(exterior, TESObjectCELL::pWorldSpace, world);
+        e.set(exterior, TESObjectCELL::fWaterHeight, f32::MAX);
+        // Without bit 1 of the cell flags: the lowest float.
+        assert_eq!(water(&mut e, exterior), f32::MIN);
+        e.mem.set_u8(exterior.addr() + 0x24, 2);
+        // The unset height falls back to the world space's.
+        assert_eq!(water(&mut e, exterior), 64.0);
+        // A set height wins.
+        e.set(exterior, TESObjectCELL::fWaterHeight, -12.5);
+        assert_eq!(water(&mut e, exterior), -12.5);
+        // A NaN is not the unset value.
+        e.set(exterior, TESObjectCELL::fWaterHeight, f32::NAN);
+        assert!(water(&mut e, exterior).is_nan());
+        // Without a world space: 0.
+        e.set(exterior, TESObjectCELL::fWaterHeight, f32::MAX);
+        e.set(exterior, TESObjectCELL::pWorldSpace, Ptr::NULL);
+        assert_eq!(water(&mut e, exterior), 0.0);
+        // An interior cell is the lowest float whatever its flags.
+        let interior = cell(&mut e, true);
+        e.mem.set_u8(interior.addr() + 0x24, 3);
+        assert_eq!(water(&mut e, interior), f32::MIN);
+    }
+
+    /// A water reference: a 3D whose first child's shape contains the
+    /// position or not, with a primitive, and a top at `+8` of its `0x1f4`
+    /// result. Returns the reference, the shape and the primitive.
+    fn water_reference(e: &mut Engine, contains: bool, top: f32) -> (Ptr, Ptr, Ptr) {
+        let reference = wide_object(e);
+        let node_3d = wide_object(e);
+        let holder = wide_object(e);
+        let child = wide_object(e);
+        let shape = wide_object(e);
+        let data = wide_object(e);
+        let primitive = wide_object(e);
+        let result = wide_object(e);
+        answer(e, reference, 0x1d0, node_3d.addr());
+        answer(e, node_3d, 0xc, holder.addr());
+        word(e, holder, 0x7c, child.addr());
+        answer(e, child, 0x14, shape.addr());
+        word(e, shape, MULTI_BOUND_DATA, data.addr());
+        word(e, data, PRIMITIVE, primitive.addr());
+        answer(e, shape, 0x108, u32::from(contains));
+        answer(e, reference, 0x1f4, result.addr());
+        e.mem.set_f32(result.addr() + 8, top);
+        (reference, shape, primitive)
+    }
+
+    #[test]
+    fn the_water_height_at_a_position_takes_the_highest_containing_reference() {
+        let mut e = scene_engine();
+        // The child of the holder at index 0: the word at +0x7c.
+        e.register(NODE_CHILD_AT, |e, a| {
+            assert_eq!(a[1], 0);
+            e.mem.u32(a[0] + 0x7c).into_ret()
+        });
+        e.register(CELL_LOADED_DATA, |e, a| e.mem.u32(a[0] + 0xc4).into_ret());
+        e.register(REFERENCE_ROTATION, |_, a| (a[0] + 0x24).into_ret());
+        e.register(PRIMITIVE_PART, |_, a| (a[0] + 0xc).into_ret());
+        e.register(WORLD_SPACE_WATER_HEIGHT, |_, _| Ret {
+            st0: 10.0,
+            ..Ret::default()
+        });
+        // The shapes record the position they are asked about.
+        let asked = Rc::new(RefCell::new(vec![]));
+        let record = asked.clone();
+        e.register_double(wide(0x108), move |e, a| {
+            record
+                .borrow_mut()
+                .push((e.mem.f32(a[1]), e.mem.f32(a[1] + 4), e.mem.f32(a[1] + 8)));
+            e.mem.u32(a[0] + SLOT_ANSWERS + 0x108).into_ret()
+        });
+        let (cell, loaded) = loaded_cell(&mut e, false);
+        e.mem.set_u8(cell.addr() + 0x24, 2);
+        e.set(cell, TESObjectCELL::fWaterHeight, f32::MAX);
+        let world = wide_object(&mut e);
+        e.set(cell, TESObjectCELL::pWorldSpace, world);
+        // Four references: a primitive of type 1 (third coordinate 7.5), a
+        // shape that does not contain the position, a primitive of type 2
+        // (8.5) with the highest top, and a lower one.
+        let (low, _, low_primitive) = water_reference(&mut e, true, 20.0);
+        answer(&mut e, low_primitive, 0x8c, 1);
+        e.mem.set_f32(low_primitive.addr() + 0x14, 7.5);
+        let (outside, _, _) = water_reference(&mut e, false, 99.0);
+        let (high, _, high_primitive) = water_reference(&mut e, true, 35.0);
+        answer(&mut e, high_primitive, 0x8c, 2);
+        e.mem.set_f32(high_primitive.addr() + 0x14, 8.5);
+        let (lower, _, _) = water_reference(&mut e, true, 5.0);
+        fill_list(&mut e, loaded.addr() + 0x5c, &[low, outside, high, lower]);
+
+        let position = e.mem.alloc(12);
+        e.mem.set_f32(position, 1.0);
+        e.mem.set_f32(position + 4, 2.0);
+        e.mem.set_f32(position + 8, 3.0);
+        let height = e.mem.alloc(4);
+        e.call_log = Some(vec![]);
+        let found = e.call(0x0054_7250, &args![cell, position, height]).bool();
+        let log = take_log(&mut e);
+        assert!(found);
+        // The height starts at the world's 10.0 and is raised to the highest
+        // containing reference's top.
+        assert_eq!(e.mem.f32(height), 35.0);
+        // The shapes were asked about x, y and the third coordinate the
+        // primitives gave (kept from one reference to the next).
+        assert_eq!(
+            *asked.borrow(),
+            vec![
+                (1.0, 2.0, 7.5),
+                (1.0, 2.0, 7.5),
+                (1.0, 2.0, 8.5),
+                (1.0, 2.0, 8.5)
+            ]
+        );
+        // The caller's position is not changed.
+        assert_eq!(e.mem.f32(position + 8), 3.0);
+        // Both buffers of slots 0x1d8 and 0x1dc were passed for every
+        // reference.
+        assert_eq!(calls_to(&log, wide(0x1d8)).len(), 4);
+        assert_eq!(calls_to(&log, wide(0x1dc)).len(), 4);
+    }
+
+    #[test]
+    fn the_water_height_at_a_position_without_water_references() {
+        let mut e = scene_engine();
+        e.register(CELL_LOADED_DATA, |e, a| e.mem.u32(a[0] + 0xc4).into_ret());
+        e.register(WORLD_SPACE_WATER_HEIGHT, |_, _| Ret {
+            st0: 10.0,
+            ..Ret::default()
+        });
+        let position = e.mem.alloc(12);
+        let height = e.mem.alloc(4);
+        // An interior cell without bit 1: -FLT_MAX and false.
+        let interior = cell(&mut e, true);
+        e.mem.set_f32(height, 1.0);
+        assert!(!e
+            .call(0x0054_7250, &args![interior, position, height])
+            .bool());
+        assert_eq!(e.mem.f32(height), f32::MIN);
+        // An exterior cell with the flag but no loaded data: the height of
+        // the cell, and false.
+        let exterior = cell(&mut e, false);
+        e.mem.set_u8(exterior.addr() + 0x24, 2);
+        e.set(exterior, TESObjectCELL::fWaterHeight, 4.5);
+        assert!(!e
+            .call(0x0054_7250, &args![exterior, position, height])
+            .bool());
+        assert_eq!(e.mem.f32(height), 4.5);
+        // Loaded data with an empty water list.
+        let (with_data, _) = loaded_cell(&mut e, false);
+        e.mem.set_u8(with_data.addr() + 0x24, 2);
+        e.set(with_data, TESObjectCELL::fWaterHeight, 6.0);
+        assert!(!e
+            .call(0x0054_7250, &args![with_data, position, height])
+            .bool());
+        assert_eq!(e.mem.f32(height), 6.0);
+    }
+
+    #[test]
+    fn setting_the_water_height_keeps_the_unset_value_for_the_worlds_height() {
+        let mut e = scene_engine();
+        let world = wide_object(&mut e);
+        let heights = Rc::new(RefCell::new(vec![]));
+        let record = heights.clone();
+        e.register(WORLD_SPACE_WATER_HEIGHT, |_, _| Ret {
+            st0: 100.0,
+            ..Ret::default()
+        });
+        e.register_double(FLOAT_NEAR, move |_, a| {
+            record.borrow_mut().push(a.to_vec());
+            let (first, second) = (f32::from_bits(a[0]), f32::from_bits(a[1]));
+            u32::from((first - second).abs() <= f32::from_bits(a[2])).into_ret()
+        });
+        let exterior = cell(&mut e, false);
+        e.set(exterior, TESObjectCELL::pWorldSpace, world);
+        // Within 0.001 of the world's height: unset (FLT_MAX).
+        e.call(0x0054_7440, &args![exterior, 100.0005f32]);
+        assert_eq!(e.get(exterior, TESObjectCELL::fWaterHeight), f32::MAX);
+        assert_eq!(
+            heights.borrow()[0],
+            vec![
+                100.0f32.to_bits(),
+                100.0005f32.to_bits(),
+                0.001f32.to_bits()
+            ]
+        );
+        // Further away: stored.
+        e.call(0x0054_7440, &args![exterior, 120.0f32]);
+        assert_eq!(e.get(exterior, TESObjectCELL::fWaterHeight), 120.0);
+        // Without a world space: stored without the comparison.
+        let before = heights.borrow().len();
+        e.set(exterior, TESObjectCELL::pWorldSpace, Ptr::NULL);
+        e.call(0x0054_7440, &args![exterior, 100.0f32]);
+        assert_eq!(e.get(exterior, TESObjectCELL::fWaterHeight), 100.0);
+        assert_eq!(heights.borrow().len(), before);
+    }
+
+    #[test]
+    fn the_type_7_extra_data_falls_back_to_the_worlds_value() {
+        let mut e = scene_engine();
+        e.register(EXTRA_LIST_GET_TYPE_7, |e, a| {
+            e.mem.u32(a[0] - 0x28 + CELL_WORD_A).into_ret()
+        });
+        e.register(WORLD_SPACE_TYPE_7_VALUE, |_, a| (a[0] + 1).into_ret());
+        e.mem.set_u32(ZERO_VECTOR, 0x11);
+        e.mem.set_u32(ZERO_VECTOR + 4, 0x22);
+        e.mem.set_u32(ZERO_VECTOR + 8, 0x33);
+        let exterior = cell(&mut e, false);
+        let world = wide_object(&mut e);
+        e.set(exterior, TESObjectCELL::pWorldSpace, world);
+        // The first call fills the static record.
+        e.call_log = Some(vec![]);
+        let result = e.call(0x0054_74b0, &args![exterior]).u32();
+        let log = take_log(&mut e);
+        assert_eq!(result, world.addr() + 1);
+        assert_eq!(e.global::<u32>(STATIC_RECORD_GUARD) & 1, 1);
+        assert_eq!(e.global::<u32>(STATIC_RECORD_COPY), 0x11);
+        assert_eq!(e.global::<u32>(STATIC_RECORD_COPY + 4), 0x22);
+        assert_eq!(e.global::<u32>(STATIC_RECORD_COPY + 8), 0x33);
+        assert_eq!(e.global::<u32>(STATIC_RECORD_LAST), world.addr() + 1);
+        // The lock is held around it.
+        let order = sequence(&log);
+        assert_eq!(order.first(), Some(&LOCK_ENTER));
+        assert_eq!(order.last(), Some(&LOCK_LEAVE));
+        // The record is filled once.
+        e.mem.set_u32(ZERO_VECTOR, 0x99);
+        e.call(0x0054_74b0, &args![exterior]);
+        assert_eq!(e.global::<u32>(STATIC_RECORD_COPY), 0x11);
+        // The extra data wins; an interior cell returns its value (or 0).
+        e.mem.set_u32(exterior.addr() + CELL_WORD_A, 0x5c5c);
+        e.set_global(STATIC_RECORD_LAST, 0u32);
+        assert_eq!(e.call(0x0054_74b0, &args![exterior]).u32(), 0x5c5c);
+        assert_eq!(e.global::<u32>(STATIC_RECORD_LAST), 0);
+        let interior = cell(&mut e, true);
+        assert_eq!(e.call(0x0054_74b0, &args![interior]).u32(), 0);
+        e.mem.set_u32(interior.addr() + CELL_WORD_A, 0x6d6d);
+        assert_eq!(e.call(0x0054_74b0, &args![interior]).u32(), 0x6d6d);
+        // An exterior cell without a world space: 0.
+        e.mem.set_u32(exterior.addr() + CELL_WORD_A, 0);
+        e.set(exterior, TESObjectCELL::pWorldSpace, Ptr::NULL);
+        assert_eq!(e.call(0x0054_74b0, &args![exterior]).u32(), 0);
+    }
+
+    #[test]
+    fn the_acoustic_space_is_the_extra_datas() {
+        let mut e = scene_engine();
+        e.register(EXTRA_LIST_GET_ACOUSTIC_SPACE, |_, a| (a[0] + 2).into_ret());
+        let cell = cell(&mut e, false);
+        assert_eq!(e.call(0x0054_7590, &args![cell]).u32(), cell.addr() + 0x2a);
+    }
+
+    #[test]
+    fn the_type_8_extra_data_needs_an_interior_cell_with_flag_0x80() {
+        let mut e = scene_engine();
+        e.register(EXTRA_LIST_GET_TYPE_8, |_, a| (a[0] + 3).into_ret());
+        e.register(WORLD_SPACE_ACOUSTIC_VALUE, |_, a| (a[0] + 4).into_ret());
+        let interior = cell(&mut e, true);
+        // Flag 0x80 clear: 0.
+        e.mem.set_u8(interior.addr() + 0x24, 1);
+        assert_eq!(e.call(0x0054_75b0, &args![interior]).u32(), 0);
+        e.mem.set_u8(interior.addr() + 0x24, 0x81);
+        assert_eq!(
+            e.call(0x0054_75b0, &args![interior]).u32(),
+            interior.addr() + 0x2b
+        );
+        // An exterior cell asks its world space.
+        let exterior = cell(&mut e, false);
+        let world = wide_object(&mut e);
+        e.set(exterior, TESObjectCELL::pWorldSpace, world);
+        assert_eq!(
+            e.call(0x0054_75b0, &args![exterior]).u32(),
+            world.addr() + 4
+        );
+    }
+
+    #[test]
+    fn the_last_extra_data_accessor_needs_an_interior_cell() {
+        let mut e = scene_engine();
+        e.register(EXTRA_LIST_GET_IMPACT_SWAP, |_, a| (a[0] + 5).into_ret());
+        let interior = cell(&mut e, true);
+        let exterior = cell(&mut e, false);
+        assert_eq!(
+            e.call(0x0054_7610, &args![interior]).u32(),
+            interior.addr() + 0x2d
+        );
+        assert_eq!(e.call(0x0054_7610, &args![exterior]).u32(), 0);
     }
 }
