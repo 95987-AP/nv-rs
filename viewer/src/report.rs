@@ -116,6 +116,9 @@ pub fn report_key(
     let Ok((camera, input)) = cameras.single() else {
         return;
     };
+    let observer = diagnostics::Observer::current();
+    let report_id = observer.id();
+    let _report_span = observer.span("report_writing_cpu", report_id, 0);
     let order = &game.0.order;
     let state = &state.0;
     let s = spot(
@@ -142,8 +145,39 @@ pub fn report_key(
         position: s.feet,
         heading: s.heading.to_radians(),
     });
+    let mut description = describe(&place, world, &s, hour);
+    if let Some(session) = observer.path() {
+        let at = observer.time_us();
+        let report_path = std::env::current_dir().unwrap_or_default().join(&folder);
+        observer.emit(
+            "report_bookmark",
+            report_id,
+            0,
+            &[
+                ("report_path", report_path.display().to_string().into()),
+                (
+                    "before_us",
+                    diagnostics::Value::U64(at.saturating_sub(30_000_000)),
+                ),
+                (
+                    "after_us",
+                    diagnostics::Value::U64(at.saturating_add(5_000_000)),
+                ),
+                (
+                    "startup_shortened",
+                    diagnostics::Value::Bool(at < 30_000_000),
+                ),
+                ("x", diagnostics::Value::F64(s.feet[0] as f64)),
+                ("y", diagnostics::Value::F64(s.feet[1] as f64)),
+                ("z", diagnostics::Value::F64(s.feet[2] as f64)),
+                ("place", place.clone().into()),
+                ("loading", diagnostics::Value::Bool(!player.ready)),
+            ],
+        );
+        description.push_str(&format!("\nDiagnostics session: {}\nBookmark: {report_id}; window {}..{} us (30 seconds before, 5 after; shortened if startup or capture ends).\n",session.display(),at.saturating_sub(30_000_000),at+5_000_000));
+    }
     let written = std::fs::create_dir_all(&folder)
-        .and_then(|()| std::fs::write(folder.join("report.txt"), describe(&place, world, &s, hour)))
+        .and_then(|()| std::fs::write(folder.join("report.txt"), description))
         .and_then(|()| std::fs::write(folder.join("state.txt"), world::save::save(state, saved)))
         .and_then(|()| {
             std::fs::write(
@@ -153,9 +187,16 @@ pub fn report_key(
         });
     let text = match written {
         Ok(()) => {
+            observer.emit("screenshot_requested", report_id, 0, &[]);
+            let completion = observer.clone();
             commands
                 .spawn(Screenshot::primary_window())
-                .observe(save_to_disk(folder.join("picture.png")));
+                .observe(save_to_disk(folder.join("picture.png")))
+                .observe(
+                    move |_: Trigger<bevy::render::view::screenshot::ScreenshotCaptured>| {
+                        completion.emit("screenshot_captured", report_id, 0, &[]);
+                    },
+                );
             format!("Report saved in {}.", folder.display())
         }
         Err(e) => format!("Couldn't save the report: {e}"),

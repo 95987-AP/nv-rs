@@ -189,6 +189,46 @@ fn later_archives_and_loose_files_win() {
 }
 
 #[test]
+fn records_the_winning_archive_and_loose_file_sources() {
+    let data = setup("diagnostic-sources");
+    let capture_root = std::env::temp_dir().join(format!(
+        "nv-rs-assets-diagnostics-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let recorder = diagnostics::Recorder::start(&capture_root, &[]).unwrap();
+    let observer = recorder.observer();
+    let mut assets =
+        Assets::open(data.path(), &plugins(&["FalloutNV.esm", "DeadMoney.esm"])).unwrap();
+    assets.set_observer(observer.clone());
+    let parent = observer.id();
+    let _context = observer.context(parent);
+
+    assert_eq!(
+        assets
+            .read("textures\\clutter\\crate.dds")
+            .unwrap()
+            .unwrap(),
+        b"dlc"
+    );
+    assert_eq!(
+        assets.read("textures/sky/stars.dds").unwrap().unwrap(),
+        b"loose stars"
+    );
+    let session = observer.path().unwrap().to_path_buf();
+    drop(_context);
+    drop(recorder);
+    let events = fs::read_to_string(session.join("events-0000.jsonl")).unwrap();
+    assert!(events.contains("\"source\":\"DeadMoney - Main.bsa\""));
+    assert!(events.contains("\"source\":\"loose file\""));
+    assert!(events.contains(&format!("\"parent_id\":{parent}")));
+    let _ = fs::remove_dir_all(capture_root);
+}
+
+#[test]
 fn archives_for_inactive_plugins_are_not_loaded() {
     let data = setup("inactive");
     let assets = Assets::open(data.path(), &plugins(&["FalloutNV.esm"])).unwrap();

@@ -48,7 +48,9 @@ param(
     [switch]$Build,
     # Keep the runs out of the way (the viewer's --background: its window
     # behind the others, without the focus, the mouse left alone).
-    [switch]$Background
+    [switch]$Background,
+    # Record the same acceptance routes without changing their input.
+    [switch]$Diagnostics
 )
 
 $ErrorActionPreference = 'Stop'
@@ -129,6 +131,7 @@ foreach ($r in $chosen) {
     # box answered "Finished - Travel Onward" (its third button).
     $a = @($Data) + $spec.Args + @('--answer-boxes', '--box-answers', '2', '--screenshot', $shot)
     if ($Background) { $a += '--background' }
+    if ($Diagnostics) { $a += @("--diagnostics", "--diagnostics-dir", (Join-Path $Out "diagnostics")) }
     # Each route is its own viewer run: a new game, so the DLC start
     # messages show again in every route that starts outside Doc's house.
     Write-Host "== $r (new game)"

@@ -88,3 +88,17 @@ tests/builds, live Doc's house and exterior walk, F12 through MCP, three
 interleaved foreground off/on benchmark pairs, customization verification and
 review PRs. Next action: finish validation, then run the same release build
 through those live checks. Do not infer overhead compliance from test counts.
+
+Batch 2 validation update: the core test failure was the repository hygiene
+check finding absolute user-profile paths in this topic. Those paths were
+made portable and the full rerun passes tests; clippy/release remain running.
+Viewer baseline: 171 tests and clippy passed, release built. Subsequent
+presentation checks found the FPS update could restore FPS visibility after
+screenshot exclusion; it now stays hidden for command-line shots, F12 and
+pending screenshot requests, and restores visibility after capture. This
+preserves the registered behavior. The parser has an opt-in regression test.
+An explicit `NV_DIAGNOSTICS_BENCHMARK_PATH` harness buffers the same monotonic
+intervals in off/on runs until exit, without a recorder thread in off runs.
+It is disabled in ordinary play. `scripts/acceptance.ps1 -Diagnostics` records
+the existing routes without altering their commands or pass conditions.
+First draft review: https://github.com/95987-AP/nv-rs/pull/1.

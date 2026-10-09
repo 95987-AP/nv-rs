@@ -435,6 +435,7 @@ pub fn archive_priority(names: &[&str]) -> Vec<usize> {
 
 /// Every file the game can see, with overrides resolved.
 pub struct Assets {
+    observer: diagnostics::Observer,
     data_dir: PathBuf,
     /// Loaded archives in the order they were opened.
     archives: Vec<LoadedArchive>,
@@ -636,6 +637,7 @@ impl Assets {
         }
 
         Ok(Self {
+            observer: diagnostics::Observer::current(),
             data_dir,
             archives,
             priority,
@@ -663,6 +665,17 @@ impl Assets {
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// Diagnostics observer shared with the scene loader.
+    pub fn observer(&self) -> &diagnostics::Observer {
+        &self.observer
+    }
+
+    /// Replaces the per-instance diagnostics observer, primarily for tests and
+    /// callers that want to capture this asset set without global state.
+    pub fn set_observer(&mut self, observer: diagnostics::Observer) {
+        self.observer = observer;
     }
 
     /// Loaded archives in the order they were opened (see
@@ -741,7 +754,52 @@ impl Assets {
 
     /// Reads a file, or returns `None` if the game can't see it.
     pub fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        self.locate(path).map(|s| s.read()).transpose()
+        if !self.observer.enabled() {
+            return self.locate(path).map(|s| s.read()).transpose();
+        }
+
+        let id = self.observer.id();
+        let parent_id = self.observer.parent();
+        let started = std::time::Instant::now();
+        let source = self.locate(path);
+        let (result, outcome, resolved_path, source_name, bytes) = match source {
+            None => (Ok(None), "missing", String::new(), String::new(), 0),
+            Some(source) => {
+                let resolved_path = match source {
+                    Source::Loose(file) => file.to_string_lossy().into_owned(),
+                    Source::Archive { .. } => normalize_path(path),
+                };
+                let source_name = source.describe();
+                match source.read() {
+                    Ok(bytes) => {
+                        let len = bytes.len() as u64;
+                        (Ok(Some(bytes)), "ok", resolved_path, source_name, len)
+                    }
+                    Err(error) => (Err(error), "error", resolved_path, source_name, 0),
+                }
+            }
+        };
+        let duration_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        let error = result
+            .as_ref()
+            .err()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        self.observer.emit(
+            "asset_read",
+            id,
+            parent_id,
+            &[
+                ("requested_path", diagnostics::Value::Str(path.to_string())),
+                ("resolved_path", diagnostics::Value::Str(resolved_path)),
+                ("source", diagnostics::Value::Str(source_name)),
+                ("bytes", diagnostics::Value::U64(bytes)),
+                ("duration_us", diagnostics::Value::U64(duration_us)),
+                ("result", diagnostics::Value::Str(outcome.to_string())),
+                ("error", diagnostics::Value::Str(error)),
+            ],
+        );
+        result
     }
 
     /// Every copy of a file the game could use, highest priority (the

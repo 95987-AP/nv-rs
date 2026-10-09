@@ -264,9 +264,11 @@ fn main() {
             }
         }
     }
+    let benchmark = frame_work::Benchmark::from_env();
     drop(startup_span);
     drop(_startup_context);
     App::new()
+        .insert_resource(benchmark.clone())
         .insert_resource(ClearColor(Color::BLACK))
         // Lit surfaces do their own lighting (see `lighting`); nothing else
         // should add Bevy's ambient light.
@@ -624,6 +626,7 @@ fn main() {
             ),
         )
         .run();
+    benchmark.finish();
 }
 
 /// A piece its model's own animation moves or changes
@@ -1292,12 +1295,16 @@ fn take_screenshot(
         return;
     }
     request.taken = true;
+    let observer = diagnostics::Observer::current();
+    let id = observer.id();
+    observer.emit("screenshot_requested", id, 0, &[]);
     println!("Saving the view to {}", path.display());
     commands
         .spawn(Screenshot::primary_window())
         .observe(save_to_disk(path))
         .observe(
-            |_: Trigger<ScreenshotCaptured>, mut exit: EventWriter<AppExit>| {
+            move |_: Trigger<ScreenshotCaptured>, mut exit: EventWriter<AppExit>| {
+                observer.emit("screenshot_captured", id, 0, &[]);
                 exit.write(AppExit::Success);
             },
         );
@@ -2651,6 +2658,8 @@ fn report_fps(
     mut counter: ResMut<FrameCounter>,
     work: Res<frame_work::FrameWork>,
     mut fps_query: Query<(&mut Text, &mut Visibility), With<FpsText>>,
+    screenshot_request: Res<ScreenshotRequest>,
+    screenshots: Query<Entity, With<Screenshot>>,
 ) {
     if keys.just_pressed(KeyCode::F3) {
         counter.visible = !counter.visible;
@@ -2691,7 +2700,12 @@ fn report_fps(
 
     let show_hud = hud_show.as_ref().is_none_or(|hud| hud.0);
     for (mut text, mut visibility) in &mut fps_query {
-        if !counter.visible || !show_hud {
+        if !counter.visible
+            || !show_hud
+            || screenshot_request.path.is_some()
+            || keys.just_pressed(KeyCode::F12)
+            || !screenshots.is_empty()
+        {
             *visibility = Visibility::Hidden;
         } else {
             *visibility = Visibility::Visible;
