@@ -54,3 +54,29 @@ that file is not included in this branch's notification commit.
 
 All check and viewer processes from this batch have exited. No unfinished
 local checks. Next action: review the notification-card pull request.
+
+## Local launcher follow-up (2026-10-09)
+
+The user still saw centered boxes through `Launch-Playtest.cmd`: it calls
+an extracted 2026-10-03.2 package's `Play.cmd`, which uses its old
+`app/nv-viewer.exe` (last written 2026-10-07), not the rebuilt viewer.
+
+The two local ignored launchers now pass/use `NV_RS_VIEWER`, pointing to
+`viewer/target/release/nv-viewer.exe`. The root launcher checks that build
+exists and gives the rebuild command if missing. Its selection menu and
+the package's `userdata` directory are preserved. Direct package launching
+without the override still uses the original packaged binary. The root
+launcher labels the selected executable as a local development build rather
+than showing the old official build metadata. No package binary or game
+installation files were replaced.
+
+Backups of both launchers and patches of the existing staged/unstaged work
+are under `%TEMP%/nv-launcher-backup-20261009-212322`. Existing user edits
+in `AGENTS.md`, `docs/MILESTONES.md` and the staged FPS counter were preserved.
+
+Verified by running `Launch-Playtest.cmd` through its menu, selecting 1 and
+inspecting the resulting process: `viewer/target/release/nv-viewer.exe`,
+`GSDocMitchellHouse --official`. This uses the release already checked above,
+including both registered UI customizations. The test launch is currently
+open (viewer PID 20628, terminal session 29552); no additional Rust changes
+or unchecked rebuilds. Next action: launch normally through the root launcher.

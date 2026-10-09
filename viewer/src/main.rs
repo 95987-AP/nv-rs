@@ -1238,7 +1238,7 @@ struct ScreenshotRequest {
 const SCREENSHOT_AFTER_FRAMES: u32 = 300;
 
 /// What screenshots hide: the help and the health line.
-type KeptOutOfPictures = Or<(With<HelpText>, With<combat::HudText>)>;
+type KeptOutOfPictures = Or<(With<HelpText>, With<combat::HudText>, With<FpsText>)>;
 
 fn take_screenshot(
     // Real time: V.A.T.S. stops the game's clock.
@@ -1316,6 +1316,9 @@ pub(crate) struct FlyCamera {
 
 #[derive(Component)]
 struct HelpText;
+
+#[derive(Component)]
+struct FpsText;
 
 /// Every texture is sampled as stored, colors too: the game's samplers
 /// never decode sRGB (no `D3DSAMP_SRGBTEXTURE` anywhere in the Goodsprings
@@ -1652,6 +1655,23 @@ fn setup(mut commands: Commands) {
         },
         BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
         HelpText,
+    ));
+    commands.spawn((
+        Text::new(String::new()),
+        TextFont {
+            font_size: 14.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.95, 0.75, 0.3)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(8.0),
+            right: Val::Px(8.0),
+            padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
+        FpsText,
     ));
 }
 
@@ -2578,26 +2598,51 @@ fn srgb_decode(c: f32) -> f32 {
 
 /// `--fps`: frames counted, the time since the last report and the
 /// longest frame in it (a hitch).
-#[derive(Resource, Default)]
+#[derive(Resource)]
 struct FrameCounter {
     on: bool,
     frames: u32,
     seconds: f32,
     longest: f32,
+    display_frames: u32,
+    display_seconds: f32,
+    display_fps: f32,
+    visible: bool,
+}
+
+impl Default for FrameCounter {
+    fn default() -> Self {
+        Self {
+            on: false,
+            frames: 0,
+            seconds: 0.0,
+            longest: 0.0,
+            display_frames: 0,
+            display_seconds: 0.0,
+            display_fps: 0.0,
+            visible: true,
+        }
+    }
 }
 
 fn report_fps(
     time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    hud_show: Option<Res<hud::ShowHud>>,
     mut counter: ResMut<FrameCounter>,
     work: Res<frame_work::FrameWork>,
+    mut fps_query: Query<(&mut Text, &mut Visibility), With<FpsText>>,
 ) {
-    if !counter.on {
-        return;
+    if keys.just_pressed(KeyCode::F3) {
+        counter.visible = !counter.visible;
     }
-    counter.frames += 1;
-    counter.seconds += time.delta_secs();
-    counter.longest = counter.longest.max(time.delta_secs());
-    if counter.seconds >= 2.0 {
+
+    if counter.on {
+        counter.frames += 1;
+        counter.seconds += time.delta_secs();
+        counter.longest = counter.longest.max(time.delta_secs());
+    }
+    if counter.on && counter.seconds >= 2.0 {
         // The frames' own work on each thread (`frame_work`), apart from
         // waiting for the display.
         let (main, main_longest) = work.main.lock().map(|mut t| t.take()).unwrap_or_default();
@@ -2615,6 +2660,31 @@ fn report_fps(
         counter.frames = 0;
         counter.seconds = 0.0;
         counter.longest = 0.0;
+    }
+
+    counter.display_frames += 1;
+    counter.display_seconds += time.delta_secs();
+    if counter.display_seconds >= 0.25 {
+        counter.display_fps = counter.display_frames as f32 / counter.display_seconds;
+        counter.display_frames = 0;
+        counter.display_seconds = 0.0;
+    }
+
+    let show_hud = hud_show.as_ref().is_none_or(|hud| hud.0);
+    for (mut text, mut visibility) in &mut fps_query {
+        if !counter.visible || !show_hud {
+            *visibility = Visibility::Hidden;
+        } else {
+            *visibility = Visibility::Visible;
+            let label = if counter.display_fps > 0.0 {
+                format!("{:.0} FPS", counter.display_fps)
+            } else {
+                "--- FPS".to_string()
+            };
+            if text.0 != label {
+                text.0 = label;
+            }
+        }
     }
 }
 
@@ -2950,7 +3020,7 @@ fn help_text(ev100: f32, speed: f32, walking: bool) -> String {
     format!(
         "{moving}\n\
          F: first/third person (hold: look around; wheel: zoom)   `: walk/fly\n\
-         V: V.A.T.S.   Tab: Pip-Boy   T: wait   F5/F9: save/load   \
+         V: V.A.T.S.   Tab: Pip-Boy   T: wait   F3: fps   F5/F9: save/load   \
          [ ]: exposure (EV {ev100:.1})   G: image space   Home: start   Esc: pause menu"
     )
 }
