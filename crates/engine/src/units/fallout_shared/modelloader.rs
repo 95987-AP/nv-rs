@@ -3,14 +3,22 @@
 //!
 //! The unit has 517 functions (`ledger queue "fallout shared/modelloader.cpp"`);
 //! it is translated in address order, a session at a time. State of this file:
-//! the first 80 functions, `0043aaf0` to `0043c830`. The first 40, to
+//! the first 160 functions, `0043aaf0` to `0043e9b0`. The first 40, to
 //! `0043baa0`, are the `Model` and `KFModel` classes, `Model::InitModel` and
 //! the small helpers the unit's compiler emitted next to them (`BSStream`,
 //! `NiNode` and `NiFixedString` accessors, interlocked-operation wrappers).
 //! The next 40, from `0043bac0`, are `LoadedFile`, `QueuedFile`,
 //! `QueuedTexture` (constructors, `QueueMe`, `Run`, `Finish`, `Cancel`) and
 //! the start of `QueuedModel`, with their flag, TLS and texture-map helpers.
-//! The next session continues at `0043c890`.
+//! The third 40, from `0043c890`, finish `QueuedModel` (constructors,
+//! `CheckFinished`, `QueueMe`, `Run`, `Finish`, `GetDescription`), the
+//! `BSStream` helpers `Run` needs, and begin the tree classes
+//! (`QueuedTreeBillboard`, `QueuedTreeModel`).
+//! The fourth 40, from `0043d8c0`, finish `QueuedTreeModel`, translate
+//! `QueuedMagicItem` (`QueueMe`, `CheckFinished`), the task key packing of
+//! `IOTask::GenerateKey`, and `QueuedKF` with its subclasses `QueuedAnimIdle`
+//! and `QueuedReplacementKF` (up to `PostProcess`).
+//! The next session continues at `0043ea00`.
 //!
 //! Layouts and helpers added here live at the top of the file, below.
 //!
@@ -215,11 +223,11 @@ const SET_FLAG_BIT_4: u32 = 0x0044_aea0;
 /// `__cdecl(flags byte) -> bool`: whether bit 2 / bit 4 of the byte is set.
 const TEST_FLAG_BIT_2: u32 = 0x0044_ae50;
 const TEST_FLAG_BIT_4: u32 = 0x0044_ae90;
-/// `__thiscall(flag)` on a `QueuedTexture` (`0043e480`, in this unit, not
-/// translated yet): sets or clears bit 1 of `cFlags`.
+/// `__thiscall(flag)` on a `QueuedTexture` (`0043e480`, [`fn_0043e480`]):
+/// sets or clears bit 1 of `cFlags`.
 const QUEUED_TEXTURE_SET_FLAG_1: u32 = 0x0043_e480;
-/// `__thiscall()` on a `QueuedTexture` (`0043e530`, in this unit, not
-/// translated yet): whether bit 1 of `cFlags` is set.
+/// `__thiscall()` on a `QueuedTexture` (`0043e530`, [`fn_0043e530`]): whether
+/// bit 1 of `cFlags` is set.
 const QUEUED_TEXTURE_TEST_FLAG_1: u32 = 0x0043_e530;
 /// The object at `011c3b3c`, whose methods `00448330`, `00448370`,
 /// `00448ed0` and `00448f50` (this unit, not translated yet) keep the maps
@@ -302,6 +310,141 @@ const LOADED_FILE_UNUSED_MESSAGE: u32 = 0x0101_6720;
 const LOADED_FILE_REFERENCES_MESSAGE: u32 = 0x0101_66dc;
 /// The format preferences object `Run` passes to the texture creators.
 const TEXTURE_FORMAT_PREFERENCES: u32 = 0x011a_9598;
+
+// --- `QueuedModel` and the tree classes (`0043c890` onwards). ---
+
+/// `NiPointer<Model>::operator=(Model*)` (Xbox PDB `NiPointer<Model>::operator_`,
+/// `0044aed0`, in this unit, not translated yet), `__thiscall(model)` on the
+/// `NiPointer`.
+const MODEL_POINTER_ASSIGN: u32 = 0x0044_aed0;
+/// `QueuedFile::CheckFinished` (Xbox PDB, `00c3c930`).
+const QUEUED_FILE_CHECK_FINISHED: u32 = 0x00c3_c930;
+/// `QueuedFileEntry::GenerateKey` (Xbox PDB, `00c3d440`).
+const QUEUED_FILE_ENTRY_GENERATE_KEY: u32 = 0x00c3_d440;
+/// `BSStream::Load` (Xbox PDB, `00c3a8a0`), `__thiscall(name, file)`: reads
+/// the stream from the open `BSFile`; false on failure.
+const BS_STREAM_LOAD: u32 = 0x00c3_a8a0;
+/// `NiStream::NiStream` (`00a66150`) and its destructor body (`00a65300`).
+const NI_STREAM_CONSTRUCT: u32 = 0x00a6_6150;
+const NI_STREAM_DESTRUCT: u32 = 0x00a6_5300;
+/// `NiStreamSaveBinary<unsigned int>` (Xbox PDB, `0044adf0`),
+/// `__cdecl(stream, value pointer)`.
+const NI_STREAM_SAVE_BINARY_U32: u32 = 0x0044_adf0;
+/// `ModelLoader::FindModel` (Xbox PDB, `004472a0`) on [`FILE_MAP_OWNER`],
+/// `__thiscall(name, NiPointer<Model> out)`: gives the pointer the model of
+/// that name when the loader has it.
+const MODEL_LOADER_FIND_MODEL: u32 = 0x0044_72a0;
+/// Adds a model to the loader's map (`00447010`, in this unit, not
+/// translated yet), `__thiscall(name, model) -> bool` on [`FILE_MAP_OWNER`];
+/// false when the name is already there.
+const MODEL_LOADER_ADD_MODEL: u32 = 0x0044_7010;
+/// `ModelLoader::QueueTexture_ov2` (Xbox PDB, `00443af0`) on
+/// [`FILE_MAP_OWNER`], `__thiscall(texture, key, parent queued file)`.
+const MODEL_LOADER_QUEUE_TEXTURE: u32 = 0x0044_3af0;
+/// `BGSTextureSet::QueueTextureSet` (Xbox PDB, `005930e0`),
+/// `__thiscall(key, parent queued file, 0)`.
+const QUEUE_TEXTURE_SET: u32 = 0x0059_30e0;
+/// `__thiscall()` on a `TESModel` (`0048d150`): `this + 0xC`, the texture
+/// hash block `QueueMe_ov2` reads.
+const TES_MODEL_TEXTURE_BLOCK: u32 = 0x0048_d150;
+/// `__thiscall()` getters of the texture hash block (`009373f0`: the byte at
+/// +0; `00726070`: the dword at +4, also the "next" link of the list nodes).
+const BYTE_AT_0: u32 = 0x0093_73f0;
+const FIELD_AT_4: u32 = 0x0072_6070;
+/// List helpers of the texture set list: `00500940` returns `this + 0x18`
+/// (the first node), `006815c0` returns the node itself (its item is the
+/// first dword); the next node is [`FIELD_AT_4`].
+const LIST_FIRST_NODE: u32 = 0x0050_0940;
+const LIST_NODE_ITEM_ADDRESS: u32 = 0x0068_15c0;
+/// Whether the dword at +0xC (`eState`) is 0 (`0069b080`; the engine map
+/// files it under the navmesh code).
+const STATE_IS_ZERO: u32 = 0x0069_b080;
+/// The finished-child count of a `QueuedChildren` (`0044edb0`, named
+/// `BaseProcess::GetCurrentProcedureIndex` by the engine map but folded: it
+/// returns the dword at +0x10).
+const FINISHED_COUNT_GETTER: u32 = 0x0044_edb0;
+/// `__cdecl(flags byte) -> bool` tests of the other bits of a queued file's
+/// flag byte, and the setter of bit 8 (`__cdecl(flag, byte pointer)`).
+const TEST_FLAG_BIT_1: u32 = 0x0044_ae10;
+const TEST_FLAG_BIT_8: u32 = 0x0044_af20;
+const TEST_FLAG_BIT_10: u32 = 0x0044_af60;
+const TEST_FLAG_BIT_20: u32 = 0x0044_afa0;
+const SET_FLAG_BIT_8: u32 = 0x0044_af30;
+/// `NiRefObject::IncRefCount` (`0092c870`): one more reference.
+const ADD_REFERENCE: u32 = 0x0092_c870;
+/// `NiAVObject::Update(NiUpdateData*)` as `Finish` calls it (`00a59c60`,
+/// `__thiscall(update data)`).
+const NI_AV_OBJECT_UPDATE: u32 = 0x00a5_9c60;
+/// Radius of a `NiBound` (`0084d030`, the float at +0xC, returned in ST0).
+const BOUND_RADIUS: u32 = 0x0084_d030;
+/// `TESObjectREFR::GetBoundMax` (Xbox PDB, `0056fc30`), `__cdecl(out, node)
+/// -> vector pointer`.
+const GET_BOUND_MAX: u32 = 0x0056_fc30;
+/// Address of the value of a setting object (`00403e20`: `this + 4`, or a
+/// zero scratch float when `this` is 0).
+const SETTING_VALUE_POINTER: u32 = 0x0040_3e20;
+/// `QueuedModel::mfOverriddenVisualDistance` getter (`00792760`, in ST0).
+const OVERRIDDEN_VISUAL_DISTANCE: u32 = 0x0079_2760;
+/// `BSFadeNode::SetRange` (Xbox PDB, `00b4dfd0`), `__thiscall(float, float)`.
+const FADE_NODE_SET_RANGE: u32 = 0x00b4_dfd0;
+/// `BSFadeNode::SetLODMultType` (Xbox PDB, `00b4dec0`).
+const FADE_NODE_SET_LOD_MULT_TYPE: u32 = 0x00b4_dec0;
+/// The setting objects `Finish` reads: the world size in cells (`011c63cc`,
+/// +4 is the value), the scale of the visual distance of a model
+/// (`011c3be4`) and the scale of the fade range (`011c3bb8`).
+const CELL_COUNT_SETTING: u32 = 0x011c_63cc;
+const VISUAL_DISTANCE_SCALE_SETTING: u32 = 0x011c_3be4;
+const FADE_RANGE_SCALE_SETTING: u32 = 0x011c_3bb8;
+/// The zero scratch dword `0043d4d0` returns the address of when it has no
+/// object.
+const SCRATCH_ZERO: u32 = 0x0120_2800;
+/// The bound `NiAVObject::GetWorldBound` returns when the object has none.
+const EMPTY_WORLD_BOUND: u32 = 0x011f_4288;
+/// Doubles in `.rdata`: 0.001, 2048.0, 0.5 and 0.0.
+const SMALL_RADIUS: u32 = 0x0101_6978;
+const LOADED_AREA_MARGIN: u32 = 0x0101_6968;
+const HALF: u32 = 0x0101_1588;
+const ZERO: u32 = 0x0101_2060;
+/// The file name of the model being loaded (`011f94c0`): `QueuedModel::Run`
+/// sets it while the stream loads and clears it afterwards.
+const LOADING_FILE_NAME: u32 = 0x011f_94c0;
+/// `TESObjectTREE::BuildDistant3D` (Xbox PDB, `0051cba0`), `__thiscall(1)`.
+const BUILD_DISTANT_3D: u32 = 0x0051_cba0;
+/// Zeroes the three words of the object (`00b57e70`).
+const ZERO_THREE_WORDS: u32 = 0x00b5_7e70;
+/// Builds the instanced billboards (`00b59ae0`), `__cdecl(cell chunk, cell
+/// key, instanced node, out, locations, colors, count)`.
+const CREATE_BILLBOARD_INSTANCES: u32 = 0x00b5_9ae0;
+/// The destructor body of `TREE_BILLBOARD_DATA` (`0051d400`).
+const TREE_BILLBOARD_DATA_DESTRUCT: u32 = 0x0051_d400;
+/// The smart pointer to a task: `__thiscall(task)` constructor that adds a
+/// reference (`00528cb0`), and its destructor (`0044cbf0`).
+const TASK_POINTER_CONSTRUCT: u32 = 0x0052_8cb0;
+const TASK_POINTER_DESTRUCT: u32 = 0x0044_cbf0;
+/// Puts a task into the queue of its priority (`00449210`),
+/// `__thiscall(priority, task pointer)` on the table of queues at
+/// `IOManager + 0x64`.
+const QUEUE_TABLE_ADD: u32 = 0x0044_9210;
+
+/// `BSStream`'s virtual table (`01016904`), `QueuedTreeBillboard`'s
+/// (`0101698c`) and `QueuedTreeModel`'s (`010169d4`).
+const BS_STREAM_VTABLE: u32 = 0x0101_6904;
+const QUEUED_TREE_BILLBOARD_VTABLE: u32 = 0x0101_698c;
+const QUEUED_TREE_MODEL_VTABLE: u32 = 0x0101_69d4;
+
+/// `"MODEL ERROR: Could not %s file '%s'."`, and its two verbs.
+const MODEL_ERROR_MESSAGE: u32 = 0x0101_68c4;
+const FIND_WORD: u32 = 0x0101_68ec;
+const LOAD_WORD: u32 = 0x0101_68f4;
+/// `"model"` and `"Tree Billboard"`.
+const MODEL_WORD: u32 = 0x0101_6980;
+const TREE_BILLBOARD_WORD: u32 = 0x0101_69c0;
+/// The source lines the memory context scopes of `QueuedModel::Run` and
+/// `Finish` record.
+const MODEL_RUN_SOURCE_LINE: u32 = 0x3b8;
+const MODEL_FINISH_SOURCE_LINE: u32 = 0x3e5;
+/// The `eContext` a queued tree model starts with (`0x1e`).
+const TREE_MODEL_CONTEXT: u32 = 0x1e;
 
 /// The offsets in a thread's TLS block `QueuedTexture` uses: a byte flag
 /// (read by `0043c130`) and a word (`0043c410`/`0043c3f0`) that `Run` sets to
@@ -401,6 +544,10 @@ layout! {
     /// `QueuedModel` (Xbox PDB), 0x48 bytes on the Xbox; the offsets used
     /// here are the same on PC.
     pub struct QueuedModel: 0x48 {
+        /// `eContext` (`QueuedFile`, Xbox PDB).
+        0x18 eContext: u32,
+        /// `pChildren` (`QueuedFile`, Xbox PDB): `QueuedChildren*`.
+        0x20 pChildren: Ptr,
         /// `spModel` (Xbox PDB): `NiPointer<Model>`.
         0x30 spModel: Ptr,
         /// `pTESModel` (Xbox PDB): `TESModel*`.
@@ -412,6 +559,79 @@ layout! {
         0x3C cFlags: u8,
         /// `mfOverriddenVisualDistance` (Xbox PDB).
         0x40 mfOverriddenVisualDistance: f32,
+    }
+}
+
+layout! {
+    /// `BSStream` (Xbox PDB), 0x5cc bytes (the `NiStream` base, then these):
+    /// `QueuedModel::Run` keeps one on its stack.
+    pub struct BSStream: 0x5cc {
+        /// `pObjectRefMap` (Xbox PDB): `NiTStringMap<NiObjectNET*>*`, deleted
+        /// (virtual destructor, flag 1) by `0043d100`.
+        0x5C4 pObjectRefMap: Ptr,
+        /// `spNodeReferences` (Xbox PDB): `NiPointer<BSNodeReferences>`.
+        0x5C8 spNodeReferences: Ptr,
+    }
+
+    /// `IOTask` (Xbox PDB), 0x18 bytes: the base of the queued files.
+    pub struct IOTask: 0x18 {
+        /// `Key` (Xbox PDB): `i64`; bits 16 to 23 are the priority of the
+        /// queue the task goes into.
+        0x10 Key: u64,
+    }
+
+    /// `NiUpdateData` (Xbox PDB), 0xc bytes.
+    pub struct NiUpdateData: 0xc {
+        /// `fTime` (Xbox PDB).
+        0x00 fTime: f32,
+        /// `bUpdateControllers` (Xbox PDB).
+        0x04 bUpdateControllers: u8,
+        /// `bParallelUpdate` (Xbox PDB).
+        0x05 bParallelUpdate: u8,
+        /// `bFoundParticles` (Xbox PDB).
+        0x06 bFoundParticles: u8,
+        /// `bFoundMorphController` (Xbox PDB).
+        0x07 bFoundMorphController: u8,
+        /// `bSceneGraphChange` (Xbox PDB).
+        0x08 bSceneGraphChange: u8,
+    }
+
+    /// `TREE_BILLBOARD_DATA` (Xbox PDB), 0x1c bytes (the same on PC).
+    pub struct TreeBillboardData: 0x1c {
+        /// `pTree` (Xbox PDB): `TESObjectTREE*`.
+        0x00 pTree: Ptr,
+        /// `iCellChunk` (Xbox PDB).
+        0x04 iCellChunk: u32,
+        /// `iCellKey` (Xbox PDB).
+        0x08 iCellKey: u32,
+        /// `pInstancedNode` (Xbox PDB): `NiNode*`.
+        0x0C pInstancedNode: Ptr,
+        /// `iArraySize` (Xbox PDB); the game reads the low word.
+        0x10 iArraySize: u32,
+        /// `pLocArray` (Xbox PDB): `NiPoint3*`.
+        0x14 pLocArray: Ptr,
+        /// `pColorArray` (Xbox PDB): `f32*`.
+        0x18 pColorArray: Ptr,
+    }
+
+    /// `QueuedTreeBillboard` (Xbox PDB), 0x40 bytes: a `QueuedTexture` and
+    /// the data to build the billboard from.
+    pub struct QueuedTreeBillboard: 0x40 {
+        /// `eContext` (`QueuedFile`, Xbox PDB).
+        0x18 eContext: u32,
+        /// `pBillboardData` (Xbox PDB): `TREE_BILLBOARD_DATA*`, owned.
+        0x38 pBillboardData: Ptr,
+    }
+
+    /// `QueuedTreeModel` (Xbox PDB), 0x50 bytes: a `QueuedModel` and the
+    /// reference and tree it is for.
+    pub struct QueuedTreeModel: 0x50 {
+        /// `eContext` (`QueuedFile`, Xbox PDB).
+        0x18 eContext: u32,
+        /// `pRef` (Xbox PDB): `TESObjectREFR*`.
+        0x48 pRef: Ptr,
+        /// `pTree` (Xbox PDB): `TESObjectTREE*`.
+        0x4C pTree: Ptr,
     }
 }
 
@@ -1685,6 +1905,1796 @@ pub fn fn_0043c830(e: &mut Engine, this: Ptr<QueuedModel>) {
     e.call(QUEUED_FILE_ENTRY_DESTRUCT, &args![this]);
 }
 
+/// `QueuedFileEntry::pFileName` of a queued model (the getter `0045cd60`).
+fn model_file_name(e: &mut Engine, this: Ptr<QueuedModel>) -> u32 {
+    e.call(QUEUED_FILE_ENTRY_GET_FILE_NAME, &args![this]).u32()
+}
+
+/// The address of a queued model's `cFlags` byte, which the game passes to
+/// the flag helpers.
+fn model_flags_pointer(model: Ptr<QueuedModel>) -> Ptr {
+    model.byte_add(QueuedModel::cFlags.off)
+}
+
+// Translated from 0043c890 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedModel` constructor taking a `TESModel` (no name in the engine map;
+/// Xbox PDB `QueuedModel::QueuedModel(TESModel*, MEM_CONTEXT, ENUM_LOD_MULT,
+/// bool, bool)`): the base constructor with `context`, the model's virtual
+/// table, no model, `tes_model`, `lod_fade_mult`, no flags; the file name is
+/// the model name (virtual function `0x14` of the `TESModel`), the file
+/// entry is looked up (flag 0), and the last two arguments set bits 1 and 2
+/// of `cFlags`. The overridden visual distance starts at 0. Returns `this`.
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043c890(
+    e: &mut Engine,
+    this: Ptr<QueuedModel>,
+    tes_model: Ptr,
+    context: u32,
+    lod_fade_mult: u32,
+    first_flag: u8,
+    second_flag: u8,
+) -> Ptr<QueuedModel> {
+    e.call(QUEUED_FILE_ENTRY_CONSTRUCT, &args![this, context]);
+    e.mem.set_u32(this.addr(), QUEUED_MODEL_VTABLE);
+    let model = model_pointer(this);
+    e.call(NI_POINTER_CONSTRUCT, &args![model, 0u32]);
+    e.set(this, QueuedModel::pTESModel, tes_model);
+    e.set(this, QueuedModel::eLODFadeMult, lod_fade_mult);
+    e.set(this, QueuedModel::cFlags, 0);
+    let name = e.vcall(tes_model.addr(), 0x14, &args![]).u32();
+    e.call(QUEUED_FILE_ENTRY_SET_FILE_NAME, &args![this, name]);
+    e.call(QUEUED_FILE_ENTRY_FIND_FILE_ENTRY, &args![this, 0u32]);
+    fn_0043c7a0(e, this, first_flag);
+    fn_0043c7d0(e, this, second_flag);
+    e.set(this, QueuedModel::mfOverriddenVisualDistance, 0.0);
+    this
+}
+
+// Translated from 0043c960 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedModel` constructor taking a loaded model (no name in the engine
+/// map): the base constructor with `context`, the model's virtual table, no
+/// `TESModel`, no fade multiplier, no flags, then `model` is stored in
+/// `spModel` and the task is put into state done. Returns `this`.
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043c960(
+    e: &mut Engine,
+    this: Ptr<QueuedModel>,
+    model: Ptr,
+    context: u32,
+) -> Ptr<QueuedModel> {
+    e.call(QUEUED_FILE_ENTRY_CONSTRUCT, &args![this, context]);
+    e.mem.set_u32(this.addr(), QUEUED_MODEL_VTABLE);
+    let slot = model_pointer(this);
+    e.call(NI_POINTER_CONSTRUCT, &args![slot, 0u32]);
+    e.set(this, QueuedModel::pTESModel, Ptr::NULL);
+    e.set(this, QueuedModel::eLODFadeMult, 0);
+    e.set(this, QueuedModel::cFlags, 0);
+    e.call(MODEL_POINTER_ASSIGN, &args![slot, model]);
+    e.call(TASK_SET_DONE, &args![this]);
+    e.set(this, QueuedModel::mfOverriddenVisualDistance, 0.0);
+    this
+}
+
+// Translated from 0043ca10 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedModel::GenerateKey` (Xbox PDB): `QueuedFileEntry::GenerateKey`.
+pub fn queued_model_generate_key(e: &mut Engine, this: Ptr<QueuedModel>) {
+    e.call(QUEUED_FILE_ENTRY_GENERATE_KEY, &args![this]);
+}
+
+// Translated from 0043ca30 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedModel::CheckFinished` (Xbox PDB): a model whose bit 4 is not set
+/// takes the plain `QueuedFile::CheckFinished`. With bit 4 set it does
+/// nothing while the children are not all finished
+/// ([`fn_0043caa0`]); when they are, a task still in state 0 is handed to
+/// the task queue (slot `0x48`), any other goes through
+/// `QueuedFile::CheckFinished`.
+pub fn queued_model_check_finished(e: &mut Engine, this: Ptr<QueuedModel>) {
+    if !fn_0043caf0(e, this) {
+        e.call(QUEUED_FILE_CHECK_FINISHED, &args![this]);
+    } else if fn_0043caa0(e, this) {
+        if e.call(STATE_IS_ZERO, &args![this]).bool() {
+            let queue = e.global::<u32>(TASK_QUEUE);
+            e.vcall(queue, 0x48, &args![this]);
+        } else {
+            e.call(QUEUED_FILE_CHECK_FINISHED, &args![this]);
+        }
+    }
+}
+
+// Translated from 0043caa0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether all children are finished: true without a `pChildren` object,
+/// otherwise the child count (dword at +8) equals the finished count (dword
+/// at +0x10).
+pub fn fn_0043caa0(e: &mut Engine, this: Ptr<QueuedModel>) -> bool {
+    let children = e.get(this, QueuedModel::pChildren);
+    if children.is_null() {
+        return true;
+    }
+    let total = e.call(FIELD_AT_8, &args![children]).u32();
+    let finished = e.call(FINISHED_COUNT_GETTER, &args![children]).u32();
+    total == finished
+}
+
+// Translated from 0043caf0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether bit 4 of the model's `cFlags` is set.
+pub fn fn_0043caf0(e: &mut Engine, this: Ptr<QueuedModel>) -> bool {
+    let flags = e.get(this, QueuedModel::cFlags);
+    e.call(TEST_FLAG_BIT_4, &args![flags as u32]).bool()
+}
+
+// Translated from 0043cb10 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedModel::QueueMe` (Xbox PDB): calls the virtual function `0x30`
+/// (`QueueMe_ov2`) with the texture block of the `TESModel` (0 without one).
+pub fn queued_model_queue_me(e: &mut Engine, this: Ptr<QueuedModel>) {
+    let mut block = 0;
+    let tes_model = e.get(this, QueuedModel::pTESModel);
+    if !tes_model.is_null() {
+        block = e.call(TES_MODEL_TEXTURE_BLOCK, &args![tes_model]).u32();
+    }
+    e.vcall(this.addr(), 0x30, &args![block]);
+}
+
+// Translated from 0043cb50 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedModel::QueueMe_ov2` (Xbox PDB): queues the textures of the model.
+/// With a texture block (`block`: a count byte, then a pointer to that many
+/// texture entries) every non-null entry goes to the loader's
+/// `QueueTexture_ov2` with this model's key and as the parent. Then every
+/// texture set of the `TESModel`'s list (virtual function `0x1c` of the
+/// `TESModel`) that has an item is queued with `QueueTextureSet`. Last, bit
+/// 4 of `cFlags` is set and the virtual function `0x28` (`CheckFinished`) is
+/// called.
+pub fn queued_model_queue_me_ov2(e: &mut Engine, this: Ptr<QueuedModel>, block: u32) {
+    if block != 0 {
+        let count = e.call(BYTE_AT_0, &args![block]).u8() as u32;
+        if count != 0 {
+            let textures = e.call(FIELD_AT_4, &args![block]).u32();
+            for index in 0..count {
+                let texture = e.mem.u32(textures + index * 4);
+                if texture != 0 {
+                    let key = fn_0043cc60(e, this.cast());
+                    let owner = e.global::<u32>(FILE_MAP_OWNER);
+                    e.call(
+                        MODEL_LOADER_QUEUE_TEXTURE,
+                        &args![owner, texture, key as u32, this],
+                    );
+                }
+            }
+        }
+    }
+    let tes_model = e.get(this, QueuedModel::pTESModel);
+    if !tes_model.is_null() {
+        let list = e.vcall(tes_model.addr(), 0x1c, &args![]).u32();
+        if list != 0 {
+            let mut node = e.call(LIST_FIRST_NODE, &args![list]).u32();
+            while node != 0 {
+                let item_slot = e.call(LIST_NODE_ITEM_ADDRESS, &args![node]).u32();
+                let texture_set = e.mem.u32(item_slot);
+                if texture_set != 0 && e.mem.u32(texture_set) != 0 {
+                    let key = fn_0043cc60(e, this.cast());
+                    let target = e.mem.u32(texture_set);
+                    e.call(QUEUE_TEXTURE_SET, &args![target, key as u32, this, 0u32]);
+                }
+                node = e.call(FIELD_AT_4, &args![node]).u32();
+            }
+        }
+    }
+    fn_0043ccc0(e, this, 1);
+    e.vcall(this.addr(), 0x28, &args![]);
+}
+
+// Translated from 0043cc60 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The priority byte of a task's key: the low byte of [`fn_0043cc80`].
+pub fn fn_0043cc60(e: &mut Engine, this: Ptr<IOTask>) -> u8 {
+    fn_0043cc80(e, this) as u8
+}
+
+// Translated from 0043cc80 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The task's `Key` shifted right by 16 ([`fn_0043cca0`] on `this + 0x10`).
+pub fn fn_0043cc80(e: &mut Engine, this: Ptr<IOTask>) -> u64 {
+    fn_0043cca0(e, this.byte_add(IOTask::Key.off))
+}
+
+// Translated from 0043cca0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `__cdecl(pointer)`: the 64-bit value at `value` shifted right by 16 with
+/// the sign kept (`__allshr`), returned in `EDX:EAX`.
+pub fn fn_0043cca0(e: &mut Engine, value: Ptr) -> u64 {
+    ((e.mem.u64(value.addr()) as i64) >> 16) as u64
+}
+
+// Translated from 0043ccc0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Sets (`flag` non-zero) or clears bit 4 of the model's `cFlags`.
+pub fn fn_0043ccc0(e: &mut Engine, this: Ptr<QueuedModel>, flag: u8) {
+    let flags = model_flags_pointer(this);
+    e.call(SET_FLAG_BIT_4, &args![flag as u32, flags]);
+}
+
+// Translated from 0043ccf0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedModel::Run` (Xbox PDB): inside the memory context of the task, a
+/// model with a file name is loaded: if the loader already has a model of
+/// that name it is taken (and bit 8 set); otherwise the file is opened
+/// (`QueuedFileEntry::GetFile`) and read into a `BSStream` on the stack, and
+/// a `Model` built from it is stored in `spModel` (when the file could be
+/// read, or bit 0x10 allows a model without one); a failure is logged. The
+/// name is published in `011f94c0` while the stream loads.
+///
+/// The exception-unwinding frame and the stack-cookie check are not
+/// translated; the `BSStream` of the game's stack frame is a heap block here.
+pub fn queued_model_run(e: &mut Engine, this: Ptr<QueuedModel>) {
+    let context = e.get(this, QueuedModel::eContext);
+    // The scope guard of the game's stack frame (4 bytes).
+    e.with_stack(4, |e, guard| {
+        e.call(
+            MEMORY_CONTEXT_ENTER,
+            &args![
+                guard,
+                context,
+                1u32,
+                MODEL_LOADER_SOURCE,
+                MODEL_RUN_SOURCE_LINE
+            ],
+        );
+        queued_model_run_in_context(e, this);
+        e.call(MEMORY_CONTEXT_LEAVE, &args![guard]);
+    });
+}
+
+/// The body of [`queued_model_run`] inside its memory context.
+fn queued_model_run_in_context(e: &mut Engine, this: Ptr<QueuedModel>) {
+    let name = model_file_name(e, this);
+    if e.call(STRLEN, &args![name]).u32() == 0 {
+        return;
+    }
+    let slot = model_pointer(this);
+    let name = model_file_name(e, this);
+    let owner = e.global::<u32>(FILE_MAP_OWNER);
+    e.call(MODEL_LOADER_FIND_MODEL, &args![owner, name, slot]);
+    if !ni_pointer_get(e, slot).is_null() {
+        fn_0043cf60(e, this, 1);
+        return;
+    }
+
+    let file: Ptr = e
+        .call(QUEUED_FILE_ENTRY_GET_FILE, &args![this, 0u32, 1u32])
+        .ptr();
+    e.with_stack(BSStream::SIZE, |e, stream| {
+        fn_0043cfd0(e, stream.cast());
+        let name = model_file_name(e, this);
+        e.set_global(LOADING_FILE_NAME, name);
+        let mut create = false;
+        if !file.is_null() {
+            let name = model_file_name(e, this);
+            create = e.call(BS_STREAM_LOAD, &args![stream, name, file]).bool();
+        }
+        if create || fn_0043cf90(e, this) {
+            let block = e.call(MEMORY_ALLOC, &args![0x10u32]).u32();
+            let mut model = 0;
+            if block != 0 {
+                let force = fn_0043cfb0(e, this);
+                let prepare = fn_0043cf40(e, this);
+                let name = model_file_name(e, this);
+                model = model_model(e, Ptr::new(block), name, stream, prepare as u8, force as u8)
+                    .addr();
+            }
+            e.call(MODEL_POINTER_ASSIGN, &args![slot, model]);
+        } else {
+            let verb = if file.is_null() { FIND_WORD } else { LOAD_WORD };
+            let name = model_file_name(e, this);
+            e.call(LOG, &args![MODEL_ERROR_MESSAGE, verb, name]);
+        }
+        e.set_global(LOADING_FILE_NAME, 0u32);
+        bs_stream_destructor(e, stream.cast());
+    });
+}
+
+// Translated from 0043cf40 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether bit 1 of the model's `cFlags` is set.
+pub fn fn_0043cf40(e: &mut Engine, this: Ptr<QueuedModel>) -> bool {
+    let flags = e.get(this, QueuedModel::cFlags);
+    e.call(TEST_FLAG_BIT_1, &args![flags as u32]).bool()
+}
+
+// Translated from 0043cf60 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Sets (`flag` non-zero) or clears bit 8 of the model's `cFlags`.
+pub fn fn_0043cf60(e: &mut Engine, this: Ptr<QueuedModel>, flag: u8) {
+    let flags = model_flags_pointer(this);
+    e.call(SET_FLAG_BIT_8, &args![flag as u32, flags]);
+}
+
+// Translated from 0043cf90 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether bit 0x10 of the model's `cFlags` is set.
+pub fn fn_0043cf90(e: &mut Engine, this: Ptr<QueuedModel>) -> bool {
+    let flags = e.get(this, QueuedModel::cFlags);
+    e.call(TEST_FLAG_BIT_10, &args![flags as u32]).bool()
+}
+
+// Translated from 0043cfb0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether bit 0x20 of the model's `cFlags` is set.
+pub fn fn_0043cfb0(e: &mut Engine, this: Ptr<QueuedModel>) -> bool {
+    let flags = e.get(this, QueuedModel::cFlags);
+    e.call(TEST_FLAG_BIT_20, &args![flags as u32]).bool()
+}
+
+// Translated from 0043cfd0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `BSStream::BSStream` (the engine map has no name; Ghidra's library match
+/// calls it `CMiniDockFrameWnd`'s, which it is not): the `NiStream`
+/// constructor, the stream's virtual table, no node references and no
+/// object reference map. Returns `this`.
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043cfd0(e: &mut Engine, this: Ptr<BSStream>) -> Ptr<BSStream> {
+    e.call(NI_STREAM_CONSTRUCT, &args![this]);
+    e.mem.set_u32(this.addr(), BS_STREAM_VTABLE);
+    let references = this.byte_add(BSStream::spNodeReferences.off);
+    e.call(NI_POINTER_CONSTRUCT, &args![references, 0u32]);
+    e.set(this, BSStream::pObjectRefMap, Ptr::NULL);
+    this
+}
+
+// Translated from 0043d050 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `NiStream::SaveLinkID` (Xbox PDB): asks the stream (virtual function
+/// `0x2c`) for the link id of `object` and writes it with
+/// `NiStreamSaveBinary<unsigned int>`.
+pub fn ni_stream_save_link_id(e: &mut Engine, this: Ptr, object: Ptr) {
+    let link_id = e.vcall(this.addr(), 0x2c, &args![object]).u32();
+    // The local `unsigned int` of the game's stack frame.
+    e.with_stack(4, |e, value| {
+        e.mem.set_u32(value.addr(), link_id);
+        e.call(NI_STREAM_SAVE_BINARY_U32, &args![this, value]);
+    });
+}
+
+// Translated from 0043d090 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `BSStream::~BSStream` (Xbox PDB): restores the stream's virtual table,
+/// deletes the object reference map ([`fn_0043d100`]), destroys the node
+/// references pointer and runs the `NiStream` destructor body.
+///
+/// The exception-unwinding frame is not translated.
+pub fn bs_stream_destructor(e: &mut Engine, this: Ptr<BSStream>) {
+    e.mem.set_u32(this.addr(), BS_STREAM_VTABLE);
+    fn_0043d100(e, this);
+    let references = this.byte_add(BSStream::spNodeReferences.off);
+    e.call(NI_POINTER_DESTRUCT, &args![references]);
+    e.call(NI_STREAM_DESTRUCT, &args![this]);
+}
+
+// Translated from 0043d100 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Deletes the stream's object reference map (virtual destructor, flag 1)
+/// when there is one and clears the pointer.
+pub fn fn_0043d100(e: &mut Engine, this: Ptr<BSStream>) {
+    let map = e.get(this, BSStream::pObjectRefMap);
+    if !map.is_null() {
+        e.vcall(map.addr(), 0, &args![1u32]);
+    }
+    e.set(this, BSStream::pObjectRefMap, Ptr::NULL);
+}
+
+// Translated from 0043d150 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `BSStream::_scalar_deleting_destructor_` (Xbox PDB): runs the destructor
+/// and, when bit 0 of `flags` is set, frees the stream. Returns `this`.
+pub fn bs_stream_scalar_deleting_destructor(
+    e: &mut Engine,
+    this: Ptr<BSStream>,
+    flags: u32,
+) -> Ptr<BSStream> {
+    bs_stream_destructor(e, this);
+    if flags & 1 != 0 {
+        e.call(MEMORY_FREE, &args![this]);
+    }
+    this
+}
+
+// Translated from 0043d180 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedModel::Finish` (Xbox PDB): inside the memory context of the task,
+/// for a loaded model: bit 2 adds a reference to the model; unless bit 8 is
+/// set, the model's 3D object is updated and, when it is a fade node, given
+/// its fade range and LOD multiplier type ([`fade_range`]); then the model
+/// is added to the loader's map, and when the map already has one of that
+/// name `spModel` is replaced by it. Last the task's virtual function `0x28`
+/// (`CheckFinished`) is called.
+///
+/// The exception-unwinding frame is not translated.
+pub fn queued_model_finish(e: &mut Engine, this: Ptr<QueuedModel>) {
+    let context = e.get(this, QueuedModel::eContext);
+    // The scope guard of the game's stack frame (4 bytes).
+    e.with_stack(4, |e, guard| {
+        e.call(
+            MEMORY_CONTEXT_ENTER,
+            &args![
+                guard,
+                context,
+                1u32,
+                MODEL_LOADER_SOURCE,
+                MODEL_FINISH_SOURCE_LINE
+            ],
+        );
+        queued_model_finish_in_context(e, this);
+        e.call(MEMORY_CONTEXT_LEAVE, &args![guard]);
+    });
+}
+
+/// The body of [`queued_model_finish`] inside its memory context.
+fn queued_model_finish_in_context(e: &mut Engine, this: Ptr<QueuedModel>) {
+    let slot = model_pointer(this);
+    if !ni_pointer_get(e, slot).is_null() {
+        if fn_0043d490(e, this) {
+            let model = ni_pointer_get(e, slot);
+            e.call(ADD_REFERENCE, &args![model]);
+        }
+        if !fn_0043d4b0(e, this) {
+            let model = ni_pointer_get(e, slot);
+            if !fn_0043b230(e, model).is_null() {
+                let model = ni_pointer_get(e, slot);
+                let object = fn_0043b230(e, model);
+                // Virtual function `0x10` gives the object as a fade node
+                // (0 for other classes).
+                let fade_node: Ptr = e.vcall(object.addr(), 0x10, &args![]).ptr();
+                if !fade_node.is_null() {
+                    fade_range(e, this, fade_node);
+                }
+                let model = ni_pointer_get(e, slot);
+                let name = model_file_name(e, this);
+                let owner = e.global::<u32>(FILE_MAP_OWNER);
+                let added = e
+                    .call(MODEL_LOADER_ADD_MODEL, &args![owner, name, model])
+                    .bool();
+                if !added {
+                    let name = model_file_name(e, this);
+                    let owner = e.global::<u32>(FILE_MAP_OWNER);
+                    e.call(MODEL_LOADER_FIND_MODEL, &args![owner, name, slot]);
+                }
+            }
+        }
+    }
+    fn_0043c610(e, this.cast());
+}
+
+/// What `Finish` does with a model whose 3D object is a fade node: updates
+/// the node, then sets its fade range and LOD multiplier type.
+///
+/// The radius is the world bound's radius, or when that is below 0.001 half
+/// of the third component of the reference's maximum bound. The range is the
+/// radius times the visual distance scale, unless the radius is 0 or the
+/// world is too small for it: then the limit (half the world in units of
+/// 4096 per cell, minus radius and 2048). A non-zero overridden visual
+/// distance of the queued model replaces the range. The node gets the range
+/// times the fade range scale and the range itself.
+///
+/// The floating-point steps follow the x87 code: values are computed in
+/// `f64` and rounded to `f32` where the game stores a `float`.
+fn fade_range(e: &mut Engine, this: Ptr<QueuedModel>, fade_node: Ptr) {
+    // The update record of the game's stack frame (12 bytes).
+    e.with_stack(NiUpdateData::SIZE, |e, update| {
+        fn_0043d410(e, update.cast(), 0.0, 0, 0);
+        e.call(NI_AV_OBJECT_UPDATE, &args![fade_node, update]);
+    });
+    let bound = ni_av_object_get_world_bound(e, fade_node);
+    let mut radius = e.call(BOUND_RADIUS, &args![bound]).f32();
+    if (radius as f64) < e.global::<f64>(SMALL_RADIUS) {
+        let model = ni_pointer_get(e, model_pointer(this));
+        let object = fn_0043b230(e, model);
+        let depth = e.with_stack(12, |e, out| {
+            let vector = e.call(GET_BOUND_MAX, &args![out, object]).u32();
+            e.mem.f32(vector + 8)
+        });
+        radius = (depth as f64 * e.global::<f64>(HALF)) as f32;
+    }
+    // The game first stores `FLT_MAX` (`01016970`) into the limit; it is
+    // overwritten at once.
+    let cells_setting = fn_0043d4d0(e, Ptr::new(CELL_COUNT_SETTING));
+    let cells = e.mem.u32(cells_setting.addr());
+    let world_size = (cells << 12) as f64;
+    let limit = (world_size * e.global::<f64>(HALF)
+        - (radius as f64 + e.global::<f64>(LOADED_AREA_MARGIN))) as f32;
+    let scale = e
+        .call(SETTING_VALUE_POINTER, &args![VISUAL_DISTANCE_SCALE_SETTING])
+        .u32();
+    let scaled = (radius as f64 * e.mem.f32(scale) as f64) as f32;
+    // `radius == 0`, `limit <= scaled` and unordered compares take the limit.
+    let mut range = if radius != 0.0 && scaled < limit {
+        scaled
+    } else {
+        limit
+    };
+    let overridden = e.call(OVERRIDDEN_VISUAL_DISTANCE, &args![this]).f32();
+    if overridden as f64 != e.global::<f64>(ZERO) {
+        range = e.call(OVERRIDDEN_VISUAL_DISTANCE, &args![this]).f32();
+    }
+    let scale = e
+        .call(SETTING_VALUE_POINTER, &args![FADE_RANGE_SCALE_SETTING])
+        .u32();
+    let far = (range as f64 * e.mem.f32(scale) as f64) as f32;
+    e.call(FADE_NODE_SET_RANGE, &args![fade_node, far, range]);
+    let lod_fade_mult = e.get(this, QueuedModel::eLODFadeMult);
+    e.call(
+        FADE_NODE_SET_LOD_MULT_TYPE,
+        &args![fade_node, lod_fade_mult],
+    );
+}
+
+// Translated from 0043d410 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `NiUpdateData::NiUpdateData(float, bool, bool)` (no name in the engine
+/// map): stores the time and the first two flags, clears the other three.
+/// Returns `this`.
+pub fn fn_0043d410(
+    e: &mut Engine,
+    this: Ptr<NiUpdateData>,
+    time: f32,
+    update_controllers: u8,
+    parallel_update: u8,
+) -> Ptr<NiUpdateData> {
+    e.set(this, NiUpdateData::fTime, time);
+    e.set(this, NiUpdateData::bUpdateControllers, update_controllers);
+    e.set(this, NiUpdateData::bParallelUpdate, parallel_update);
+    e.set(this, NiUpdateData::bFoundParticles, 0);
+    e.set(this, NiUpdateData::bFoundMorphController, 0);
+    e.set(this, NiUpdateData::bSceneGraphChange, 0);
+    this
+}
+
+// Translated from 0043d450 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `NiAVObject::GetWorldBound` (Xbox PDB): the object's bound (the pointer
+/// at +0x20), or the empty bound at `011f4288` when it has none.
+pub fn ni_av_object_get_world_bound(e: &mut Engine, this: Ptr) -> Ptr {
+    // NiAVObject::m_pkWorldBound (Xbox PDB) +0x20
+    let bound = e.mem.u32(this.addr() + 0x20);
+    if bound == 0 {
+        Ptr::new(EMPTY_WORLD_BOUND)
+    } else {
+        Ptr::new(bound)
+    }
+}
+
+// Translated from 0043d490 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether bit 2 of the model's `cFlags` is set.
+pub fn fn_0043d490(e: &mut Engine, this: Ptr<QueuedModel>) -> bool {
+    let flags = e.get(this, QueuedModel::cFlags);
+    e.call(TEST_FLAG_BIT_2, &args![flags as u32]).bool()
+}
+
+// Translated from 0043d4b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether bit 8 of the model's `cFlags` is set.
+pub fn fn_0043d4b0(e: &mut Engine, this: Ptr<QueuedModel>) -> bool {
+    let flags = e.get(this, QueuedModel::cFlags);
+    e.call(TEST_FLAG_BIT_8, &args![flags as u32]).bool()
+}
+
+// Translated from 0043d4d0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Address of the value of a setting object (`this + 4`); without an object
+/// (0) a scratch dword at `01202800` is zeroed and its address returned.
+pub fn fn_0043d4d0(e: &mut Engine, this: Ptr) -> Ptr {
+    if this.is_null() {
+        e.set_global(SCRATCH_ZERO, 0u32);
+        Ptr::new(SCRATCH_ZERO)
+    } else {
+        this.byte_add(4)
+    }
+}
+
+// Translated from 0043d510 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedModel::GetDescription` (Xbox PDB): `QueuedFileEntry::GetDescription`
+/// with the kind word `"model"`; returns its result.
+pub fn queued_model_get_description(
+    e: &mut Engine,
+    this: Ptr<QueuedModel>,
+    buffer: u32,
+    size: u32,
+) -> bool {
+    e.call(
+        QUEUED_FILE_ENTRY_GET_DESCRIPTION,
+        &args![this, buffer, size, MODEL_WORD],
+    )
+    .bool()
+}
+
+// Translated from 0043d540 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeBillboard` constructor (no name in the engine map): the
+/// `QueuedTexture` constructor with `name` and `context`, the billboard's
+/// virtual table and `data` as `pBillboardData`. Returns `this`.
+pub fn fn_0043d540(
+    e: &mut Engine,
+    this: Ptr<QueuedTreeBillboard>,
+    name: u32,
+    context: u32,
+    data: Ptr<TreeBillboardData>,
+) -> Ptr<QueuedTreeBillboard> {
+    fn_0043bd10(e, this.cast(), name, context);
+    e.mem.set_u32(this.addr(), QUEUED_TREE_BILLBOARD_VTABLE);
+    e.set(this, QueuedTreeBillboard::pBillboardData, data.cast());
+    this
+}
+
+// Translated from 0043d580 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeBillboard::_scalar_deleting_destructor_` (Xbox PDB): runs the
+/// destructor ([`fn_0043d5b0`]) and, when bit 0 of `flags` is set, frees the
+/// object. Returns `this`.
+pub fn queued_tree_billboard_scalar_deleting_destructor(
+    e: &mut Engine,
+    this: Ptr<QueuedTreeBillboard>,
+    flags: u32,
+) -> Ptr<QueuedTreeBillboard> {
+    fn_0043d5b0(e, this);
+    if flags & 1 != 0 {
+        e.call(MEMORY_FREE, &args![this]);
+    }
+    this
+}
+
+// Translated from 0043d5b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeBillboard` destructor (no name in the engine map): deletes the
+/// billboard data (when there is some) and runs the `QueuedTexture`
+/// destructor.
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043d5b0(e: &mut Engine, this: Ptr<QueuedTreeBillboard>) {
+    e.mem.set_u32(this.addr(), QUEUED_TREE_BILLBOARD_VTABLE);
+    let data = e.get(this, QueuedTreeBillboard::pBillboardData);
+    if !data.is_null() {
+        fn_0043d640(e, data.cast(), 1);
+    }
+    fn_0043bf80(e, this.cast());
+}
+
+// Translated from 0043d640 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `TREE_BILLBOARD_DATA` scalar deleting destructor (the decompiler names it
+/// after an MFC class; the engine map has no name): runs the destructor body
+/// (`0051d400`) and, when bit 0 of `flags` is set, frees the block. Returns
+/// `this`.
+pub fn fn_0043d640(
+    e: &mut Engine,
+    this: Ptr<TreeBillboardData>,
+    flags: u32,
+) -> Ptr<TreeBillboardData> {
+    e.call(TREE_BILLBOARD_DATA_DESTRUCT, &args![this]);
+    if flags & 1 != 0 {
+        e.call(MEMORY_FREE, &args![this]);
+    }
+    this
+}
+
+// Translated from 0043d670 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeBillboard::Finish` (Xbox PDB): `QueuedTexture::Finish`, then
+/// the task is added to the post-process queue ([`iomanager_add_post_process_task`]).
+pub fn queued_tree_billboard_finish(e: &mut Engine, this: Ptr<QueuedTreeBillboard>) {
+    queued_texture_finish(e, this.cast());
+    iomanager_add_post_process_task(e, this.cast());
+}
+
+// Translated from 0043d690 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `IOManager::AddPostProcessTask` (Xbox PDB): [`fn_0043d6b0`] on the IO
+/// manager (the global at `01202d98`) with `task`.
+pub fn iomanager_add_post_process_task(e: &mut Engine, task: Ptr<IOTask>) {
+    let manager = e.global::<u32>(TASK_QUEUE);
+    fn_0043d6b0(e, Ptr::new(manager), task);
+}
+
+// Translated from 0043d6b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// The body of `IOManager::AddPostProcessTask` (no name in the engine map):
+/// takes a counted reference to `task` and puts it into the queue its key
+/// names (the priority byte, [`fn_0043cc80`]) in the table of queues at
+/// `IOManager + 0x64` (a PC field, the Xbox class ends at 0x5c).
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043d6b0(e: &mut Engine, this: Ptr, task: Ptr<IOTask>) {
+    // The task pointer of the game's stack frame.
+    e.with_stack(4, |e, holder| {
+        e.call(TASK_POINTER_CONSTRUCT, &args![holder, task]);
+        let priority = fn_0043cc80(e, task) as u8;
+        // IOManager + 0x64: the table of queues (not in the Xbox layout).
+        let queues = e.mem.u32(this.addr() + 0x64);
+        e.call(QUEUE_TABLE_ADD, &args![queues, priority as u32, holder]);
+        e.call(TASK_POINTER_DESTRUCT, &args![holder]);
+    });
+}
+
+// Translated from 0043d730 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeBillboard::PostProcess` (Xbox PDB): calls the virtual function
+/// `0x30` (`CreateBillboard`).
+pub fn queued_tree_billboard_post_process(e: &mut Engine, this: Ptr<QueuedTreeBillboard>) {
+    e.vcall(this.addr(), 0x30, &args![]);
+}
+
+// Translated from 0043d750 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeBillboard::CreateBillboard` (Xbox PDB): builds the distant 3D
+/// of the tree (`BuildDistant3D(1)`); with it, a three-word record on the
+/// stack (0, the node, the count read from the tree) is passed with the
+/// billboard data to the instance builder (`00b59ae0`), and the node is
+/// deleted again (virtual destructor, flag 1).
+pub fn queued_tree_billboard_create_billboard(e: &mut Engine, this: Ptr<QueuedTreeBillboard>) {
+    let data: Ptr<TreeBillboardData> = e.get(this, QueuedTreeBillboard::pBillboardData).cast();
+    let tree = e.get(data, TreeBillboardData::pTree);
+    let node = e.call(BUILD_DISTANT_3D, &args![tree, 1u32]).u32();
+    if node == 0 {
+        return;
+    }
+    // The record of the game's stack frame: +0 zero, +4 the node, +8 the count.
+    e.with_stack(12, |e, record| {
+        e.call(ZERO_THREE_WORDS, &args![record]);
+        let tree = e.get(data, TreeBillboardData::pTree);
+        let count = e.call(ARRAY_COUNT, &args![tree]).u32();
+        e.mem.set_u32(record.addr() + 8, count);
+        e.mem.set_u32(record.addr() + 4, node);
+        e.mem.set_u32(record.addr(), 0);
+        let size = e.get(data, TreeBillboardData::iArraySize) & 0xffff;
+        let chunk = e.get(data, TreeBillboardData::iCellChunk);
+        let key = e.get(data, TreeBillboardData::iCellKey);
+        let instanced = e.get(data, TreeBillboardData::pInstancedNode);
+        let locations = e.get(data, TreeBillboardData::pLocArray);
+        let colors = e.get(data, TreeBillboardData::pColorArray);
+        e.call(
+            CREATE_BILLBOARD_INSTANCES,
+            &args![chunk, key, instanced, record, locations, colors, size],
+        );
+        let node = e.mem.u32(record.addr() + 4);
+        if node != 0 {
+            e.vcall(node, 0, &args![1u32]);
+        }
+    });
+}
+
+// Translated from 0043d820 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeBillboard::GetDescription` (Xbox PDB):
+/// `QueuedFileEntry::GetDescription` with the kind word `"Tree Billboard"`;
+/// returns its result.
+pub fn queued_tree_billboard_get_description(
+    e: &mut Engine,
+    this: Ptr<QueuedTreeBillboard>,
+    buffer: u32,
+    size: u32,
+) -> bool {
+    e.call(
+        QUEUED_FILE_ENTRY_GET_DESCRIPTION,
+        &args![this, buffer, size, TREE_BILLBOARD_WORD],
+    )
+    .bool()
+}
+
+// Translated from 0043d850 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeModel` constructor (no name in the engine map): the
+/// `QueuedModel` constructor over the `TESModel` embedded in the tree (at
+/// +0x30; none for a null tree) with `context`, `lod_fade_mult`, bit 1 set
+/// and bit 2 clear; then the tree model's virtual table, `pRef`, `pTree` and
+/// the context `0x1e`. Returns `this`.
+pub fn fn_0043d850(
+    e: &mut Engine,
+    this: Ptr<QueuedTreeModel>,
+    reference: Ptr,
+    tree: Ptr,
+    context: u32,
+    lod_fade_mult: u32,
+) -> Ptr<QueuedTreeModel> {
+    // TESObjectTREE::TESModel base (Xbox PDB) +0x30
+    let tes_model = if tree.is_null() {
+        Ptr::NULL
+    } else {
+        tree.byte_add(0x30)
+    };
+    fn_0043c890(e, this.cast(), tes_model, context, lod_fade_mult, 1, 0);
+    e.mem.set_u32(this.addr(), QUEUED_TREE_MODEL_VTABLE);
+    e.set(this, QueuedTreeModel::pRef, reference);
+    e.set(this, QueuedTreeModel::pTree, tree);
+    e.set(this, QueuedTreeModel::eContext, TREE_MODEL_CONTEXT);
+    this
+}
+
+// --- The tree model, `QueuedMagicItem`, `QueuedKF` and its subclasses (`0043d8c0` onwards). ---
+
+/// `BSTreeManager`'s global pointer (`011d5c48`) and the three methods
+/// `QueuedTreeModel` calls on it: `00664f50` (`__thiscall(reference, tree)
+/// -> tree node`, no name in the engine map), `00665b80`
+/// (`__thiscall(reference, tree node)`, the same) and
+/// `BSTreeManager::RemoveBackgroundLoadedTree` (Xbox PDB, `00665be0`,
+/// `__thiscall(reference)`).
+const TREE_MANAGER: u32 = 0x011d_5c48;
+const TREE_MANAGER_BUILD_TREE: u32 = 0x0066_4f50;
+const TREE_MANAGER_STORE_TREE: u32 = 0x0066_5b80;
+const TREE_MANAGER_REMOVE_BACKGROUND_TREE: u32 = 0x0066_5be0;
+/// The text of a `TESTexture` (`00408da0`, `this + 4` is a `BSStringT`): the
+/// string, or an empty string without one.
+const TEXTURE_TEXT: u32 = 0x0040_8da0;
+/// `strcat_s(destination, size, source)` through the game's wrapper
+/// (`00406d50`).
+const STRING_APPEND: u32 = 0x0040_6d50;
+/// `ModelLoader::QueueTexture` (Xbox PDB, `004436c0`) on
+/// [`FILE_MAP_OWNER`], `__thiscall(file name, key, parent queued file)`.
+const MODEL_LOADER_QUEUE_TEXTURE_BY_NAME: u32 = 0x0044_36c0;
+/// `ModelLoader::QueueModel` taking a `TESModel` (`00443d30`, no name in the
+/// engine map) on [`FILE_MAP_OWNER`], `__thiscall(TESModel, key, parent
+/// queued file, LOD multiplier, 1, 0, 0)`.
+const MODEL_LOADER_QUEUE_MODEL: u32 = 0x0044_3d30;
+/// `ModelLoader` method (`004463b0`, no name in the engine map) on
+/// [`FILE_MAP_OWNER`], `__thiscall(list of model names, 0, key, parent
+/// queued file, 0)`: queues every model of the list.
+const MODEL_LOADER_QUEUE_MODEL_LIST: u32 = 0x0044_63b0;
+/// `ModelLoader::QueueAnimations` (Xbox PDB, `00445a10`) on
+/// [`FILE_MAP_OWNER`], `__thiscall(animation list, key, parent queued file,
+/// 0, 1, 1)`.
+const MODEL_LOADER_QUEUE_ANIMATIONS: u32 = 0x0044_5a10;
+/// `TES::GetLODMult` (Xbox PDB, `0045c6b0`), `__cdecl(form) -> LOD
+/// multiplier`.
+const GET_LOD_MULT: u32 = 0x0045_c6b0;
+/// `TESBipedModelForm::GetBipedTESModel_ov2` (Xbox PDB, `00481150`),
+/// `__thiscall(index) -> TESModel`.
+const GET_BIPED_TES_MODEL: u32 = 0x0048_1150;
+/// `TESNPC::BuildDefaultModelList` (Xbox PDB, `0060af90`), `__thiscall(1, 1)
+/// -> list`.
+const BUILD_DEFAULT_MODEL_LIST: u32 = 0x0060_af90;
+/// Empties a list (`00470470`, releases every node after the first) and
+/// deletes it (`004702f0`, `__thiscall(flags)`: destructor, then the block
+/// when bit 0 of `flags` is set).
+const LIST_CLEAR: u32 = 0x0047_0470;
+const LIST_DELETE: u32 = 0x0047_02f0;
+/// Length of the string of the `TESModel` at `this` (`0048cee0`: the
+/// `BSStringT` at `this + 4`).
+const MODEL_NAME_LENGTH: u32 = 0x0048_cee0;
+/// `__thiscall(mask) -> bool` on an `EffectSetting` (`00403e60`): whether
+/// `iFlags` (`this + 0x58`) has any bit of `mask`.
+const EFFECT_SETTING_HAS_FLAG: u32 = 0x0040_3e60;
+/// `EffectSetting` methods of its two queue counters (`+0xa8`, the Xbox PDB's
+/// `iEffectLoadedCount`, and `+0xac`, `iAssociatedItemLoadedCount`): the
+/// counter of the effect is negative while it is queued
+/// (`EffectSetting::IsEffectQueued`, `00408a20`) and `00408970` takes one
+/// more from it (logging a message instead when it is positive); the counter
+/// of the associated item is negative while it is queued (`004088a0`),
+/// positive once loaded (`00408880`), and `00408790` takes one from it the
+/// same way.
+const EFFECT_IS_QUEUED: u32 = 0x0040_8a20;
+const EFFECT_COUNT_DOWN: u32 = 0x0040_8970;
+const ASSOCIATED_ITEM_IS_QUEUED: u32 = 0x0040_88a0;
+const ASSOCIATED_ITEM_IS_LOADED: u32 = 0x0040_8880;
+const ASSOCIATED_ITEM_COUNT_DOWN: u32 = 0x0040_8790;
+/// `EffectSetting` getter of the associated item (`005f5f80`, `this + 0x60`,
+/// the Xbox PDB's `pAssociatedItem`).
+const EFFECT_ASSOCIATED_ITEM: u32 = 0x005f_5f80;
+/// Form type byte of a form (`00401170`, `this + 4`).
+const FORM_TYPE: u32 = 0x0040_1170;
+/// `EffectItem::pEffectSetting` getter (`00825c00`, `this + 0x14`).
+const EFFECT_ITEM_SETTING: u32 = 0x0082_5c00;
+/// A test of an `EffectSetting` (`004064b0`, no name in the engine map): looks
+/// the dword at `this + 0x98` up in the 16-byte-entry table at `01183328`
+/// and tests its first dword against `0x7c`.
+const EFFECT_SETTING_IN_TABLE: u32 = 0x0040_64b0;
+/// Whether the list at `this` (a `BSSimpleList` head) has no item and no next
+/// node (`008256d0`).
+const LIST_IS_EMPTY: u32 = 0x0082_56d0;
+/// Increments a global counter (`0040ab50`, the dword at `011c3438`).
+const COUNT_UNLOADED_ASSOCIATED_ITEM: u32 = 0x0040_ab50;
+/// `MagicItem::FinishedLoading` (Xbox PDB, `0040ab70`).
+const MAGIC_ITEM_FINISHED_LOADING: u32 = 0x0040_ab70;
+/// `__thiscall() -> bool` on a task (`00449110`): `eState >= 4`; and
+/// (`00449130`): `eState == 6`.
+const TASK_STATE_AT_LEAST_4: u32 = 0x0044_9110;
+const TASK_STATE_IS_6: u32 = 0x0044_9130;
+/// `QueuedFile::QueuedFile(context)` (Xbox PDB, `00c3c590`) and the body of
+/// its destructor (`00c3c620`).
+const QUEUED_FILE_CONSTRUCT: u32 = 0x00c3_c590;
+const QUEUED_FILE_DESTRUCT: u32 = 0x00c3_c620;
+/// The `NiPointer<KFModel>` functions (`0044afe0`, `0044b070`, `0044b030`;
+/// no names in the engine map): `__thiscall(model)` constructor,
+/// `__thiscall(model)` assignment (releases the old model, keeps the new) and
+/// the release the destructor does.
+const KF_POINTER_CONSTRUCT: u32 = 0x0044_afe0;
+const KF_POINTER_ASSIGN: u32 = 0x0044_b070;
+const KF_POINTER_RELEASE: u32 = 0x0044_b030;
+/// `ModelLoader` methods of the map of `KFModel`s (no names in the engine
+/// map) on [`FILE_MAP_OWNER`]: `004483e0` is `__thiscall(name) -> KFModel`
+/// (0 when the map has none) and `00447040` `__thiscall(name, KFModel) ->
+/// bool` (false when the name is already there).
+const FIND_KF_MODEL: u32 = 0x0044_83e0;
+const ADD_KF_MODEL: u32 = 0x0044_7040;
+/// `QueuedKF::QueueMe` (Xbox PDB, `00441e10`).
+const QUEUED_KF_QUEUE_ME: u32 = 0x0044_1e10;
+/// `AnimIdle::Loaded` (Xbox PDB, `00496cd0`), `__thiscall(KFModel)`.
+const ANIM_IDLE_LOADED: u32 = 0x0049_6cd0;
+/// `Animation` method (`00490fa0`, no name in the engine map),
+/// `__thiscall(KFModel)`: takes the loaded `KFModel` into the animation.
+const ANIMATION_KF_LOADED: u32 = 0x0049_0fa0;
+/// `QueuedReplacementKFList` method (`0043ea30`, in this unit, not translated
+/// yet): counts one post-processed child.
+const REPLACEMENT_KF_LIST_CHILD_POST_PROCESSED: u32 = 0x0043_ea30;
+
+/// The counters `IOTask::GenerateKey` takes its values from (`01202d9c` and
+/// `01202da0`; the Xbox PDB's statics `iStaticCounter` and `iStaticOffset`,
+/// which of the two is which is not confirmed).
+const KEY_COUNTER_FIRST: u32 = 0x0120_2d9c;
+const KEY_COUNTER_SECOND: u32 = 0x0120_2da0;
+
+/// `QueuedMagicItem`'s (`01016a18`), `QueuedKF`'s (`01016a48`),
+/// `QueuedAnimIdle`'s (`01016a80`) and `QueuedReplacementKF`'s (`01016ac0`)
+/// virtual tables.
+const QUEUED_MAGIC_ITEM_VTABLE: u32 = 0x0101_6a18;
+const QUEUED_KF_VTABLE: u32 = 0x0101_6a48;
+const QUEUED_ANIM_IDLE_VTABLE: u32 = 0x0101_6a80;
+const QUEUED_REPLACEMENT_KF_VTABLE: u32 = 0x0101_6ac0;
+/// `"tree model"`, `"KF"` and `"AnimIdle"`: the kind words of the
+/// descriptions.
+const TREE_MODEL_WORD: u32 = 0x0101_6a08;
+const KF_WORD: u32 = 0x0101_6a78;
+const ANIM_IDLE_WORD: u32 = 0x0101_6ab0;
+/// The source lines the memory context scopes of `QueuedTreeModel::Run` and
+/// `QueuedKF::Run` record, and the context of the second (`0x33`).
+const TREE_RUN_SOURCE_LINE: u32 = 0x476;
+const KF_RUN_SOURCE_LINE: u32 = 0x529;
+const KF_CONTEXT: u32 = 0x33;
+/// Size of the path buffers of `QueuedTreeModel::QueueMe` (`strcpy_s` is
+/// told this size).
+const PATH_BUFFER_SIZE: u32 = 0x104;
+
+layout! {
+    /// `QueuedMagicItem` (Xbox PDB), 0x30 bytes: a `QueuedFile` and the magic
+    /// item and effect it loads the models of.
+    pub struct QueuedMagicItem: 0x30 {
+        /// `eContext` (`QueuedFile`, Xbox PDB).
+        0x18 eContext: u32,
+        /// `pMagicItem` (Xbox PDB): `MagicItem*`.
+        0x28 pMagicItem: Ptr,
+        /// `pEffectSetting` (Xbox PDB): `EffectSetting*`.
+        0x2C pEffectSetting: Ptr,
+    }
+
+    /// `QueuedKF` (Xbox PDB), 0x38 bytes: a `QueuedFileEntry` and the
+    /// animation file it loads.
+    pub struct QueuedKF: 0x38 {
+        /// `eContext` (`QueuedFile`, Xbox PDB).
+        0x18 eContext: u32,
+        /// `pFileName` (`QueuedFileEntry`, Xbox PDB).
+        0x28 pFileName: u32,
+        /// `pFileEntry` (`QueuedFileEntry`, Xbox PDB).
+        0x2C pFileEntry: Ptr,
+        /// `spKFModel` (Xbox PDB): `NiPointer<KFModel>`.
+        0x30 spKFModel: Ptr,
+        /// `cFlags` (Xbox PDB). Bit 1 is set by `Run` when the loader
+        /// already had the model (`0043e480`, `0043e530`).
+        0x34 cFlags: u8,
+    }
+
+    /// `QueuedAnimIdle` (Xbox PDB), 0x40 bytes: a `QueuedKF` and the idle it
+    /// is for.
+    pub struct QueuedAnimIdle: 0x40 {
+        /// `spKFModel` (`QueuedKF`, Xbox PDB): `NiPointer<KFModel>`.
+        0x30 spKFModel: Ptr,
+        /// `cFlags` (`QueuedKF`, Xbox PDB).
+        0x34 cFlags: u8,
+        /// `pQueuedForRef` (Xbox PDB): `TESObjectREFR*`.
+        0x38 pQueuedForRef: Ptr,
+        /// `spAnimIdle` (Xbox PDB): `NiPointer<AnimIdle>`.
+        0x3C spAnimIdle: Ptr,
+    }
+
+    /// `QueuedReplacementKF` (Xbox PDB), 0x40 bytes: a `QueuedKF` and the
+    /// animation and list it belongs to.
+    pub struct QueuedReplacementKF: 0x40 {
+        /// `spKFModel` (`QueuedKF`, Xbox PDB): `NiPointer<KFModel>`.
+        0x30 spKFModel: Ptr,
+        /// `cFlags` (`QueuedKF`, Xbox PDB).
+        0x34 cFlags: u8,
+        /// `pAnim` (Xbox PDB): `Animation*`.
+        0x38 pAnim: Ptr,
+        /// `pOwner` (Xbox PDB): `QueuedReplacementKFList*`.
+        0x3C pOwner: Ptr,
+    }
+
+    /// `QueuedReplacementKFList` (Xbox PDB), 0x38 bytes (the same on PC): only
+    /// the counter `QueuedReplacementKF::Finish` bumps is used here.
+    pub struct QueuedReplacementKFList: 0x38 {
+        /// `iPostProcessingChildCount` (Xbox PDB).
+        0x2C iPostProcessingChildCount: u32,
+    }
+}
+
+/// `QueuedFileEntry::pFileName` of a queued KF through the game's getter
+/// (`0045cd60`).
+fn kf_file_name(e: &mut Engine, this: Ptr<QueuedKF>) -> u32 {
+    queued_file_name(e, this.cast())
+}
+
+/// The address of `QueuedKF::spKFModel`, which the game passes to the
+/// `NiPointer` functions.
+fn kf_model_pointer(this: Ptr<QueuedKF>) -> Ptr {
+    this.byte_add(QueuedKF::spKFModel.off)
+}
+
+/// `ModelLoader::QueueModel` of `model` for the queued file `parent`, with
+/// the priority of the parent's key and the given LOD multiplier (the other
+/// three arguments are constant in every caller of this part).
+fn queue_model(e: &mut Engine, model: u32, parent: Ptr, lod_mult: u32) {
+    let key = fn_0043cc60(e, parent.cast()) as u32;
+    let owner = e.global::<u32>(FILE_MAP_OWNER);
+    e.call(
+        MODEL_LOADER_QUEUE_MODEL,
+        &args![owner, model, key, parent, lod_mult, 1u32, 0u32, 0u32],
+    );
+}
+
+// Translated from 0043d8c0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeModel::_scalar_deleting_destructor_` (Xbox PDB): runs the
+/// destructor ([`fn_0043d8f0`]) and, when bit 0 of `flags` is set, frees the
+/// object. Returns `this`.
+pub fn queued_tree_model_scalar_deleting_destructor(
+    e: &mut Engine,
+    this: Ptr<QueuedTreeModel>,
+    flags: u32,
+) -> Ptr<QueuedTreeModel> {
+    fn_0043d8f0(e, this);
+    if flags & 1 != 0 {
+        e.call(MEMORY_FREE, &args![this]);
+    }
+    this
+}
+
+// Translated from 0043d8f0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeModel` destructor (no name in the engine map; the decompiler's
+/// library match names the body after a cancellation-token callback): sets
+/// the tree model's virtual table and runs the `QueuedModel` destructor
+/// ([`fn_0043c830`]).
+pub fn fn_0043d8f0(e: &mut Engine, this: Ptr<QueuedTreeModel>) {
+    e.mem.set_u32(this.addr(), QUEUED_TREE_MODEL_VTABLE);
+    fn_0043c830(e, this.cast());
+}
+
+// Translated from 0043d910 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeModel::QueueMe` (Xbox PDB): when the tree's leaf texture
+/// (`TESObjectTREE`'s icon part at +0x48, its text from `00408da0`) is not
+/// empty, builds `<virtual function 0x18 of the icon part><texture text>`
+/// in a 0x104-byte buffer, normalizes the path into a second buffer and
+/// queues that texture (`ModelLoader::QueueTexture`) with this task's key and
+/// as the parent. Then `QueuedModel::QueueMe` ([`queued_model_queue_me`]).
+///
+/// The stack-cookie check is not translated; the two path buffers of the
+/// game's stack frame come from [`Engine::with_stack`].
+pub fn queued_tree_model_queue_me(e: &mut Engine, this: Ptr<QueuedTreeModel>) {
+    let tree = e.get(this, QueuedTreeModel::pTree);
+    // TESObjectTREE's icon part (`TESIconTree`, Xbox PDB) +0x48 on PC.
+    let icon = tree.byte_add(0x48);
+    let text = e.call(TEXTURE_TEXT, &args![icon]).u32();
+    if e.mem.u8(text) != 0 {
+        e.with_stack(PATH_BUFFER_SIZE, |e, path| {
+            e.with_stack(PATH_BUFFER_SIZE, |e, normalized| {
+                let tree = e.get(this, QueuedTreeModel::pTree);
+                let icon = tree.byte_add(0x48);
+                let directory = e.vcall(icon.addr(), 0x18, &args![]).u32();
+                e.call(STRING_COPY, &args![path, PATH_BUFFER_SIZE, directory]);
+                let text = e.call(TEXTURE_TEXT, &args![icon]).u32();
+                e.call(STRING_APPEND, &args![path, PATH_BUFFER_SIZE, text]);
+                e.call(NORMALIZE_PATH, &args![path, normalized, PATH_BUFFER_SIZE]);
+                let key = fn_0043cc60(e, this.cast()) as u32;
+                let owner = e.global::<u32>(FILE_MAP_OWNER);
+                e.call(
+                    MODEL_LOADER_QUEUE_TEXTURE_BY_NAME,
+                    &args![owner, normalized, key, this],
+                );
+            });
+        });
+    }
+    queued_model_queue_me(e, this.cast());
+}
+
+// Translated from 0043da00 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeModel::Run` (Xbox PDB): inside the memory context `0x1e`
+/// (source line `0x476`), asks the tree manager (`011d5c48`) for the tree
+/// node of the reference and tree (`00664f50`) and hands it back to the
+/// manager with the reference (`00665b80`).
+///
+/// The exception-unwinding frame is not translated.
+pub fn queued_tree_model_run(e: &mut Engine, this: Ptr<QueuedTreeModel>) {
+    // The scope guard of the game's stack frame (4 bytes).
+    e.with_stack(4, |e, guard| {
+        e.call(
+            MEMORY_CONTEXT_ENTER,
+            &args![
+                guard,
+                TREE_MODEL_CONTEXT,
+                1u32,
+                MODEL_LOADER_SOURCE,
+                TREE_RUN_SOURCE_LINE
+            ],
+        );
+        let manager = e.global::<u32>(TREE_MANAGER);
+        let reference = e.get(this, QueuedTreeModel::pRef);
+        let tree = e.get(this, QueuedTreeModel::pTree);
+        let node = e
+            .call(TREE_MANAGER_BUILD_TREE, &args![manager, reference, tree])
+            .u32();
+        let manager = e.global::<u32>(TREE_MANAGER);
+        let reference = e.get(this, QueuedTreeModel::pRef);
+        e.call(TREE_MANAGER_STORE_TREE, &args![manager, reference, node]);
+        e.call(MEMORY_CONTEXT_LEAVE, &args![guard]);
+    });
+}
+
+// Translated from 0043daa0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeModel::Finish` (virtual function `0x8`; no name in the engine
+/// map): calls the task's virtual function `0x28` (`CheckFinished`,
+/// [`fn_0043c610`]).
+pub fn fn_0043daa0(e: &mut Engine, this: Ptr<QueuedTreeModel>) {
+    fn_0043c610(e, this.cast());
+}
+
+// Translated from 0043dac0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeModel::Cancel` (Xbox PDB): `QueuedFile::Cancel` with its two
+/// arguments; when `first` (signed) is 4 or more, the tree manager is told
+/// to forget the background-loaded tree of the reference
+/// (`BSTreeManager::RemoveBackgroundLoadedTree`).
+pub fn queued_tree_model_cancel(
+    e: &mut Engine,
+    this: Ptr<QueuedTreeModel>,
+    first: i32,
+    second: u32,
+) {
+    e.call(QUEUED_FILE_CANCEL, &args![this, first as u32, second]);
+    if first >= 4 {
+        let manager = e.global::<u32>(TREE_MANAGER);
+        let reference = e.get(this, QueuedTreeModel::pRef);
+        e.call(
+            TREE_MANAGER_REMOVE_BACKGROUND_TREE,
+            &args![manager, reference],
+        );
+    }
+}
+
+// Translated from 0043db00 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedTreeModel::GetDescription` (Xbox PDB):
+/// `QueuedFileEntry::GetDescription` with the kind word `"tree model"`;
+/// returns its result.
+pub fn queued_tree_model_get_description(
+    e: &mut Engine,
+    this: Ptr<QueuedTreeModel>,
+    buffer: u32,
+    size: u32,
+) -> bool {
+    e.call(
+        QUEUED_FILE_ENTRY_GET_DESCRIPTION,
+        &args![this, buffer, size, TREE_MODEL_WORD],
+    )
+    .bool()
+}
+
+// Translated from 0043db30 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedMagicItem` constructor (no name in the engine map; the decompiler's
+/// library match names it after a cancellation-token registration): the
+/// `QueuedFile` constructor with `context`, the magic item's virtual table,
+/// `pMagicItem` and `pEffectSetting`. Returns `this`.
+pub fn fn_0043db30(
+    e: &mut Engine,
+    this: Ptr<QueuedMagicItem>,
+    magic_item: Ptr,
+    effect_setting: Ptr,
+    context: u32,
+) -> Ptr<QueuedMagicItem> {
+    e.call(QUEUED_FILE_CONSTRUCT, &args![this, context]);
+    e.mem.set_u32(this.addr(), QUEUED_MAGIC_ITEM_VTABLE);
+    e.set(this, QueuedMagicItem::pMagicItem, magic_item);
+    e.set(this, QueuedMagicItem::pEffectSetting, effect_setting);
+    this
+}
+
+// Translated from 0043db70 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `IOTask::GenerateKey` (Xbox PDB): builds the task's `Key` ([`fn_0043dbb0`])
+/// from the kind 3, the next value of the second counter ([`fn_0043dc30`]),
+/// the priority of the current key ([`fn_0043cc80`], low byte) and the next
+/// value of the first counter ([`fn_0043dc10`], low word).
+pub fn io_task_generate_key(e: &mut Engine, this: Ptr<IOTask>) {
+    let first = fn_0043dc10(e, this.cast()) & 0xffff;
+    let priority = fn_0043cc80(e, this) as u8;
+    let second = fn_0043dc30(e, this.cast());
+    fn_0043dbb0(e, this, 3, second, priority, first as u16);
+}
+
+// Translated from 0043dbb0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Packs a task key (no name in the engine map): `kind` (a signed byte) in
+/// bits 56 and up, `counter` in bits 24 to 55, `priority` in bits 16 to 23
+/// and `low` in bits 0 to 15, stored in `Key`.
+pub fn fn_0043dbb0(
+    e: &mut Engine,
+    this: Ptr<IOTask>,
+    kind: i8,
+    counter: u32,
+    priority: u8,
+    low: u16,
+) {
+    // `__allshl` of the sign-extended byte, the zero-extended counter and
+    // priority, and the zero-extended word.
+    let key = ((kind as i64 as u64) << 56)
+        | ((counter as u64) << 24)
+        | ((priority as u64) << 16)
+        | low as u64;
+    e.set(this, IOTask::Key, key);
+}
+
+// Translated from 0043dc10 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `InterlockedIncrement` of the counter at `01202d9c` (`this` is not used):
+/// returns the new value.
+pub fn fn_0043dc10(e: &mut Engine, _this: Ptr) -> u32 {
+    e.call(INTERLOCKED_INCREMENT, &args![KEY_COUNTER_FIRST])
+        .u32()
+}
+
+// Translated from 0043dc30 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `InterlockedIncrement` of the counter at `01202da0` (`this` is not used):
+/// returns the new value.
+pub fn fn_0043dc30(e: &mut Engine, _this: Ptr) -> u32 {
+    e.call(INTERLOCKED_INCREMENT, &args![KEY_COUNTER_SECOND])
+        .u32()
+}
+
+// Translated from 0043dc50 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedMagicItem` destructor (no name in the engine map): the body of the
+/// `QueuedFile` destructor (`00c3c620`).
+pub fn fn_0043dc50(e: &mut Engine, this: Ptr<QueuedMagicItem>) {
+    e.call(QUEUED_FILE_DESTRUCT, &args![this]);
+}
+
+// Translated from 0043dc70 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedMagicItem::QueueMe` (Xbox PDB): queues the models of a magic
+/// item's effects.
+///
+/// First the effect setting of the task: when its model has a name and the
+/// effect is not already queued, its model is queued (`QueueModel` with the
+/// task as parent); either way the effect's queue counter is counted down.
+/// Then every effect of the magic item's effect list (`MagicItem + 0xc`):
+/// for the ones the effect-setting test `004064b0` accepts, and (when this
+/// task queued the effect's own model) whose associated item is not already
+/// queued, the associated item (`EffectSetting + 0x60`) is queued according
+/// to the effect's flags ([`queue_associated_item`]). Last, when the
+/// associated item is neither loaded nor queued and the effect has flag
+/// `0x40000`, a global counter is incremented (`0040ab50`), and the
+/// associated item's queue counter is counted down. The task is then put into
+/// state 5 (done) and its virtual function `0x28` (`CheckFinished`) is
+/// called.
+pub fn queued_magic_item_queue_me(e: &mut Engine, this: Ptr<QueuedMagicItem>) {
+    let task: Ptr = this.cast();
+    let mut queued_model = false;
+    let effect = e.get(this, QueuedMagicItem::pEffectSetting);
+    // EffectSetting's `TESModel` base (Xbox PDB +0x28) is at +0x18 on PC.
+    let effect_model = effect.addr().wrapping_add(0x18);
+    if e.call(MODEL_NAME_LENGTH, &args![effect_model]).u32() != 0
+        && !e.call(EFFECT_IS_QUEUED, &args![effect]).bool()
+    {
+        let model = if effect.is_null() { 0 } else { effect_model };
+        queue_model(e, model, task, 0);
+        queued_model = true;
+    }
+    e.call(EFFECT_COUNT_DOWN, &args![effect]);
+
+    let magic_item = e.get(this, QueuedMagicItem::pMagicItem);
+    // MagicItem's `EffectItemList` (Xbox PDB +0xc) holds a `BSSimpleList` at
+    // +4; `list` is the address of the node minus 4.
+    let mut list = if magic_item.is_null() {
+        0
+    } else {
+        magic_item.addr() + 0xc
+    };
+    if !e.call(LIST_IS_EMPTY, &args![list.wrapping_add(4)]).bool() {
+        while list != 0 {
+            let node = e.call(LIST_NODE_ITEM_ADDRESS, &args![list + 4]).u32();
+            let item = e.mem.u32(node);
+            let setting = e.call(EFFECT_ITEM_SETTING, &args![item]).u32();
+            if e.call(EFFECT_SETTING_IN_TABLE, &args![setting]).bool()
+                && (!queued_model || !e.call(ASSOCIATED_ITEM_IS_QUEUED, &args![setting]).bool())
+            {
+                queue_associated_item(e, task, setting);
+                if !e.call(ASSOCIATED_ITEM_IS_LOADED, &args![setting]).bool()
+                    && !e.call(ASSOCIATED_ITEM_IS_QUEUED, &args![setting]).bool()
+                    && e.call(EFFECT_SETTING_HAS_FLAG, &args![setting, 0x40000u32])
+                        .bool()
+                {
+                    e.call(COUNT_UNLOADED_ASSOCIATED_ITEM, &args![]);
+                }
+                e.call(ASSOCIATED_ITEM_COUNT_DOWN, &args![setting]);
+            }
+            let next = e.call(FIELD_AT_4, &args![list + 4]).u32();
+            list = if next == 0 { 0 } else { next - 4 };
+        }
+    }
+    e.call(TASK_SET_DONE, &args![this]);
+    e.vcall(this.addr(), 0x28, &args![]);
+}
+
+/// The part of [`queued_magic_item_queue_me`] that queues the associated item
+/// of the effect setting `setting` for the task `task`: nothing without an
+/// item or when the effect's flags select no case. With flag `0x10000` and
+/// form type `0x28` the model at `+0x3c` of the item (when it has a name);
+/// with `0x20000` and form type `0x18` the biped models 0 and 1 of the part
+/// at `+0x70`; with `0x40000` and form type `0x2a` the default model list of
+/// the item (`BuildDefaultModelList`, emptied and deleted afterwards), and
+/// with `0x40000` and form type `0x2b` the animations and the model at
+/// `+0xdc`. Each of these uses the item's LOD multiplier (`TES::GetLODMult`)
+/// where it queues a model.
+fn queue_associated_item(e: &mut Engine, task: Ptr, setting: u32) {
+    let item = e.call(EFFECT_ASSOCIATED_ITEM, &args![setting]).u32();
+    if item == 0 {
+        return;
+    }
+    if e.call(EFFECT_SETTING_HAS_FLAG, &args![setting, 0x10000u32])
+        .bool()
+    {
+        if e.call(FORM_TYPE, &args![item]).u32() == 0x28
+            && e.call(MODEL_NAME_LENGTH, &args![item + 0x3c]).u32() != 0
+        {
+            let lod_mult = e.call(GET_LOD_MULT, &args![item]).u32();
+            queue_model(e, item + 0x3c, task, lod_mult);
+        }
+    } else if e
+        .call(EFFECT_SETTING_HAS_FLAG, &args![setting, 0x20000u32])
+        .bool()
+    {
+        if e.call(FORM_TYPE, &args![item]).u32() == 0x18 {
+            for index in 0..2u32 {
+                let lod_mult = e.call(GET_LOD_MULT, &args![item]).u32();
+                // The biped model part of the item is at +0x70.
+                let model = e
+                    .call(GET_BIPED_TES_MODEL, &args![item + 0x70, index])
+                    .u32();
+                queue_model(e, model, task, lod_mult);
+            }
+        }
+    } else if e
+        .call(EFFECT_SETTING_HAS_FLAG, &args![setting, 0x40000u32])
+        .bool()
+    {
+        if e.call(FORM_TYPE, &args![item]).u32() == 0x2a {
+            let list = e
+                .call(BUILD_DEFAULT_MODEL_LIST, &args![item, 1u32, 1u32])
+                .u32();
+            let key = fn_0043cc60(e, task.cast()) as u32;
+            let owner = e.global::<u32>(FILE_MAP_OWNER);
+            e.call(
+                MODEL_LOADER_QUEUE_MODEL_LIST,
+                &args![owner, list, 0u32, key, task, 0u32],
+            );
+            e.call(LIST_CLEAR, &args![list]);
+            if list != 0 {
+                e.call(LIST_DELETE, &args![list, 1u32]);
+            }
+        } else if e.call(FORM_TYPE, &args![item]).u32() == 0x2b {
+            // The animation part of the item is at +0xdc.
+            let animations = item + 0xdc;
+            let key = fn_0043cc60(e, task.cast()) as u32;
+            let owner = e.global::<u32>(FILE_MAP_OWNER);
+            e.call(
+                MODEL_LOADER_QUEUE_ANIMATIONS,
+                &args![owner, animations, key, task, 0u32, 1u32, 1u32],
+            );
+            let lod_mult = e.call(GET_LOD_MULT, &args![item]).u32();
+            queue_model(e, animations, task, lod_mult);
+        }
+    }
+}
+
+// Translated from 0043e080 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedMagicItem::CheckFinished` (Xbox PDB): once the task's state is 4 or
+/// more and all its children are finished ([`fn_0043caa0`]), tells the magic
+/// item it has finished loading (`MagicItem::FinishedLoading`) and, when the
+/// task has no references left, deletes it (virtual destructor, flag 1).
+pub fn queued_magic_item_check_finished(e: &mut Engine, this: Ptr<QueuedMagicItem>) {
+    if e.call(TASK_STATE_AT_LEAST_4, &args![this]).bool() && fn_0043caa0(e, this.cast()) {
+        let magic_item = e.get(this, QueuedMagicItem::pMagicItem);
+        e.call(MAGIC_ITEM_FINISHED_LOADING, &args![magic_item]);
+        if e.call(FIELD_AT_8, &args![this]).u32() == 0 && !this.is_null() {
+            e.vcall(this.addr(), 0, &args![1u32]);
+        }
+    }
+}
+
+// Translated from 0043e0f0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedKF::QueuedKF` (Xbox PDB): the `QueuedFileEntry` constructor with
+/// `context`, the KF's virtual table, no model, no flags, then the file name
+/// is copied (`name`) and the file entry looked up (flag 0). Returns `this`.
+///
+/// The exception-unwinding frame is not translated.
+pub fn queued_kf_queued_kf(
+    e: &mut Engine,
+    this: Ptr<QueuedKF>,
+    name: u32,
+    context: u32,
+) -> Ptr<QueuedKF> {
+    e.call(QUEUED_FILE_ENTRY_CONSTRUCT, &args![this, context]);
+    e.mem.set_u32(this.addr(), QUEUED_KF_VTABLE);
+    e.call(KF_POINTER_CONSTRUCT, &args![kf_model_pointer(this), 0u32]);
+    e.set(this, QueuedKF::cFlags, 0);
+    e.call(QUEUED_FILE_ENTRY_SET_FILE_NAME, &args![this, name]);
+    e.call(QUEUED_FILE_ENTRY_FIND_FILE_ENTRY, &args![this, 0u32]);
+    this
+}
+
+// Translated from 0043e180 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedKF` scalar deleting destructor (no name in the engine map): runs
+/// the destructor ([`fn_0043e1b0`]) and, when bit 0 of `flags` is set, frees
+/// the object. Returns `this`.
+pub fn fn_0043e180(e: &mut Engine, this: Ptr<QueuedKF>, flags: u32) -> Ptr<QueuedKF> {
+    fn_0043e1b0(e, this);
+    if flags & 1 != 0 {
+        e.call(MEMORY_FREE, &args![this]);
+    }
+    this
+}
+
+// Translated from 0043e1b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedKF` destructor (no name in the engine map; the decompiler's library
+/// match names it after a cancellation-token callback): releases the KF
+/// model pointer and runs the `QueuedFileEntry` destructor. It does not
+/// restore the virtual table.
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043e1b0(e: &mut Engine, this: Ptr<QueuedKF>) {
+    e.call(KF_POINTER_RELEASE, &args![kf_model_pointer(this)]);
+    e.call(QUEUED_FILE_ENTRY_DESTRUCT, &args![this]);
+}
+
+// Translated from 0043e210 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedKF` constructor taking a loaded model (no name in the engine map):
+/// the `QueuedFileEntry` constructor with `context`, the KF's virtual table,
+/// no flags, `spKFModel` set to `model`, and the task put into state 5
+/// (done). Returns `this`.
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043e210(e: &mut Engine, this: Ptr<QueuedKF>, model: Ptr, context: u32) -> Ptr<QueuedKF> {
+    e.call(QUEUED_FILE_ENTRY_CONSTRUCT, &args![this, context]);
+    e.mem.set_u32(this.addr(), QUEUED_KF_VTABLE);
+    e.call(KF_POINTER_CONSTRUCT, &args![kf_model_pointer(this), 0u32]);
+    e.set(this, QueuedKF::cFlags, 0);
+    e.call(KF_POINTER_ASSIGN, &args![kf_model_pointer(this), model]);
+    e.call(TASK_SET_DONE, &args![this]);
+    this
+}
+
+// Translated from 0043e2a0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedKF::Run` (Xbox PDB): inside the memory context `0x33` (source line
+/// `0x529`), takes the loader's `KFModel` of the file name into `spKFModel`;
+/// when there is one, bit 1 of `cFlags` is set ([`fn_0043e480`]) and that is
+/// all. Otherwise the file is opened (`QueuedFileEntry::GetFile`) and read
+/// into a `BSStream` on the stack, and a `KFModel` built from the stream is
+/// stored in `spKFModel`; a failure is logged.
+///
+/// The exception-unwinding frame and the stack-cookie check are not
+/// translated.
+pub fn queued_kf_run(e: &mut Engine, this: Ptr<QueuedKF>) {
+    // The scope guard of the game's stack frame (4 bytes).
+    e.with_stack(4, |e, guard| {
+        e.call(
+            MEMORY_CONTEXT_ENTER,
+            &args![
+                guard,
+                KF_CONTEXT,
+                1u32,
+                MODEL_LOADER_SOURCE,
+                KF_RUN_SOURCE_LINE
+            ],
+        );
+        queued_kf_run_in_context(e, this);
+        e.call(MEMORY_CONTEXT_LEAVE, &args![guard]);
+    });
+}
+
+/// The body of [`queued_kf_run`] inside its memory context.
+fn queued_kf_run_in_context(e: &mut Engine, this: Ptr<QueuedKF>) {
+    let slot = kf_model_pointer(this);
+    let name = kf_file_name(e, this);
+    let owner = e.global::<u32>(FILE_MAP_OWNER);
+    let found = e.call(FIND_KF_MODEL, &args![owner, name]).u32();
+    e.call(KF_POINTER_ASSIGN, &args![slot, found]);
+    if !ni_pointer_get(e, slot).is_null() {
+        fn_0043e480(e, this, 1);
+        return;
+    }
+    let file: Ptr = e
+        .call(QUEUED_FILE_ENTRY_GET_FILE, &args![this, 0u32, 1u32])
+        .ptr();
+    e.with_stack(BSStream::SIZE, |e, stream| {
+        fn_0043cfd0(e, stream.cast());
+        let mut loaded = false;
+        if !file.is_null() {
+            let name = kf_file_name(e, this);
+            loaded = e.call(BS_STREAM_LOAD, &args![stream, name, file]).bool();
+        }
+        if loaded {
+            let block = e.call(MEMORY_ALLOC, &args![0x14u32]).u32();
+            let mut model = 0;
+            if block != 0 {
+                let name = kf_file_name(e, this);
+                model = kf_model_kf_model(e, Ptr::new(block), name, stream).addr();
+            }
+            e.call(KF_POINTER_ASSIGN, &args![slot, model]);
+        } else {
+            let verb = if file.is_null() { FIND_WORD } else { LOAD_WORD };
+            let name = kf_file_name(e, this);
+            e.call(LOG, &args![MODEL_ERROR_MESSAGE, verb, name]);
+        }
+        bs_stream_destructor(e, stream.cast());
+    });
+}
+
+// Translated from 0043e480 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Sets (`flag` non-zero) or clears bit 1 of the `cFlags` byte at `this +
+/// 0x34` (a `QueuedKF`'s, and a `QueuedTexture`'s, which is at the same
+/// place).
+pub fn fn_0043e480(e: &mut Engine, this: Ptr<QueuedKF>, flag: u8) {
+    let flags = this.byte_add(QueuedKF::cFlags.off);
+    e.call(SET_FLAG_BIT_1, &args![flag as u32, flags]);
+}
+
+// Translated from 0043e4b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedKF::Finish` (Xbox PDB): with a loaded KF model whose bit 1 of
+/// `cFlags` is clear (the loader did not already have it), the model is added
+/// to the loader's map by file name; when the map already has one of that
+/// name, `spKFModel` is replaced by it. Last the task's virtual function
+/// `0x28` (`CheckFinished`) is called.
+pub fn queued_kf_finish(e: &mut Engine, this: Ptr<QueuedKF>) {
+    let slot = kf_model_pointer(this);
+    if !ni_pointer_get(e, slot).is_null() && !fn_0043e530(e, this) {
+        let model = ni_pointer_get(e, slot);
+        let name = kf_file_name(e, this);
+        let owner = e.global::<u32>(FILE_MAP_OWNER);
+        if !e.call(ADD_KF_MODEL, &args![owner, name, model]).bool() {
+            let name = kf_file_name(e, this);
+            let found = e.call(FIND_KF_MODEL, &args![owner, name]).u32();
+            e.call(KF_POINTER_ASSIGN, &args![slot, found]);
+        }
+    }
+    fn_0043c610(e, this.cast());
+}
+
+// Translated from 0043e530 (decompiled, FalloutNV.exe 1.4.0.525)
+/// Whether bit 1 of the `cFlags` byte at `this + 0x34` is set.
+pub fn fn_0043e530(e: &mut Engine, this: Ptr<QueuedKF>) -> bool {
+    let flags = e.get(this, QueuedKF::cFlags);
+    e.call(TEST_FLAG_BIT_1, &args![flags as u32]).bool()
+}
+
+// Translated from 0043e550 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedKF::GetDescription` (Xbox PDB): `QueuedFileEntry::GetDescription`
+/// with the kind word `"KF"`; returns its result.
+pub fn queued_kf_get_description(
+    e: &mut Engine,
+    this: Ptr<QueuedKF>,
+    buffer: u32,
+    size: u32,
+) -> bool {
+    e.call(
+        QUEUED_FILE_ENTRY_GET_DESCRIPTION,
+        &args![this, buffer, size, KF_WORD],
+    )
+    .bool()
+}
+
+// Translated from 0043e580 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedAnimIdle` constructor (no name in the engine map): the `QueuedKF`
+/// constructor ([`queued_kf_queued_kf`]) with `name` and `context`, the anim
+/// idle's virtual table, `pQueuedForRef` and the `NiPointer<AnimIdle>`
+/// constructed from `anim_idle`. Returns `this`.
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043e580(
+    e: &mut Engine,
+    this: Ptr<QueuedAnimIdle>,
+    name: u32,
+    context: u32,
+    anim_idle: Ptr,
+    reference: Ptr,
+) -> Ptr<QueuedAnimIdle> {
+    queued_kf_queued_kf(e, this.cast(), name, context);
+    e.mem.set_u32(this.addr(), QUEUED_ANIM_IDLE_VTABLE);
+    e.set(this, QueuedAnimIdle::pQueuedForRef, reference);
+    let idle = this.byte_add(QueuedAnimIdle::spAnimIdle.off);
+    e.call(NI_POINTER_CONSTRUCT, &args![idle, anim_idle]);
+    this
+}
+
+// Translated from 0043e600 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedAnimIdle::_scalar_deleting_destructor_` (Xbox PDB): runs the
+/// destructor ([`fn_0043e630`]) and, when bit 0 of `flags` is set, frees the
+/// object. Returns `this`.
+pub fn queued_anim_idle_scalar_deleting_destructor(
+    e: &mut Engine,
+    this: Ptr<QueuedAnimIdle>,
+    flags: u32,
+) -> Ptr<QueuedAnimIdle> {
+    fn_0043e630(e, this);
+    if flags & 1 != 0 {
+        e.call(MEMORY_FREE, &args![this]);
+    }
+    this
+}
+
+// Translated from 0043e630 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedAnimIdle` destructor (no name in the engine map): destroys the
+/// `NiPointer<AnimIdle>` and runs the `QueuedKF` destructor
+/// ([`fn_0043e1b0`]).
+///
+/// The exception-unwinding frame is not translated.
+pub fn fn_0043e630(e: &mut Engine, this: Ptr<QueuedAnimIdle>) {
+    let idle = this.byte_add(QueuedAnimIdle::spAnimIdle.off);
+    e.call(NI_POINTER_DESTRUCT, &args![idle]);
+    fn_0043e1b0(e, this.cast());
+}
+
+// Translated from 0043e690 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedAnimIdle::QueueMe` (Xbox PDB): with an anim idle, queues the model
+/// of each of its two animation objects (`AnimIdle + 0x1c`, [`fn_0043e750`])
+/// that exists: the object's `TESModel` part (at +0x18) with this task's key
+/// and as the parent, LOD multiplier 2. Then `QueuedKF::QueueMe`.
+pub fn queued_anim_idle_queue_me(e: &mut Engine, this: Ptr<QueuedAnimIdle>) {
+    let slot = this.byte_add(QueuedAnimIdle::spAnimIdle.off);
+    if !ni_pointer_get(e, slot).is_null() {
+        for index in 0..2u32 {
+            let idle = ni_pointer_get(e, slot);
+            if fn_0043e750(e, idle, index) != 0 {
+                let idle = ni_pointer_get(e, slot);
+                let animation = fn_0043e750(e, idle, index);
+                let model = if animation == 0 { 0 } else { animation + 0x18 };
+                queue_model(e, model, this.cast(), 2);
+            }
+        }
+    }
+    e.call(QUEUED_KF_QUEUE_ME, &args![this]);
+}
+
+// Translated from 0043e750 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `AnimIdle` accessor (no name in the engine map): the animation object
+/// `index` of the two at `this + 0x1c` (`pAnimObj`, Xbox PDB).
+pub fn fn_0043e750(e: &mut Engine, this: Ptr, index: u32) -> u32 {
+    e.mem.u32(this.addr() + 0x1c + index * 4)
+}
+
+// Translated from 0043e770 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedAnimIdle::CheckFinished` (Xbox PDB): once the task's state is 4 or
+/// more and all its children are finished ([`fn_0043caa0`]), the task is added
+/// to the post-process queue ([`iomanager_add_post_process_task`]).
+pub fn queued_anim_idle_check_finished(e: &mut Engine, this: Ptr<QueuedAnimIdle>) {
+    if e.call(TASK_STATE_AT_LEAST_4, &args![this]).bool() && fn_0043caa0(e, this.cast()) {
+        iomanager_add_post_process_task(e, this.cast());
+    }
+}
+
+// Translated from 0043e7b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedAnimIdle::PostProcess` (Xbox PDB): with a loaded KF model, and
+/// unless the task's state is 6, tells the anim idle it has loaded
+/// (`AnimIdle::Loaded` with the model). Then the loader drops the anim idle
+/// from its map of queued anim idles ([`fn_0043e810`]).
+pub fn queued_anim_idle_post_process(e: &mut Engine, this: Ptr<QueuedAnimIdle>) {
+    let model_slot = this.byte_add(QueuedAnimIdle::spKFModel.off);
+    let idle_slot = this.byte_add(QueuedAnimIdle::spAnimIdle.off);
+    if !ni_pointer_get(e, model_slot).is_null() && !e.call(TASK_STATE_IS_6, &args![this]).bool() {
+        let model = ni_pointer_get(e, model_slot);
+        let idle = ni_pointer_get(e, idle_slot);
+        e.call(ANIM_IDLE_LOADED, &args![idle, model]);
+    }
+    let idle = ni_pointer_get(e, idle_slot);
+    let owner = e.global::<u32>(FILE_MAP_OWNER);
+    fn_0043e810(e, Ptr::new(owner), idle);
+}
+
+// Translated from 0043e810 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `ModelLoader` method (no name in the engine map) on the loader at
+/// `this`: calls the virtual function `0x14` of its `pQueuedAnimIdleMap`
+/// (`this + 0x10`, a `LockFreeMap<AnimIdle*, ...>` in the Xbox PDB) with
+/// `idle`. What that slot does is not confirmed; both callers use it when
+/// the task is over.
+pub fn fn_0043e810(e: &mut Engine, this: Ptr, idle: Ptr) {
+    let map = e.mem.u32(this.addr() + 0x10);
+    e.vcall(map, 0x14, &args![idle]);
+}
+
+// Translated from 0043e840 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedAnimIdle::Cancel` (Xbox PDB): `QueuedFile::Cancel` with its two
+/// arguments, then the loader's map of queued anim idles is told about the
+/// anim idle ([`fn_0043e810`]).
+pub fn queued_anim_idle_cancel(e: &mut Engine, this: Ptr<QueuedAnimIdle>, first: u32, second: u32) {
+    e.call(QUEUED_FILE_CANCEL, &args![this, first, second]);
+    let idle_slot = this.byte_add(QueuedAnimIdle::spAnimIdle.off);
+    let idle = ni_pointer_get(e, idle_slot);
+    let owner = e.global::<u32>(FILE_MAP_OWNER);
+    fn_0043e810(e, Ptr::new(owner), idle);
+}
+
+// Translated from 0043e880 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedAnimIdle::GetDescription` (Xbox PDB):
+/// `QueuedFileEntry::GetDescription` with the kind word `"AnimIdle"`;
+/// returns its result.
+pub fn queued_anim_idle_get_description(
+    e: &mut Engine,
+    this: Ptr<QueuedAnimIdle>,
+    buffer: u32,
+    size: u32,
+) -> bool {
+    e.call(
+        QUEUED_FILE_ENTRY_GET_DESCRIPTION,
+        &args![this, buffer, size, ANIM_IDLE_WORD],
+    )
+    .bool()
+}
+
+// Translated from 0043e8b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedReplacementKF` constructor (no name in the engine map): the
+/// `QueuedKF` constructor ([`queued_kf_queued_kf`]) with `name` and
+/// `context`, the replacement KF's virtual table, `pAnim` and `pOwner`.
+/// Returns `this`.
+pub fn fn_0043e8b0(
+    e: &mut Engine,
+    this: Ptr<QueuedReplacementKF>,
+    name: u32,
+    context: u32,
+    animation: Ptr,
+    owner: Ptr,
+) -> Ptr<QueuedReplacementKF> {
+    queued_kf_queued_kf(e, this.cast(), name, context);
+    e.mem.set_u32(this.addr(), QUEUED_REPLACEMENT_KF_VTABLE);
+    e.set(this, QueuedReplacementKF::pAnim, animation);
+    e.set(this, QueuedReplacementKF::pOwner, owner);
+    this
+}
+
+// Translated from 0043e8f0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedReplacementKF` scalar deleting destructor (no name in the engine
+/// map): runs the destructor ([`fn_0043e920`]) and, when bit 0 of `flags` is
+/// set, frees the object. Returns `this`.
+pub fn fn_0043e8f0(
+    e: &mut Engine,
+    this: Ptr<QueuedReplacementKF>,
+    flags: u32,
+) -> Ptr<QueuedReplacementKF> {
+    fn_0043e920(e, this);
+    if flags & 1 != 0 {
+        e.call(MEMORY_FREE, &args![this]);
+    }
+    this
+}
+
+// Translated from 0043e920 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedReplacementKF` destructor (no name in the engine map): the
+/// `QueuedKF` destructor ([`fn_0043e1b0`]).
+pub fn fn_0043e920(e: &mut Engine, this: Ptr<QueuedReplacementKF>) {
+    fn_0043e1b0(e, this.cast());
+}
+
+// Translated from 0043e940 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedReplacementKF::Finish` (Xbox PDB): `QueuedKF::Finish`; then, with a
+/// loaded KF model and unless the task's state is 6, the owning list (when
+/// there is one) counts one more child ([`fn_0043e990`]) and the task is
+/// added to the post-process queue ([`iomanager_add_post_process_task`]).
+pub fn queued_replacement_kf_finish(e: &mut Engine, this: Ptr<QueuedReplacementKF>) {
+    queued_kf_finish(e, this.cast());
+    let model_slot = this.byte_add(QueuedReplacementKF::spKFModel.off);
+    if !ni_pointer_get(e, model_slot).is_null() && !e.call(TASK_STATE_IS_6, &args![this]).bool() {
+        let owner = e.get(this, QueuedReplacementKF::pOwner);
+        if !owner.is_null() {
+            fn_0043e990(e, owner.cast());
+        }
+        iomanager_add_post_process_task(e, this.cast());
+    }
+}
+
+// Translated from 0043e990 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedReplacementKFList` method (no name in the engine map): one more
+/// `iPostProcessingChildCount`.
+pub fn fn_0043e990(e: &mut Engine, this: Ptr<QueuedReplacementKFList>) {
+    let count = e.get(this, QueuedReplacementKFList::iPostProcessingChildCount);
+    e.set(
+        this,
+        QueuedReplacementKFList::iPostProcessingChildCount,
+        count.wrapping_add(1),
+    );
+}
+
+// Translated from 0043e9b0 (decompiled, FalloutNV.exe 1.4.0.525)
+/// `QueuedReplacementKF::PostProcess` (Xbox PDB): unless the task's state is
+/// 6, hands the loaded KF model to the animation (`pAnim`, `00490fa0`) and,
+/// when there is an owning list, tells it a child was post-processed
+/// (`0043ea30`, in this unit, not translated yet).
+pub fn queued_replacement_kf_post_process(e: &mut Engine, this: Ptr<QueuedReplacementKF>) {
+    if !e.call(TASK_STATE_IS_6, &args![this]).bool() {
+        let model_slot = this.byte_add(QueuedReplacementKF::spKFModel.off);
+        let model = ni_pointer_get(e, model_slot);
+        let animation = e.get(this, QueuedReplacementKF::pAnim);
+        e.call(ANIMATION_KF_LOADED, &args![animation, model]);
+        let owner = e.get(this, QueuedReplacementKF::pOwner);
+        if !owner.is_null() {
+            e.call(REPLACEMENT_KF_LIST_CHILD_POST_PROCESSED, &args![owner]);
+        }
+    }
+}
+
 /// This unit's translated functions, by exe address.
 pub fn funcs() -> Vec<(u32, AbiFn)> {
     vec![
@@ -1819,6 +3829,194 @@ pub fn funcs() -> Vec<(u32, AbiFn)> {
             queued_model_scalar_deleting_destructor(Ptr<QueuedModel>, u32) -> Ptr<QueuedModel>
         ),
         entry!(0x0043c830, fn_0043c830(Ptr<QueuedModel>)),
+        entry!(
+            0x0043c890,
+            fn_0043c890(Ptr<QueuedModel>, Ptr, u32, u32, u8, u8) -> Ptr<QueuedModel>
+        ),
+        entry!(
+            0x0043c960,
+            fn_0043c960(Ptr<QueuedModel>, Ptr, u32) -> Ptr<QueuedModel>
+        ),
+        entry!(0x0043ca10, queued_model_generate_key(Ptr<QueuedModel>)),
+        entry!(0x0043ca30, queued_model_check_finished(Ptr<QueuedModel>)),
+        entry!(0x0043caa0, fn_0043caa0(Ptr<QueuedModel>) -> bool),
+        entry!(0x0043caf0, fn_0043caf0(Ptr<QueuedModel>) -> bool),
+        entry!(0x0043cb10, queued_model_queue_me(Ptr<QueuedModel>)),
+        entry!(0x0043cb50, queued_model_queue_me_ov2(Ptr<QueuedModel>, u32)),
+        entry!(0x0043cc60, fn_0043cc60(Ptr<IOTask>) -> u8),
+        entry!(0x0043cc80, fn_0043cc80(Ptr<IOTask>) -> u64),
+        entry!(0x0043cca0, fn_0043cca0(Ptr) -> u64),
+        entry!(0x0043ccc0, fn_0043ccc0(Ptr<QueuedModel>, u8)),
+        entry!(0x0043ccf0, queued_model_run(Ptr<QueuedModel>)),
+        entry!(0x0043cf40, fn_0043cf40(Ptr<QueuedModel>) -> bool),
+        entry!(0x0043cf60, fn_0043cf60(Ptr<QueuedModel>, u8)),
+        entry!(0x0043cf90, fn_0043cf90(Ptr<QueuedModel>) -> bool),
+        entry!(0x0043cfb0, fn_0043cfb0(Ptr<QueuedModel>) -> bool),
+        entry!(0x0043cfd0, fn_0043cfd0(Ptr<BSStream>) -> Ptr<BSStream>),
+        entry!(0x0043d050, ni_stream_save_link_id(Ptr, Ptr)),
+        entry!(0x0043d090, bs_stream_destructor(Ptr<BSStream>)),
+        entry!(0x0043d100, fn_0043d100(Ptr<BSStream>)),
+        entry!(
+            0x0043d150,
+            bs_stream_scalar_deleting_destructor(Ptr<BSStream>, u32) -> Ptr<BSStream>
+        ),
+        entry!(0x0043d180, queued_model_finish(Ptr<QueuedModel>)),
+        entry!(
+            0x0043d410,
+            fn_0043d410(Ptr<NiUpdateData>, f32, u8, u8) -> Ptr<NiUpdateData>
+        ),
+        entry!(0x0043d450, ni_av_object_get_world_bound(Ptr) -> Ptr),
+        entry!(0x0043d490, fn_0043d490(Ptr<QueuedModel>) -> bool),
+        entry!(0x0043d4b0, fn_0043d4b0(Ptr<QueuedModel>) -> bool),
+        entry!(0x0043d4d0, fn_0043d4d0(Ptr) -> Ptr),
+        entry!(
+            0x0043d510,
+            queued_model_get_description(Ptr<QueuedModel>, u32, u32) -> bool
+        ),
+        entry!(
+            0x0043d540,
+            fn_0043d540(
+                Ptr<QueuedTreeBillboard>,
+                u32,
+                u32,
+                Ptr<TreeBillboardData>,
+            ) -> Ptr<QueuedTreeBillboard>
+        ),
+        entry!(
+            0x0043d580,
+            queued_tree_billboard_scalar_deleting_destructor(
+                Ptr<QueuedTreeBillboard>,
+                u32,
+            )
+                -> Ptr<QueuedTreeBillboard>
+        ),
+        entry!(0x0043d5b0, fn_0043d5b0(Ptr<QueuedTreeBillboard>)),
+        entry!(
+            0x0043d640,
+            fn_0043d640(Ptr<TreeBillboardData>, u32) -> Ptr<TreeBillboardData>
+        ),
+        entry!(
+            0x0043d670,
+            queued_tree_billboard_finish(Ptr<QueuedTreeBillboard>)
+        ),
+        entry!(0x0043d690, iomanager_add_post_process_task(Ptr<IOTask>)),
+        entry!(0x0043d6b0, fn_0043d6b0(Ptr, Ptr<IOTask>)),
+        entry!(
+            0x0043d730,
+            queued_tree_billboard_post_process(Ptr<QueuedTreeBillboard>)
+        ),
+        entry!(
+            0x0043d750,
+            queued_tree_billboard_create_billboard(Ptr<QueuedTreeBillboard>)
+        ),
+        entry!(
+            0x0043d820,
+            queued_tree_billboard_get_description(Ptr<QueuedTreeBillboard>, u32, u32) -> bool
+        ),
+        entry!(
+            0x0043d850,
+            fn_0043d850(Ptr<QueuedTreeModel>, Ptr, Ptr, u32, u32) -> Ptr<QueuedTreeModel>
+        ),
+        entry!(
+            0x0043d8c0,
+            queued_tree_model_scalar_deleting_destructor(
+                Ptr<QueuedTreeModel>,
+                u32,
+            ) -> Ptr<QueuedTreeModel>
+        ),
+        entry!(0x0043d8f0, fn_0043d8f0(Ptr<QueuedTreeModel>)),
+        entry!(0x0043d910, queued_tree_model_queue_me(Ptr<QueuedTreeModel>)),
+        entry!(0x0043da00, queued_tree_model_run(Ptr<QueuedTreeModel>)),
+        entry!(0x0043daa0, fn_0043daa0(Ptr<QueuedTreeModel>)),
+        entry!(
+            0x0043dac0,
+            queued_tree_model_cancel(Ptr<QueuedTreeModel>, i32, u32)
+        ),
+        entry!(
+            0x0043db00,
+            queued_tree_model_get_description(Ptr<QueuedTreeModel>, u32, u32) -> bool
+        ),
+        entry!(
+            0x0043db30,
+            fn_0043db30(Ptr<QueuedMagicItem>, Ptr, Ptr, u32) -> Ptr<QueuedMagicItem>
+        ),
+        entry!(0x0043db70, io_task_generate_key(Ptr<IOTask>)),
+        entry!(0x0043dbb0, fn_0043dbb0(Ptr<IOTask>, i8, u32, u8, u16)),
+        entry!(0x0043dc10, fn_0043dc10(Ptr) -> u32),
+        entry!(0x0043dc30, fn_0043dc30(Ptr) -> u32),
+        entry!(0x0043dc50, fn_0043dc50(Ptr<QueuedMagicItem>)),
+        entry!(0x0043dc70, queued_magic_item_queue_me(Ptr<QueuedMagicItem>)),
+        entry!(
+            0x0043e080,
+            queued_magic_item_check_finished(Ptr<QueuedMagicItem>)
+        ),
+        entry!(
+            0x0043e0f0,
+            queued_kf_queued_kf(Ptr<QueuedKF>, u32, u32) -> Ptr<QueuedKF>
+        ),
+        entry!(0x0043e180, fn_0043e180(Ptr<QueuedKF>, u32) -> Ptr<QueuedKF>),
+        entry!(0x0043e1b0, fn_0043e1b0(Ptr<QueuedKF>)),
+        entry!(
+            0x0043e210,
+            fn_0043e210(Ptr<QueuedKF>, Ptr, u32) -> Ptr<QueuedKF>
+        ),
+        entry!(0x0043e2a0, queued_kf_run(Ptr<QueuedKF>)),
+        entry!(0x0043e480, fn_0043e480(Ptr<QueuedKF>, u8)),
+        entry!(0x0043e4b0, queued_kf_finish(Ptr<QueuedKF>)),
+        entry!(0x0043e530, fn_0043e530(Ptr<QueuedKF>) -> bool),
+        entry!(
+            0x0043e550,
+            queued_kf_get_description(Ptr<QueuedKF>, u32, u32) -> bool
+        ),
+        entry!(
+            0x0043e580,
+            fn_0043e580(Ptr<QueuedAnimIdle>, u32, u32, Ptr, Ptr) -> Ptr<QueuedAnimIdle>
+        ),
+        entry!(
+            0x0043e600,
+            queued_anim_idle_scalar_deleting_destructor(
+                Ptr<QueuedAnimIdle>,
+                u32,
+            ) -> Ptr<QueuedAnimIdle>
+        ),
+        entry!(0x0043e630, fn_0043e630(Ptr<QueuedAnimIdle>)),
+        entry!(0x0043e690, queued_anim_idle_queue_me(Ptr<QueuedAnimIdle>)),
+        entry!(0x0043e750, fn_0043e750(Ptr, u32) -> u32),
+        entry!(
+            0x0043e770,
+            queued_anim_idle_check_finished(Ptr<QueuedAnimIdle>)
+        ),
+        entry!(
+            0x0043e7b0,
+            queued_anim_idle_post_process(Ptr<QueuedAnimIdle>)
+        ),
+        entry!(0x0043e810, fn_0043e810(Ptr, Ptr)),
+        entry!(
+            0x0043e840,
+            queued_anim_idle_cancel(Ptr<QueuedAnimIdle>, u32, u32)
+        ),
+        entry!(
+            0x0043e880,
+            queued_anim_idle_get_description(Ptr<QueuedAnimIdle>, u32, u32) -> bool
+        ),
+        entry!(
+            0x0043e8b0,
+            fn_0043e8b0(Ptr<QueuedReplacementKF>, u32, u32, Ptr, Ptr) -> Ptr<QueuedReplacementKF>
+        ),
+        entry!(
+            0x0043e8f0,
+            fn_0043e8f0(Ptr<QueuedReplacementKF>, u32) -> Ptr<QueuedReplacementKF>
+        ),
+        entry!(0x0043e920, fn_0043e920(Ptr<QueuedReplacementKF>)),
+        entry!(
+            0x0043e940,
+            queued_replacement_kf_finish(Ptr<QueuedReplacementKF>)
+        ),
+        entry!(0x0043e990, fn_0043e990(Ptr<QueuedReplacementKFList>)),
+        entry!(
+            0x0043e9b0,
+            queued_replacement_kf_post_process(Ptr<QueuedReplacementKF>)
+        ),
     ]
 }
 
@@ -3169,13 +5367,7 @@ mod tests {
         });
         e.register(TEST_FLAG_BIT_2, |_, a| (a[0] & 2 != 0).into_ret());
         e.register(TEST_FLAG_BIT_4, |_, a| (a[0] & 4 != 0).into_ret());
-        e.register(QUEUED_TEXTURE_SET_FLAG_1, |e, a| {
-            write_flag(e, a[0] + 0x34, 1, a[1] != 0);
-            Ret::default()
-        });
-        e.register(QUEUED_TEXTURE_TEST_FLAG_1, |e, a| {
-            (e.mem.u8(a[0] + 0x34) & 1 != 0).into_ret()
-        });
+        e.register(TEST_FLAG_BIT_1, |_, a| (a[0] & 1 != 0).into_ret());
         e.register(QUEUED_FILE_ENTRY_GET_FILE_ENTRY, |e, a| {
             e.mem.u32(a[0] + 0x2c).into_ret()
         });
@@ -4176,5 +6368,2514 @@ mod tests {
         );
         // The virtual table is left as it was.
         assert_eq!(e.mem.u32(this.addr()), 0x2222);
+    }
+
+    // --- `QueuedModel` (third part) and the tree classes. ---
+
+    /// A queued model's table: slot 0x28 is `CheckFinished`, slot 0x30 the
+    /// `QueueMe_ov2` hook that records its argument.
+    const MODEL_TASK_VTABLE: u32 = 0x0ff2_5000;
+    const QUEUE_ME_HOOK: u32 = 0x0ff0_0110;
+    /// A `TESModel`'s table: slot 0x14 is the model name, slot 0x1c the list.
+    const TES_MODEL_VTABLE: u32 = 0x0ff2_6000;
+    const TES_NAME_SLOT: u32 = 0x0ff0_0111;
+    const TES_LIST_SLOT: u32 = 0x0ff0_0112;
+    /// A 3D object's table: slot 0 deletes, slot 0x10 casts to a fade node.
+    const OBJECT_VTABLE: u32 = 0x0ff2_7000;
+    const OBJECT_DELETE: u32 = 0x0ff0_0113;
+    const FADE_CAST: u32 = 0x0ff0_0114;
+    /// A stream's object reference map table: slot 0 deletes.
+    const REF_MAP_VTABLE: u32 = 0x0ff2_8000;
+    const REF_MAP_DELETE: u32 = 0x0ff0_0115;
+    /// A stream's table: slot 0x2c gives the link id.
+    const LINK_STREAM_VTABLE: u32 = 0x0ff2_9000;
+    const LINK_ID_SLOT: u32 = 0x0ff0_0116;
+    /// A fixed answer of `QueuedFileEntry::GetFile`, the file name and the
+    /// name of the tests' models.
+    const OPEN_FILE: u32 = 0x0ff4_0000;
+    /// Scratch dwords on the mapped page at `011f9000`.
+    const SCRATCH: u32 = 0x011f_9100;
+
+    /// An engine with doubles for what the `QueuedModel` and tree functions
+    /// call.
+    fn model_engine() -> Engine {
+        let mut e = queue_engine();
+        for page in [0x0101_1000, 0x0101_2000, 0x011c_6000, 0x011f_9000] {
+            e.map(page, 0x1000);
+        }
+        e.register(TEST_FLAG_BIT_1, |_, a| (a[0] & 1 != 0).into_ret());
+        e.register(TEST_FLAG_BIT_8, |_, a| (a[0] & 8 != 0).into_ret());
+        e.register(TEST_FLAG_BIT_10, |_, a| (a[0] & 0x10 != 0).into_ret());
+        e.register(TEST_FLAG_BIT_20, |_, a| (a[0] & 0x20 != 0).into_ret());
+        e.register(SET_FLAG_BIT_8, |e, a| {
+            write_flag(e, a[1], 8, a[0] & 0xff != 0);
+            Ret::default()
+        });
+        e.register(STATE_IS_ZERO, |e, a| {
+            (e.mem.u32(a[0] + 0xc) == 0).into_ret()
+        });
+        e.register(FIELD_AT_8, |e, a| e.mem.u32(a[0] + 8).into_ret());
+        e.register(FIELD_AT_4, |e, a| e.mem.u32(a[0] + 4).into_ret());
+        e.register(BYTE_AT_0, |e, a| e.mem.u8(a[0]).into_ret());
+        e.register(FINISHED_COUNT_GETTER, |e, a| {
+            e.mem.u32(a[0] + 0x10).into_ret()
+        });
+        e.register(LIST_FIRST_NODE, |_, a| (a[0] + 0x18).into_ret());
+        e.register(LIST_NODE_ITEM_ADDRESS, |_, a| a[0].into_ret());
+        e.register(TES_MODEL_TEXTURE_BLOCK, |_, a| (a[0] + 0xc).into_ret());
+        e.register(MODEL_POINTER_ASSIGN, |e, a| {
+            e.mem.set_u32(a[0], a[1]);
+            a[0].into_ret()
+        });
+        e.register(TASK_POINTER_CONSTRUCT, |e, a| {
+            e.mem.set_u32(a[0], a[1]);
+            a[0].into_ret()
+        });
+        e.register(ZERO_THREE_WORDS, |e, a| {
+            for word in 0..3 {
+                e.mem.set_u32(a[0] + word * 4, 0);
+            }
+            Ret::default()
+        });
+        e.register(MODEL_LOADER_FIND_MODEL, |_, _| 0u32.into_ret());
+        e.register(MODEL_LOADER_ADD_MODEL, |_, _| 1u32.into_ret());
+        e.register(BS_STREAM_LOAD, |_, _| 1u32.into_ret());
+        e.register(QUEUED_FILE_ENTRY_GET_FILE, |_, _| OPEN_FILE.into_ret());
+        // What `Model::Model` (`InitModel`) calls once it has its objects.
+        e.register(REMOVE_EDITOR_MARKERS, |_, _| Ret::default());
+        e.register(GET_PROPERTY, |_, _| 0u32.into_ret());
+        e.register(PROPERTY_TYPE_SECOND_GETTER, |_, _| SECOND_TYPE.into_ret());
+        e.register(MATCHES_PATTERN, |_, _| 0u32.into_ret());
+        e.register(STREAM_FREE_ALL_OBJECTS, |_, _| Ret::default());
+        e.register(HAS_MORPHER_CONTROLLER, |_, _| 0u32.into_ret());
+        e.register(PREPARE_OBJECT, |_, _| Ret::default());
+        e.register(SETTING_VALUE_POINTER, |_, a| (a[0] + 4).into_ret());
+        e.register(BOUND_RADIUS, |e, a| e.mem.f32(a[0] + 0xc).into_ret());
+        e.register(OVERRIDDEN_VISUAL_DISTANCE, |e, a| {
+            e.mem.f32(a[0] + 0x40).into_ret()
+        });
+        for address in [
+            QUEUED_FILE_CHECK_FINISHED,
+            QUEUED_FILE_ENTRY_GENERATE_KEY,
+            MODEL_LOADER_QUEUE_TEXTURE,
+            QUEUE_TEXTURE_SET,
+            NI_STREAM_CONSTRUCT,
+            NI_STREAM_DESTRUCT,
+            NI_STREAM_SAVE_BINARY_U32,
+            ADD_REFERENCE,
+            NI_AV_OBJECT_UPDATE,
+            FADE_NODE_SET_RANGE,
+            FADE_NODE_SET_LOD_MULT_TYPE,
+            CREATE_BILLBOARD_INSTANCES,
+            TREE_BILLBOARD_DATA_DESTRUCT,
+            TASK_POINTER_DESTRUCT,
+            QUEUE_TABLE_ADD,
+            QUEUE_ME_HOOK,
+            OBJECT_DELETE,
+            REF_MAP_DELETE,
+        ] {
+            e.register(address, |_, _| Ret::default());
+        }
+        e.register(FADE_CAST, |_, _| 0u32.into_ret());
+        e.register(LINK_ID_SLOT, |_, a| (a[1] + 0x100).into_ret());
+        put_slots(
+            &mut e,
+            MODEL_TASK_VTABLE,
+            &[(0x28, CHECK_FINISHED), (0x30, QUEUE_ME_HOOK)],
+        );
+        put_slots(
+            &mut e,
+            TES_MODEL_VTABLE,
+            &[(0x14, TES_NAME_SLOT), (0x1c, TES_LIST_SLOT)],
+        );
+        put_slots(
+            &mut e,
+            OBJECT_VTABLE,
+            &[(0, OBJECT_DELETE), (0x10, FADE_CAST)],
+        );
+        put_slots(&mut e, REF_MAP_VTABLE, &[(0, REF_MAP_DELETE)]);
+        // A `BSStream` whose own loader (slot 0x60) fails.
+        put_slots(&mut e, BS_STREAM_VTABLE, &[]);
+        // After the tables: the table of the stream shares the page.
+        e.mem.set_f64(HALF, 0.5);
+        e.mem.set_f64(ZERO, 0.0);
+        e.mem.set_f64(LOADED_AREA_MARGIN, 2048.0);
+        e.mem.set_f64(SMALL_RADIUS, 0.001f32 as f64);
+        put_slots(&mut e, LINK_STREAM_VTABLE, &[(0x2c, LINK_ID_SLOT)]);
+        e
+    }
+
+    /// A queued model whose first word is the model task table.
+    fn queued_model(e: &mut Engine) -> Ptr<QueuedModel> {
+        let model: Ptr<QueuedModel> = e.new_object();
+        e.mem.set_u32(model.addr(), MODEL_TASK_VTABLE);
+        model
+    }
+
+    /// A `TESModel` object whose name slot is a double returning `name` and
+    /// whose list slot returns `list`.
+    fn tes_model(e: &mut Engine) -> Ptr {
+        let tes_model = Ptr::new(e.mem.alloc(0x40));
+        e.mem.set_u32(tes_model.addr(), TES_MODEL_VTABLE);
+        tes_model
+    }
+
+    #[test]
+    fn model_constructor_with_a_tes_model_sets_up_the_fields_and_flags() {
+        let mut e = model_engine();
+        e.register(TES_NAME_SLOT, |e, _| e.mem.u32(SCRATCH).into_ret());
+        let name = text(&mut e, "meshes\\tree.nif");
+        e.mem.set_u32(SCRATCH, name);
+        let tes = tes_model(&mut e);
+        let this: Ptr<QueuedModel> = e.new_object();
+        e.set(this, QueuedModel::cFlags, 0xff);
+        e.set(this, QueuedModel::mfOverriddenVisualDistance, 5.0);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_c890, &args![this, tes, 0x66u32, 0x3u32, 0u8, 1u8]);
+        assert_eq!(back.ptr::<QueuedModel>(), this);
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_MODEL_VTABLE);
+        assert_eq!(e.get(this, QueuedModel::spModel), Ptr::NULL);
+        assert_eq!(e.get(this, QueuedModel::pTESModel), tes);
+        assert_eq!(e.get(this, QueuedModel::eLODFadeMult), 3);
+        // The first flag argument (0) clears bit 1, the second sets bit 2.
+        assert_eq!(e.get(this, QueuedModel::cFlags), 2);
+        assert_eq!(e.get(this, QueuedModel::mfOverriddenVisualDistance), 0.0);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_CONSTRUCT),
+            vec![vec![this.addr(), 0x66]]
+        );
+        // The file name is what the TESModel's slot 0x14 answered.
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_SET_FILE_NAME),
+            vec![vec![this.addr(), name]]
+        );
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_FIND_FILE_ENTRY),
+            vec![vec![this.addr(), 0]]
+        );
+    }
+
+    #[test]
+    fn model_constructor_with_a_loaded_model_stores_it_and_finishes_the_task() {
+        let mut e = model_engine();
+        let this: Ptr<QueuedModel> = e.new_object();
+        e.set(this, QueuedModel::pTESModel, Ptr::new(0x1111));
+        e.set(this, QueuedModel::cFlags, 0xff);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_c960, &args![this, Ptr::<()>::new(0x7777), 0x55u32]);
+        assert_eq!(back.ptr::<QueuedModel>(), this);
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_MODEL_VTABLE);
+        assert_eq!(e.get(this, QueuedModel::spModel), Ptr::new(0x7777));
+        assert_eq!(e.get(this, QueuedModel::pTESModel), Ptr::NULL);
+        assert_eq!(e.get(this, QueuedModel::eLODFadeMult), 0);
+        assert_eq!(e.get(this, QueuedModel::cFlags), 0);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_CONSTRUCT),
+            vec![vec![this.addr(), 0x55]]
+        );
+        assert_eq!(calls_to(&e, TASK_SET_DONE), vec![vec![this.addr()]]);
+        // No file name is set.
+        assert!(calls_to(&e, QUEUED_FILE_ENTRY_SET_FILE_NAME).is_empty());
+    }
+
+    #[test]
+    fn model_generate_key_is_the_file_entry_one() {
+        let mut e = model_engine();
+        let this = queued_model(&mut e);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ca10, &args![this]);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_GENERATE_KEY),
+            vec![vec![this.addr()]]
+        );
+    }
+
+    #[test]
+    fn model_check_finished_follows_bit_4_children_and_state() {
+        let mut e = model_engine();
+        let queue = task_queue(&mut e);
+        let children = Ptr::<()>::new(e.mem.alloc(0x20));
+        let this = queued_model(&mut e);
+        e.set(this, QueuedModel::pChildren, children);
+        // Bit 4 clear: the base `CheckFinished`.
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ca30, &args![this]);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_CHECK_FINISHED),
+            vec![vec![this.addr()]]
+        );
+        assert!(calls_to(&e, QUEUE_ADD).is_empty());
+        // Bit 4 set, 1 of 2 children finished: nothing.
+        e.set(this, QueuedModel::cFlags, 4);
+        e.mem.set_u32(children.addr() + 8, 2);
+        e.mem.set_u32(children.addr() + 0x10, 1);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ca30, &args![this]);
+        assert!(calls_to(&e, QUEUED_FILE_CHECK_FINISHED).is_empty());
+        assert!(calls_to(&e, QUEUE_ADD).is_empty());
+        // All finished and the task in state 0: given to the task queue.
+        e.mem.set_u32(children.addr() + 0x10, 2);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ca30, &args![this]);
+        assert_eq!(calls_to(&e, QUEUE_ADD), vec![vec![queue, this.addr()]]);
+        assert!(calls_to(&e, QUEUED_FILE_CHECK_FINISHED).is_empty());
+        // All finished, state not 0: the base `CheckFinished`.
+        e.mem.set_u32(this.addr() + 0xc, 3);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ca30, &args![this]);
+        assert!(calls_to(&e, QUEUE_ADD).is_empty());
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_CHECK_FINISHED),
+            vec![vec![this.addr()]]
+        );
+    }
+
+    #[test]
+    fn model_children_finished_compares_the_counts() {
+        let mut e = model_engine();
+        let this = queued_model(&mut e);
+        // No children object: finished.
+        assert!(e.call(0x0043_caa0, &args![this]).bool());
+        let children = Ptr::<()>::new(e.mem.alloc(0x20));
+        e.set(this, QueuedModel::pChildren, children);
+        e.mem.set_u32(children.addr() + 8, 3);
+        e.mem.set_u32(children.addr() + 0x10, 3);
+        assert!(e.call(0x0043_caa0, &args![this]).bool());
+        e.mem.set_u32(children.addr() + 0x10, 2);
+        assert!(!e.call(0x0043_caa0, &args![this]).bool());
+    }
+
+    #[test]
+    fn model_bit_4_test_reads_the_flags() {
+        let mut e = model_engine();
+        let this = queued_model(&mut e);
+        assert!(!e.call(0x0043_caf0, &args![this]).bool());
+        e.set(this, QueuedModel::cFlags, 4);
+        assert!(e.call(0x0043_caf0, &args![this]).bool());
+    }
+
+    #[test]
+    fn model_queue_me_passes_the_tes_model_block_or_zero() {
+        let mut e = model_engine();
+        let this = queued_model(&mut e);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_cb10, &args![this]);
+        assert_eq!(calls_to(&e, QUEUE_ME_HOOK), vec![vec![this.addr(), 0]]);
+        assert!(calls_to(&e, TES_MODEL_TEXTURE_BLOCK).is_empty());
+        let tes = tes_model(&mut e);
+        e.set(this, QueuedModel::pTESModel, tes);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_cb10, &args![this]);
+        assert_eq!(
+            calls_to(&e, QUEUE_ME_HOOK),
+            vec![vec![this.addr(), tes.addr() + 0xc]]
+        );
+    }
+
+    #[test]
+    fn model_queue_me_ov2_queues_the_textures_and_texture_sets() {
+        let mut e = model_engine();
+        e.set_global(FILE_MAP_OWNER, OWNER_OBJECT);
+        let this = queued_model(&mut e);
+        // The key of the task: priority byte 7 in bits 16 to 23.
+        e.mem.set_u64(this.addr() + 0x10, 0x0007_0000);
+        // A block of three texture entries, the middle one empty.
+        let textures = e.mem.alloc(12);
+        e.mem.set_u32(textures, 0xaa);
+        e.mem.set_u32(textures + 8, 0xcc);
+        let block = e.mem.alloc(8);
+        e.mem.set_u8(block, 3);
+        e.mem.set_u32(block + 4, textures);
+        // A TESModel with a list of three nodes (the first is embedded in
+        // the list at +0x18; a node is an item pointer and a next link): a
+        // texture set, a set holder whose set is null, no holder at all.
+        let tes = tes_model(&mut e);
+        e.set(this, QueuedModel::pTESModel, tes);
+        let list = e.mem.alloc(0x20);
+        e.register(TES_LIST_SLOT, |e, _| e.mem.u32(SCRATCH).into_ret());
+        e.mem.set_u32(SCRATCH, list);
+        let holder = e.mem.alloc(8);
+        e.mem.set_u32(holder, 0x5e7);
+        let empty_holder = e.mem.alloc(8);
+        e.mem.set_u32(empty_holder, 0);
+        let third = e.mem.alloc(8);
+        e.mem.set_u32(third, 0);
+        e.mem.set_u32(third + 4, 0);
+        let second = e.mem.alloc(8);
+        e.mem.set_u32(second, empty_holder);
+        e.mem.set_u32(second + 4, third);
+        let first = list + 0x18;
+        e.mem.set_u32(first, holder);
+        e.mem.set_u32(first + 4, second);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_cb50, &args![this, block]);
+        assert_eq!(
+            calls_to(&e, MODEL_LOADER_QUEUE_TEXTURE),
+            vec![
+                vec![OWNER_OBJECT, 0xaa, 7, this.addr()],
+                vec![OWNER_OBJECT, 0xcc, 7, this.addr()]
+            ]
+        );
+        assert_eq!(
+            calls_to(&e, QUEUE_TEXTURE_SET),
+            vec![vec![0x5e7, 7, this.addr(), 0]]
+        );
+        // Bit 4 is set, then `CheckFinished` is called.
+        assert_eq!(e.get(this, QueuedModel::cFlags), 4);
+        assert_eq!(calls_to(&e, CHECK_FINISHED), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn model_queue_me_ov2_without_block_or_tes_model_only_flags_and_checks() {
+        let mut e = model_engine();
+        let this = queued_model(&mut e);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_cb50, &args![this, 0u32]);
+        assert!(calls_to(&e, MODEL_LOADER_QUEUE_TEXTURE).is_empty());
+        assert!(calls_to(&e, QUEUE_TEXTURE_SET).is_empty());
+        assert_eq!(e.get(this, QueuedModel::cFlags), 4);
+        assert_eq!(calls_to(&e, CHECK_FINISHED).len(), 1);
+        // A block with a zero count is skipped as well.
+        let block = e.mem.alloc(8);
+        e.mem.set_u8(block, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_cb50, &args![this, block]);
+        assert!(calls_to(&e, MODEL_LOADER_QUEUE_TEXTURE).is_empty());
+    }
+
+    #[test]
+    fn task_key_is_shifted_arithmetically_by_16() {
+        let mut e = model_engine();
+        let task = queued_model(&mut e);
+        e.mem.set_u64(task.addr() + 0x10, 0x8000_0000_0012_0000);
+        let shifted = e.call(0x0043_cc80, &args![task]).u64();
+        assert_eq!(shifted, 0xffff_8000_0000_0012);
+        assert_eq!(e.call(0x0043_cc60, &args![task]).u32(), 0x12);
+        assert_eq!(
+            e.call(0x0043_cca0, &args![Ptr::<()>::new(task.addr() + 0x10)])
+                .u64(),
+            0xffff_8000_0000_0012
+        );
+    }
+
+    #[test]
+    fn model_bit_4_setter_sets_and_clears() {
+        let mut e = model_engine();
+        let this = queued_model(&mut e);
+        e.set(this, QueuedModel::cFlags, 1);
+        e.call(0x0043_ccc0, &args![this, 1u8]);
+        assert_eq!(e.get(this, QueuedModel::cFlags), 5);
+        e.call(0x0043_ccc0, &args![this, 0u8]);
+        assert_eq!(e.get(this, QueuedModel::cFlags), 1);
+    }
+
+    /// A queued model ready for `Run`: a file name and the context 0x21.
+    fn runnable_model(e: &mut Engine, name: &str) -> Ptr<QueuedModel> {
+        let this = queued_model(e);
+        let name = text(e, name);
+        e.mem.set_u32(this.addr() + 0x28, name);
+        e.set(this, QueuedModel::eContext, 0x21);
+        this
+    }
+
+    #[test]
+    fn model_run_without_a_file_name_does_nothing() {
+        let mut e = model_engine();
+        let this = runnable_model(&mut e, "");
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ccf0, &args![this]);
+        assert!(calls_to(&e, MODEL_LOADER_FIND_MODEL).is_empty());
+        assert!(calls_to(&e, QUEUED_FILE_ENTRY_GET_FILE).is_empty());
+        // The memory context was entered and left.
+        let enter = calls_to(&e, MEMORY_CONTEXT_ENTER);
+        assert_eq!(enter.len(), 1);
+        assert_eq!(&enter[0][1..], &[0x21, 1, MODEL_LOADER_SOURCE, 0x3b8]);
+        assert_eq!(calls_to(&e, MEMORY_CONTEXT_LEAVE).len(), 1);
+    }
+
+    #[test]
+    fn model_run_takes_a_model_the_loader_already_has() {
+        let mut e = model_engine();
+        e.set_global(FILE_MAP_OWNER, OWNER_OBJECT);
+        e.register(MODEL_LOADER_FIND_MODEL, |e, a| {
+            e.mem.set_u32(a[2], 0x5555);
+            1u32.into_ret()
+        });
+        let this = runnable_model(&mut e, "meshes\\a.nif");
+        let name = e.mem.u32(this.addr() + 0x28);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ccf0, &args![this]);
+        assert_eq!(
+            calls_to(&e, MODEL_LOADER_FIND_MODEL),
+            vec![vec![OWNER_OBJECT, name, this.addr() + 0x30]]
+        );
+        assert_eq!(e.get(this, QueuedModel::spModel), Ptr::new(0x5555));
+        // Bit 8 is set; the file is never opened.
+        assert_eq!(e.get(this, QueuedModel::cFlags), 8);
+        assert!(calls_to(&e, QUEUED_FILE_ENTRY_GET_FILE).is_empty());
+        assert!(calls_to(&e, 0x0043_aaf0).is_empty());
+        assert_eq!(calls_to(&e, MEMORY_CONTEXT_LEAVE).len(), 1);
+    }
+
+    /// The loader of the stream (`BSStream::Load`) gives the stream a root
+    /// node named `Scene Root`; the returned address is that node. The
+    /// loader also records the name published in `011f94c0` at `SCRATCH`.
+    fn stream_loads_a_root(e: &mut Engine) -> Ptr {
+        let root = object(e, NODE_VTABLE);
+        let root_name = text(e, "Scene Root");
+        e.mem.set_u32(root.addr() + 8, root_name);
+        e.register_double(BS_STREAM_LOAD, move |e, a| {
+            let published = e.global::<u32>(LOADING_FILE_NAME);
+            e.mem.set_u32(SCRATCH, published);
+            set_stream_objects(e, Ptr::new(a[0]), &[root]);
+            1u32.into_ret()
+        });
+        root
+    }
+
+    #[test]
+    fn model_run_loads_the_file_into_a_stream_and_builds_the_model() {
+        let mut e = model_engine();
+        e.set_global(FILE_MAP_OWNER, OWNER_OBJECT);
+        let root = stream_loads_a_root(&mut e);
+        let this = runnable_model(&mut e, "meshes\\a.nif");
+        let name = e.mem.u32(this.addr() + 0x28);
+        // Bit 1 (prepare) and bit 0x20 (force).
+        e.set(this, QueuedModel::cFlags, 0x21);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ccf0, &args![this]);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_GET_FILE),
+            vec![vec![this.addr(), 0, 1]]
+        );
+        let loads = calls_to(&e, BS_STREAM_LOAD);
+        assert_eq!(loads.len(), 1);
+        let stream = loads[0][0];
+        assert_eq!(&loads[0][1..], &[name, OPEN_FILE]);
+        // The load saw the name published in `011f94c0`.
+        assert_eq!(e.mem.u32(SCRATCH), name);
+        assert_eq!(calls_to(&e, NI_STREAM_CONSTRUCT), vec![vec![stream]]);
+        // The model (a 0x10-byte block) is built from the stream and stored:
+        // its 3D object is the stream's root, prepared with `force` and
+        // `prepare` taken from bits 0x20 and 1.
+        assert_eq!(calls_to(&e, MEMORY_ALLOC)[0], vec![0x10]);
+        let model = e.get(this, QueuedModel::spModel);
+        assert!(!model.is_null());
+        assert_eq!(e.mem.u32(model.addr() + 0xc), root.addr());
+        assert_eq!(calls_to(&e, PREPARE_OBJECT), vec![vec![root.addr(), 1, 1]]);
+        // The name is withdrawn and the stream destroyed.
+        assert_eq!(e.global::<u32>(LOADING_FILE_NAME), 0);
+        assert_eq!(calls_to(&e, NI_STREAM_DESTRUCT), vec![vec![stream]]);
+        assert!(calls_to(&e, LOG).is_empty());
+        // Only bit 1: prepare without force.
+        e.set(this, QueuedModel::spModel, Ptr::NULL);
+        e.set(this, QueuedModel::cFlags, 0x01);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ccf0, &args![this]);
+        assert_eq!(calls_to(&e, PREPARE_OBJECT), vec![vec![root.addr(), 0, 0]]);
+        // Neither bit: not prepared at all.
+        e.set(this, QueuedModel::spModel, Ptr::NULL);
+        e.set(this, QueuedModel::cFlags, 0x00);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ccf0, &args![this]);
+        assert!(calls_to(&e, PREPARE_OBJECT).is_empty());
+    }
+
+    #[test]
+    fn model_run_logs_a_failed_load_unless_bit_10_allows_a_model() {
+        let mut e = model_engine();
+        e.set_global(FILE_MAP_OWNER, OWNER_OBJECT);
+        e.register(BS_STREAM_LOAD, |_, _| 0u32.into_ret());
+        let this = runnable_model(&mut e, "meshes\\a.nif");
+        let name = e.mem.u32(this.addr() + 0x28);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ccf0, &args![this]);
+        assert_eq!(
+            calls_to(&e, LOG),
+            vec![vec![MODEL_ERROR_MESSAGE, LOAD_WORD, name]]
+        );
+        // No model block is allocated and the pointer stays empty.
+        assert!(calls_to(&e, MEMORY_ALLOC).is_empty());
+        assert_eq!(e.get(this, QueuedModel::spModel), Ptr::NULL);
+        assert_eq!(e.global::<u32>(LOADING_FILE_NAME), 0);
+        assert_eq!(calls_to(&e, NI_STREAM_DESTRUCT).len(), 1);
+        // Bit 0x10: a model is built anyway (from the empty stream).
+        e.set(this, QueuedModel::cFlags, 0x10);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ccf0, &args![this]);
+        assert!(calls_to(&e, LOG).is_empty());
+        assert_eq!(calls_to(&e, MEMORY_ALLOC)[0], vec![0x10]);
+        assert_ne!(e.get(this, QueuedModel::spModel), Ptr::NULL);
+    }
+
+    #[test]
+    fn model_run_without_a_file_logs_find_or_builds_with_bit_10() {
+        let mut e = model_engine();
+        e.set_global(FILE_MAP_OWNER, OWNER_OBJECT);
+        e.register(QUEUED_FILE_ENTRY_GET_FILE, |_, _| 0u32.into_ret());
+        let this = runnable_model(&mut e, "meshes\\a.nif");
+        let name = e.mem.u32(this.addr() + 0x28);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ccf0, &args![this]);
+        assert_eq!(
+            calls_to(&e, LOG),
+            vec![vec![MODEL_ERROR_MESSAGE, FIND_WORD, name]]
+        );
+        // The stream is never read.
+        assert!(calls_to(&e, BS_STREAM_LOAD).is_empty());
+        assert_eq!(e.get(this, QueuedModel::spModel), Ptr::NULL);
+        e.set(this, QueuedModel::cFlags, 0x10);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_ccf0, &args![this]);
+        assert!(calls_to(&e, LOG).is_empty());
+        assert_ne!(e.get(this, QueuedModel::spModel), Ptr::NULL);
+    }
+    #[test]
+    fn model_flag_tests_read_their_bits() {
+        let mut e = model_engine();
+        let this = queued_model(&mut e);
+        for (address, bit) in [
+            (0x0043_cf40u32, 1u8),
+            (0x0043_cf90, 0x10),
+            (0x0043_cfb0, 0x20),
+            (0x0043_d490, 2),
+            (0x0043_d4b0, 8),
+        ] {
+            e.set(this, QueuedModel::cFlags, !bit);
+            assert!(!e.call(address, &args![this]).bool(), "{address:08x}");
+            e.set(this, QueuedModel::cFlags, bit);
+            assert!(e.call(address, &args![this]).bool(), "{address:08x}");
+        }
+    }
+
+    #[test]
+    fn model_bit_8_setter_sets_and_clears() {
+        let mut e = model_engine();
+        let this = queued_model(&mut e);
+        e.call(0x0043_cf60, &args![this, 1u8]);
+        assert_eq!(e.get(this, QueuedModel::cFlags), 8);
+        e.call(0x0043_cf60, &args![this, 0u8]);
+        assert_eq!(e.get(this, QueuedModel::cFlags), 0);
+    }
+
+    #[test]
+    fn stream_constructor_builds_the_base_and_clears_the_pointers() {
+        let mut e = model_engine();
+        let stream: Ptr<BSStream> = e.new_object();
+        e.set(stream, BSStream::pObjectRefMap, Ptr::new(0x1234));
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_cfd0, &args![stream]);
+        assert_eq!(back.ptr::<BSStream>(), stream);
+        assert_eq!(calls_to(&e, NI_STREAM_CONSTRUCT), vec![vec![stream.addr()]]);
+        assert_eq!(e.mem.u32(stream.addr()), BS_STREAM_VTABLE);
+        assert_eq!(
+            calls_to(&e, NI_POINTER_CONSTRUCT),
+            vec![vec![stream.addr() + 0x5c8, 0]]
+        );
+        assert_eq!(e.get(stream, BSStream::pObjectRefMap), Ptr::NULL);
+        // The base constructor comes first, the table is set after it.
+        assert_eq!(call_order(&e)[1], NI_STREAM_CONSTRUCT);
+    }
+
+    #[test]
+    fn save_link_id_writes_the_id_the_stream_gives() {
+        let mut e = model_engine();
+        let stream = Ptr::<()>::new(e.mem.alloc(8));
+        e.mem.set_u32(stream.addr(), LINK_STREAM_VTABLE);
+        e.register(NI_STREAM_SAVE_BINARY_U32, |e, a| {
+            let value = e.mem.u32(a[1]);
+            e.mem.set_u32(SCRATCH, value);
+            Ret::default()
+        });
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d050, &args![stream, Ptr::<()>::new(0x40)]);
+        // The slot got the object and answered object + 0x100.
+        assert_eq!(calls_to(&e, LINK_ID_SLOT), vec![vec![stream.addr(), 0x40]]);
+        assert_eq!(e.mem.u32(SCRATCH), 0x140);
+        let saves = calls_to(&e, NI_STREAM_SAVE_BINARY_U32);
+        assert_eq!(saves.len(), 1);
+        assert_eq!(saves[0][0], stream.addr());
+    }
+
+    #[test]
+    fn stream_destructor_deletes_the_map_and_destroys_the_pointer_and_base() {
+        let mut e = model_engine();
+        let stream: Ptr<BSStream> = e.new_object();
+        let map = Ptr::<()>::new(e.mem.alloc(8));
+        e.mem.set_u32(map.addr(), REF_MAP_VTABLE);
+        e.set(stream, BSStream::pObjectRefMap, map);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d090, &args![stream]);
+        assert_eq!(e.mem.u32(stream.addr()), BS_STREAM_VTABLE);
+        assert_eq!(
+            call_order(&e),
+            vec![
+                0x0043_d090,
+                REF_MAP_DELETE,
+                NI_POINTER_DESTRUCT,
+                NI_STREAM_DESTRUCT
+            ]
+        );
+        assert_eq!(calls_to(&e, REF_MAP_DELETE), vec![vec![map.addr(), 1]]);
+        assert_eq!(
+            calls_to(&e, NI_POINTER_DESTRUCT),
+            vec![vec![stream.addr() + 0x5c8]]
+        );
+        assert_eq!(e.get(stream, BSStream::pObjectRefMap), Ptr::NULL);
+    }
+
+    #[test]
+    fn stream_map_deleter_skips_a_missing_map() {
+        let mut e = model_engine();
+        let stream: Ptr<BSStream> = e.new_object();
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d100, &args![stream]);
+        assert!(calls_to(&e, REF_MAP_DELETE).is_empty());
+        assert_eq!(e.get(stream, BSStream::pObjectRefMap), Ptr::NULL);
+    }
+
+    #[test]
+    fn stream_scalar_deleting_destructor_frees_only_on_request() {
+        let mut e = model_engine();
+        let stream: Ptr<BSStream> = e.new_object();
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_d150, &args![stream, 0u32]);
+        assert_eq!(back.ptr::<BSStream>(), stream);
+        assert_eq!(calls_to(&e, NI_STREAM_DESTRUCT).len(), 1);
+        assert!(calls_to(&e, MEMORY_FREE).is_empty());
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d150, &args![stream, 1u32]);
+        assert_eq!(calls_to(&e, MEMORY_FREE), vec![vec![stream.addr()]]);
+    }
+
+    /// A model ready for `Finish`: the queued model holds a model whose 3D
+    /// object (its table casts to `fade_node`, which has the world bound
+    /// radius `radius`).
+    struct FinishSetup {
+        this: Ptr<QueuedModel>,
+        model: u32,
+        object: u32,
+        fade_node: u32,
+    }
+
+    fn finishing_model(e: &mut Engine, radius: f32) -> FinishSetup {
+        let this = queued_model(e);
+        e.set(this, QueuedModel::eContext, 0x21);
+        let name = text(e, "meshes\\a.nif");
+        e.mem.set_u32(this.addr() + 0x28, name);
+        e.set(this, QueuedModel::eLODFadeMult, 2);
+        let model = e.mem.alloc(0x10);
+        let object = e.mem.alloc(0x10);
+        e.mem.set_u32(object, OBJECT_VTABLE);
+        e.mem.set_u32(model + 0xc, object);
+        e.set(this, QueuedModel::spModel, Ptr::new(model));
+        // The fade node has a world bound with the radius at +0xC.
+        let fade_node = e.mem.alloc(0x40);
+        let bound = e.mem.alloc(0x10);
+        e.mem.set_f32(bound + 0xc, radius);
+        e.mem.set_u32(fade_node + 0x20, bound);
+        e.register(FADE_CAST, |e, a| e.mem.u32(a[0] + 4).into_ret());
+        e.mem.set_u32(object + 4, fade_node);
+        // The settings: 64 cells, visual distance scale 10, fade scale 0.5.
+        e.mem.set_u32(CELL_COUNT_SETTING + 4, 64);
+        e.mem.set_f32(VISUAL_DISTANCE_SCALE_SETTING + 4, 10.0);
+        e.mem.set_f32(FADE_RANGE_SCALE_SETTING + 4, 0.5);
+        e.set_global(FILE_MAP_OWNER, OWNER_OBJECT);
+        FinishSetup {
+            this,
+            model,
+            object,
+            fade_node,
+        }
+    }
+
+    /// The `(near, far)` floats `SetRange` received.
+    fn set_range_args(e: &Engine) -> Vec<(f32, f32)> {
+        calls_to(e, FADE_NODE_SET_RANGE)
+            .iter()
+            .map(|a| (f32::from_bits(a[1]), f32::from_bits(a[2])))
+            .collect()
+    }
+
+    #[test]
+    fn model_finish_sets_the_fade_range_from_the_radius() {
+        let mut e = model_engine();
+        let setup = finishing_model(&mut e, 100.0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d180, &args![setup.this]);
+        // 64 cells: limit = 262144 * 0.5 - (100 + 2048) = 128924; the radius
+        // times 10 is smaller, and the node gets (range * 0.5, range).
+        assert_eq!(set_range_args(&e), vec![(500.0, 1000.0)]);
+        assert_eq!(
+            calls_to(&e, FADE_NODE_SET_LOD_MULT_TYPE),
+            vec![vec![setup.fade_node, 2]]
+        );
+        // The node was updated with the zeroed update record first.
+        assert_eq!(calls_to(&e, NI_AV_OBJECT_UPDATE).len(), 1);
+        assert_eq!(calls_to(&e, NI_AV_OBJECT_UPDATE)[0][0], setup.fade_node);
+        // The model is added to the loader's map; the add succeeded.
+        let name = e.mem.u32(setup.this.addr() + 0x28);
+        assert_eq!(
+            calls_to(&e, MODEL_LOADER_ADD_MODEL),
+            vec![vec![OWNER_OBJECT, name, setup.model]]
+        );
+        assert!(calls_to(&e, MODEL_LOADER_FIND_MODEL).is_empty());
+        // The memory context of `Finish`, then `CheckFinished`.
+        let enter = calls_to(&e, MEMORY_CONTEXT_ENTER);
+        assert_eq!(&enter[0][1..], &[0x21, 1, MODEL_LOADER_SOURCE, 0x3e5]);
+        assert_eq!(calls_to(&e, CHECK_FINISHED), vec![vec![setup.this.addr()]]);
+        assert!(calls_to(&e, ADD_REFERENCE).is_empty());
+    }
+
+    #[test]
+    fn model_finish_limits_the_range_to_the_world() {
+        let mut e = model_engine();
+        let setup = finishing_model(&mut e, 100.0);
+        // One cell: limit = 4096 * 0.5 - (100 + 2048) = -100.
+        e.mem.set_u32(CELL_COUNT_SETTING + 4, 1);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d180, &args![setup.this]);
+        assert_eq!(set_range_args(&e), vec![(-50.0, -100.0)]);
+    }
+
+    #[test]
+    fn model_finish_takes_a_tiny_radius_from_the_maximum_bound() {
+        let mut e = model_engine();
+        let setup = finishing_model(&mut e, 0.0005);
+        e.register(GET_BOUND_MAX, |e, a| {
+            e.mem.set_f32(a[0] + 8, 20.0);
+            a[0].into_ret()
+        });
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d180, &args![setup.this]);
+        // The radius becomes 20 * 0.5 = 10, the range 10 * 10.
+        let bound_calls = calls_to(&e, GET_BOUND_MAX);
+        assert_eq!(bound_calls.len(), 1);
+        assert_eq!(bound_calls[0][1], setup.object);
+        assert_eq!(set_range_args(&e), vec![(50.0, 100.0)]);
+        // A maximum bound of zero leaves radius 0: the limit is used.
+        e.register(GET_BOUND_MAX, |e, a| {
+            e.mem.set_f32(a[0] + 8, 0.0);
+            a[0].into_ret()
+        });
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d180, &args![setup.this]);
+        assert_eq!(
+            set_range_args(&e),
+            vec![(65536.0 - 1024.0, 131072.0 - 2048.0)]
+        );
+    }
+
+    #[test]
+    fn model_finish_uses_the_overridden_visual_distance_when_set() {
+        let mut e = model_engine();
+        let setup = finishing_model(&mut e, 100.0);
+        e.set(setup.this, QueuedModel::mfOverriddenVisualDistance, 77.0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d180, &args![setup.this]);
+        assert_eq!(set_range_args(&e), vec![(38.5, 77.0)]);
+    }
+
+    #[test]
+    fn model_finish_branches_on_flags_missing_objects_and_the_map() {
+        let mut e = model_engine();
+        let setup = finishing_model(&mut e, 100.0);
+        // Bit 2 adds a reference to the model.
+        e.set(setup.this, QueuedModel::cFlags, 2);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d180, &args![setup.this]);
+        assert_eq!(calls_to(&e, ADD_REFERENCE), vec![vec![setup.model]]);
+        // Bit 8 skips everything but the final check.
+        e.set(setup.this, QueuedModel::cFlags, 8);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d180, &args![setup.this]);
+        assert!(calls_to(&e, NI_AV_OBJECT_UPDATE).is_empty());
+        assert!(calls_to(&e, MODEL_LOADER_ADD_MODEL).is_empty());
+        assert_eq!(calls_to(&e, CHECK_FINISHED).len(), 1);
+        // No fade node: no range, but the model still goes into the map.
+        e.set(setup.this, QueuedModel::cFlags, 0);
+        e.mem.set_u32(setup.object + 4, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d180, &args![setup.this]);
+        assert!(calls_to(&e, FADE_NODE_SET_RANGE).is_empty());
+        assert_eq!(calls_to(&e, MODEL_LOADER_ADD_MODEL).len(), 1);
+        // No 3D object: nothing is added.
+        e.mem.set_u32(setup.model + 0xc, 0);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d180, &args![setup.this]);
+        assert!(calls_to(&e, MODEL_LOADER_ADD_MODEL).is_empty());
+        assert_eq!(calls_to(&e, CHECK_FINISHED).len(), 1);
+        // No model at all: only the final check.
+        e.set(setup.this, QueuedModel::spModel, Ptr::NULL);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d180, &args![setup.this]);
+        assert!(calls_to(&e, MODEL_LOADER_ADD_MODEL).is_empty());
+        assert_eq!(calls_to(&e, CHECK_FINISHED).len(), 1);
+    }
+
+    #[test]
+    fn model_finish_replaces_the_model_when_the_map_has_one() {
+        let mut e = model_engine();
+        let setup = finishing_model(&mut e, 100.0);
+        e.register(MODEL_LOADER_ADD_MODEL, |_, _| 0u32.into_ret());
+        let name = e.mem.u32(setup.this.addr() + 0x28);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d180, &args![setup.this]);
+        assert_eq!(
+            calls_to(&e, MODEL_LOADER_FIND_MODEL),
+            vec![vec![OWNER_OBJECT, name, setup.this.addr() + 0x30]]
+        );
+    }
+
+    #[test]
+    fn update_data_constructor_stores_time_and_two_flags() {
+        let mut e = model_engine();
+        let data: Ptr<NiUpdateData> = e.new_object();
+        for offset in 0..12 {
+            e.mem.set_u8(data.addr() + offset, 0xee);
+        }
+        let back = e.call(0x0043_d410, &args![data, 1.5f32, 1u8, 0u8]);
+        assert_eq!(back.ptr::<NiUpdateData>(), data);
+        assert_eq!(e.get(data, NiUpdateData::fTime), 1.5);
+        assert_eq!(e.get(data, NiUpdateData::bUpdateControllers), 1);
+        assert_eq!(e.get(data, NiUpdateData::bParallelUpdate), 0);
+        assert_eq!(e.get(data, NiUpdateData::bFoundParticles), 0);
+        assert_eq!(e.get(data, NiUpdateData::bFoundMorphController), 0);
+        assert_eq!(e.get(data, NiUpdateData::bSceneGraphChange), 0);
+        // The padding after the five flags is not touched.
+        assert_eq!(e.mem.u8(data.addr() + 9), 0xee);
+    }
+
+    #[test]
+    fn world_bound_falls_back_to_the_empty_bound() {
+        let mut e = model_engine();
+        let object = Ptr::<()>::new(e.mem.alloc(0x40));
+        assert_eq!(e.call(0x0043_d450, &args![object]).u32(), EMPTY_WORLD_BOUND);
+        e.mem.set_u32(object.addr() + 0x20, 0x4321);
+        assert_eq!(e.call(0x0043_d450, &args![object]).u32(), 0x4321);
+    }
+
+    #[test]
+    fn setting_value_address_is_plus_4_or_a_zeroed_scratch() {
+        let mut e = model_engine();
+        e.mem.set_u32(SCRATCH_ZERO, 0x9999);
+        assert_eq!(
+            e.call(0x0043_d4d0, &args![Ptr::<()>::new(0x1000)]).u32(),
+            0x1004
+        );
+        assert_eq!(e.mem.u32(SCRATCH_ZERO), 0x9999);
+        assert_eq!(
+            e.call(0x0043_d4d0, &args![Ptr::<()>::NULL]).u32(),
+            SCRATCH_ZERO
+        );
+        assert_eq!(e.mem.u32(SCRATCH_ZERO), 0);
+    }
+
+    #[test]
+    fn model_description_passes_the_word_model() {
+        let mut e = model_engine();
+        let this = queued_model(&mut e);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_d510, &args![this, 0x9000u32, 0x400u32]);
+        assert!(back.bool());
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_GET_DESCRIPTION),
+            vec![vec![this.addr(), 0x9000, 0x400, MODEL_WORD]]
+        );
+    }
+
+    #[test]
+    fn tree_billboard_constructor_builds_a_texture_with_the_data() {
+        let mut e = model_engine();
+        let this: Ptr<QueuedTreeBillboard> = e.new_object();
+        let name = text(&mut e, "textures\\tree.dds");
+        e.call_log = Some(vec![]);
+        let back = e.call(
+            0x0043_d540,
+            &args![this, name, 0x44u32, Ptr::<()>::new(0x6000)],
+        );
+        assert_eq!(back.ptr::<QueuedTreeBillboard>(), this);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_CONSTRUCT),
+            vec![vec![this.addr(), 0x44]]
+        );
+        // The billboard's table replaces the texture's.
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_TREE_BILLBOARD_VTABLE);
+        assert_eq!(
+            e.get(this, QueuedTreeBillboard::pBillboardData),
+            Ptr::new(0x6000)
+        );
+        assert_eq!(calls_to(&e, QUEUED_FILE_ENTRY_FIND_FILE_ENTRY).len(), 1);
+    }
+
+    #[test]
+    fn tree_billboard_destructor_deletes_the_data_then_the_texture_part() {
+        let mut e = model_engine();
+        let this: Ptr<QueuedTreeBillboard> = e.new_object();
+        let data: Ptr<TreeBillboardData> = e.new_object();
+        e.set(this, QueuedTreeBillboard::pBillboardData, data.cast());
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d5b0, &args![this]);
+        assert_eq!(
+            call_order(&e),
+            vec![
+                0x0043_d5b0,
+                TREE_BILLBOARD_DATA_DESTRUCT,
+                MEMORY_FREE,
+                NI_POINTER_DESTRUCT,
+                QUEUED_FILE_ENTRY_DESTRUCT
+            ]
+        );
+        // The data is freed (flag 1).
+        assert_eq!(calls_to(&e, MEMORY_FREE), vec![vec![data.addr()]]);
+        // The texture part ends with the texture's table.
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_TEXTURE_VTABLE);
+        // Without data only the base runs.
+        e.set(this, QueuedTreeBillboard::pBillboardData, Ptr::NULL);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d5b0, &args![this]);
+        assert!(calls_to(&e, TREE_BILLBOARD_DATA_DESTRUCT).is_empty());
+        assert_eq!(calls_to(&e, QUEUED_FILE_ENTRY_DESTRUCT).len(), 1);
+    }
+
+    #[test]
+    fn tree_billboard_scalar_deleting_destructor_frees_only_on_request() {
+        let mut e = model_engine();
+        let this: Ptr<QueuedTreeBillboard> = e.new_object();
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_d580, &args![this, 0u32]);
+        assert_eq!(back.ptr::<QueuedTreeBillboard>(), this);
+        assert_eq!(calls_to(&e, QUEUED_FILE_ENTRY_DESTRUCT).len(), 1);
+        assert!(calls_to(&e, MEMORY_FREE).is_empty());
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d580, &args![this, 1u32]);
+        assert_eq!(calls_to(&e, MEMORY_FREE), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn billboard_data_deleter_runs_the_destructor_and_frees_on_request() {
+        let mut e = model_engine();
+        let data: Ptr<TreeBillboardData> = e.new_object();
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_d640, &args![data, 0u32]);
+        assert_eq!(back.ptr::<TreeBillboardData>(), data);
+        assert_eq!(
+            calls_to(&e, TREE_BILLBOARD_DATA_DESTRUCT),
+            vec![vec![data.addr()]]
+        );
+        assert!(calls_to(&e, MEMORY_FREE).is_empty());
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d640, &args![data, 1u32]);
+        assert_eq!(calls_to(&e, MEMORY_FREE), vec![vec![data.addr()]]);
+    }
+
+    /// The IO manager of the tests: the table of queues at +0x64 is a block
+    /// of dwords.
+    const IO_MANAGER: u32 = 0x0ff5_0000;
+
+    #[test]
+    fn tree_billboard_finish_finishes_the_texture_then_posts_the_task() {
+        let mut e = model_engine();
+        e.map(IO_MANAGER, 0x1000);
+        e.mem.set_u32(IO_MANAGER + 0x64, 0x7100);
+        e.set_global(TASK_QUEUE, IO_MANAGER);
+        e.set_global(FILE_MAP_OWNER, OWNER_OBJECT);
+        let this: Ptr<QueuedTreeBillboard> = e.new_object();
+        e.mem.set_u32(this.addr(), TASK_VTABLE);
+        e.mem.set_u64(this.addr() + 0x10, 0x0004_0000);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d670, &args![this]);
+        // The texture's `Finish` asks whether the task is finished first.
+        let order = call_order(&e);
+        let finish = order.iter().position(|a| *a == CHECK_FINISHED).unwrap();
+        let post = order
+            .iter()
+            .position(|a| *a == TASK_POINTER_CONSTRUCT)
+            .unwrap();
+        assert!(finish < post);
+        // The task is queued under its priority byte.
+        let holder = calls_to(&e, TASK_POINTER_CONSTRUCT)[0][0];
+        assert_eq!(
+            calls_to(&e, TASK_POINTER_CONSTRUCT),
+            vec![vec![holder, this.addr()]]
+        );
+        assert_eq!(calls_to(&e, QUEUE_TABLE_ADD), vec![vec![0x7100, 4, holder]]);
+    }
+
+    #[test]
+    fn post_process_task_is_added_through_the_io_manager_global() {
+        let mut e = model_engine();
+        e.map(IO_MANAGER, 0x1000);
+        e.mem.set_u32(IO_MANAGER + 0x64, 0x7100);
+        e.set_global(TASK_QUEUE, IO_MANAGER);
+        let task = queued_model(&mut e);
+        e.mem.set_u64(task.addr() + 0x10, 0x0003_0000);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d690, &args![task]);
+        let holder = calls_to(&e, TASK_POINTER_CONSTRUCT)[0][0];
+        assert_eq!(
+            calls_to(&e, TASK_POINTER_CONSTRUCT),
+            vec![vec![holder, task.addr()]]
+        );
+        // The queue table of the manager is used.
+        assert_eq!(calls_to(&e, QUEUE_TABLE_ADD), vec![vec![0x7100, 3, holder]]);
+    }
+
+    #[test]
+    fn post_process_body_queues_under_the_priority_byte() {
+        let mut e = model_engine();
+        e.map(IO_MANAGER, 0x1000);
+        e.mem.set_u32(IO_MANAGER + 0x64, 0x7200);
+        let task = queued_model(&mut e);
+        // Priority 0x12 in bits 16 to 23; higher bits do not matter.
+        e.mem.set_u64(task.addr() + 0x10, 0x0000_0001_0012_0000);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d6b0, &args![Ptr::<()>::new(IO_MANAGER), task]);
+        let holder = calls_to(&e, TASK_POINTER_CONSTRUCT)[0][0];
+        assert_eq!(
+            call_order(&e),
+            vec![
+                0x0043_d6b0,
+                TASK_POINTER_CONSTRUCT,
+                QUEUE_TABLE_ADD,
+                TASK_POINTER_DESTRUCT
+            ]
+        );
+        assert_eq!(
+            calls_to(&e, QUEUE_TABLE_ADD),
+            vec![vec![0x7200, 0x12, holder]]
+        );
+        assert_eq!(calls_to(&e, TASK_POINTER_DESTRUCT), vec![vec![holder]]);
+    }
+
+    #[test]
+    fn tree_billboard_post_process_calls_slot_0x30() {
+        let mut e = model_engine();
+        let this: Ptr<QueuedTreeBillboard> = e.new_object();
+        e.mem.set_u32(this.addr(), MODEL_TASK_VTABLE);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d730, &args![this]);
+        assert_eq!(calls_to(&e, QUEUE_ME_HOOK), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn tree_billboard_creates_the_distant_node_and_deletes_it_again() {
+        let mut e = model_engine();
+        let this: Ptr<QueuedTreeBillboard> = e.new_object();
+        let data: Ptr<TreeBillboardData> = e.new_object();
+        e.set(this, QueuedTreeBillboard::pBillboardData, data.cast());
+        let tree = e.mem.alloc(0x20);
+        e.mem.set_u32(tree + 0xc, 9);
+        e.set(data, TreeBillboardData::pTree, Ptr::new(tree));
+        e.set(data, TreeBillboardData::iCellChunk, 11);
+        e.set(data, TreeBillboardData::iCellKey, 12);
+        e.set(data, TreeBillboardData::pInstancedNode, Ptr::new(13));
+        // The game reads the low word of the size.
+        e.set(data, TreeBillboardData::iArraySize, 0x1_0005);
+        e.set(data, TreeBillboardData::pLocArray, Ptr::new(15));
+        e.set(data, TreeBillboardData::pColorArray, Ptr::new(16));
+        e.register(BUILD_DISTANT_3D, |_, _| 0x0ff6_0000u32.into_ret());
+        e.map(0x0ff6_0000, 0x1000);
+        e.mem.set_u32(0x0ff6_0000, OBJECT_VTABLE);
+        e.register(CREATE_BILLBOARD_INSTANCES, |e, a| {
+            // The record: 0, the node, the count.
+            let record: Vec<u32> = (0..3).map(|i| e.mem.u32(a[3] + i * 4)).collect();
+            e.mem.set_u32(SCRATCH, record[0]);
+            e.mem.set_u32(SCRATCH + 4, record[1]);
+            e.mem.set_u32(SCRATCH + 8, record[2]);
+            Ret::default()
+        });
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d750, &args![this]);
+        assert_eq!(calls_to(&e, BUILD_DISTANT_3D), vec![vec![tree, 1]]);
+        let built = calls_to(&e, CREATE_BILLBOARD_INSTANCES);
+        assert_eq!(built.len(), 1);
+        assert_eq!(&built[0][..3], &[11, 12, 13]);
+        assert_eq!(&built[0][4..], &[15, 16, 5]);
+        assert_eq!(
+            [
+                e.mem.u32(SCRATCH),
+                e.mem.u32(SCRATCH + 4),
+                e.mem.u32(SCRATCH + 8)
+            ],
+            [0, 0x0ff6_0000, 9]
+        );
+        // The node is deleted through its virtual destructor with flag 1.
+        assert_eq!(calls_to(&e, OBJECT_DELETE), vec![vec![0x0ff6_0000, 1]]);
+        // Without a node nothing else happens.
+        e.register(BUILD_DISTANT_3D, |_, _| 0u32.into_ret());
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d750, &args![this]);
+        assert!(calls_to(&e, CREATE_BILLBOARD_INSTANCES).is_empty());
+        assert!(calls_to(&e, OBJECT_DELETE).is_empty());
+    }
+
+    #[test]
+    fn tree_billboard_description_passes_the_words() {
+        let mut e = model_engine();
+        let this: Ptr<QueuedTreeBillboard> = e.new_object();
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_d820, &args![this, 0x9000u32, 0x400u32]);
+        assert!(back.bool());
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_GET_DESCRIPTION),
+            vec![vec![this.addr(), 0x9000, 0x400, TREE_BILLBOARD_WORD]]
+        );
+    }
+
+    #[test]
+    fn tree_model_constructor_uses_the_trees_embedded_tes_model() {
+        let mut e = model_engine();
+        e.register(TES_NAME_SLOT, |e, a| e.mem.u32(a[0] + 0x38).into_ret());
+        // A tree with its TESModel (a table pointer) at +0x30.
+        let tree = Ptr::<()>::new(e.mem.alloc(0x80));
+        e.mem.set_u32(tree.addr() + 0x30, TES_MODEL_VTABLE);
+        let name = text(&mut e, "trees\\oak.spt");
+        e.mem.set_u32(tree.addr() + 0x30 + 0x38, name);
+        let this: Ptr<QueuedTreeModel> = e.new_object();
+        let reference = Ptr::<()>::new(0x8000);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_d850, &args![this, reference, tree, 0x31u32, 2u32]);
+        assert_eq!(back.ptr::<QueuedTreeModel>(), this);
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_TREE_MODEL_VTABLE);
+        assert_eq!(e.get(this, QueuedTreeModel::pRef), reference);
+        assert_eq!(e.get(this, QueuedTreeModel::pTree), tree);
+        assert_eq!(e.get(this, QueuedTreeModel::eContext), 0x1e);
+        // The `QueuedModel` part: the embedded TESModel, the context and
+        // fade multiplier arguments, bit 1 set and bit 2 clear.
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_CONSTRUCT),
+            vec![vec![this.addr(), 0x31]]
+        );
+        assert_eq!(
+            e.get(this.cast::<QueuedModel>(), QueuedModel::pTESModel),
+            Ptr::new(tree.addr() + 0x30)
+        );
+        assert_eq!(
+            e.get(this.cast::<QueuedModel>(), QueuedModel::eLODFadeMult),
+            2
+        );
+        assert_eq!(e.get(this.cast::<QueuedModel>(), QueuedModel::cFlags), 1);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_SET_FILE_NAME),
+            vec![vec![this.addr(), name]]
+        );
+    }
+
+    // --- The tree model, `QueuedMagicItem`, `QueuedKF` and its subclasses. ---
+
+    /// A task's table with slot 0 deleting and slot 0x28 `CheckFinished`.
+    const KF_TASK_VTABLE: u32 = 0x0ff6_0000;
+    /// The icon part of a tree: slot 0x18 gives the directory text.
+    const ICON_VTABLE: u32 = 0x0ff6_1000;
+    const ICON_DIRECTORY_SLOT: u32 = 0x0ff0_0120;
+    /// The anim idle map's table: slot 0x14 is the call `0043e810` makes.
+    const ANIM_MAP_VTABLE: u32 = 0x0ff6_2000;
+    const ANIM_MAP_SLOT: u32 = 0x0ff0_0121;
+    /// The loader object (its anim idle map pointer is at +0x10) and the text
+    /// the icon directory slot returns.
+    const LOADER: u32 = 0x0ff6_3000;
+    const ICON_DIRECTORY: u32 = LOADER + 0x800;
+    /// The list `BuildDefaultModelList` gives, and the IO manager.
+    const LIST_BLOCK: u32 = 0x0ff6_4000;
+    const PART_IO_MANAGER: u32 = 0x0ff6_5000;
+    /// Scratch dwords the doubles read: the answers of the KF model map.
+    const FIND_KF_ANSWER: u32 = SCRATCH + 0x20;
+    const ADD_KF_ANSWER: u32 = SCRATCH + 0x24;
+    /// Where the texture-queue double leaves the path it was given.
+    const QUEUED_PATH: u32 = SCRATCH + 0x40;
+    /// The global counter `0040ab50` increments.
+    const UNLOADED_ASSOCIATED_COUNT: u32 = 0x011c_3438;
+    /// What the tree manager double answers for a tree node.
+    const TREE_NODE: u32 = 0x7771;
+
+    /// An engine with doubles for what this part calls, on top of the queued
+    /// model ones.
+    fn part_engine() -> Engine {
+        let mut e = model_engine();
+        for page in [0x011d_5000, LOADER, LIST_BLOCK, PART_IO_MANAGER] {
+            e.map(page, 0x1000);
+        }
+        e.mem.set_cstr(ICON_DIRECTORY, b"textures\\trees\\");
+        e.mem.set_u32(LOADER + 0x10, ANIM_MAP_OBJECT);
+        e.mem.set_u32(PART_IO_MANAGER + 0x64, 0x7100);
+        e.set_global(FILE_MAP_OWNER, LOADER);
+        e.set_global(TASK_QUEUE, PART_IO_MANAGER);
+        e.set_global(TREE_MANAGER, 0x7000_1000u32);
+        e.register(TEXTURE_TEXT, |e, a| e.mem.u32(a[0] + 4).into_ret());
+        e.register(STRING_APPEND, |e, a| {
+            let mut text = e.mem.cstr(a[0]);
+            text.extend(e.mem.cstr(a[2]));
+            e.mem.set_cstr(a[0], &text);
+            Ret::default()
+        });
+        e.register(ICON_DIRECTORY_SLOT, |_, _| ICON_DIRECTORY.into_ret());
+        e.register(MODEL_LOADER_QUEUE_TEXTURE_BY_NAME, |e, a| {
+            let path = e.mem.cstr(a[1]);
+            e.mem.set_cstr(QUEUED_PATH, &path);
+            Ret::default()
+        });
+        e.register(TREE_MANAGER_BUILD_TREE, |_, _| TREE_NODE.into_ret());
+        for address in [
+            TREE_MANAGER_STORE_TREE,
+            TREE_MANAGER_REMOVE_BACKGROUND_TREE,
+            MODEL_LOADER_QUEUE_MODEL,
+            MODEL_LOADER_QUEUE_MODEL_LIST,
+            MODEL_LOADER_QUEUE_ANIMATIONS,
+            LIST_CLEAR,
+            LIST_DELETE,
+            MAGIC_ITEM_FINISHED_LOADING,
+            QUEUED_FILE_CONSTRUCT,
+            QUEUED_FILE_DESTRUCT,
+            KF_POINTER_RELEASE,
+            QUEUED_KF_QUEUE_ME,
+            ANIM_IDLE_LOADED,
+            ANIMATION_KF_LOADED,
+            REPLACEMENT_KF_LIST_CHILD_POST_PROCESSED,
+            LOAD_KF_SEQUENCE,
+            ANIM_MAP_SLOT,
+        ] {
+            e.register(address, |_, _| Ret::default());
+        }
+        e.register(GET_LOD_MULT, |_, _| 3u32.into_ret());
+        e.register(GET_BIPED_TES_MODEL, |_, a| (0x6000 + a[1]).into_ret());
+        e.register(BUILD_DEFAULT_MODEL_LIST, |_, _| LIST_BLOCK.into_ret());
+        // The name length of a `TESModel`: a word at +8 in the tests.
+        e.register(MODEL_NAME_LENGTH, |e, a| e.mem.u16(a[0] + 8).into_ret());
+        e.register(EFFECT_SETTING_HAS_FLAG, |e, a| {
+            (e.mem.u32(a[0] + 0x58) & a[1] != 0).into_ret()
+        });
+        e.register(EFFECT_IS_QUEUED, |e, a| {
+            (e.mem.i32(a[0] + 0xa8) < 0).into_ret()
+        });
+        e.register(ASSOCIATED_ITEM_IS_QUEUED, |e, a| {
+            (e.mem.i32(a[0] + 0xac) < 0).into_ret()
+        });
+        e.register(ASSOCIATED_ITEM_IS_LOADED, |e, a| {
+            (e.mem.i32(a[0] + 0xac) > 0).into_ret()
+        });
+        e.register(EFFECT_COUNT_DOWN, |e, a| {
+            let value = e.mem.i32(a[0] + 0xa8) - 1;
+            e.mem.set_i32(a[0] + 0xa8, value);
+            Ret::default()
+        });
+        e.register(ASSOCIATED_ITEM_COUNT_DOWN, |e, a| {
+            let value = e.mem.i32(a[0] + 0xac) - 1;
+            e.mem.set_i32(a[0] + 0xac, value);
+            Ret::default()
+        });
+        e.register(EFFECT_ASSOCIATED_ITEM, |e, a| {
+            e.mem.u32(a[0] + 0x60).into_ret()
+        });
+        e.register(FORM_TYPE, |e, a| e.mem.u8(a[0] + 4).into_ret());
+        e.register(EFFECT_ITEM_SETTING, |e, a| {
+            e.mem.u32(a[0] + 0x14).into_ret()
+        });
+        e.register(EFFECT_SETTING_IN_TABLE, |e, a| {
+            (e.mem.u32(a[0] + 0x98) != 0).into_ret()
+        });
+        e.register(LIST_IS_EMPTY, |e, a| {
+            (e.mem.u32(a[0]) == 0 && e.mem.u32(a[0] + 4) == 0).into_ret()
+        });
+        e.register(COUNT_UNLOADED_ASSOCIATED_ITEM, |e, _| {
+            let value = e.mem.u32(UNLOADED_ASSOCIATED_COUNT) + 1;
+            e.mem.set_u32(UNLOADED_ASSOCIATED_COUNT, value);
+            Ret::default()
+        });
+        e.register(TASK_STATE_AT_LEAST_4, |e, a| {
+            (e.mem.i32(a[0] + 0xc) >= 4).into_ret()
+        });
+        e.register(TASK_STATE_IS_6, |e, a| {
+            (e.mem.i32(a[0] + 0xc) == 6).into_ret()
+        });
+        e.register(KF_POINTER_CONSTRUCT, |e, a| {
+            e.mem.set_u32(a[0], a[1]);
+            a[0].into_ret()
+        });
+        e.register(KF_POINTER_ASSIGN, |e, a| {
+            e.mem.set_u32(a[0], a[1]);
+            a[0].into_ret()
+        });
+        e.register(FIND_KF_MODEL, |e, _| e.mem.u32(FIND_KF_ANSWER).into_ret());
+        e.register(ADD_KF_MODEL, |e, _| e.mem.u32(ADD_KF_ANSWER).into_ret());
+        put_slots(
+            &mut e,
+            KF_TASK_VTABLE,
+            &[(0, OBJECT_DELETE), (0x28, CHECK_FINISHED)],
+        );
+        put_slots(&mut e, ICON_VTABLE, &[(0x18, ICON_DIRECTORY_SLOT)]);
+        put_slots(&mut e, ANIM_MAP_VTABLE, &[(0x14, ANIM_MAP_SLOT)]);
+        e.mem.set_u32(ANIM_MAP_OBJECT, ANIM_MAP_VTABLE);
+        e
+    }
+
+    /// The anim idle map object the loader at [`LOADER`] points to.
+    const ANIM_MAP_OBJECT: u32 = LOADER + 0x400;
+
+    /// A tree model whose tree has an icon part with the text `leaf`, a
+    /// reference at 0x1111 and the priority byte 5 in its key.
+    fn tree_model(e: &mut Engine, leaf: &str) -> Ptr<QueuedTreeModel> {
+        let tree = Ptr::<()>::new(e.mem.alloc(0x80));
+        e.mem.set_u32(tree.addr() + 0x48, ICON_VTABLE);
+        let leaf = text(e, leaf);
+        e.mem.set_u32(tree.addr() + 0x48 + 4, leaf);
+        let this: Ptr<QueuedTreeModel> = e.new_object();
+        e.mem.set_u32(this.addr(), MODEL_TASK_VTABLE);
+        e.set(this, QueuedTreeModel::pRef, Ptr::new(0x1111));
+        e.set(this, QueuedTreeModel::pTree, tree);
+        e.mem.set_u64(this.addr() + 0x10, 5 << 16);
+        this
+    }
+
+    #[test]
+    fn tree_model_scalar_deleting_destructor_restores_the_table_and_frees() {
+        let mut e = part_engine();
+        let this: Ptr<QueuedTreeModel> = e.new_object();
+        e.mem.set_u32(this.addr(), 0x1234);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_d8c0, &args![this, 0u32]);
+        assert_eq!(back.ptr::<QueuedTreeModel>(), this);
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_TREE_MODEL_VTABLE);
+        assert!(calls_to(&e, MEMORY_FREE).is_empty());
+        e.call(0x0043_d8c0, &args![this, 1u32]);
+        assert_eq!(calls_to(&e, MEMORY_FREE), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn tree_model_destructor_releases_the_model_then_the_base() {
+        let mut e = part_engine();
+        let this: Ptr<QueuedTreeModel> = e.new_object();
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d8f0, &args![this]);
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_TREE_MODEL_VTABLE);
+        assert_eq!(
+            call_order(&e),
+            vec![
+                0x0043_d8f0,
+                MODEL_POINTER_RELEASE,
+                QUEUED_FILE_ENTRY_DESTRUCT
+            ]
+        );
+        assert_eq!(
+            calls_to(&e, MODEL_POINTER_RELEASE),
+            vec![vec![this.addr() + 0x30]]
+        );
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_DESTRUCT),
+            vec![vec![this.addr()]]
+        );
+    }
+
+    #[test]
+    fn tree_model_queue_me_queues_the_leaf_texture_then_the_model() {
+        let mut e = part_engine();
+        let this = tree_model(&mut e, "leaf.dds");
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d910, &args![this]);
+        // directory + leaf text, copied into the second buffer.
+        assert_eq!(e.mem.cstr(QUEUED_PATH), b"textures\\trees\\leaf.dds");
+        let queued = calls_to(&e, MODEL_LOADER_QUEUE_TEXTURE_BY_NAME);
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0][0], LOADER);
+        assert_eq!(&queued[0][2..], &[5, this.addr()]);
+        // The path buffers are told their size (0x104).
+        assert_eq!(calls_to(&e, STRING_COPY)[0][1], 0x104);
+        assert_eq!(calls_to(&e, STRING_APPEND)[0][1], 0x104);
+        assert_eq!(calls_to(&e, NORMALIZE_PATH)[0][2], 0x104);
+        // `QueuedModel::QueueMe` follows: slot 0x30 of the task.
+        let order = call_order(&e);
+        let texture = order
+            .iter()
+            .position(|a| *a == MODEL_LOADER_QUEUE_TEXTURE_BY_NAME)
+            .unwrap();
+        let hook = order.iter().position(|a| *a == QUEUE_ME_HOOK).unwrap();
+        assert!(texture < hook);
+    }
+
+    #[test]
+    fn tree_model_queue_me_without_leaf_texture_only_queues_the_model() {
+        let mut e = part_engine();
+        let this = tree_model(&mut e, "");
+        e.call_log = Some(vec![]);
+        e.call(0x0043_d910, &args![this]);
+        assert!(calls_to(&e, MODEL_LOADER_QUEUE_TEXTURE_BY_NAME).is_empty());
+        assert!(calls_to(&e, STRING_COPY).is_empty());
+        assert_eq!(calls_to(&e, QUEUE_ME_HOOK), vec![vec![this.addr(), 0]]);
+    }
+
+    #[test]
+    fn tree_model_run_builds_the_tree_node_in_memory_context_0x1e() {
+        let mut e = part_engine();
+        let this = tree_model(&mut e, "");
+        e.call_log = Some(vec![]);
+        e.call(0x0043_da00, &args![this]);
+        assert_eq!(
+            call_order(&e),
+            vec![
+                0x0043_da00,
+                MEMORY_CONTEXT_ENTER,
+                TREE_MANAGER_BUILD_TREE,
+                TREE_MANAGER_STORE_TREE,
+                MEMORY_CONTEXT_LEAVE
+            ]
+        );
+        let enter = &calls_to(&e, MEMORY_CONTEXT_ENTER)[0];
+        assert_eq!(&enter[1..], &[0x1e, 1, MODEL_LOADER_SOURCE, 0x476]);
+        let tree = e.get(this, QueuedTreeModel::pTree).addr();
+        assert_eq!(
+            calls_to(&e, TREE_MANAGER_BUILD_TREE),
+            vec![vec![0x7000_1000, 0x1111, tree]]
+        );
+        assert_eq!(
+            calls_to(&e, TREE_MANAGER_STORE_TREE),
+            vec![vec![0x7000_1000, 0x1111, TREE_NODE]]
+        );
+        assert_eq!(calls_to(&e, MEMORY_CONTEXT_LEAVE), vec![vec![enter[0]]]);
+    }
+
+    #[test]
+    fn tree_model_finish_calls_check_finished() {
+        let mut e = part_engine();
+        let this: Ptr<QueuedTreeModel> = e.new_object();
+        e.mem.set_u32(this.addr(), KF_TASK_VTABLE);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_daa0, &args![this]);
+        assert_eq!(calls_to(&e, CHECK_FINISHED), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn tree_model_cancel_forgets_the_background_tree_from_state_4() {
+        let mut e = part_engine();
+        let this = tree_model(&mut e, "");
+        for (first, forgotten) in [(3i32, false), (4, true), (6, true), (-1, false)] {
+            e.call_log = Some(vec![]);
+            e.call(0x0043_dac0, &args![this, first as u32, 9u32]);
+            assert_eq!(
+                calls_to(&e, QUEUED_FILE_CANCEL),
+                vec![vec![this.addr(), first as u32, 9]]
+            );
+            let removed = calls_to(&e, TREE_MANAGER_REMOVE_BACKGROUND_TREE);
+            if forgotten {
+                assert_eq!(removed, vec![vec![0x7000_1000, 0x1111]]);
+            } else {
+                assert!(removed.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn tree_model_description_passes_the_words() {
+        let mut e = part_engine();
+        let this: Ptr<QueuedTreeModel> = e.new_object();
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_db00, &args![this, 0x9000u32, 0x400u32]);
+        assert!(back.bool());
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_GET_DESCRIPTION),
+            vec![vec![this.addr(), 0x9000, 0x400, TREE_MODEL_WORD]]
+        );
+    }
+
+    #[test]
+    fn magic_item_constructor_sets_table_item_and_effect() {
+        let mut e = part_engine();
+        let this: Ptr<QueuedMagicItem> = e.new_object();
+        e.call_log = Some(vec![]);
+        let back = e.call(
+            0x0043_db30,
+            &args![
+                this,
+                Ptr::<()>::new(0x5001),
+                Ptr::<()>::new(0x5002),
+                0x31u32
+            ],
+        );
+        assert_eq!(back.ptr::<QueuedMagicItem>(), this);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_CONSTRUCT),
+            vec![vec![this.addr(), 0x31]]
+        );
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_MAGIC_ITEM_VTABLE);
+        assert_eq!(e.get(this, QueuedMagicItem::pMagicItem), Ptr::new(0x5001));
+        assert_eq!(
+            e.get(this, QueuedMagicItem::pEffectSetting),
+            Ptr::new(0x5002)
+        );
+    }
+
+    #[test]
+    fn generate_key_packs_kind_counters_and_priority() {
+        let mut e = part_engine();
+        let this: Ptr<IOTask> = e.new_object();
+        e.mem.set_u64(this.addr() + 0x10, 0x0000_0001_0007_1234);
+        e.mem.set_u32(KEY_COUNTER_FIRST, 0x1_2344);
+        e.mem.set_u32(KEY_COUNTER_SECOND, 0x00ab_cdef);
+        e.call(0x0043_db70, &args![this]);
+        // Counters advanced; the first one is cut to its low word.
+        assert_eq!(e.mem.u32(KEY_COUNTER_FIRST), 0x1_2345);
+        assert_eq!(e.mem.u32(KEY_COUNTER_SECOND), 0x00ab_cdf0);
+        let expected = (3u64 << 56) | (0x00ab_cdf0u64 << 24) | (7 << 16) | 0x2345;
+        assert_eq!(e.get(this, IOTask::Key), expected);
+    }
+
+    #[test]
+    fn key_packing_takes_the_low_byte_and_word() {
+        let mut e = part_engine();
+        let this: Ptr<IOTask> = e.new_object();
+        e.call(
+            0x0043_dbb0,
+            &args![this, 3u32, 0xdead_beefu32, 0x112u32, 0x1_abcdu32],
+        );
+        let expected = (3u64 << 56) | (0xdead_beefu64 << 24) | (0x12 << 16) | 0xabcd;
+        assert_eq!(e.get(this, IOTask::Key), expected);
+    }
+
+    #[test]
+    fn key_counters_return_the_incremented_values() {
+        let mut e = part_engine();
+        e.mem.set_u32(KEY_COUNTER_FIRST, 10);
+        e.mem.set_u32(KEY_COUNTER_SECOND, 20);
+        e.call_log = Some(vec![]);
+        assert_eq!(e.call(0x0043_dc10, &args![0x5000u32]).u32(), 11);
+        assert_eq!(e.call(0x0043_dc30, &args![0x5000u32]).u32(), 21);
+        assert_eq!(
+            calls_to(&e, INTERLOCKED_INCREMENT),
+            vec![vec![KEY_COUNTER_FIRST], vec![KEY_COUNTER_SECOND]]
+        );
+    }
+
+    #[test]
+    fn magic_item_destructor_runs_the_queued_file_destructor_body() {
+        let mut e = part_engine();
+        let this: Ptr<QueuedMagicItem> = e.new_object();
+        e.call_log = Some(vec![]);
+        e.call(0x0043_dc50, &args![this]);
+        assert_eq!(calls_to(&e, QUEUED_FILE_DESTRUCT), vec![vec![this.addr()]]);
+    }
+
+    /// An effect setting with `flags`, associated item `item` and a model of
+    /// the given name length (0: none), whose test passes.
+    fn effect_setting(e: &mut Engine, flags: u32, item: u32, name_length: u16) -> u32 {
+        let setting = e.mem.alloc(0x100);
+        e.mem.set_u32(setting + 0x58, flags);
+        e.mem.set_u32(setting + 0x60, item);
+        e.mem.set_u32(setting + 0x98, 1);
+        e.mem.set_u16(setting + 0x18 + 8, name_length);
+        setting
+    }
+
+    /// A form of type `kind` with a model name of `name_length` at +0x3c.
+    fn associated_item(e: &mut Engine, kind: u8, name_length: u16) -> u32 {
+        let item = e.mem.alloc(0x200);
+        e.mem.set_u8(item + 4, kind);
+        e.mem.set_u16(item + 0x3c + 8, name_length);
+        item
+    }
+
+    /// A magic item whose effect list holds one effect item per setting.
+    fn magic_item_with(e: &mut Engine, settings: &[u32]) -> Ptr {
+        let magic = Ptr::new(e.mem.alloc(0x40));
+        let mut node = magic.addr() + 0x10;
+        for (i, setting) in settings.iter().enumerate() {
+            let effect_item = e.mem.alloc(0x20);
+            e.mem.set_u32(effect_item + 0x14, *setting);
+            e.mem.set_u32(node, effect_item);
+            if i + 1 < settings.len() {
+                let next = e.mem.alloc(8);
+                e.mem.set_u32(node + 4, next);
+                node = next;
+            }
+        }
+        magic
+    }
+
+    /// A queued magic item for `effect` and `magic` with the priority byte 4.
+    fn queued_magic_item(e: &mut Engine, magic: Ptr, effect: u32) -> Ptr<QueuedMagicItem> {
+        let this: Ptr<QueuedMagicItem> = e.new_object();
+        e.mem.set_u32(this.addr(), KF_TASK_VTABLE);
+        e.set(this, QueuedMagicItem::pMagicItem, magic);
+        e.set(this, QueuedMagicItem::pEffectSetting, Ptr::new(effect));
+        e.mem.set_u64(this.addr() + 0x10, 4 << 16);
+        this
+    }
+
+    #[test]
+    fn magic_item_queue_me_queues_the_effect_model_and_a_weapon_model() {
+        let mut e = part_engine();
+        // The task's effect has a model; the list's effect has a weapon.
+        let weapon = associated_item(&mut e, 0x28, 2);
+        let own = effect_setting(&mut e, 0, 0, 4);
+        let listed = effect_setting(&mut e, 0x10000, weapon, 0);
+        let magic = magic_item_with(&mut e, &[listed]);
+        let this = queued_magic_item(&mut e, magic, own);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_dc70, &args![this]);
+        assert_eq!(
+            calls_to(&e, MODEL_LOADER_QUEUE_MODEL),
+            vec![
+                vec![LOADER, own + 0x18, 4, this.addr(), 0, 1, 0, 0],
+                vec![LOADER, weapon + 0x3c, 4, this.addr(), 3, 1, 0, 0],
+            ]
+        );
+        // The effect's counter and the associated item's are counted down.
+        assert_eq!(calls_to(&e, EFFECT_COUNT_DOWN), vec![vec![own]]);
+        assert_eq!(calls_to(&e, ASSOCIATED_ITEM_COUNT_DOWN), vec![vec![listed]]);
+        assert_eq!(e.mem.i32(own + 0xa8), -1);
+        // Flag 0x40000 is clear: the global counter stays.
+        assert!(calls_to(&e, COUNT_UNLOADED_ASSOCIATED_ITEM).is_empty());
+        // The task ends in state 5 and calls `CheckFinished`.
+        assert_eq!(calls_to(&e, TASK_SET_DONE), vec![vec![this.addr()]]);
+        assert_eq!(calls_to(&e, CHECK_FINISHED), vec![vec![this.addr()]]);
+        let order = call_order(&e);
+        let done = order.iter().position(|a| *a == TASK_SET_DONE).unwrap();
+        let finished = order.iter().position(|a| *a == CHECK_FINISHED).unwrap();
+        assert!(done < finished);
+    }
+
+    #[test]
+    fn magic_item_queue_me_queues_both_biped_models_of_an_armor() {
+        let mut e = part_engine();
+        let armor = associated_item(&mut e, 0x18, 0);
+        // The task's effect has no model name: nothing is queued for it.
+        let own = effect_setting(&mut e, 0, 0, 0);
+        let listed = effect_setting(&mut e, 0x20000, armor, 0);
+        let magic = magic_item_with(&mut e, &[listed]);
+        let this = queued_magic_item(&mut e, magic, own);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_dc70, &args![this]);
+        assert_eq!(
+            calls_to(&e, GET_BIPED_TES_MODEL),
+            vec![vec![armor + 0x70, 0], vec![armor + 0x70, 1]]
+        );
+        assert_eq!(
+            calls_to(&e, MODEL_LOADER_QUEUE_MODEL),
+            vec![
+                vec![LOADER, 0x6000, 4, this.addr(), 3, 1, 0, 0],
+                vec![LOADER, 0x6001, 4, this.addr(), 3, 1, 0, 0],
+            ]
+        );
+        // The effect's own counter is still counted down.
+        assert_eq!(calls_to(&e, EFFECT_COUNT_DOWN), vec![vec![own]]);
+    }
+
+    #[test]
+    fn magic_item_queue_me_queues_the_default_model_list_of_an_npc() {
+        let mut e = part_engine();
+        let npc = associated_item(&mut e, 0x2a, 0);
+        let own = effect_setting(&mut e, 0, 0, 0);
+        let listed = effect_setting(&mut e, 0x40000, npc, 0);
+        let magic = magic_item_with(&mut e, &[listed]);
+        let this = queued_magic_item(&mut e, magic, own);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_dc70, &args![this]);
+        assert_eq!(
+            calls_to(&e, BUILD_DEFAULT_MODEL_LIST),
+            vec![vec![npc, 1, 1]]
+        );
+        assert_eq!(
+            calls_to(&e, MODEL_LOADER_QUEUE_MODEL_LIST),
+            vec![vec![LOADER, LIST_BLOCK, 0, 4, this.addr(), 0]]
+        );
+        assert_eq!(
+            call_order(&e)
+                .into_iter()
+                .filter(|a| [MODEL_LOADER_QUEUE_MODEL_LIST, LIST_CLEAR, LIST_DELETE].contains(a))
+                .collect::<Vec<_>>(),
+            vec![MODEL_LOADER_QUEUE_MODEL_LIST, LIST_CLEAR, LIST_DELETE]
+        );
+        assert_eq!(calls_to(&e, LIST_CLEAR), vec![vec![LIST_BLOCK]]);
+        assert_eq!(calls_to(&e, LIST_DELETE), vec![vec![LIST_BLOCK, 1]]);
+        // The item is neither loaded nor queued and the effect has flag
+        // 0x40000: the global counter goes up.
+        assert_eq!(e.mem.u32(UNLOADED_ASSOCIATED_COUNT), 1);
+        // Without a list nothing is deleted.
+        e.register(BUILD_DEFAULT_MODEL_LIST, |_, _| 0u32.into_ret());
+        e.call_log = Some(vec![]);
+        e.call(0x0043_dc70, &args![this]);
+        assert_eq!(calls_to(&e, LIST_CLEAR), vec![vec![0]]);
+        assert!(calls_to(&e, LIST_DELETE).is_empty());
+    }
+
+    #[test]
+    fn magic_item_queue_me_queues_the_animations_and_model_of_a_creature() {
+        let mut e = part_engine();
+        let creature = associated_item(&mut e, 0x2b, 0);
+        let own = effect_setting(&mut e, 0, 0, 0);
+        let listed = effect_setting(&mut e, 0x40000, creature, 0);
+        // The item is already loaded: no counting of unloaded items.
+        e.mem.set_i32(listed + 0xac, 1);
+        let magic = magic_item_with(&mut e, &[listed]);
+        let this = queued_magic_item(&mut e, magic, own);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_dc70, &args![this]);
+        assert_eq!(
+            calls_to(&e, MODEL_LOADER_QUEUE_ANIMATIONS),
+            vec![vec![LOADER, creature + 0xdc, 4, this.addr(), 0, 1, 1]]
+        );
+        assert_eq!(
+            calls_to(&e, MODEL_LOADER_QUEUE_MODEL),
+            vec![vec![LOADER, creature + 0xdc, 4, this.addr(), 3, 1, 0, 0]]
+        );
+        assert!(calls_to(&e, COUNT_UNLOADED_ASSOCIATED_ITEM).is_empty());
+        assert_eq!(e.mem.i32(listed + 0xac), 0);
+    }
+
+    #[test]
+    fn magic_item_queue_me_skips_what_the_rules_exclude() {
+        let mut e = part_engine();
+        let weapon = associated_item(&mut e, 0x28, 2);
+        // The effect is already queued: its model is not queued again, and
+        // the associated-item test is not consulted for the list's effects.
+        let own = effect_setting(&mut e, 0, 0, 4);
+        e.mem.set_i32(own + 0xa8, -1);
+        // 1: fails the setting test. 2: no associated item. 3: flag 0x10000
+        // with a form of another type. 4: flag 0x10000, weapon, no name.
+        let failing = effect_setting(&mut e, 0x10000, weapon, 0);
+        e.mem.set_u32(failing + 0x98, 0);
+        let no_item = effect_setting(&mut e, 0x10000, 0, 0);
+        let other = associated_item(&mut e, 0x18, 2);
+        let wrong_type = effect_setting(&mut e, 0x10000, other, 0);
+        let unnamed = associated_item(&mut e, 0x28, 0);
+        let no_name = effect_setting(&mut e, 0x10000, unnamed, 0);
+        let magic = magic_item_with(&mut e, &[failing, no_item, wrong_type, no_name]);
+        let this = queued_magic_item(&mut e, magic, own);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_dc70, &args![this]);
+        assert!(calls_to(&e, MODEL_LOADER_QUEUE_MODEL).is_empty());
+        // The effect itself is counted down; so is every accepted setting's
+        // associated item (not the failing one).
+        assert_eq!(calls_to(&e, EFFECT_COUNT_DOWN), vec![vec![own]]);
+        assert_eq!(
+            calls_to(&e, ASSOCIATED_ITEM_COUNT_DOWN),
+            vec![vec![no_item], vec![wrong_type], vec![no_name]]
+        );
+        assert_eq!(calls_to(&e, CHECK_FINISHED), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn magic_item_queue_me_leaves_out_effects_whose_item_is_queued() {
+        let mut e = part_engine();
+        let weapon = associated_item(&mut e, 0x28, 2);
+        // The task queues the effect's own model, and the listed effect's item
+        // is already queued (counter negative): skipped entirely.
+        let own = effect_setting(&mut e, 0, 0, 4);
+        let listed = effect_setting(&mut e, 0x10000, weapon, 0);
+        e.mem.set_i32(listed + 0xac, -1);
+        let magic = magic_item_with(&mut e, &[listed]);
+        let this = queued_magic_item(&mut e, magic, own);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_dc70, &args![this]);
+        assert_eq!(calls_to(&e, MODEL_LOADER_QUEUE_MODEL).len(), 1);
+        assert!(calls_to(&e, ASSOCIATED_ITEM_COUNT_DOWN).is_empty());
+        assert_eq!(e.mem.i32(listed + 0xac), -1);
+        // With an empty effect list nothing else happens.
+        let empty = Ptr::new(e.mem.alloc(0x40));
+        e.set(this, QueuedMagicItem::pMagicItem, empty);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_dc70, &args![this]);
+        assert!(calls_to(&e, EFFECT_ITEM_SETTING).is_empty());
+        assert_eq!(calls_to(&e, TASK_SET_DONE), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn magic_item_queue_me_walks_every_effect_of_the_list() {
+        let mut e = part_engine();
+        let weapon = associated_item(&mut e, 0x28, 2);
+        let own = effect_setting(&mut e, 0, 0, 0);
+        let first = effect_setting(&mut e, 0x10000, weapon, 0);
+        let second = effect_setting(&mut e, 0x10000, weapon, 0);
+        let third = effect_setting(&mut e, 0, 0, 0);
+        let magic = magic_item_with(&mut e, &[first, second, third]);
+        let this = queued_magic_item(&mut e, magic, own);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_dc70, &args![this]);
+        assert_eq!(
+            calls_to(&e, ASSOCIATED_ITEM_COUNT_DOWN),
+            vec![vec![first], vec![second], vec![third]]
+        );
+        assert_eq!(calls_to(&e, MODEL_LOADER_QUEUE_MODEL).len(), 2);
+    }
+
+    #[test]
+    fn magic_item_check_finished_waits_for_state_and_children() {
+        let mut e = part_engine();
+        let this: Ptr<QueuedMagicItem> = e.new_object();
+        e.mem.set_u32(this.addr(), KF_TASK_VTABLE);
+        e.set(this, QueuedMagicItem::pMagicItem, Ptr::new(0x5001));
+        // Two children, one finished.
+        let children = e.mem.alloc(0x20);
+        e.mem.set_u32(children + 8, 2);
+        e.mem.set_u32(children + 0x10, 1);
+        e.mem.set_u32(this.addr() + 0x20, children);
+        e.mem.set_i32(this.addr() + 0xc, 3);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e080, &args![this]);
+        // State below 4: nothing.
+        e.mem.set_i32(this.addr() + 0xc, 4);
+        e.call(0x0043_e080, &args![this]);
+        // Children unfinished: nothing.
+        assert!(calls_to(&e, MAGIC_ITEM_FINISHED_LOADING).is_empty());
+        // All finished with references left: the magic item is told, the task
+        // stays.
+        e.mem.set_u32(children + 0x10, 2);
+        e.mem.set_i32(this.addr() + 8, 1);
+        e.call(0x0043_e080, &args![this]);
+        assert_eq!(
+            calls_to(&e, MAGIC_ITEM_FINISHED_LOADING),
+            vec![vec![0x5001]]
+        );
+        assert!(calls_to(&e, OBJECT_DELETE).is_empty());
+        // Without references it deletes itself (virtual destructor, flag 1).
+        e.mem.set_i32(this.addr() + 8, 0);
+        e.call(0x0043_e080, &args![this]);
+        assert_eq!(calls_to(&e, OBJECT_DELETE), vec![vec![this.addr(), 1]]);
+    }
+
+    /// A queued KF with the file name `name`, the table with `CheckFinished`
+    /// and a stale flag byte.
+    fn queued_kf(e: &mut Engine, name: &str) -> Ptr<QueuedKF> {
+        let this: Ptr<QueuedKF> = e.new_object();
+        e.mem.set_u32(this.addr(), KF_TASK_VTABLE);
+        let name = text(e, name);
+        e.set(this, QueuedKF::pFileName, name);
+        this
+    }
+
+    #[test]
+    fn kf_constructor_sets_up_the_entry_and_the_model_pointer() {
+        let mut e = part_engine();
+        let this: Ptr<QueuedKF> = e.new_object();
+        e.set(this, QueuedKF::cFlags, 0xff);
+        let name = text(&mut e, "a.kf");
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_e0f0, &args![this, name, 0x33u32]);
+        assert_eq!(back.ptr::<QueuedKF>(), this);
+        assert_eq!(
+            call_order(&e),
+            vec![
+                0x0043_e0f0,
+                QUEUED_FILE_ENTRY_CONSTRUCT,
+                KF_POINTER_CONSTRUCT,
+                QUEUED_FILE_ENTRY_SET_FILE_NAME,
+                QUEUED_FILE_ENTRY_FIND_FILE_ENTRY
+            ]
+        );
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_CONSTRUCT),
+            vec![vec![this.addr(), 0x33]]
+        );
+        assert_eq!(
+            calls_to(&e, KF_POINTER_CONSTRUCT),
+            vec![vec![this.addr() + 0x30, 0]]
+        );
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_SET_FILE_NAME),
+            vec![vec![this.addr(), name]]
+        );
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_FIND_FILE_ENTRY),
+            vec![vec![this.addr(), 0]]
+        );
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_KF_VTABLE);
+        assert_eq!(e.get(this, QueuedKF::cFlags), 0);
+    }
+
+    #[test]
+    fn kf_scalar_deleting_destructor_frees_on_bit_0() {
+        let mut e = part_engine();
+        let this = queued_kf(&mut e, "a.kf");
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_e180, &args![this, 0u32]);
+        assert_eq!(back.ptr::<QueuedKF>(), this);
+        assert!(calls_to(&e, MEMORY_FREE).is_empty());
+        assert_eq!(calls_to(&e, KF_POINTER_RELEASE).len(), 1);
+        e.call(0x0043_e180, &args![this, 1u32]);
+        assert_eq!(calls_to(&e, MEMORY_FREE), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn kf_destructor_releases_the_model_then_the_entry() {
+        let mut e = part_engine();
+        let this = queued_kf(&mut e, "a.kf");
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e1b0, &args![this]);
+        assert_eq!(
+            call_order(&e),
+            vec![0x0043_e1b0, KF_POINTER_RELEASE, QUEUED_FILE_ENTRY_DESTRUCT]
+        );
+        assert_eq!(
+            calls_to(&e, KF_POINTER_RELEASE),
+            vec![vec![this.addr() + 0x30]]
+        );
+        // The table is left alone.
+        assert_eq!(e.mem.u32(this.addr()), KF_TASK_VTABLE);
+    }
+
+    #[test]
+    fn kf_constructor_with_a_model_starts_done() {
+        let mut e = part_engine();
+        let this: Ptr<QueuedKF> = e.new_object();
+        e.set(this, QueuedKF::cFlags, 0xff);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_e210, &args![this, Ptr::<()>::new(0x4b40), 0x33u32]);
+        assert_eq!(back.ptr::<QueuedKF>(), this);
+        assert_eq!(
+            call_order(&e),
+            vec![
+                0x0043_e210,
+                QUEUED_FILE_ENTRY_CONSTRUCT,
+                KF_POINTER_CONSTRUCT,
+                KF_POINTER_ASSIGN,
+                TASK_SET_DONE
+            ]
+        );
+        assert_eq!(
+            calls_to(&e, KF_POINTER_ASSIGN),
+            vec![vec![this.addr() + 0x30, 0x4b40]]
+        );
+        assert_eq!(e.get(this, QueuedKF::spKFModel), Ptr::new(0x4b40));
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_KF_VTABLE);
+        assert_eq!(e.get(this, QueuedKF::cFlags), 0);
+        assert_eq!(calls_to(&e, TASK_SET_DONE), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn kf_run_takes_the_loaders_model_and_sets_bit_1() {
+        let mut e = part_engine();
+        let this = queued_kf(&mut e, "a.kf");
+        e.mem.set_u32(FIND_KF_ANSWER, 0x4b40);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e2a0, &args![this]);
+        let enter = &calls_to(&e, MEMORY_CONTEXT_ENTER)[0];
+        assert_eq!(&enter[1..], &[0x33, 1, MODEL_LOADER_SOURCE, 0x529]);
+        assert_eq!(calls_to(&e, MEMORY_CONTEXT_LEAVE), vec![vec![enter[0]]]);
+        let name = e.get(this, QueuedKF::pFileName);
+        assert_eq!(calls_to(&e, FIND_KF_MODEL), vec![vec![LOADER, name]]);
+        assert_eq!(e.get(this, QueuedKF::spKFModel), Ptr::new(0x4b40));
+        assert_eq!(e.get(this, QueuedKF::cFlags) & 1, 1);
+        // Nothing is opened or read.
+        assert!(calls_to(&e, QUEUED_FILE_ENTRY_GET_FILE).is_empty());
+        assert!(calls_to(&e, BS_STREAM_LOAD).is_empty());
+    }
+
+    #[test]
+    fn kf_run_reads_the_file_into_a_new_model() {
+        let mut e = part_engine();
+        let this = queued_kf(&mut e, "a.kf");
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e2a0, &args![this]);
+        let name = e.get(this, QueuedKF::pFileName);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_GET_FILE),
+            vec![vec![this.addr(), 0, 1]]
+        );
+        let load = &calls_to(&e, BS_STREAM_LOAD)[0];
+        assert_eq!(&load[1..], &[name, OPEN_FILE]);
+        // A 0x14-byte `KFModel` was built from the stream and stored.
+        assert_eq!(calls_to(&e, MEMORY_ALLOC)[0], vec![0x14]);
+        let model = e.get(this, QueuedKF::spKFModel);
+        assert!(!model.is_null());
+        assert_eq!(
+            calls_to(&e, LOAD_KF_SEQUENCE),
+            vec![vec![load[0], 0, model.addr() + 4]]
+        );
+        assert_eq!(e.get(this, QueuedKF::cFlags) & 1, 0);
+        // The stream is destroyed again.
+        assert_eq!(calls_to(&e, NI_STREAM_DESTRUCT).len(), 1);
+    }
+
+    #[test]
+    fn kf_run_logs_a_file_that_cannot_be_opened_or_read() {
+        let mut e = part_engine();
+        let this = queued_kf(&mut e, "a.kf");
+        let name = e.get(this, QueuedKF::pFileName);
+        // No file: "find".
+        e.register(QUEUED_FILE_ENTRY_GET_FILE, |_, _| 0u32.into_ret());
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e2a0, &args![this]);
+        assert_eq!(
+            calls_to(&e, LOG),
+            vec![vec![MODEL_ERROR_MESSAGE, FIND_WORD, name]]
+        );
+        assert!(calls_to(&e, BS_STREAM_LOAD).is_empty());
+        assert!(e.get(this, QueuedKF::spKFModel).is_null());
+        // A file the stream cannot read: "load".
+        e.register(QUEUED_FILE_ENTRY_GET_FILE, |_, _| OPEN_FILE.into_ret());
+        e.register(BS_STREAM_LOAD, |_, _| 0u32.into_ret());
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e2a0, &args![this]);
+        assert_eq!(
+            calls_to(&e, LOG),
+            vec![vec![MODEL_ERROR_MESSAGE, LOAD_WORD, name]]
+        );
+        assert!(calls_to(&e, MEMORY_ALLOC).is_empty());
+        assert!(e.get(this, QueuedKF::spKFModel).is_null());
+    }
+
+    #[test]
+    fn kf_flag_bit_1_is_set_and_cleared() {
+        let mut e = part_engine();
+        let this = queued_kf(&mut e, "a.kf");
+        e.set(this, QueuedKF::cFlags, 4);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e480, &args![this, 1u32]);
+        assert_eq!(e.get(this, QueuedKF::cFlags), 5);
+        assert_eq!(
+            calls_to(&e, SET_FLAG_BIT_1),
+            vec![vec![1, this.addr() + 0x34]]
+        );
+        e.call(0x0043_e480, &args![this, 0u32]);
+        assert_eq!(e.get(this, QueuedKF::cFlags), 4);
+    }
+
+    #[test]
+    fn kf_finish_adds_the_model_to_the_loader_or_takes_the_existing_one() {
+        let mut e = part_engine();
+        let this = queued_kf(&mut e, "a.kf");
+        let name = e.get(this, QueuedKF::pFileName);
+        // No model: only `CheckFinished`.
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e4b0, &args![this]);
+        assert!(calls_to(&e, ADD_KF_MODEL).is_empty());
+        assert_eq!(calls_to(&e, CHECK_FINISHED), vec![vec![this.addr()]]);
+        // A model the loader had already (bit 1): not added.
+        e.set(this, QueuedKF::spKFModel, Ptr::new(0x4b40));
+        e.set(this, QueuedKF::cFlags, 1);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e4b0, &args![this]);
+        assert!(calls_to(&e, ADD_KF_MODEL).is_empty());
+        // A new model the loader accepts.
+        e.set(this, QueuedKF::cFlags, 0);
+        e.mem.set_u32(ADD_KF_ANSWER, 1);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e4b0, &args![this]);
+        assert_eq!(calls_to(&e, ADD_KF_MODEL), vec![vec![LOADER, name, 0x4b40]]);
+        assert!(calls_to(&e, FIND_KF_MODEL).is_empty());
+        assert_eq!(e.get(this, QueuedKF::spKFModel), Ptr::new(0x4b40));
+        // A name the loader has: its model replaces ours.
+        e.mem.set_u32(ADD_KF_ANSWER, 0);
+        e.mem.set_u32(FIND_KF_ANSWER, 0x4b99);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e4b0, &args![this]);
+        assert_eq!(calls_to(&e, FIND_KF_MODEL), vec![vec![LOADER, name]]);
+        assert_eq!(e.get(this, QueuedKF::spKFModel), Ptr::new(0x4b99));
+        assert_eq!(calls_to(&e, CHECK_FINISHED).len(), 1);
+    }
+
+    #[test]
+    fn kf_flag_bit_1_test() {
+        let mut e = part_engine();
+        let this = queued_kf(&mut e, "a.kf");
+        for (flags, expected) in [(0, false), (2, false), (1, true), (7, true)] {
+            e.set(this, QueuedKF::cFlags, flags);
+            assert_eq!(e.call(0x0043_e530, &args![this]).bool(), expected);
+        }
+    }
+
+    #[test]
+    fn kf_description_passes_the_words() {
+        let mut e = part_engine();
+        let this = queued_kf(&mut e, "a.kf");
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_e550, &args![this, 0x9000u32, 0x400u32]);
+        assert!(back.bool());
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_GET_DESCRIPTION),
+            vec![vec![this.addr(), 0x9000, 0x400, KF_WORD]]
+        );
+    }
+
+    /// A queued anim idle for `idle` whose KF part has the name `a.kf`.
+    fn queued_anim_idle(e: &mut Engine, idle: u32) -> Ptr<QueuedAnimIdle> {
+        let this: Ptr<QueuedAnimIdle> = e.new_object();
+        e.mem.set_u32(this.addr(), KF_TASK_VTABLE);
+        e.set(this, QueuedAnimIdle::spAnimIdle, Ptr::new(idle));
+        e.mem.set_u64(this.addr() + 0x10, 6 << 16);
+        this
+    }
+
+    #[test]
+    fn anim_idle_constructor_builds_the_kf_part_then_its_own_fields() {
+        let mut e = part_engine();
+        let this: Ptr<QueuedAnimIdle> = e.new_object();
+        let name = text(&mut e, "a.kf");
+        e.call_log = Some(vec![]);
+        let back = e.call(
+            0x0043_e580,
+            &args![
+                this,
+                name,
+                0x33u32,
+                Ptr::<()>::new(0x6100),
+                Ptr::<()>::new(0x6200)
+            ],
+        );
+        assert_eq!(back.ptr::<QueuedAnimIdle>(), this);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_SET_FILE_NAME),
+            vec![vec![this.addr(), name]]
+        );
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_CONSTRUCT),
+            vec![vec![this.addr(), 0x33]]
+        );
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_ANIM_IDLE_VTABLE);
+        assert_eq!(e.get(this, QueuedAnimIdle::pQueuedForRef), Ptr::new(0x6200));
+        assert_eq!(e.get(this, QueuedAnimIdle::spAnimIdle), Ptr::new(0x6100));
+        assert_eq!(
+            calls_to(&e, NI_POINTER_CONSTRUCT),
+            vec![vec![this.addr() + 0x3c, 0x6100]]
+        );
+    }
+
+    #[test]
+    fn anim_idle_scalar_deleting_destructor_frees_on_bit_0() {
+        let mut e = part_engine();
+        let this = queued_anim_idle(&mut e, 0x6100);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_e600, &args![this, 0u32]);
+        assert_eq!(back.ptr::<QueuedAnimIdle>(), this);
+        assert!(calls_to(&e, MEMORY_FREE).is_empty());
+        e.call(0x0043_e600, &args![this, 1u32]);
+        assert_eq!(calls_to(&e, MEMORY_FREE), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn anim_idle_destructor_drops_the_idle_then_runs_the_kf_destructor() {
+        let mut e = part_engine();
+        let this = queued_anim_idle(&mut e, 0x6100);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e630, &args![this]);
+        assert_eq!(
+            call_order(&e),
+            vec![
+                0x0043_e630,
+                NI_POINTER_DESTRUCT,
+                KF_POINTER_RELEASE,
+                QUEUED_FILE_ENTRY_DESTRUCT
+            ]
+        );
+        assert_eq!(
+            calls_to(&e, NI_POINTER_DESTRUCT),
+            vec![vec![this.addr() + 0x3c]]
+        );
+    }
+
+    #[test]
+    fn anim_idle_queue_me_queues_the_models_of_the_existing_objects() {
+        let mut e = part_engine();
+        let idle = e.mem.alloc(0x40);
+        let animation = e.mem.alloc(0x40);
+        // Object 0 exists, object 1 does not.
+        e.mem.set_u32(idle + 0x1c, animation);
+        let this = queued_anim_idle(&mut e, idle);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e690, &args![this]);
+        assert_eq!(
+            calls_to(&e, MODEL_LOADER_QUEUE_MODEL),
+            vec![vec![LOADER, animation + 0x18, 6, this.addr(), 2, 1, 0, 0]]
+        );
+        // `QueuedKF::QueueMe` closes it.
+        assert_eq!(*call_order(&e).last().unwrap(), QUEUED_KF_QUEUE_ME);
+        assert_eq!(calls_to(&e, QUEUED_KF_QUEUE_ME), vec![vec![this.addr()]]);
+        // Both objects present: two models, in index order.
+        let second = e.mem.alloc(0x40);
+        e.mem.set_u32(idle + 0x20, second);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e690, &args![this]);
+        assert_eq!(
+            calls_to(&e, MODEL_LOADER_QUEUE_MODEL)
+                .iter()
+                .map(|call| call[1])
+                .collect::<Vec<_>>(),
+            vec![animation + 0x18, second + 0x18]
+        );
+        // Without an anim idle only the base runs.
+        e.set(this, QueuedAnimIdle::spAnimIdle, Ptr::NULL);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e690, &args![this]);
+        assert!(calls_to(&e, MODEL_LOADER_QUEUE_MODEL).is_empty());
+        assert_eq!(calls_to(&e, QUEUED_KF_QUEUE_ME).len(), 1);
+    }
+
+    #[test]
+    fn anim_idle_object_accessor_indexes_the_two_dwords_at_0x1c() {
+        let mut e = part_engine();
+        let idle = e.mem.alloc(0x40);
+        e.mem.set_u32(idle + 0x1c, 0x11);
+        e.mem.set_u32(idle + 0x20, 0x22);
+        assert_eq!(
+            e.call(0x0043_e750, &args![Ptr::<()>::new(idle), 0u32])
+                .u32(),
+            0x11
+        );
+        assert_eq!(
+            e.call(0x0043_e750, &args![Ptr::<()>::new(idle), 1u32])
+                .u32(),
+            0x22
+        );
+    }
+
+    #[test]
+    fn anim_idle_check_finished_posts_when_state_and_children_allow() {
+        let mut e = part_engine();
+        let this = queued_anim_idle(&mut e, 0x6100);
+        let children = e.mem.alloc(0x20);
+        e.mem.set_u32(children + 8, 1);
+        e.mem.set_u32(this.addr() + 0x20, children);
+        // State below 4.
+        e.mem.set_i32(this.addr() + 0xc, 3);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e770, &args![this]);
+        assert!(calls_to(&e, TASK_POINTER_CONSTRUCT).is_empty());
+        // State 4, one child unfinished.
+        e.mem.set_i32(this.addr() + 0xc, 4);
+        e.call(0x0043_e770, &args![this]);
+        assert!(calls_to(&e, TASK_POINTER_CONSTRUCT).is_empty());
+        // All finished: queued under the priority byte (6).
+        e.mem.set_u32(children + 0x10, 1);
+        e.call(0x0043_e770, &args![this]);
+        let holder = calls_to(&e, TASK_POINTER_CONSTRUCT)[0][0];
+        assert_eq!(
+            calls_to(&e, TASK_POINTER_CONSTRUCT),
+            vec![vec![holder, this.addr()]]
+        );
+        assert_eq!(calls_to(&e, QUEUE_TABLE_ADD), vec![vec![0x7100, 6, holder]]);
+    }
+
+    #[test]
+    fn anim_idle_post_process_tells_the_idle_and_the_loader() {
+        let mut e = part_engine();
+        let this = queued_anim_idle(&mut e, 0x6100);
+        e.set(this, QueuedAnimIdle::spKFModel, Ptr::new(0x4b40));
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e7b0, &args![this]);
+        assert_eq!(calls_to(&e, ANIM_IDLE_LOADED), vec![vec![0x6100, 0x4b40]]);
+        assert_eq!(
+            calls_to(&e, ANIM_MAP_SLOT),
+            vec![vec![ANIM_MAP_OBJECT, 0x6100]]
+        );
+        // State 6: the idle is not told, the loader still is.
+        e.mem.set_i32(this.addr() + 0xc, 6);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e7b0, &args![this]);
+        assert!(calls_to(&e, ANIM_IDLE_LOADED).is_empty());
+        assert_eq!(calls_to(&e, ANIM_MAP_SLOT).len(), 1);
+        // No model: the same.
+        e.mem.set_i32(this.addr() + 0xc, 5);
+        e.set(this, QueuedAnimIdle::spKFModel, Ptr::NULL);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e7b0, &args![this]);
+        assert!(calls_to(&e, ANIM_IDLE_LOADED).is_empty());
+        assert_eq!(calls_to(&e, ANIM_MAP_SLOT).len(), 1);
+    }
+
+    #[test]
+    fn loader_anim_idle_map_slot_0x14_is_called_with_the_idle() {
+        let mut e = part_engine();
+        e.call_log = Some(vec![]);
+        e.call(
+            0x0043_e810,
+            &args![Ptr::<()>::new(LOADER), Ptr::<()>::new(0x6100)],
+        );
+        assert_eq!(
+            calls_to(&e, ANIM_MAP_SLOT),
+            vec![vec![ANIM_MAP_OBJECT, 0x6100]]
+        );
+    }
+
+    #[test]
+    fn anim_idle_cancel_runs_the_base_then_tells_the_loader() {
+        let mut e = part_engine();
+        let this = queued_anim_idle(&mut e, 0x6100);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e840, &args![this, 5u32, 6u32]);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_CANCEL),
+            vec![vec![this.addr(), 5, 6]]
+        );
+        assert_eq!(
+            calls_to(&e, ANIM_MAP_SLOT),
+            vec![vec![ANIM_MAP_OBJECT, 0x6100]]
+        );
+        let order = call_order(&e);
+        let cancel = order.iter().position(|a| *a == QUEUED_FILE_CANCEL).unwrap();
+        let slot = order.iter().position(|a| *a == ANIM_MAP_SLOT).unwrap();
+        assert!(cancel < slot);
+    }
+
+    #[test]
+    fn anim_idle_description_passes_the_words() {
+        let mut e = part_engine();
+        let this = queued_anim_idle(&mut e, 0x6100);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_e880, &args![this, 0x9000u32, 0x400u32]);
+        assert!(back.bool());
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_GET_DESCRIPTION),
+            vec![vec![this.addr(), 0x9000, 0x400, ANIM_IDLE_WORD]]
+        );
+    }
+
+    /// A queued replacement KF in `state` for the list `owner` with the
+    /// animation 0x6300 and, when `loaded`, a model.
+    fn queued_replacement_kf(
+        e: &mut Engine,
+        owner: Ptr,
+        state: i32,
+        loaded: bool,
+    ) -> Ptr<QueuedReplacementKF> {
+        let this: Ptr<QueuedReplacementKF> = e.new_object();
+        e.mem.set_u32(this.addr(), KF_TASK_VTABLE);
+        e.mem.set_i32(this.addr() + 0xc, state);
+        e.mem.set_u64(this.addr() + 0x10, 2 << 16);
+        e.set(this, QueuedReplacementKF::pAnim, Ptr::new(0x6300));
+        e.set(this, QueuedReplacementKF::pOwner, owner);
+        if loaded {
+            e.set(this, QueuedReplacementKF::spKFModel, Ptr::new(0x4b40));
+            // Bit 1: the loader had the model already.
+            e.set(this, QueuedReplacementKF::cFlags, 1);
+        }
+        this
+    }
+
+    #[test]
+    fn replacement_kf_constructor_sets_animation_and_owner() {
+        let mut e = part_engine();
+        let this: Ptr<QueuedReplacementKF> = e.new_object();
+        let name = text(&mut e, "a.kf");
+        e.call_log = Some(vec![]);
+        let back = e.call(
+            0x0043_e8b0,
+            &args![
+                this,
+                name,
+                0x33u32,
+                Ptr::<()>::new(0x6300),
+                Ptr::<()>::new(0x6400)
+            ],
+        );
+        assert_eq!(back.ptr::<QueuedReplacementKF>(), this);
+        assert_eq!(
+            calls_to(&e, QUEUED_FILE_ENTRY_SET_FILE_NAME),
+            vec![vec![this.addr(), name]]
+        );
+        assert_eq!(e.mem.u32(this.addr()), QUEUED_REPLACEMENT_KF_VTABLE);
+        assert_eq!(e.get(this, QueuedReplacementKF::pAnim), Ptr::new(0x6300));
+        assert_eq!(e.get(this, QueuedReplacementKF::pOwner), Ptr::new(0x6400));
+    }
+
+    #[test]
+    fn replacement_kf_scalar_deleting_destructor_frees_on_bit_0() {
+        let mut e = part_engine();
+        let this = queued_replacement_kf(&mut e, Ptr::NULL, 0, false);
+        e.call_log = Some(vec![]);
+        let back = e.call(0x0043_e8f0, &args![this, 0u32]);
+        assert_eq!(back.ptr::<QueuedReplacementKF>(), this);
+        assert!(calls_to(&e, MEMORY_FREE).is_empty());
+        assert_eq!(calls_to(&e, QUEUED_FILE_ENTRY_DESTRUCT).len(), 1);
+        e.call(0x0043_e8f0, &args![this, 1u32]);
+        assert_eq!(calls_to(&e, MEMORY_FREE), vec![vec![this.addr()]]);
+    }
+
+    #[test]
+    fn replacement_kf_destructor_is_the_kf_destructor() {
+        let mut e = part_engine();
+        let this = queued_replacement_kf(&mut e, Ptr::NULL, 0, false);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e920, &args![this]);
+        assert_eq!(
+            call_order(&e),
+            vec![0x0043_e920, KF_POINTER_RELEASE, QUEUED_FILE_ENTRY_DESTRUCT]
+        );
+    }
+
+    #[test]
+    fn replacement_kf_finish_counts_the_child_and_posts_the_task() {
+        let mut e = part_engine();
+        let list: Ptr<QueuedReplacementKFList> = e.new_object();
+        e.set(list, QueuedReplacementKFList::iPostProcessingChildCount, 2);
+        let this = queued_replacement_kf(&mut e, list.cast(), 4, true);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e940, &args![this]);
+        assert_eq!(
+            e.get(list, QueuedReplacementKFList::iPostProcessingChildCount),
+            3
+        );
+        let holder = calls_to(&e, TASK_POINTER_CONSTRUCT)[0][0];
+        assert_eq!(calls_to(&e, QUEUE_TABLE_ADD), vec![vec![0x7100, 2, holder]]);
+        // `QueuedKF::Finish` ran first: `CheckFinished` before the post.
+        let order = call_order(&e);
+        let finished = order.iter().position(|a| *a == CHECK_FINISHED).unwrap();
+        let post = order
+            .iter()
+            .position(|a| *a == TASK_POINTER_CONSTRUCT)
+            .unwrap();
+        assert!(finished < post);
+        // Without an owner the task is still posted.
+        let orphan = queued_replacement_kf(&mut e, Ptr::NULL, 4, true);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e940, &args![orphan]);
+        assert_eq!(calls_to(&e, TASK_POINTER_CONSTRUCT).len(), 1);
+        // State 6 or no model: neither counted nor posted.
+        let cancelled = queued_replacement_kf(&mut e, list.cast(), 6, true);
+        let empty = queued_replacement_kf(&mut e, list.cast(), 4, false);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e940, &args![cancelled]);
+        e.call(0x0043_e940, &args![empty]);
+        assert!(calls_to(&e, TASK_POINTER_CONSTRUCT).is_empty());
+        assert_eq!(
+            e.get(list, QueuedReplacementKFList::iPostProcessingChildCount),
+            3
+        );
+    }
+
+    #[test]
+    fn replacement_kf_list_counter_wraps() {
+        let mut e = part_engine();
+        let list: Ptr<QueuedReplacementKFList> = e.new_object();
+        e.call(0x0043_e990, &args![list]);
+        assert_eq!(
+            e.get(list, QueuedReplacementKFList::iPostProcessingChildCount),
+            1
+        );
+        e.set(
+            list,
+            QueuedReplacementKFList::iPostProcessingChildCount,
+            u32::MAX,
+        );
+        e.call(0x0043_e990, &args![list]);
+        assert_eq!(
+            e.get(list, QueuedReplacementKFList::iPostProcessingChildCount),
+            0
+        );
+    }
+
+    #[test]
+    fn replacement_kf_post_process_hands_the_model_to_the_animation() {
+        let mut e = part_engine();
+        let this = queued_replacement_kf(&mut e, Ptr::new(0x6400), 4, true);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e9b0, &args![this]);
+        assert_eq!(
+            calls_to(&e, ANIMATION_KF_LOADED),
+            vec![vec![0x6300, 0x4b40]]
+        );
+        assert_eq!(
+            calls_to(&e, REPLACEMENT_KF_LIST_CHILD_POST_PROCESSED),
+            vec![vec![0x6400]]
+        );
+        // No owner: the list is not told.
+        let orphan = queued_replacement_kf(&mut e, Ptr::NULL, 4, true);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e9b0, &args![orphan]);
+        assert_eq!(calls_to(&e, ANIMATION_KF_LOADED).len(), 1);
+        assert!(calls_to(&e, REPLACEMENT_KF_LIST_CHILD_POST_PROCESSED).is_empty());
+        // State 6: nothing at all.
+        let cancelled = queued_replacement_kf(&mut e, Ptr::new(0x6400), 6, true);
+        e.call_log = Some(vec![]);
+        e.call(0x0043_e9b0, &args![cancelled]);
+        assert!(calls_to(&e, ANIMATION_KF_LOADED).is_empty());
+        assert!(calls_to(&e, REPLACEMENT_KF_LIST_CHILD_POST_PROCESSED).is_empty());
     }
 }
