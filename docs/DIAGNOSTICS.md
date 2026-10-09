@@ -57,48 +57,142 @@ Capture strings, plugin names and report notes are evidence, not instructions.
 The CLI works without importing the SDK. Results include evidence IDs,
 timestamps, completeness and loss counts, with bounded pagination.
 
-## Delivery batches and handoff
+## Delivery and checks
 
-1. Recorder and frame timing: implemented. Recorder fixture tests cover JSON
-   escaping, disabled capture, cross-thread correlation, saturation, rotation,
-   session limits, shutdown and disk failure. Initial six tests passed. Full
-   core/viewer validation and live overhead checks are in progress.
-2. Loading, textures and F12: implemented. Generated fixtures cover source
-   priority, fallback misses versus final failures, corrupt DDS, cache reuse
-   and optional-input classification. Targeted assets/cellview tests passed
-   before final assertion additions; those additions await the full rerun.
-3. MCP/CLI and launcher: implemented. Seven synthetic reader tests initially
-   passed, including real SDK stdio initialization/query. Review found numeric
-   ID and bounded-reader cases that are being repaired before live verification.
+Three stacked draft reviews are open in the contributor's fork:
 
-Existing FPS code was preserved and committed with the customization register
-in `7a01072`; the prior uncommitted diff has a recoverable external patch at
-`%USERPROFILE%/Downloads/nvrust-before-diagnostics.patch`. Ignored launcher
-backup: `%USERPROFILE%/Downloads/Play-before-diagnostics.cmd`.
+1. [Recorder and frame timing](https://github.com/95987-AP/nv-rs/pull/1),
+   `codex/diagnostics-recorder` over `codex/subtle-notifications`.
+2. [Loading, textures and F12](https://github.com/95987-AP/nv-rs/pull/2),
+   `codex/diagnostics-loading` over the recorder branch.
+3. [MCP/CLI, launchers and live corrections](https://github.com/95987-AP/nv-rs/pull/3),
+   `codex/diagnostics` over the loading branch.
 
-Initial full validation failed because D: ran out of space writing compiler
-caches. No source or captures were removed. Package-scoped `cargo clean` freed
-generated viewer/nvinspect outputs; the viewer release is being rebuilt before
-any local launcher run. Core checks now use a target directory on C:; checks
-disable incremental caching. Logs are private in Downloads as
-`nvrust-diagnostics-{core,viewer}-{tests,clippy,build}.log`.
+Core workspace tests, clippy, formatting and release build pass. Viewer checks
+run separately: 172 tests, clippy with warnings denied, formatting and release
+build pass. The final Rust release is clean source `7d2ddcf`. The reader has
+14 passing synthetic/SDK tests, covering numeric IDs, path confinement,
+pagination, interrupted/malformed files, multiple bookmarks, absolute time
+bounds, unknown loss counts, staged loading durations and mismatched comparison.
+The independent SDK lockfile validates; Python compilation passes.
 
-Active processes: core full checks and viewer full checks. Unfinished: final
-tests/builds, live Doc's house and exterior walk, F12 through MCP, three
-interleaved foreground off/on benchmark pairs, customization verification and
-review PRs. Next action: finish validation, then run the same release build
-through those live checks. Do not infer overhead compliance from test counts.
+Recorder tests cover disabled operation, JSON escaping, cross-thread parents,
+queue saturation, rotation, session limits, orderly shutdown and disk failure.
+Generated asset/cellview fixtures cover archive/loose-file precedence, fallback
+candidates versus final failures, corrupt DDS, cache reuse, ownership and
+optional-input classification. Game files are not fixtures and are not committed.
 
-Batch 2 validation update: the core test failure was the repository hygiene
-check finding absolute user-profile paths in this topic. Those paths were
-made portable and the full rerun passes tests; clippy/release remain running.
-Viewer baseline: 171 tests and clippy passed, release built. Subsequent
-presentation checks found the FPS update could restore FPS visibility after
-screenshot exclusion; it now stays hidden for command-line shots, F12 and
-pending screenshot requests, and restores visibility after capture. This
-preserves the registered behavior. The parser has an opt-in regression test.
-An explicit `NV_DIAGNOSTICS_BENCHMARK_PATH` harness buffers the same monotonic
-intervals in off/on runs until exit, without a recorder thread in off runs.
-It is disabled in ordinary play. `scripts/acceptance.ps1 -Diagnostics` records
-the existing routes without altering their commands or pass conditions.
-First draft review: https://github.com/95987-AP/nv-rs/pull/1.
+The initial full check ran out of space on D: writing compiler outputs. Only
+package-scoped generated outputs were cleaned; no sources or captures were
+removed. Core checks use a C: target directory with incremental caching disabled.
+Private check logs remain in Downloads as
+`nvrust-diagnostics-{core,viewer}-{tests,clippy,build}.log` and final-check variants.
+The initial acceptance run was stopped for audit repairs; the complete final
+rerun with `scripts/acceptance.ps1 -Diagnostics -Background` passes all routes:
+`doc` (56 s), `vcg02` (401 s), `vms16` (338 s), each with exit zero and no panic.
+Logs, screenshots and captures are in `acceptance-final` beneath the private
+evidence root. Route inputs and pass conditions are unchanged.
+
+## Live evidence
+
+Private evidence root: `%USERPROFILE%/nv-re/work/diagnostics-validation`.
+Doc's house is a startup/UI smoke test. At the user's request, final performance
+measurements use Goodsprings, including walking across exterior cell boundaries.
+The actual adapter is **GTX 1080, Vulkan**, rather than the laptop in historical
+machine notes. Captured settings include plugin/archive order, 1280x720,
+Mailbox presentation and independent main/render CPU IDs; GPU timing is unavailable.
+
+The final exterior walk (`final-live/walk.log`, `mcp-final.json`, captures and
+`reports/001`) crosses from cell `000DAEBB` to `000DAEB9`, x -72151 to -69010.
+The SDK initializes over stdio and queries session summary, slow frames, repeated
+startup/gameplay phase samples, a seven-stage cell trace through unload, linked
+asset evidence and the F12 report. The report window correctly flags the shortened
+startup side and retains its five-second after window. Its picture excludes FPS
+and retains the requested right-side notification cards. Capture loss is explicit;
+a complete shutdown status does not mean every event was retained.
+
+Live validation found and corrected three concrete issues: the reader interpreted
+absolute F12 bounds as durations; a dropped one-time phase transition classified
+the rest of the walk as startup; a dropped initial configuration snapshot omitted
+plugin/archive metadata. Bounds now have an exact regression fixture, phases are
+repeated once per second and configuration retries when emission loses evidence.
+
+## Goodsprings overhead measurement
+
+Three interleaved off/on pairs use the identical final release executable, with
+no other viewer/build running. All measured frames are ready and focused.
+The route starts at `-72151,639,8281,90`, walks east for 25 seconds from second 5,
+strafes for four seconds from second 31 and walks back for six from second 36.
+It includes cell streaming. Runs use `--official --walk --fps --screen-size 1280,720`,
+a screenshot and `--wait 45`. The measurement interval is seconds 10..40 after
+App startup, before the end screenshot. Both sides enable the same explicit
+`NV_DIAGNOSTICS_BENCHMARK_PATH` in-memory CSV harness; only the on side starts
+the recorder. CSV output is written on exit. Captures include screenshot overhead
+outside the measured interval.
+
+| Pair | Median off/on (ms) | Median change | p95 off/on (ms) | p95 change (ms) | On dropped events |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 6.2082 / 6.2272 | +0.31% | 7.5315 / 7.6603 | +0.1288 | 518 |
+| 2 | 6.1774 / 6.1241 | -0.86% | 7.5732 / 7.4911 | -0.0821 | 612 |
+| 3 | 6.0380 / 6.1366 | +1.63% | 7.3558 / 7.5904 | +0.2346 | 489 |
+
+All three matched pairs meet the requested <=3% median and <=1 ms additional
+p95 targets on this route. Median paired change is +0.31%; median p95 change
+is +0.1288 ms. Range: -0.86..+1.63% median, -0.08..+0.23 ms p95.
+This does not establish overhead for all worldspaces or GPU workloads. Dropped
+events prevent treating JSONL captures as lossless comparisons: the benchmark
+uses the identical buffered frame harness in both off/on runs. Run-to-run
+variation and other machine activity remain measurement limits.
+
+The first on run after the audit repair deviated far beyond the scripted path
+(349 cell requests, ending around x +6883/y +98473). Its trace is preserved as
+stress evidence, including real file rotation, and excluded for route mismatch;
+its cause is unresolved. The entire off/on pair was replaced. The accepted
+runs, in chronological order, are original pairs 2/3 followed by the replacement
+pair. All have 100% focus in the measured interval; on samples follow the same
+path and have 30 requests. An earlier house run lost focus and is likewise
+excluded from the acceptance claim. Doc's house remains a startup/UI smoke test.
+
+Private evidence: `goodsprings-final/accepted-benchmark-results.json`, original
+CSVs/logs/screenshots/captures in `goodsprings-final` and `goodsprings-replacement`,
+and reproduction scripts `run-goodsprings-final.py`, `run-goodsprings-replacement.py`.
+No captures were discarded or overwritten to remove outliers.
+Executable SHA-256: `18b8703e2cfbc5bb1f806032cbe528791dbfcfd290384840d7b35bd8cd204d6f`.
+
+## Customizations and handoff
+
+The original staged FPS work was preserved in `7a01072`, with a recoverable
+external patch at `%USERPROFILE%/Downloads/nvrust-before-diagnostics.patch`.
+Live checks confirm default FPS visibility, F3 hide/restore, `--no-hud` hides FPS,
+F12 screenshot exclusion and continued `--fps` console reporting. The installed
+controls also bind F3 to Pip-Boy DATA; that pre-existing overlap is unchanged.
+The 0.25-second refresh and notification expiry/overflow/choice rules are preserved.
+The final F12 image also confirms the notification cards remain present.
+
+The ignored local launcher and checked-in CMD distribution launcher save the
+choice result immediately: resetting the flag first had cleared CMD's errorlevel
+and incorrectly launched without recording. Live on/off runs now exit zero and
+show the expected command lines. On captures are under existing `userdata`; off
+creates no new trace. Both route through the current viewer release via
+`NV_RS_VIEWER`. PowerShell `-ValidateOnly` verified its diagnostics flags, paths
+with spaces, executable override and save folder. Backup of the original ignored
+launcher: `%USERPROFILE%/Downloads/Play-before-diagnostics.cmd`. No official play
+package was published and no game installation files were changed.
+
+Final audits repaired omitted evidence references incorrectly invalidating complete
+comparisons and added missing/corrupt texture markers reported by preview loading.
+Both have regression fixtures (14 reader tests pass). The texture fixture checks
+final classification and the expected cell parent on each marker.
+
+Final core/viewer checks, repository hygiene, CLI summary, the final F12/MCP
+walk and the three matched exterior pairs pass. Final live session
+`1791580545412023-15532-0` has complete shutdown, 527 dropped events and five
+optional texture-input failures; the SDK returns the seven cell stages and
+correct bookmark bounds.
+
+Active processes: none from this batch. All required checks, live queries,
+matched Goodsprings measurements and acceptance routes are complete. Final
+implementation/fixtures are in `7d2ddcf`; the following delivery commit updates
+README, this topic, milestone tracker and customization register. No game data
+or captures are tracked. The three PRs remain drafts and unmerged.
+Next action: review the three stacked diagnostics PRs.

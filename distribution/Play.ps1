@@ -4,6 +4,8 @@ param(
     [string]$Place = 'GSDocMitchellHouse',
     [switch]$NewGame,
     [switch]$UseActivePlugins,
+    [switch]$Diagnostics,
+    [string]$DiagnosticsDir,
     [switch]$ValidateOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -13,11 +15,13 @@ if (!(Test-Path -LiteralPath (Join-Path $DataPath 'FalloutNV.esm') -PathType Lea
     throw 'That folder does not contain FalloutNV.esm. Supply -DataPath or set NV_RS_DATA.'
 }
 $DataPath = (Resolve-Path -LiteralPath $DataPath).Path
-$executable = Join-Path $PSScriptRoot 'app/nv-viewer.exe'
+$executable = $env:NV_RS_VIEWER
+if (!$executable) { $executable = Join-Path $PSScriptRoot 'app/nv-viewer.exe' }
 if (!(Test-Path -LiteralPath $executable -PathType Leaf)) { throw 'app/nv-viewer.exe is missing. Extract the entire playtest ZIP.' }
 $viewerArguments = @($DataPath)
 if ($NewGame) { $viewerArguments += '--new-game' } else { $viewerArguments += $Place }
 if (!$UseActivePlugins) { $viewerArguments += '--official' }
+if ($DiagnosticsDir) { $viewerArguments += @('--diagnostics-dir', $DiagnosticsDir) } elseif ($Diagnostics) { $viewerArguments += '--diagnostics' }
 if ($ValidateOnly) {
     [pscustomobject]@{ Executable=$executable; Arguments=$viewerArguments; SaveFolder=(Join-Path $PSScriptRoot 'userdata') }
     return

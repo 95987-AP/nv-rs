@@ -2651,6 +2651,7 @@ impl Default for FrameCounter {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Separate Bevy resources include pending screenshot visibility.
 fn report_fps(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,

@@ -929,8 +929,14 @@ results, process ownership and unfinished checks: [DIAGNOSTICS.md](DIAGNOSTICS.m
 The registered FPS, notification and launcher customizations are preserved.
 Initial full checks hit a full D: drive; package-scoped generated outputs were
 cleaned, and core checks moved to C: with incremental caching disabled.
-Core tests pass after fixing portable documentation paths; the 171-test viewer baseline and reader fixtures pass. Full final checks and live/overhead evidence are pending. Recorder draft PR #1 is open. Next action: finish the
-checks and verify captures with the rebuilt release viewer.
+Final clean Rust build `7d2ddcf`: core/viewer tests, clippy, formatting and
+release pass; 172 viewer tests, 14 MCP/CLI fixtures and all three acceptance
+routes pass. Live Doc startup, Goodsprings boundary/F12-MCP/CLI, FPS and launcher
+preservation checks pass. Three matched, focused Goodsprings pairs meet the
+measured-route targets (-0.86..+1.63% median, <=0.24 ms added p95); 489..612
+dropped events per on run remain explicit. A divergent stress run is retained
+and excluded for route mismatch. No batch processes remain. Three stacked draft
+PRs #1/#2/#3 are open and unmerged. Next action: review the diagnostics stack.
 
 ## Deferred
 

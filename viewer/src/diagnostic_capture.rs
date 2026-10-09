@@ -92,6 +92,7 @@ fn sample(
             .map(|a| a.name.as_str())
             .collect::<Vec<_>>()
             .join("|");
+        let dropped_before = o.dropped();
         o.emit(
             "configuration",
             o.id(),
@@ -101,7 +102,9 @@ fn sample(
                 ("archive_order", archives.into()),
             ],
         );
-        capture.configured = true;
+        // Retry if this snapshot was lost to queue contention. A concurrent
+        // drop can cause an extra harmless retry, but never suppress metadata.
+        capture.configured = o.dropped() == dropped_before;
     }
     if let Some(adapter) = adapter {
         let info = adapter.get_info();
@@ -115,10 +118,25 @@ fn sample(
             ],
         );
     }
-    if player.ready && !capture.gameplay {
-        o.emit("phase", o.id(), 0, &[("name", "gameplay".into())]);
+    if player.ready {
         capture.gameplay = true;
     }
+    // Repeat the current phase in each sample: a dropped transition must not
+    // classify the remainder of a session as startup.
+    o.emit(
+        "phase",
+        o.id(),
+        0,
+        &[(
+            "name",
+            if capture.gameplay {
+                "gameplay"
+            } else {
+                "startup"
+            }
+            .into(),
+        )],
+    );
     if let (Ok(camera), Ok(window)) = (cameras.single(), windows.single()) {
         let feet = player.position_for_view(crate::walk::game_point(camera.translation));
         o.emit(
