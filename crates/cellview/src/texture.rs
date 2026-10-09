@@ -57,11 +57,71 @@ enum Source {
 
 impl TextureData {
     pub fn from_dds(path: impl Into<String>, bytes: Vec<u8>) -> Result<Self, dds::Error> {
-        let dds = Dds::parse(bytes)?;
+        let observer = diagnostics::Observer::current();
+        Self::from_dds_observed(path, bytes, &observer, "required")
+    }
+
+    pub(crate) fn from_dds_observed(
+        path: impl Into<String>,
+        bytes: Vec<u8>,
+        observer: &diagnostics::Observer,
+        role: &str,
+    ) -> Result<Self, dds::Error> {
+        let path = path.into();
+        let (id, parent_id, started, input_bytes) = if observer.enabled() {
+            (
+                observer.id(),
+                observer.parent(),
+                Some(std::time::Instant::now()),
+                bytes.len() as u64,
+            )
+        } else {
+            (0, 0, None, 0)
+        };
+        let dds = match Dds::parse(bytes) {
+            Ok(dds) => dds,
+            Err(error) => {
+                if let Some(started) = started {
+                    observer.emit(
+                        "texture_parse",
+                        id,
+                        parent_id,
+                        &[
+                            ("path", diagnostics::Value::Str(path.clone())),
+                            ("role", diagnostics::Value::Str(role.to_string())),
+                            ("result", diagnostics::Value::Str("corrupt".into())),
+                            ("bytes", diagnostics::Value::U64(input_bytes)),
+                            ("error", diagnostics::Value::Str(error.to_string())),
+                            (
+                                "duration_us",
+                                diagnostics::Value::U64(
+                                    started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+                                ),
+                            ),
+                        ],
+                    );
+                    if !role.starts_with("optional") {
+                        observer.emit(
+                            "texture_failure",
+                            id,
+                            parent_id,
+                            &[
+                                ("requested_path", diagnostics::Value::Str(path.clone())),
+                                ("failure", diagnostics::Value::Str("corrupt_dds".into())),
+                                ("role", diagnostics::Value::Str(role.to_string())),
+                                ("owner", diagnostics::Value::Str("unknown".into())),
+                                ("automatic_marker", diagnostics::Value::Bool(true)),
+                            ],
+                        );
+                    }
+                }
+                return Err(error);
+            }
+        };
         // A full chain ends at 1x1; GPUs reject files that claim more.
         let full_chain = 32 - dds.width().max(dds.height()).max(1).leading_zeros();
-        Ok(Self {
-            path: path.into(),
+        let texture = Self {
+            path,
             width: dds.width(),
             height: dds.height(),
             mip_levels: (dds.mip_count().max(1) as u32).min(full_chain),
@@ -69,7 +129,37 @@ impl TextureData {
             layers: 1,
             repeat_face: false,
             source: Source::Dds(dds),
-        })
+        };
+        if let Some(started) = started {
+            observer.emit(
+                "texture_parse",
+                id,
+                parent_id,
+                &[
+                    ("path", diagnostics::Value::Str(texture.path.clone())),
+                    ("role", diagnostics::Value::Str(role.to_string())),
+                    ("result", diagnostics::Value::Str("ok".into())),
+                    ("width", diagnostics::Value::U64(u64::from(texture.width))),
+                    ("height", diagnostics::Value::U64(u64::from(texture.height))),
+                    ("format", diagnostics::Value::Str(texture.source_format())),
+                    (
+                        "mip_count",
+                        diagnostics::Value::U64(u64::from(texture.mip_levels)),
+                    ),
+                    (
+                        "logical_bytes_estimate",
+                        diagnostics::Value::U64(texture.logical_bytes_estimate()),
+                    ),
+                    (
+                        "duration_us",
+                        diagnostics::Value::U64(
+                            started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+                        ),
+                    ),
+                ],
+            );
+        }
+        Ok(texture)
     }
 
     /// The same texture as a cube map: the file's six faces when it has
@@ -98,7 +188,7 @@ impl TextureData {
             h = (h / 2).max(1);
             levels.push(next);
         }
-        Self {
+        let texture = Self {
             path: path.into(),
             width,
             height,
@@ -107,7 +197,82 @@ impl TextureData {
             layers: 1,
             repeat_face: false,
             source: Source::Rgba(levels),
+        };
+        let observer = diagnostics::Observer::current();
+        if observer.enabled() {
+            observer.emit(
+                "texture_generated",
+                observer.id(),
+                observer.parent(),
+                &[
+                    ("path", diagnostics::Value::Str(texture.path.clone())),
+                    ("width", diagnostics::Value::U64(u64::from(texture.width))),
+                    ("height", diagnostics::Value::U64(u64::from(texture.height))),
+                    ("format", diagnostics::Value::Str("RGBA8".into())),
+                    (
+                        "mip_count",
+                        diagnostics::Value::U64(u64::from(texture.mip_levels)),
+                    ),
+                    (
+                        "logical_bytes_estimate",
+                        diagnostics::Value::U64(texture.logical_bytes_estimate()),
+                    ),
+                ],
+            );
         }
+        texture
+    }
+
+    fn source_format(&self) -> String {
+        match &self.source {
+            Source::Dds(dds) => dds.format().name(),
+            Source::Rgba(_) => "RGBA8".into(),
+        }
+    }
+
+    /// Estimated stored payload size across the retained mip chain and layers.
+    pub fn logical_bytes_estimate(&self) -> u64 {
+        let mut total = 0u64;
+        let mut width = self.width;
+        let mut height = self.height;
+        let bytes_per_block = match &self.source {
+            Source::Dds(dds) => match dds.format() {
+                Format::Bc1 | Format::Bc4 => Some(8u64),
+                Format::Bc2 { .. } | Format::Bc3 { .. } | Format::Bc5 => Some(16u64),
+                Format::Uncompressed(masks) => {
+                    total = 0;
+                    for _ in 0..self.mip_levels {
+                        total = total.saturating_add(
+                            u64::from(width)
+                                .saturating_mul(u64::from(height))
+                                .saturating_mul(u64::from(masks.bits.div_ceil(8))),
+                        );
+                        width = (width / 2).max(1);
+                        height = (height / 2).max(1);
+                    }
+                    return total.saturating_mul(u64::from(self.layers));
+                }
+            },
+            Source::Rgba(levels) => {
+                return levels
+                    .iter()
+                    .map(|level| level.len() as u64)
+                    .sum::<u64>()
+                    .saturating_mul(u64::from(self.layers))
+            }
+        };
+        for _ in 0..self.mip_levels {
+            let blocks_wide = u64::from(width.div_ceil(4));
+            let blocks_high = u64::from(height.div_ceil(4));
+            total = total.saturating_add(
+                blocks_wide
+                    .saturating_mul(blocks_high)
+                    .saturating_mul(bytes_per_block.unwrap_or(0)),
+            );
+            width = (width / 2).max(1);
+            height = (height / 2).max(1);
+        }
+        total.saturating_mul(u64::from(self.layers))
     }
 
     /// The two textures multiplied together, channel by channel, at the size

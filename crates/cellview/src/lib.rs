@@ -774,7 +774,16 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
                 model: pm.clone(),
                 looks: particles::looks(
                     pm,
-                    |path| cache.get(path),
+                    |path| {
+                        cache.texture_request(
+                            path,
+                            &model.path,
+                            "particle system",
+                            scene.cell.objects[instance.object].form_id.0,
+                            "particle_texture",
+                        );
+                        cache.get(path)
+                    },
                     scene.cell.emittance_color(placed),
                     link,
                     &playing,
@@ -872,18 +881,42 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
                 Some(&index) => index,
                 None => {
                     let texture = match (&mesh.texture_path, mesh.texture) {
-                        (Some(path), Some(_)) => cache.get(path),
+                        (Some(path), Some(_)) => {
+                            cache.texture_request(
+                                path,
+                                &model.path,
+                                &mesh.name,
+                                scene.cell.objects[instance.object].form_id.0,
+                                "diffuse",
+                            );
+                            cache.get(path)
+                        }
                         _ => None,
                     };
                     let self_lit = mesh.lit && emissive.iter().any(|&c| c > 0.0);
                     let glow = match (&mesh.glow_path, mesh.glow) {
-                        (Some(glow), Some(_)) if self_lit => cache.get(glow),
+                        (Some(glow), Some(_)) if self_lit => {
+                            cache.texture_request(
+                                glow,
+                                &model.path,
+                                &mesh.name,
+                                scene.cell.objects[instance.object].form_id.0,
+                                "glow",
+                            );
+                            cache.get(glow)
+                        }
                         _ => None,
                     };
-                    let normal_map = mesh
-                        .normal_path
-                        .as_deref()
-                        .and_then(|path| cache.get_linear(path));
+                    let normal_map = mesh.normal_path.as_deref().and_then(|path| {
+                        cache.texture_request(
+                            path,
+                            &model.path,
+                            &mesh.name,
+                            scene.cell.objects[instance.object].form_id.0,
+                            "normal",
+                        );
+                        cache.get_linear(path)
+                    });
                     let mut data = mesh_data(
                         &format!("{} #{k}", model.path),
                         mesh,
@@ -901,8 +934,26 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
                     }
                     data.material.environment = mesh.environment.as_ref().and_then(|e| {
                         Some(EnvironmentData {
-                            cube: cache.get_cube(&e.cube_path)?,
-                            mask: e.mask_path.as_deref().and_then(|p| cache.get_linear(p)),
+                            cube: {
+                                cache.texture_request(
+                                    &e.cube_path,
+                                    &model.path,
+                                    &mesh.name,
+                                    scene.cell.objects[instance.object].form_id.0,
+                                    "environment_cube",
+                                );
+                                cache.get_cube(&e.cube_path)?
+                            },
+                            mask: e.mask_path.as_deref().and_then(|p| {
+                                cache.texture_request(
+                                    p,
+                                    &model.path,
+                                    &mesh.name,
+                                    scene.cell.objects[instance.object].form_id.0,
+                                    "environment_mask",
+                                );
+                                cache.get_linear(p)
+                            }),
                             strength: e.strength,
                             window: e.window,
                         })
@@ -1032,12 +1083,55 @@ pub(crate) fn convert(scene: &CellScene, cache: &mut TextureCache<'_>) -> Viewer
     notes.push(image_space_note(cell.info.image_space.as_ref()));
     for (path, n) in &report.missing_models {
         notes.push(format!("missing model: {path} (x{n})"));
+        if cache.observer.enabled() {
+            cache.observer.emit(
+                "mesh_failure",
+                cache.observer.id(),
+                cache.observer.parent(),
+                &[
+                    ("path", diagnostics::Value::Str(path.clone())),
+                    ("failure", diagnostics::Value::Str("missing".into())),
+                    ("request_count", diagnostics::Value::U64(*n as u64)),
+                    ("owner", diagnostics::Value::Str("unknown".into())),
+                    ("final", diagnostics::Value::Bool(true)),
+                ],
+            );
+        }
     }
     for path in report.missing_textures.keys() {
         notes.push(format!("missing texture: {path}"));
     }
     for (path, e) in report.unreadable_models.iter() {
         notes.push(format!("unreadable model: {path}: {e}"));
+        if cache.observer.enabled() {
+            cache.observer.emit(
+                "mesh_failure",
+                cache.observer.id(),
+                cache.observer.parent(),
+                &[
+                    ("path", diagnostics::Value::Str(path.clone())),
+                    ("failure", diagnostics::Value::Str("unreadable".into())),
+                    ("error", diagnostics::Value::Str(e.clone())),
+                    ("owner", diagnostics::Value::Str("unknown".into())),
+                    ("final", diagnostics::Value::Bool(true)),
+                ],
+            );
+        }
+    }
+    for path in &report.missing_animations {
+        if cache.observer.enabled() {
+            cache.observer.emit(
+                "animation_failure",
+                cache.observer.id(),
+                cache.observer.parent(),
+                &[
+                    ("path", diagnostics::Value::Str(path.clone())),
+                    ("failure", diagnostics::Value::Str("missing".into())),
+                    ("owner", diagnostics::Value::Str("unknown".into())),
+                    ("final", diagnostics::Value::Bool(true)),
+                ],
+            );
+        }
     }
     let opening: Vec<&world::Placement> = cell
         .objects
@@ -1178,6 +1272,7 @@ fn image_space_note(space: Option<&world::ImageSpace>) -> String {
 /// Textures loaded so far, each once.
 pub(crate) struct TextureCache<'a> {
     assets: &'a Assets,
+    observer: diagnostics::Observer,
     textures: Vec<TextureData>,
     /// Path (or "diffuse * glow" pair) to index; `None` when it couldn't be
     /// loaded.
@@ -1189,6 +1284,7 @@ impl<'a> TextureCache<'a> {
     pub(crate) fn new(assets: &'a Assets) -> Self {
         Self {
             assets,
+            observer: assets.observer().clone(),
             textures: Vec::new(),
             index: HashMap::new(),
             unreadable: Vec::new(),
@@ -1202,16 +1298,45 @@ impl<'a> TextureCache<'a> {
 }
 
 impl TextureCache<'_> {
+    fn texture_request(
+        &self,
+        path: &str,
+        mesh_path: &str,
+        mesh_name: &str,
+        reference_id: u32,
+        role: &str,
+    ) {
+        if self.observer.enabled() {
+            self.observer.emit(
+                "texture_request",
+                self.observer.id(),
+                self.observer.parent(),
+                &[
+                    ("path", diagnostics::Value::Str(path.to_string())),
+                    ("mesh_path", diagnostics::Value::Str(mesh_path.to_string())),
+                    ("mesh_name", diagnostics::Value::Str(mesh_name.to_string())),
+                    (
+                        "reference_id",
+                        diagnostics::Value::U64(u64::from(reference_id)),
+                    ),
+                    ("role", diagnostics::Value::Str(role.to_string())),
+                ],
+            );
+        }
+    }
+
     /// A skin tint: a file, or a body tint the game makes when it has no
     /// file for it (`world::actor::MadeBodyTint`: its file if there, else
     /// made from the race's texture morphs, `nif::Egt::tint`).
     fn tint(&self, reference: &str) -> Option<TextureData> {
         let read = |path: &str| {
-            self.assets
-                .read(path)
-                .ok()
-                .flatten()
-                .and_then(|bytes| TextureData::from_dds(path, bytes).ok())
+            let result = self.assets.read(path).ok().flatten().and_then(|bytes| {
+                TextureData::from_dds_observed(path, bytes, &self.observer, "optional_tint").ok()
+            });
+            if result.is_none() {
+                self.optional_texture_failure(path, "tint");
+            }
+            result
         };
         let Some(made) = world::actor::MadeBodyTint::parse(reference) else {
             return read(reference);
@@ -1219,8 +1344,18 @@ impl TextureCache<'_> {
         if let Some(file) = read(&made.file) {
             return Some(file);
         }
-        let bytes = self.assets.read(&assets::mesh_path(&made.egt)).ok()??;
-        let egt = nif::Egt::parse(&bytes).ok()?;
+        let egt_path = assets::mesh_path(&made.egt);
+        let Some(bytes) = self.assets.read(&egt_path).ok().flatten() else {
+            self.optional_texture_failure(&egt_path, "body_tint_morph");
+            return None;
+        };
+        let egt = match nif::Egt::parse(&bytes) {
+            Ok(egt) => egt,
+            Err(_) => {
+                self.optional_texture_failure(&egt_path, "body_tint_morph");
+                return None;
+            }
+        };
         let rgb = egt.tint(&made.values);
         let pixels = rgb
             .chunks_exact(3)
@@ -1239,11 +1374,31 @@ impl TextureCache<'_> {
     /// just the base).
     pub(crate) fn get(&mut self, path: &str) -> Option<usize> {
         if let Some(&known) = self.index.get(path) {
+            self.cache_event(path, "hit", known);
             return known;
         }
+        self.cache_event(path, "miss", None);
         if let Some((tint, base)) = preview::actor::face_tint_parts(path) {
             let found = self.read(base).map(|b| {
-                let tinted = self.tint(tint).and_then(|t| b.plus_face_tint(&t).ok());
+                let tint_data = self.tint(tint);
+                let had_tint = tint_data.is_some();
+                let tinted = tint_data.and_then(|t| b.plus_face_tint(&t).ok());
+                if had_tint && tinted.is_none() {
+                    self.optional_texture_failure(tint, "face_tint_application");
+                }
+                if self.observer.enabled() {
+                    self.observer.emit(
+                        "texture_transform",
+                        self.observer.id(),
+                        self.observer.parent(),
+                        &[
+                            ("transform", diagnostics::Value::Str("face_tint".into())),
+                            ("base_path", diagnostics::Value::Str(base.to_string())),
+                            ("input_path", diagnostics::Value::Str(tint.to_string())),
+                            ("applied", diagnostics::Value::Bool(tinted.is_some())),
+                        ],
+                    );
+                }
                 self.push(tinted.unwrap_or(b))
             });
             self.index.insert(path.to_string(), found);
@@ -1251,13 +1406,31 @@ impl TextureCache<'_> {
         }
         if let Some((layer, base)) = preview::actor::hair_layer_parts(path) {
             let found = self.read(base).map(|b| {
-                let layered = self
-                    .assets
-                    .read(layer)
-                    .ok()
-                    .flatten()
-                    .and_then(|bytes| TextureData::from_dds(layer, bytes).ok())
-                    .and_then(|l| b.with_layer(&l).ok());
+                let input = self.assets.read(layer).ok().flatten().and_then(|bytes| {
+                    TextureData::from_dds_observed(layer, bytes, &self.observer, "optional_layer")
+                        .ok()
+                });
+                if input.is_none() {
+                    self.optional_texture_failure(layer, "layer");
+                }
+                let had_input = input.is_some();
+                let layered = input.and_then(|l| b.with_layer(&l).ok());
+                if had_input && layered.is_none() {
+                    self.optional_texture_failure(layer, "hair_layer_application");
+                }
+                if self.observer.enabled() {
+                    self.observer.emit(
+                        "texture_transform",
+                        self.observer.id(),
+                        self.observer.parent(),
+                        &[
+                            ("transform", diagnostics::Value::Str("hair_layer".into())),
+                            ("base_path", diagnostics::Value::Str(base.to_string())),
+                            ("input_path", diagnostics::Value::Str(layer.to_string())),
+                            ("applied", diagnostics::Value::Bool(layered.is_some())),
+                        ],
+                    );
+                }
                 self.push(layered.unwrap_or(b))
             });
             self.index.insert(path.to_string(), found);
@@ -1273,8 +1446,10 @@ impl TextureCache<'_> {
     pub(crate) fn get_linear(&mut self, path: &str) -> Option<usize> {
         let key = format!("linear:{path}");
         if let Some(&known) = self.index.get(&key) {
+            self.cache_event(path, "hit", known);
             return known;
         }
+        self.cache_event(path, "miss", None);
         let found = self.read(path).map(|mut t| {
             t.linear = true;
             self.push(t)
@@ -1288,8 +1463,10 @@ impl TextureCache<'_> {
     fn get_cube(&mut self, path: &str) -> Option<usize> {
         let key = format!("cube:{path}");
         if let Some(&known) = self.index.get(&key) {
+            self.cache_event(path, "hit", known);
             return known;
         }
+        self.cache_event(path, "miss", None);
         let found = self.read(path).and_then(|mut t| {
             t.linear = true;
             match t.into_cube() {
@@ -1307,14 +1484,84 @@ impl TextureCache<'_> {
 
     fn read(&mut self, path: &str) -> Option<TextureData> {
         let (real, bytes) = read_texture(self.assets, path)?;
-        TextureData::from_dds(real, bytes)
-            .map_err(|e| self.unreadable.push(format!("{path}: {e}")))
-            .ok()
+        match TextureData::from_dds_observed(real.clone(), bytes, &self.observer, "required") {
+            Ok(texture) => Some(texture),
+            Err(error) => {
+                self.unreadable.push(format!("{path}: {error}"));
+                None
+            }
+        }
     }
 
     fn push(&mut self, texture: TextureData) -> usize {
+        if self.observer.enabled() {
+            let format = match texture.gpu_format(true) {
+                GpuFormat::Bc1 => "BC1",
+                GpuFormat::Bc2 => "BC2",
+                GpuFormat::Bc3 => "BC3",
+                GpuFormat::Bc4 => "BC4",
+                GpuFormat::Bc5 => "BC5",
+                GpuFormat::Rgba8 => "RGBA8",
+            };
+            self.observer.emit(
+                "texture_prepared",
+                self.observer.id(),
+                self.observer.parent(),
+                &[
+                    ("path", diagnostics::Value::Str(texture.path.clone())),
+                    ("width", diagnostics::Value::U64(u64::from(texture.width))),
+                    ("height", diagnostics::Value::U64(u64::from(texture.height))),
+                    ("format", diagnostics::Value::Str(format.into())),
+                    (
+                        "mip_count",
+                        diagnostics::Value::U64(u64::from(texture.mip_levels)),
+                    ),
+                    (
+                        "logical_bytes_estimate",
+                        diagnostics::Value::U64(texture.logical_bytes_estimate()),
+                    ),
+                ],
+            );
+        }
         self.textures.push(texture);
         self.textures.len() - 1
+    }
+
+    fn cache_event(&self, path: &str, outcome: &str, index: Option<usize>) {
+        if self.observer.enabled() {
+            let mut fields = vec![
+                ("path", diagnostics::Value::Str(path.to_string())),
+                ("outcome", diagnostics::Value::Str(outcome.to_string())),
+                ("available", diagnostics::Value::Bool(index.is_some())),
+            ];
+            if let Some(index) = index {
+                fields.push(("texture_index", diagnostics::Value::U64(index as u64)));
+            }
+            self.observer.emit(
+                "texture_cache",
+                self.observer.id(),
+                self.observer.parent(),
+                &fields,
+            );
+        }
+    }
+
+    fn optional_texture_failure(&self, path: &str, input_kind: &str) {
+        if self.observer.enabled() {
+            self.observer.emit(
+                "texture_optional_input_failure",
+                self.observer.id(),
+                self.observer.parent(),
+                &[
+                    ("path", diagnostics::Value::Str(path.to_string())),
+                    (
+                        "input_kind",
+                        diagnostics::Value::Str(input_kind.to_string()),
+                    ),
+                    ("owner", diagnostics::Value::Str("unknown".into())),
+                ],
+            );
+        }
     }
 }
 
@@ -1327,9 +1574,26 @@ pub(crate) fn read_texture(assets: &Assets, path: &str) -> Option<(String, Vec<u
             candidates.push(format!("{stem}.dds"));
         }
     }
-    candidates
-        .into_iter()
-        .find_map(|p| assets.read(&p).ok().flatten().map(|bytes| (p, bytes)))
+    for candidate in candidates {
+        if let Some(bytes) = assets.read(&candidate).ok().flatten() {
+            return Some((candidate, bytes));
+        }
+    }
+    let observer = assets.observer();
+    if observer.enabled() {
+        observer.emit(
+            "texture_failure",
+            observer.id(),
+            observer.parent(),
+            &[
+                ("requested_path", diagnostics::Value::Str(path.to_string())),
+                ("failure", diagnostics::Value::Str("missing".into())),
+                ("owner", diagnostics::Value::Str("unknown".into())),
+                ("automatic_marker", diagnostics::Value::Bool(true)),
+            ],
+        );
+    }
+    None
 }
 
 /// Where the camera starts: the first arrival point (the `coc` marker, else
@@ -1650,6 +1914,93 @@ pub fn smooth_normals(positions: &[[f32; 3]], triangles: &[[u16; 3]]) -> Vec<[f3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn texture_reads_fallbacks_reports_final_failures_and_reuses_cache() {
+        let data = testdata::room("texture-diagnostics");
+        let source = data.path().join("textures/test/floor.dds");
+        std::fs::copy(&source, data.path().join("textures/test/fallback.dds")).unwrap();
+        std::fs::write(data.path().join("textures/test/broken.dds"), b"not a DDS").unwrap();
+        std::fs::write(
+            data.path().join("textures/test/layer.dds"),
+            b"corrupt optional layer",
+        )
+        .unwrap();
+        let capture_root = std::env::temp_dir().join(format!(
+            "nv-rs-cellview-diagnostics-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let recorder = diagnostics::Recorder::start(&capture_root, &[]).unwrap();
+        let observer = recorder.observer();
+        let mut files = Assets::open(data.path(), &["FalloutNV.esm".into()]).unwrap();
+        files.set_observer(observer.clone());
+        let parent = observer.id();
+        let _context = observer.context(parent);
+
+        let (resolved, _) = read_texture(&files, "textures/test/fallback.nif").unwrap();
+        assert_eq!(resolved, "textures/test/fallback.dds");
+        assert!(read_texture(&files, "textures/test/absent.nif").is_none());
+
+        let mut cache = TextureCache::new(&files);
+        assert!(cache.get("textures/test/broken.dds").is_none());
+        assert!(cache
+            .get("hairlayer:textures/test/layer.dds|textures/test/floor.dds")
+            .is_some());
+        cache.texture_request(
+            "textures/test/floor.dds",
+            "meshes/test/floor.nif",
+            "Mesh",
+            0x1234,
+            "diffuse",
+        );
+        let first = cache.get("textures/test/floor.dds").unwrap();
+        let second = cache.get("textures/test/floor.dds").unwrap();
+        assert_eq!(first, second);
+        let (textures, unreadable) = cache.finish();
+        assert_eq!(textures.len(), 2);
+        assert!(unreadable.iter().any(|line| line.contains("broken.dds")));
+
+        let session = observer.path().unwrap().to_path_buf();
+        drop(_context);
+        drop(recorder);
+        let events = std::fs::read_to_string(session.join("events-0000.jsonl")).unwrap();
+        assert!(events.contains("\"source\":\"loose file\""));
+        assert!(events.contains("\"result\":\"missing\""));
+        assert!(events.contains("\"failure\":\"missing\""));
+        assert!(events.contains("\"outcome\":\"hit\""));
+        assert!(events.contains("\"failure\":\"corrupt_dds\""));
+        assert!(events.contains("\"role\":\"optional_layer\""));
+        assert!(events.contains("\"input_kind\":\"layer\""));
+        assert!(events.contains("\"mesh_path\":\"meshes/test/floor.nif\""));
+        assert!(events.contains("\"reference_id\":4660"));
+        assert!(events.contains(&format!("\"parent_id\":{parent}")));
+        assert!(events.lines().any(|line| {
+            line.contains("asset_read")
+                && line.contains("fallback.nif")
+                && line.contains("\"result\":\"missing\"")
+        }));
+        assert!(!events
+            .lines()
+            .any(|line| { line.contains("texture_failure") && line.contains("fallback.") }));
+        assert!(events.lines().any(|line| {
+            line.contains("texture_failure")
+                && line.contains("absent.nif")
+                && line.contains("\"failure\":\"missing\"")
+        }));
+        let broken_line = events
+            .lines()
+            .find(|line| line.contains("texture_failure") && line.contains("broken.dds"))
+            .unwrap();
+        assert!(broken_line.contains("\"failure\":\"corrupt_dds\""));
+        assert!(!events
+            .lines()
+            .any(|line| { line.contains("texture_failure") && line.contains("layer.dds") }));
+        let _ = std::fs::remove_dir_all(capture_root);
+    }
 
     #[test]
     fn lights_near_a_square_edge_light_the_next_square_too() {

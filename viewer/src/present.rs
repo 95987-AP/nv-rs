@@ -62,6 +62,21 @@ fn look_at_surface(
         found.0.store(2, Ordering::Relaxed);
         return;
     };
+    let observer = diagnostics::Observer::current();
+    if observer.enabled() {
+        let info = adapter.get_info();
+        let modes = surface.get_capabilities(&adapter).present_modes;
+        observer.emit(
+            "configuration",
+            observer.id(),
+            0,
+            &[
+                ("adapter", info.name.into()),
+                ("backend", format!("{:?}", info.backend).into()),
+                ("available_present_modes", format!("{modes:?}").into()),
+            ],
+        );
+    }
     let has = surface
         .get_capabilities(&adapter)
         .present_modes

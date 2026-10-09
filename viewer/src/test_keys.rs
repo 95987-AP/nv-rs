@@ -54,6 +54,8 @@ pub fn parse(at: f32, v: &str) -> Result<TimedPress, String> {
         "mouse-right" => Press::Mouse(MouseButton::Right),
         // The pause menu's key.
         "escape" => Press::Key(KeyCode::Escape),
+        "f3" => Press::Key(KeyCode::F3),
+        "f12" => Press::Key(KeyCode::F12),
         // Jump (control 12).
         "space" => Press::Key(KeyCode::Space),
         // The Pip-Boy's key (let go before the light's hold time).

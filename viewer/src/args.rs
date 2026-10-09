@@ -638,6 +638,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn diagnostic_arguments_are_opt_in_and_directory_implies_enabled() {
+        let args = parse(&strings(&["Data", "Cell"])).unwrap().unwrap();
+        assert!(!args.diagnostics);
+        assert_eq!(args.diagnostics_dir, PathBuf::from("reports/diagnostics"));
+        let args = parse(&strings(&["Data", "Cell", "--diagnostics"]))
+            .unwrap()
+            .unwrap();
+        assert!(args.diagnostics);
+        let args = parse(&strings(&[
+            "Data",
+            "Cell",
+            "--diagnostics-dir",
+            "capture with spaces",
+        ]))
+        .unwrap()
+        .unwrap();
+        assert!(args.diagnostics);
+        assert_eq!(args.diagnostics_dir, PathBuf::from("capture with spaces"));
+        assert!(parse(&strings(&["Data", "Cell", "--diagnostics-dir"])).is_err());
+    }
+
+    #[test]
     fn movies_play_unless_skipped_or_taking_a_screenshot() {
         let p = |a: &[&str]| parse(&strings(a)).unwrap().unwrap().movies;
         assert!(p(&["Data", "Cell"]));

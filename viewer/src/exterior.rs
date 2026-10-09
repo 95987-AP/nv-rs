@@ -95,6 +95,7 @@ enum Square {
 }
 
 type Finished = (
+    u64,
     (i32, i32),
     Result<Option<ViewerScene>, String>,
     Vec<esm::FormId>,
@@ -133,6 +134,7 @@ type LodTree = Option<(LodSettings, TerrainSettings)>;
 pub struct Exterior {
     pub grid: Arc<WorldGrid>,
     squares: HashMap<(i32, i32), Square>,
+    diagnostic_loads: HashMap<(i32, i32), u64>,
     sender: Sender<Finished>,
     receiver: Mutex<Receiver<Finished>>,
     /// Waiting for the ground under the player: the spot, and the height if
@@ -159,6 +161,15 @@ pub struct Exterior {
     /// The square the terrain's blend toward the distant land was last
     /// measured from.
     blend_here: Option<(i32, i32)>,
+}
+
+impl Drop for Exterior {
+    fn drop(&mut self) {
+        let observer = diagnostics::Observer::current();
+        for id in self.diagnostic_loads.values() {
+            observer.emit("cell_unload", *id, 0, &[("reason", "world_exit".into())]);
+        }
+    }
 }
 
 impl Exterior {
@@ -259,6 +270,7 @@ pub fn enter_exterior(
     commands.insert_resource(Exterior {
         grid: Arc::new(start.grid),
         squares: HashMap::new(),
+        diagnostic_loads: HashMap::new(),
         sender,
         receiver: Mutex::new(receiver),
         landing: Some((start.feet, start.height)),
@@ -314,10 +326,23 @@ pub fn stream_squares(
         .lock()
         .map(|r| r.try_iter().collect())
         .unwrap_or_default();
-    for (square, result, disabled_people) in finished {
+    let observer = diagnostics::Observer::current();
+    for (load_id, square, result, disabled_people) in finished {
+        let _context = observer.context(load_id);
         let far = (square.0 - here.0).abs().max((square.1 - here.1).abs()) > keep_radius();
+        if observer.enabled() {
+            let outcome = match &result {
+                Ok(Some(_)) if far => "discarded_far",
+                Ok(Some(_)) => "available",
+                Ok(None) => "no_cell",
+                Err(_) => "failure",
+            };
+            observer.emit("cell_result", load_id, 0, &[("outcome", outcome.into())]);
+        }
         let state = match result {
             Ok(Some(scene)) if !far => {
+                observer.emit("cell_insert_start", load_id, 0, &[]);
+                let _span = observer.span("exterior_scene_insertion_cpu", load_id, 0);
                 if !exterior.lit {
                     exterior.lit = true;
                     // The game's weather by now (`crate::weather`), else the
@@ -385,6 +410,7 @@ pub fn stream_squares(
                     .clone();
                 let spawned = Box::new(spawner.spawn_square(&scene, here, noise));
                 crate::local_map::capture_square(&mut spawner.commands, &scene, square);
+                observer.emit("cell_insert_end", load_id, 0, &[]);
                 Square::Loaded {
                     spawned,
                     lights: scene.lights.clone(),
@@ -402,6 +428,9 @@ pub fn stream_squares(
             }
             Ok(_) => Square::Empty,
             Err(e) => {
+                if observer.enabled() {
+                    observer.emit("cell_failure", load_id, 0, &[("error", e.clone().into())]);
+                }
                 println!("  couldn't load square {},{}: {e}", square.0, square.1);
                 Square::Empty
             }
@@ -436,6 +465,9 @@ pub fn stream_squares(
         .map(|(s, _)| *s)
         .collect();
     for square in far {
+        if let Some(id) = exterior.diagnostic_loads.remove(&square) {
+            observer.emit("cell_unload", id, 0, &[]);
+        }
         if let Some(Square::Loaded { spawned, .. }) = exterior.squares.remove(&square) {
             for entity in spawned.entities {
                 commands.entity(entity).despawn();
@@ -459,6 +491,19 @@ pub fn stream_squares(
         .into_iter()
         .take(LOADING_AT_ONCE.saturating_sub(loading))
     {
+        let load_id = observer.id();
+        if observer.enabled() {
+            exterior.diagnostic_loads.insert(square, load_id);
+            observer.emit(
+                "cell_request",
+                load_id,
+                0,
+                &[
+                    ("square", format!("{},{}", square.0, square.1).into()),
+                    ("world", exterior.grid.world.label().into()),
+                ],
+            );
+        }
         exterior.squares.insert(square, Square::Loading);
         let game = Arc::clone(&game.0);
         let grid = Arc::clone(&exterior.grid);
@@ -468,15 +513,20 @@ pub fn stream_squares(
         // `bring_in_people`) are not drawn a second time.
         let mut disabled = state.0.disabled.clone();
         disabled.extend(shown.iter().map(|w| (w.reference, true)));
+        let worker_observer = observer.clone();
         std::thread::spawn(move || {
+            let _context = worker_observer.context(load_id);
+            worker_observer.emit("cell_worker_start", load_id, 0, &[]);
             let result = load_square(&game, &grid, square, &disabled);
             let people =
                 world::ai::disabled_people_in_square(&game.order, &grid, square, &disabled);
-            let _ = sender.send((square, result, people));
+            worker_observer.emit("cell_worker_end", load_id, 0, &[]);
+            let _ = sender.send((load_id, square, result, people));
         });
     }
 
     if changed {
+        let _span = observer.span("collision_index_rebuild_cpu", observer.id(), 0);
         let mut collision = Collider::new();
         let mut doors = Vec::new();
         let mut talkers = Vec::new();

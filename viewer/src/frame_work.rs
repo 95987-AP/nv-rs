@@ -51,6 +51,51 @@ struct MainStart(Option<Instant>, Option<Instant>, u64);
 #[derive(Resource, Default)]
 struct RenderStart(Option<Instant>, u64);
 
+/// Explicit benchmark harness: identical in off/on runs, buffered in memory until exit.
+/// This is separate from the recorder and never enabled during ordinary play.
+type BenchmarkSamples = Arc<Mutex<Vec<(f64, f64, bool, bool)>>>;
+#[derive(Resource, Clone, Default)]
+pub struct Benchmark {
+    shared: Option<BenchmarkSamples>,
+    path: Option<std::path::PathBuf>,
+    start: Option<Instant>,
+}
+impl Benchmark {
+    pub fn from_env() -> Self {
+        match std::env::var_os("NV_DIAGNOSTICS_BENCHMARK_PATH") {
+            Some(path) => Self {
+                shared: Some(Arc::new(Mutex::new(Vec::new()))),
+                path: Some(path.into()),
+                start: Some(Instant::now()),
+            },
+            None => Self::default(),
+        }
+    }
+    fn record(&self, interval: f64, focused: bool, ready: bool) {
+        if let (Some(shared), Some(start)) = (&self.shared, self.start) {
+            if let Ok(mut samples) = shared.lock() {
+                if samples.len() < 1_000_000 {
+                    samples.push((start.elapsed().as_secs_f64(), interval, focused, ready));
+                }
+            }
+        }
+    }
+    pub fn finish(&self) {
+        if let (Some(shared), Some(path)) = (&self.shared, &self.path) {
+            if let Ok(samples) = shared.lock() {
+                let mut out = String::from("elapsed_seconds,interval_ms,focused,ready\n");
+                use std::fmt::Write;
+                for (at, ms, focused, ready) in samples.iter() {
+                    let _ = writeln!(out, "{at:.6},{ms:.6},{focused},{ready}");
+                }
+                if let Err(e) = std::fs::write(path, out) {
+                    eprintln!("Benchmark output failed: {e}");
+                }
+            }
+        }
+    }
+}
+
 pub struct FrameWorkPlugin;
 
 impl Plugin for FrameWorkPlugin {
@@ -58,35 +103,46 @@ impl Plugin for FrameWorkPlugin {
         let work = FrameWork::default();
         app.insert_resource(work.clone())
             .init_resource::<MainStart>()
-            .add_systems(First, |mut start: ResMut<MainStart>| {
-                let now = Instant::now();
-                let o = diagnostics::Observer::current();
-                start.2 = o.id();
-                if o.enabled() {
-                    if let Some(previous) = start.1 {
-                        let ms = now.duration_since(previous).as_secs_f64() * 1000.0;
-                        o.emit(
-                            "main_frame_interval",
-                            start.2,
-                            0,
-                            &[("interval_ms", diagnostics::Value::F64(ms))],
-                        );
-                        if ms > 50.0 {
-                            o.emit(
-                                "marker",
-                                o.id(),
-                                start.2,
-                                &[
-                                    ("reason", "slow_frame".into()),
-                                    ("interval_ms", diagnostics::Value::F64(ms)),
-                                ],
+            .add_systems(
+                First,
+                |mut start: ResMut<MainStart>,
+                 benchmark: Res<Benchmark>,
+                 windows: Query<&Window>,
+                 player: Res<crate::walk::Player>| {
+                    let now = Instant::now();
+                    let o = diagnostics::Observer::current();
+                    start.2 = o.id();
+                    if o.enabled() || benchmark.shared.is_some() {
+                        if let Some(previous) = start.1 {
+                            let ms = now.duration_since(previous).as_secs_f64() * 1000.0;
+                            benchmark.record(
+                                ms,
+                                windows.single().is_ok_and(|w| w.focused),
+                                player.ready,
                             );
+                            o.emit(
+                                "main_frame_interval",
+                                start.2,
+                                0,
+                                &[("interval_ms", diagnostics::Value::F64(ms))],
+                            );
+                            if ms > 50.0 {
+                                o.emit(
+                                    "marker",
+                                    o.id(),
+                                    start.2,
+                                    &[
+                                        ("reason", "slow_frame".into()),
+                                        ("interval_ms", diagnostics::Value::F64(ms)),
+                                    ],
+                                );
+                            }
                         }
+                        start.1 = Some(now);
                     }
-                    start.1 = Some(now);
-                }
-                start.0 = Some(now);
-            })
+                    start.0 = Some(now);
+                },
+            )
             .add_systems(Last, |start: Res<MainStart>, work: Res<FrameWork>| {
                 if let (Some(t), Ok(mut m)) = (start.0, work.main.lock()) {
                     let ms = t.elapsed().as_secs_f64() * 1000.0;

@@ -18,6 +18,8 @@ use crate::{active_plugins, convert, Error, Options, TextureCache, TextureData, 
 pub struct Game {
     pub order: LoadOrder,
     pub assets: Assets,
+    /// Shared optional instrumentation for game and cell asset loading.
+    pub observer: diagnostics::Observer,
     keep_root_transforms: bool,
     /// The game's INI settings (`assets::default_settings_files`).
     pub settings: assets::IniSettings,
@@ -293,6 +295,7 @@ fn sound_files_by_folder<'a>(
 
 impl Game {
     pub fn open(data_dir: &Path, options: &Options) -> Result<Game, Error> {
+        let observer = diagnostics::Observer::current();
         let order = LoadOrder::from_data_dir(data_dir, &active_plugins(options)?)?;
         let list = match &options.ini {
             Some(ini) => archive_list_from(std::slice::from_ref(ini)),
@@ -307,6 +310,7 @@ impl Game {
         Ok(Game {
             order,
             assets,
+            observer,
             keep_root_transforms: options.keep_root_transforms,
             settings,
             sound_folders: Default::default(),
