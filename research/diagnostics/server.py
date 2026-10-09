@@ -23,7 +23,8 @@ def make_server(root: str | Path, reports_root: str | Path | None = None) -> MCP
         try:
             return call()
         except (CaptureError, OSError) as exc:
-            return {"error": str(exc), "complete": False, "dropped_events": 0}
+            return {"error": str(exc), "complete": False, "dropped_events": 0,
+                    "loss_count_known": False}
 
     @server.tool()
     def list_sessions(limit: int = 100, offset: int = 0) -> dict[str, Any]:

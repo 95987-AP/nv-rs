@@ -153,33 +153,56 @@ class CaptureReaderTests(unittest.TestCase):
         (first / "report.txt").write_text("first report", encoding="utf-8")
         (second / "report.txt").write_text("second report", encoding="utf-8")
         events = [
-            event(1, "report_bookmark", {"report_path": str(first), "before_us": 30_000_000,
-                                          "after_us": 5_000_000}, time=1_000_000, ident="bookmark-one"),
+            event(1, "report_bookmark", {"report_path": str(first), "before_us": 0,
+                                          "after_us": 6_000_000}, time=1_000_000, ident="bookmark-one"),
             event(2, "screenshot_write_start", {}, time=1_100_000),
-            event(3, "report_bookmark", {"report_path": str(second), "before_us": 30_000_000,
-                                          "after_us": 5_000_000}, time=39_000_000, ident="bookmark-two"),
+            event(3, "report_bookmark", {"report_path": str(second), "before_us": 9_000_000,
+                                          "after_us": 45_000_000}, time=39_000_000, ident="bookmark-two"),
             event(4, "report_write_end", {}, time=39_500_000),
         ]
         (session / "events-0000.jsonl").write_text("".join(json.dumps(item) + "\n" for item in events))
         store = CaptureStore(self.root, reports_root=reports)
         first_result = store.get_report("bookmarks", "bookmark-one")
         self.assertEqual(first_result["report_text"], "first report")
+        self.assertEqual(first_result["window"]["requested_start_us"], 0)
+        self.assertEqual(first_result["window"]["start_us"], 1_000_000)
         self.assertTrue(first_result["window"]["shortened_before"])
         self.assertIn("screenshot_write_start", [e["type"] for e in first_result["report_activity"]])
         second_result = store.get_report("bookmarks", "bookmark-two")
         self.assertEqual(second_result["report_text"], "second report")
+        self.assertEqual(second_result["window"]["requested_end_us"], 45_000_000)
+        self.assertEqual(second_result["window"]["end_us"], 40_000_000)
         self.assertTrue(second_result["window"]["shortened_after"])
         with patch("reader.MAX_REPORT_BYTES", 8):
             bounded = store.get_report("bookmarks", "bookmark-two")
         self.assertEqual(bounded["report_text"], "second r")
         self.assertTrue(bounded["report_truncated"])
 
+        actual_session = self.root / "actual-window"
+        actual_session.mkdir()
+        (actual_session / "manifest.json").write_text(json.dumps({"version": 1, "session_id": "actual-window"}))
+        (actual_session / "status.json").write_text(json.dumps({
+            "complete": True, "dropped_events": 0, "duration_us": 77_694_721,
+        }))
+        actual_events = [
+            event(1, "phase", {"name": "startup"}, time=0),
+            event(2, "report_bookmark", {"report_path": str(second), "before_us": 28_853_106,
+                                          "after_us": 63_853_106}, time=58_853_113, ident="actual-bookmark"),
+            event(3, "screenshot_write_end", {}, time=77_694_721),
+        ]
+        (actual_session / "events-0000.jsonl").write_text("".join(json.dumps(item) + "\n" for item in actual_events))
+        actual = store.get_report("actual-window", "actual-bookmark")["window"]
+        self.assertEqual(actual["start_us"], 28_853_106)
+        self.assertEqual(actual["end_us"], 63_853_106)
+        self.assertFalse(actual["shortened_before"])
+        self.assertFalse(actual["shortened_after"])
+
     def test_candidate_reads_are_not_final_failure_counts(self):
         events = [
             event(1, "asset_read", {"requested_path": "candidate.dds", "result": "missing"}),
             event(2, "texture_failure", {"requested_path": "bad.dds", "failure": "parse"}),
             event(3, "asset_failure", {"path": "gone.nif", "failure": "not_found"}),
-            event(4, "optional_texture_failure", {"path": "optional.dds", "failure": "missing"}),
+            event(4, "texture_optional_input_failure", {"path": "optional.dds", "failure": "missing"}),
             event(5, "cell_failure", {"square": [1, 2], "failure": "worker"}),
         ]
         write_session(self.root, "failure-types", events)
@@ -231,6 +254,16 @@ class CaptureReaderTests(unittest.TestCase):
         self.assertTrue(quality["truncated"])
         self.assertIn("trailing_partial_line", quality["read_issues"])
         self.assertIn("left_truncated_or_malformed", comparison["benchmark_comparability_reasons"])
+
+    def test_missing_drop_count_is_not_reported_as_known_zero(self):
+        folder = write_session(self.root, "unknown-drops", self.events[:1])
+        (folder / "status.json").write_text(json.dumps({"complete": True, "duration_us": 1000}))
+        comparison = CaptureStore(self.root).compare_sessions("unknown-drops", "unknown-drops")
+        quality = comparison["data_quality"]["left"]
+        self.assertFalse(quality["loss_count_known"])
+        self.assertEqual(quality["dropped_events"], 0)
+        self.assertFalse(comparison["benchmark_comparable"])
+        self.assertIn("left_loss_count_unknown", comparison["benchmark_comparability_reasons"])
 
     def test_compare_separates_phases_and_reports_configuration(self):
         write_session(self.root, "session-b", self.events, config={"resolution": [1280, 720]})

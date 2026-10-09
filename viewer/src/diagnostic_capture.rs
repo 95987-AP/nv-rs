@@ -115,10 +115,25 @@ fn sample(
             ],
         );
     }
-    if player.ready && !capture.gameplay {
-        o.emit("phase", o.id(), 0, &[("name", "gameplay".into())]);
+    if player.ready {
         capture.gameplay = true;
     }
+    // Repeat the current phase in each sample: a dropped transition must not
+    // classify the remainder of a session as startup.
+    o.emit(
+        "phase",
+        o.id(),
+        0,
+        &[(
+            "name",
+            if capture.gameplay {
+                "gameplay"
+            } else {
+                "startup"
+            }
+            .into(),
+        )],
+    );
     if let (Ok(camera), Ok(window)) = (cameras.single(), windows.single()) {
         let feet = player.position_for_view(crate::walk::game_point(camera.translation));
         o.emit(

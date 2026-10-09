@@ -301,13 +301,16 @@ class CaptureStore:
 
     @staticmethod
     def _base(session_id: str, status: dict[str, Any] | None) -> dict[str, Any]:
-        dropped = status.get("dropped_events", 0) if status else 0
-        if not isinstance(dropped, int) or isinstance(dropped, bool) or dropped < 0:
+        dropped_value = status.get("dropped_events") if status else None
+        loss_count_known = isinstance(dropped_value, int) and not isinstance(dropped_value, bool) and dropped_value >= 0
+        dropped = dropped_value if loss_count_known else 0
+        if not loss_count_known:
             dropped = 0
         return {
             "session_id": session_id,
             "complete": bool(status and status.get("complete") is True),
             "dropped_events": dropped,
+            "loss_count_known": loss_count_known,
         }
 
     def list_sessions(self, limit: int = DEFAULT_PAGE, offset: int = 0) -> dict[str, Any]:
@@ -528,13 +531,14 @@ class CaptureStore:
         path, _, status = self._session(session_id)
         bookmark = None
         selected_event = None
-        bookmark_events, issues, scanned, capture_end_us = [], [], 0, None
+        bookmark_events, issues, scanned, capture_start_us, capture_end_us = [], [], 0, None, None
         for event, scanned, issue in self._iter_events(path):
             if issue:
                 if len(issues) < 20:
                     issues.append(issue)
             event_time = _event_time(event) if event else None
             if event_time is not None:
+                capture_start_us = event_time if capture_start_us is None else min(capture_start_us, event_time)
                 capture_end_us = event_time if capture_end_us is None else max(capture_end_us, event_time)
             if event and event.get("type") in {"marker", "report_bookmark"}:
                 fields = event.get("fields") if isinstance(event.get("fields"), dict) else {}
@@ -558,15 +562,20 @@ class CaptureStore:
         bookmark_time = _event_time(selected_event) if selected_event else None
         duration = status.get("duration_us") if status else None
         if not isinstance(duration, int) or isinstance(duration, bool) or duration < 0:
-            duration = capture_end_us
-        requested_before = selected_fields.get("before_us", 30_000_000)
-        requested_after = selected_fields.get("after_us", 5_000_000)
-        requested_before = requested_before if isinstance(requested_before, int) and not isinstance(requested_before, bool) and requested_before >= 0 else 30_000_000
-        requested_after = requested_after if isinstance(requested_after, int) and not isinstance(requested_after, bool) and requested_after >= 0 else 5_000_000
-        available_before = bookmark_time if bookmark_time is not None else 0
-        available_after = max(0, duration - bookmark_time) if duration is not None and bookmark_time is not None else 0
-        actual_before = min(requested_before, available_before)
-        actual_after = min(requested_after, available_after)
+            duration = None
+        requested_start_us = selected_fields.get("before_us")
+        requested_end_us = selected_fields.get("after_us")
+        if not isinstance(requested_start_us, int) or isinstance(requested_start_us, bool) or requested_start_us < 0:
+            requested_start_us = max(0, (bookmark_time or 0) - 30_000_000)
+        if not isinstance(requested_end_us, int) or isinstance(requested_end_us, bool) or requested_end_us < 0:
+            requested_end_us = (bookmark_time or 0) + 5_000_000
+        available_start_us = capture_start_us
+        available_end_us = max(x for x in (capture_end_us, duration) if x is not None) if any(
+            x is not None for x in (capture_end_us, duration)) else None
+        actual_start_us = max(requested_start_us, available_start_us) if available_start_us is not None else requested_start_us
+        actual_end_us = min(requested_end_us, available_end_us) if available_end_us is not None else requested_end_us
+        if actual_end_us < actual_start_us:
+            actual_end_us = actual_start_us
 
         def read_text(name: str, limit: int) -> tuple[str | None, bool]:
             if not bookmark:
@@ -604,7 +613,7 @@ class CaptureStore:
                 pass
         report_activity, activity_bytes, activity_truncated = [], 0, False
         if selected_event and bookmark_time is not None:
-            start, end = bookmark_time - actual_before, bookmark_time + actual_after
+            start, end = actual_start_us, actual_end_us
             for event, _, issue in self._iter_events(path):
                 if issue == "scan_limit":
                     activity_truncated = True
@@ -625,10 +634,14 @@ class CaptureStore:
                 "bookmark_evidence_ids": bookmark_events[:100],
                 "evidence_id": str(selected_event.get("id"))[:128] if selected_event else None,
                 "bookmark_time_us": bookmark_time,
-                "window": {"requested_before_us": requested_before, "requested_after_us": requested_after,
-                           "before_us": actual_before, "after_us": actual_after,
-                           "shortened_before": actual_before < requested_before,
-                           "shortened_after": actual_after < requested_after},
+                "window": {"requested_start_us": requested_start_us,
+                           "requested_end_us": requested_end_us,
+                           "start_us": actual_start_us, "end_us": actual_end_us,
+                           "before_us": actual_start_us, "after_us": actual_end_us,
+                           "available_start_us": available_start_us,
+                           "available_end_us": available_end_us,
+                           "shortened_before": actual_start_us > requested_start_us,
+                           "shortened_after": actual_end_us < requested_end_us},
                 "report_activity": report_activity,
                 "report_text": report, "note_text": note, "state_metadata": state_text,
                 "picture_metadata": pictures, "screenshot_filenames": screenshot_filenames,
@@ -648,6 +661,8 @@ class CaptureStore:
         for side, report in (("left", left["data_quality"]), ("right", right["data_quality"])):
             if not report["complete"]:
                 comparison_reasons.append(f"{side}_session_incomplete")
+            if not report["loss_count_known"]:
+                comparison_reasons.append(f"{side}_loss_count_unknown")
             if report["dropped_events"]:
                 comparison_reasons.append(f"{side}_dropped_events")
             if report["truncated"]:
@@ -711,7 +726,7 @@ class CaptureStore:
                         truncation_reasons.add("frame_sample_limit")
             failure_type = event.get("type")
             failure_list = (failures if failure_type in {"texture_failure", "asset_failure"} else
-                            optional_failures if failure_type == "optional_texture_failure" else
+                            optional_failures if failure_type in {"optional_texture_failure", "texture_optional_input_failure"} else
                             cell_failures if failure_type == "cell_failure" else None)
             if failure_list is not None and len(failure_list) < 1000:
                 path_value = next((fields[key] for key in ("requested_path", "path", "resolved_path", "base_path")
@@ -734,10 +749,12 @@ class CaptureStore:
         data_quality = {
             "complete": bool(status and status.get("complete") is True),
             "dropped_events": self._base(session_id, status)["dropped_events"],
+            "loss_count_known": self._base(session_id, status)["loss_count_known"],
             "truncated": truncated,
             "read_issues": read_issues,
             "truncation_reasons": sorted(truncation_reasons),
             "reliable_for_comparison": bool(status and status.get("complete") is True)
+                and self._base(session_id, status)["loss_count_known"]
                 and self._base(session_id, status)["dropped_events"] == 0
                 and not truncated and not read_issues,
         }

@@ -114,3 +114,23 @@ launcher has the same choice. No official play package was published.
 Second draft review: https://github.com/95987-AP/nv-rs/pull/2.
 Core tests, clippy, formatting and release build pass. The viewer's latest
 172 tests pass; final clippy/release and live evidence are being completed.
+
+Live validation, same release source `1e99c54`: Doc's house starts and records
+readable JSONL, complete final status and adapter/plugin/archive metadata.
+Windows observation confirms F3 hides/restores FPS; the installed controls also
+bind F3 to the Pip-Boy DATA shortcut, which is pre-existing. F12's saved picture
+excludes FPS and console `--fps` continues. The actual adapter here is a GTX
+1080/Vulkan, not the laptop listed in older machine notes.
+
+A Goodsprings walk crosses from cell `000DAEBB` to `000DAEB9` (x -72151 to
+-69010), with 30 cell requests/inserts/unloads. MCP initialization and queries
+read both live sessions, F12 report windows, a seven-stage cell trace and its
+associated asset read. Local evidence is under
+`%USERPROFILE%/nv-re/work/diagnostics-validation` (`live-house.log`,
+`live-walk.log`, `mcp-live.json`, report images and captures). House capture:
+110 dropped events / about 57k recorded; walk: 524 / about 42k. Losses are
+visible and make comparison evidence incomplete. The walk lost its once-only
+phase transition, so the current phase is now repeated once per second.
+The reader's live bookmark-window interpretation was corrected and covered by
+an exact regression fixture; 13 synthetic tests pass. Final release rerun and
+new overhead measurements will use the phase repetition change.

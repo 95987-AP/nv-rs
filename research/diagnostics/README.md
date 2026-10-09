@@ -61,6 +61,9 @@ events can be matched through requested, candidate, fallback, resolved, asset,
 texture, and base path fields. Candidate `asset_read` misses are evidence, not final failure
 counts; final texture/asset failures, optional texture failures, and cell
 failures are reported separately.
+F12 `before_us` and `after_us` fields are absolute session-time bounds; the
+reader clamps them to the recorded interval and reports requested and actual
+bounds. Missing `dropped_events` status is marked as unknown, not known zero.
 
 ## Verify
 
